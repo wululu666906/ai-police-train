@@ -1,119 +1,167 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
-import { Circle, Progress } from 'vant'
+import { useRouter } from 'vue-router'
 
 const router = useRouter()
-const route = useRoute()
 const report = ref<any>(null)
 const loading = ref(true)
 
 onMounted(() => {
-  // 从路由或本地缓存获取报告数据
-  const data = localStorage.getItem('last_evaluation_report')
+  const data = localStorage.getItem('last_evaluation')
   if (data) {
     report.value = JSON.parse(data)
     loading.value = false
   } else {
-    // 兜底逻辑
     loading.value = false
   }
 })
 
-const getGradeColor = (grade: string) => {
-  if (grade === 'S') return 'text-yellow-400'
-  if (grade === 'A') return 'text-green-400'
-  if (grade === 'B') return 'text-blue-400'
-  return 'text-red-400'
+const getScoreColor = (score: number, full: number) => {
+  const ratio = score / full
+  if (ratio >= 0.9) return 'text-green-600'
+  if (ratio >= 0.7) return 'text-blue-600'
+  if (ratio >= 0.6) return 'text-orange-500'
+  return 'text-red-600'
 }
+
+const getPercentage = (score: number, full: number) => (score / full) * 100
 </script>
 
 <template>
-  <div class="h-screen bg-slate-900 overflow-y-auto pb-12">
-    <van-nav-bar 
-      title="演练评估报告" 
-      left-arrow 
-      @click-left="router.push('/cases')"
-      class="!bg-transparent !border-none"
-    />
+  <div class="h-screen bg-[#F2F3F5] overflow-y-auto flex flex-col font-sans">
+    <header class="bg-[#1D3557] text-white p-6 shadow-xl flex-shrink-0 relative overflow-hidden">
+        <div class="absolute right-[-20px] top-[-20px] opacity-10">
+           <van-icon name="medal" size="160" />
+        </div>
+        <div class="flex items-center space-x-4 mb-6 relative z-10">
+            <div class="bg-white/20 p-2 rounded-lg backdrop-blur-md cursor-pointer" @click="router.push('/admin/cases')">
+                <van-icon name="arrow-left" />
+            </div>
+            <h1 class="text-xl font-bold">演习训练考核报告</h1>
+        </div>
+
+        <div class="flex flex-col items-center py-6 relative z-10">
+            <p class="text-blue-200 text-xs uppercase tracking-widest mb-1">Total Score</p>
+            <div class="text-6xl font-black italic tracking-tighter drop-shadow-md">
+                {{ report?.total_score || 0 }}<span class="text-xl not-italic ml-1">Pts</span>
+            </div>
+            <div class="mt-4 px-6 py-1.5 bg-white/10 rounded-full border border-white/20 text-xs backdrop-blur-sm">
+                综合评估：<span class="font-bold text-yellow-400">{{ report?.total_score >= 90 ? '卓越' : (report?.total_score >= 80 ? '优秀' : '合格') }}</span>
+            </div>
+        </div>
+    </header>
     
     <div v-if="loading" class="flex flex-col items-center justify-center py-20">
-      <van-loading color="#818cf8" vertical>AI 评分生成中...</van-loading>
+      <van-loading color="#1D3557" vertical>分析成绩中...</van-loading>
     </div>
     
-    <div v-else-if="report" class="px-6 space-y-6">
-      <!-- 总体评价头 -->
-      <div class="bg-gradient-to-b from-indigo-900/40 to-slate-900 rounded-3xl p-8 border border-indigo-500/30 text-center relative overflow-hidden">
-        <div class="absolute top-0 right-0 p-8 transform rotate-12 opacity-10">
-          <van-icon name="medal" size="120" color="#fff" />
-        </div>
-        
-        <div class="text-slate-400 text-sm mb-2 uppercase tracking-widest">Training Grade</div>
-        <div class="text-7xl font-black mb-4 italic" :class="getGradeColor(report.grade)">
-          {{report.grade}}
-        </div>
-        <div class="text-white text-xl font-bold">最终得分：{{report.overall_score}}</div>
-      </div>
-      
-      <!-- 维度得分 (代替雷达图) -->
-      <div class="bg-slate-800/50 rounded-2xl p-6 border border-slate-700/50">
-        <h3 class="text-white text-sm font-bold mb-4 flex items-center">
-          <van-icon name="chart-trending-o" class="mr-2 text-indigo-400" />
-          多维评价指标
+    <div v-else-if="report" class="flex-1 p-6 space-y-6 max-w-4xl mx-auto w-full">
+      <!-- 维度得分详情 -->
+      <section class="space-y-4">
+        <h3 class="text-gray-800 font-bold flex items-center px-2">
+            <span class="w-1 h-4 bg-[#1D3557] mr-2 rounded-full"></span>
+            多维度量化考核
         </h3>
-        <div class="space-y-4">
-          <div v-for="(val, key) in report.dimensions" :key="key">
-            <div class="flex justify-between text-xs text-slate-400 mb-1 capitalize">
-              <span>{{key.replace('_', ' ')}}</span>
-              <span>{{val}}%</span>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div v-for="s in report.scores" :key="s.dimension" class="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex flex-col justify-between">
+                <div>
+                    <div class="flex justify-between items-start mb-2">
+                        <span class="text-sm font-bold text-gray-700">{{ s.dimension }}</span>
+                        <span class="text-xs font-black" :class="getScoreColor(s.score, s.full_score)">
+                            {{ s.score }}/{{ s.full_score }}
+                        </span>
+                    </div>
+                    <p class="text-xs text-gray-400 leading-relaxed min-h-[32px]">{{ s.reason }}</p>
+                </div>
+                <div class="mt-4 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                    <div 
+                        class="h-full bg-[#457B9D] transition-all duration-1000"
+                        :style="{ width: getPercentage(s.score, s.full_score) + '%' }"
+                    ></div>
+                </div>
             </div>
-            <van-progress 
-              :percentage="val" 
-              stroke-width="6" 
-              :color="'linear-gradient(to right, #6366f1, #a855f7)'"
-              track-color="#1e293b"
-              :show-pivot="false"
-            />
-          </div>
         </div>
-      </div>
+      </section>
       
       <!-- 亮点与改进 -->
-      <div class="grid grid-cols-1 gap-4">
-        <div class="bg-green-500/10 border border-green-500/20 rounded-xl p-4">
-          <div class="text-green-400 text-xs font-bold mb-2 flex items-center">
-            <van-icon name="success" class="mr-1"/> 表现亮点
-          </div>
-          <ul class="text-slate-300 text-sm space-y-1.5 list-disc list-inside">
-            <li v-for="h in report.highlights" :key="h">{{h}}</li>
-          </ul>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="bg-white rounded-2xl shadow-sm border-t-4 border-green-500 p-6">
+           <div class="flex items-center text-green-600 font-bold mb-4">
+              <van-icon name="checked" class="mr-2" size="20" />
+              表现亮点 (Strengths)
+           </div>
+           <ul class="space-y-3">
+              <li v-for="item in report.strengths" :key="item" class="text-sm text-gray-600 flex items-start">
+                  <span class="inline-block w-1.5 h-1.5 rounded-full bg-green-200 mr-2 mt-1.5 flex-shrink-0"></span>
+                  {{ item }}
+              </li>
+           </ul>
         </div>
         
-        <div class="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
-          <div class="text-red-400 text-xs font-bold mb-2 flex items-center">
-            <van-icon name="warning-o" class="mr-1"/> 改进建议
-          </div>
-          <ul class="text-slate-300 text-sm space-y-1.5 list-disc list-inside">
-            <li v-for="s in report.shortcomings" :key="s">{{s}}</li>
-          </ul>
+        <div class="bg-white rounded-2xl shadow-sm border-t-4 border-orange-400 p-6">
+           <div class="flex items-center text-orange-500 font-bold mb-4">
+              <van-icon name="warning" class="mr-2" size="20" />
+              改进空间 (Improvements)
+           </div>
+           <ul class="space-y-3">
+              <li v-for="item in report.improvements" :key="item" class="text-sm text-gray-600 flex items-start">
+                  <span class="inline-block w-1.5 h-1.5 rounded-full bg-orange-100 mr-2 mt-1.5 flex-shrink-0"></span>
+                  {{ item }}
+              </li>
+           </ul>
         </div>
       </div>
       
-      <!-- 教官点评 -->
-      <div class="bg-slate-800 p-5 rounded-xl border-l-4 border-indigo-500">
-        <div class="text-indigo-400 text-xs font-bold mb-1">教官总结：</div>
-        <div class="text-slate-200 text-sm italic leading-relaxed">
-          "{{report.suggestion}}"
-        </div>
+      <!-- 专家评语 -->
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 relative">
+        <van-icon name="chat" class="absolute right-8 top-8 text-gray-100" size="60" />
+        <h3 class="font-bold text-[#1D3557] mb-4">专家点评总结</h3>
+        <p class="text-gray-500 text-sm leading-loose italic relative z-10">
+          "{{ report.suggestions }}"
+        </p>
       </div>
       
-      <div class="flex space-x-3 pt-4 pb-8">
-        <van-button block round class="!bg-slate-700 !border-none !text-slate-200" @click="router.push('/cases')">返回剧本集</van-button>
-        <van-button block round type="primary" class="!bg-indigo-600 !border-none" @click="router.back()">重新演练</van-button>
+      <!-- Actions -->
+      <div class="flex space-x-4 pt-4 pb-12">
+        <van-button 
+            block 
+            round 
+            class="!border-gray-200 !text-gray-600 !bg-white hover:!bg-gray-50 h-12" 
+            @click="router.push('/admin/cases')"
+        >
+            返回剧本库
+        </van-button>
+        <van-button 
+            block 
+            round 
+            type="primary" 
+            class="!bg-[#1D3557] !border-none h-12 shadow-lg shadow-blue-900/10" 
+            @click="router.back()"
+        >
+            再次演练挑战
+        </van-button>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.grid > div {
+    animation: slideUp 0.5s ease-out forwards;
+    opacity: 0;
+}
+
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+</style>
 
 <style>
 .van-nav-bar__title { color: white !important; }

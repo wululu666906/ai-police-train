@@ -5,7 +5,20 @@ export default {
     "./src/**/*.{vue,js,ts,jsx,tsx}",
   ],
   theme: {
-    extend: {},
+    extend: {
+      colors: {
+        police: {
+          dark: '#1d3557',
+          blue: '#457b9d',
+          light: '#a8dadc',
+          background: '#f2f3f5',
+          accent: '#e63946'
+        }
+      },
+      borderRadius: {
+        'police': '6px'
+      }
+    },
   },
   plugins: [],
 }

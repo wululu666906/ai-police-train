@@ -3,7 +3,7 @@ import { showToast } from 'vant'
 
 const service = axios.create({
   baseURL: 'http://127.0.0.1:8000',
-  timeout: 15000
+  timeout: 120000 // 统一将超时时间增加到 120 秒，以防大型模型分析耗时较长
 })
 
 // 请求拦截器：注入 Token

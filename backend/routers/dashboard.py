@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 import models, database
-from pymilvus import MilvusClient
 import os
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])

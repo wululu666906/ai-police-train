@@ -28,3 +28,13 @@ Thumbs.db
 dist/
 build/
 frontend/dist/
+
+# 数据库备份文件
+*.db.bak*
+*.bak
+
+# Word 文档（如果是设计文档想保留可以不加这行）
+*.docx
+
+# 临时文件
+~$*

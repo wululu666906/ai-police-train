@@ -1,12 +1,17 @@
 from pydantic import BaseModel, ConfigDict
-from typing import List, Optional
+from typing import List, Optional, Any
 from datetime import datetime
+
+# --- Role & Scene Schemas ---
 
 class RoleBase(BaseModel):
     name: str
+    role_type: str = "配合型"
     personality: str
+    speaking_style: Optional[str] = "冷静"
     init_emotion: int = 50
     init_trust: int = 30
+    status: Optional[str] = "正常"
     hidden_truths: Optional[str] = "[]"
 
 class RoleCreate(RoleBase):
@@ -14,12 +19,14 @@ class RoleCreate(RoleBase):
 
 class Role(RoleBase):
     id: int
-    scene_id: int
+    scene_id: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
 class SceneBase(BaseModel):
     name: str
+    description: Optional[str] = None
     difficulty: str
+    stages: Optional[str] = "[]"
 
 class SceneCreate(SceneBase):
     roles: List[RoleCreate] = []
@@ -30,10 +37,13 @@ class Scene(SceneBase):
     roles: List[Role] = []
     model_config = ConfigDict(from_attributes=True)
 
+# --- Case Schemas ---
+
 class CaseBase(BaseModel):
-    title: str
-    case_type: str
-    background: str
+    title: Optional[str] = None
+    case_type: Optional[str] = None
+    background: Optional[str] = None
+    structured_data: Optional[str] = "{}"
 
 class CaseCreate(CaseBase):
     scenes: List[SceneCreate] = []
@@ -44,28 +54,20 @@ class Case(CaseBase):
     scenes: List[Scene] = []
     model_config = ConfigDict(from_attributes=True)
 
-class PromptTemplateBase(BaseModel):
-    name: str
-    content: str
+# --- Knowledge Base Schemas ---
 
-class PromptTemplateCreate(PromptTemplateBase):
+class KnowledgeItemBase(BaseModel):
+    content: str
+    source: Optional[str] = "manual"
+
+class KnowledgeItemCreate(KnowledgeItemBase):
     pass
 
-class PromptTemplate(PromptTemplateBase):
-    id: int
+class KnowledgeItem(KnowledgeItemBase):
+    id: str
     model_config = ConfigDict(from_attributes=True)
 
-class UserBase(BaseModel):
-    username: str
-    role: str = "student"
-
-class UserCreate(UserBase):
-    password: str
-
-class User(UserBase):
-    id: int
-    created_at: datetime
-    model_config = ConfigDict(from_attributes=True)
+# --- Training & Dialogue Schemas ---
 
 class MessageBase(BaseModel):
     role: str
@@ -89,9 +91,67 @@ class SessionCreate(SessionBase):
 
 class Session(SessionBase):
     id: int
+    current_stage: str
     current_emotion: int
     current_trust: int
     revealed_info: str
     status: str
     messages: List[Message] = []
+    model_config = ConfigDict(from_attributes=True)
+
+class SessionDetail(BaseModel):
+    id: int
+    scene_id: int
+    user_id: int
+    current_stage: str
+    current_stage_goal: Optional[str] = None
+    current_emotion: int
+    current_trust: int
+    revealed_info: str
+    status: str
+    case_title: Optional[str] = None
+    case_background: Optional[str] = None
+    role_name: Optional[str] = None
+    scene_name: Optional[str] = None
+    messages: List[Message] = []
+    model_config = ConfigDict(from_attributes=True)
+
+# --- Scoring & Evaluation Schemas ---
+
+class ScoreDetail(BaseModel):
+    dimension: str
+    score: int
+    full_score: int
+    reason: str
+
+class ScoringResult(BaseModel):
+    scores: List[ScoreDetail]
+    total_score: int
+    strengths: List[str] = []
+    improvements: List[str] = []
+    suggestions: Optional[str] = None
+
+# --- Other Schemas ---
+
+class PromptTemplateBase(BaseModel):
+    name: str
+    content: str
+
+class PromptTemplateCreate(PromptTemplateBase):
+    pass
+
+class PromptTemplate(PromptTemplateBase):
+    id: int
+    model_config = ConfigDict(from_attributes=True)
+
+class UserBase(BaseModel):
+    username: str
+    role: str = "student"
+
+class UserCreate(UserBase):
+    password: str
+
+class User(UserBase):
+    id: int
+    created_at: datetime
     model_config = ConfigDict(from_attributes=True)

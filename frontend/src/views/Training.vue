@@ -1,7 +1,162 @@
+<template>
+  <div class="h-screen bg-[#F2F3F5] flex flex-col font-sans">
+    <!-- Header: Case Info & Indicators -->
+    <header class="bg-[#1D3557] text-white p-4 shadow-lg flex-shrink-0 z-10">
+      <div class="flex justify-between items-center mb-4">
+        <div class="flex items-center">
+          <van-icon name="arrow-left" class="mr-4 cursor-pointer text-blue-200" @click="router.back()" />
+          <div>
+            <h2 class="font-bold text-lg leading-tight">{{ caseInfo.title }}</h2>
+            <p class="text-[10px] text-blue-300 uppercase tracking-widest mt-0.5">Session ID: #{{ sessionId }}</p>
+          </div>
+        </div>
+        <van-button 
+          size="small" 
+          plain 
+          class="!border-red-400 !text-red-400 !bg-transparent hover:!bg-red-500/10"
+          @click="finishTraining"
+        >
+          结束并评分
+        </van-button>
+      </div>
+
+      <!-- State Indicators -->
+      <div class="grid grid-cols-2 gap-4 bg-white/5 rounded-xl p-3 border border-white/10">
+        <div class="space-y-1">
+          <div class="flex justify-between items-center">
+            <span class="text-[10px] text-blue-200 flex items-center"><van-icon name="fire" class="mr-1" /> AI 情绪值</span>
+            <span class="text-xs font-bold">{{ currentState.emotion }}%</span>
+          </div>
+          <div class="h-1.5 bg-white/10 rounded-full overflow-hidden">
+            <div 
+              class="h-full transition-all duration-500" 
+              :class="currentState.emotion > 70 ? 'bg-red-500' : 'bg-orange-400'"
+              :style="{ width: currentState.emotion + '%' }"
+            ></div>
+          </div>
+        </div>
+        <div class="space-y-1">
+           <div class="flex justify-between items-center">
+            <span class="text-[10px] text-blue-200 flex items-center"><van-icon name="shield-reveal-o" class="mr-1" /> 训练信任度</span>
+            <span class="text-xs font-bold">{{ currentState.trust }}%</span>
+          </div>
+          <div class="h-1.5 bg-white/10 rounded-full overflow-hidden">
+            <div 
+              class="h-full bg-green-400 transition-all duration-500"
+              :style="{ width: currentState.trust + '%' }"
+            ></div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Chat History -->
+    <div class="flex-1 overflow-y-auto p-6 space-y-6" ref="chatContainer">
+      <div v-for="msg in chatHistory" :key="msg.id">
+        <!-- System Message -->
+        <div v-if="msg.role === 'system'" class="flex justify-center">
+          <span class="px-4 py-1 bg-gray-200/80 text-[11px] text-gray-500 rounded-full border border-gray-300/50 italic">
+            {{ msg.content }}
+          </span>
+        </div>
+
+        <!-- AI Bubble -->
+        <div v-else-if="msg.role === 'assistant'" class="flex items-start max-w-[85%] space-x-3 group animate-in slide-in-from-left duration-300">
+          <div class="w-10 h-10 rounded-full bg-white border border-gray-200 shadow-sm flex-shrink-0 flex items-center justify-center overflow-hidden">
+            <van-icon name="contact" class="text-xl text-[#457B9D]" />
+          </div>
+          <div class="space-y-1">
+            <p class="text-[10px] text-gray-400 font-bold uppercase ml-1">{{ roleInfo.name }}</p>
+            <div class="bg-white px-4 py-3 rounded-2xl rounded-tl-none shadow-sm border border-gray-200 text-gray-800 text-sm leading-relaxed relative">
+               {{ msg.content }}
+               <!-- Bubble tail decoration -->
+               <div class="absolute -left-[6px] top-0 w-3 h-3 bg-white border-l border-t border-gray-200 transform -rotate-45"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Human Bubble -->
+        <div v-else class="flex flex-row-reverse items-start space-x-3 space-x-reverse animate-in slide-in-from-right duration-300">
+           <div class="w-10 h-10 rounded-full bg-[#1D3557] border border-blue-400 shadow-md flex-shrink-0 flex items-center justify-center overflow-hidden">
+            <van-icon name="friends-o" class="text-xl text-white" />
+          </div>
+          <div class="space-y-1 flex flex-col items-end">
+            <p class="text-[10px] text-gray-400 font-bold uppercase mr-1">训练警员</p>
+            <div class="bg-[#457B9D] px-4 py-3 rounded-2xl rounded-tr-none shadow-lg text-white text-sm leading-relaxed relative">
+               {{ msg.content }}
+               <div class="absolute -right-[6px] top-0 w-3 h-3 bg-[#457B9D] transform rotate-45"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI Typing Indicator -->
+      <div v-if="isLoading" class="flex items-start max-w-[85%] space-x-3">
+         <div class="w-10 h-10 rounded-full bg-white border border-gray-200 shadow-sm flex-shrink-0 flex items-center justify-center">
+            <van-icon name="contact" class="text-xl text-[#457B9D]" />
+          </div>
+          <div class="bg-white px-4 py-3 rounded-2xl rounded-tl-none border border-gray-200 flex items-center space-x-1 shadow-sm">
+            <div class="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce"></div>
+            <div class="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce delay-75"></div>
+            <div class="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce delay-150"></div>
+          </div>
+      </div>
+    </div>
+
+    <!-- Info Progress Drawer Button -->
+    <div class="absolute right-6 bottom-28 group">
+       <div class="bg-white p-3 rounded-full shadow-xl border border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors" @click="showInfoList = true">
+          <van-icon name="notes-o" class="text-xl text-[#1D3557]" />
+       </div>
+       <div class="absolute right-full mr-3 top-2 bg-gray-800 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">
+          已获知关键信息巡查
+       </div>
+    </div>
+
+    <!-- Input Area -->
+    <div class="p-6 bg-white border-t border-gray-200 flex items-center space-x-4 flex-shrink-0">
+      <div class="flex-1 bg-gray-100 rounded-xl flex items-center px-4 border border-gray-200 focus-within:border-[#457B9D] focus-within:bg-white transition-all shadow-inner">
+        <textarea 
+          v-model="inputMessage" 
+          rows="1" 
+          class="flex-1 bg-transparent py-3 text-gray-700 outline-none text-sm resize-none"
+          placeholder="请输入执法话术或提问..."
+          @keyup.enter.exact.prevent="sendMessage"
+        ></textarea>
+      </div>
+      <van-button 
+        round 
+        type="primary" 
+        size="normal"
+        icon="share-o"
+        class="!bg-[#1D3557] !border-none !h-12 !w-12 !min-w-[48px] shadow-lg shadow-blue-900/10 transform rotate-[-45deg]" 
+        @click="sendMessage"
+        :loading="isLoading"
+      />
+    </div>
+
+    <!-- Information List Popup -->
+    <van-popup v-model:show="showInfoList" position="bottom" round closeable>
+      <div class="p-6">
+         <h3 class="font-bold text-gray-700 mb-4 border-b pb-2">已查明关键事实</h3>
+         <div v-if="revealedInfo.length === 0" class="py-10 text-center text-gray-400 text-sm">
+            暂未获取隐藏信息，请尝试通过引导与提问降低对方抵触情绪。
+         </div>
+         <div v-else class="space-y-3 pb-4">
+            <div v-for="(info, index) in revealedInfo" :key="index" class="p-3 bg-green-50 border border-green-100 rounded-lg flex items-start">
+               <van-icon name="certificate" class="text-green-500 mr-2 mt-0.5" />
+               <span class="text-sm text-green-800">{{ info }}</span>
+            </div>
+         </div>
+      </div>
+    </van-popup>
+  </div>
+</template>
+
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import axios from 'axios'
+import request from '../utils/request'
 import { showToast } from 'vant'
 
 const route = useRoute()
@@ -10,19 +165,47 @@ const router = useRouter()
 const sessionId = ref(route.params.id)
 const inputMessage = ref('')
 const isLoading = ref(false)
+const showInfoList = ref(false)
 
-const chatHistory = ref([
-  { id: 1, role: 'system', content: '您已进入东二环路口打架纠纷现场，本次对象为报警人（情绪激动），请开始您的问话。' }
+const caseInfo = reactive({ title: '加载中...', background: '' })
+const roleInfo = reactive({ name: '警情对象' })
+const revealedInfo = ref<string[]>([])
+
+const chatHistory = ref<any[]>([
+  { id: Date.now(), role: 'system', content: '连接训练引擎中...' }
 ])
 
 const currentState = ref({
-  emotion: 80,
-  trust: 20
+  emotion: 50,
+  trust: 30
 })
 
-// 发送消息
+const fetchSessionData = async () => {
+  try {
+    const res: any = await request.get(`/training/session/${sessionId.value}`)
+    caseInfo.title = res.case_title
+    caseInfo.background = res.case_background
+    roleInfo.name = res.role_name
+    currentState.value.emotion = res.current_emotion
+    currentState.value.trust = res.current_trust
+    revealedInfo.value = JSON.parse(res.revealed_info || '[]')
+    
+    chatHistory.value = [
+      { id: Date.now(), role: 'system', content: `演练已开始。环境：${res.scene_name || '警情现场'}。涉及人员：${res.role_name}。` },
+      ...res.messages.map((m: any) => ({
+        id: m.id,
+        role: m.role === 'user' ? 'human' : 'assistant',
+        content: m.content
+      }))
+    ]
+    scrollToBottom()
+  } catch (e) {
+    showToast('获取训练状态失败')
+  }
+}
+
 const sendMessage = async () => {
-  if (!inputMessage.value.trim()) return
+  if (!inputMessage.value.trim() || isLoading.value) return
   
   const msg = inputMessage.value
   chatHistory.value.push({ id: Date.now(), role: 'human', content: msg })
@@ -32,34 +215,29 @@ const sendMessage = async () => {
   scrollToBottom()
   
   try {
-    // 调用后端 FastAPI 接口
-    const res = await axios.post(`http://127.0.0.1:8000/training/chat/${sessionId.value}`, {
-      role: 'human',
+    const res: any = await request.post(`/training/chat/${sessionId.value}`, {
+      role: 'user',
       content: msg
     })
     
-    // 假设 AI 引擎连通，现在先用模拟延迟返回
-    if (res.data && !res.data.error) {
+    if (res && res.response) {
        chatHistory.value.push({
          id: Date.now(),
-         role: 'ai',
-         content: res.data.response || "我不听！你们警察就是不想管事对吧！"
+         role: 'assistant',
+         content: res.response
        })
-       currentState.value.emotion = res.data.updated_emotion || currentState.value.emotion
-       currentState.value.trust = res.data.updated_trust || currentState.value.trust
+       currentState.value.emotion = res.updated_emotion
+       currentState.value.trust = res.updated_trust
        
-       if (res.data.new_fact_revealed) {
+       if (res.new_fact_revealed && res.new_fact_revealed !== 'null') {
          showToast({ message: "获得新线索！", icon: "success" })
-         chatHistory.value.push({ id: Date.now(), role: 'system', content: `[破冰] 获得关键线索：${res.data.new_fact_revealed}` })
+         revealedInfo.value.push(res.new_fact_revealed)
+         chatHistory.value.push({ id: Date.now(), role: 'system', content: `[关键事实获取] ${res.new_fact_revealed}` })
        }
     }
   } catch (e) {
-    // 接口未就绪时的兜底
-    setTimeout(() => {
-      chatHistory.value.push({ id: Date.now(), role: 'ai', content: '别问了，我什么都不想说，你们到底行不行啊！' })
-      isLoading.value = false
-      scrollToBottom()
-    }, 1500)
+    showToast('AI响应超时')
+    chatHistory.value.push({ id: Date.now(), role: 'system', content: '通讯故障，请重试' })
   } finally {
     isLoading.value = false
     scrollToBottom()
@@ -67,15 +245,12 @@ const sendMessage = async () => {
 }
 
 const finishTraining = async () => {
-  isLoading.value = true
   try {
-    const res = await axios.post(`http://127.0.0.1:8000/training/finish/${sessionId.value}`)
-    localStorage.setItem('last_evaluation_report', JSON.stringify(res.data))
-    router.push('/evaluation')
+    const res = await request.post(`/training/finish/${sessionId.value}`)
+    localStorage.setItem('last_evaluation', JSON.stringify(res))
+    router.push('/admin/evaluation') // Redirect to evaluation report
   } catch (e) {
-    showToast('评估生成失败，请稍后重试')
-  } finally {
-    isLoading.value = false
+    showToast('生成报告失败')
   }
 }
 
@@ -88,113 +263,31 @@ const scrollToBottom = () => {
   })
 }
 
-onMounted(() => {
-  // 可以调用 /training/start 启动真实会话
-})
+onMounted(fetchSessionData)
 </script>
 
-<template>
-  <div class="h-screen bg-slate-900 flex flex-col relative">
-    
-    <!-- 顶部状态导航栏 (按照草图还原) -->
-    <div class="flex justify-between items-center p-4 bg-slate-900/80 backdrop-blur-md sticky top-0 z-20">
-      <div class="w-10 h-10 rounded-full border border-slate-600 flex items-center justify-center text-slate-300" @click="router.back()">
-        <van-icon name="wap-nav" size="20" />
-      </div>
-      
-      <!-- 情绪与信任胶囊 -->
-      <div class="bg-slate-800 border border-slate-700 rounded-full px-3 py-1.5 flex items-center space-x-3 shadow-lg">
-        <div class="flex items-center space-x-1">
-          <van-icon name="fire" :class="currentState.emotion > 70 ? 'text-red-500' : 'text-orange-400'" />
-          <span class="text-xs text-slate-300 font-bold">{{ currentState.emotion }}</span>
-        </div>
-        <div class="w-px h-3 bg-slate-600"></div>
-        <div class="flex items-center space-x-1">
-          <van-icon name="good-job" :class="currentState.trust < 30 ? 'text-slate-500' : 'text-green-400'" />
-          <span class="text-xs text-slate-300 font-bold">{{ currentState.trust }}</span>
-        </div>
-      </div>
+<style scoped>
+.延时渲染 {
+  animation: fadeIn 0.5s ease;
+}
 
-      <!-- 结束按钮 -->
-      <van-button size="small" round class="!bg-red-500/20 !border-red-500/50 !text-red-400" @click="finishTraining">
-        结束
-      </van-button>
-    </div>
-    
-    <!-- 中间：案件标签与聊天列表 -->
-    <div class="flex-1 overflow-y-auto px-4 pb-4" ref="chatContainer">
-      <div class="flex justify-center space-x-4 py-4">
-        <div class="px-4 py-2 bg-indigo-900/40 border border-indigo-500/30 text-indigo-200 text-sm rounded-lg shadow-inner">
-          案件类型
-        </div>
-        <div class="px-4 py-2 bg-purple-900/40 border border-purple-500/30 text-purple-200 text-sm rounded-lg shadow-inner">
-          人物设定
-        </div>
-      </div>
-      
-      <!-- 对话消息列表 -->
-      <div class="space-y-4">
-        <div v-for="msg in chatHistory" :key="msg.id" class="flex flex-col">
-          <div v-if="msg.role === 'system'" class="self-center my-2 text-xs text-slate-500 bg-slate-800/50 px-3 py-1 rounded-full text-center">
-            {{ msg.content }}
-          </div>
-          
-          <div v-else-if="msg.role === 'ai'" class="flex self-start max-w-[85%] mt-2">
-            <div class="w-8 h-8 rounded-full bg-red-900/50 flex-shrink-0 flex items-center justify-center border border-red-700/50 text-red-300">
-              <van-icon name="contact" />
-            </div>
-            <div class="ml-2 px-4 py-2 bg-slate-800 text-white rounded-2xl rounded-tl-none border border-slate-700 shadow-sm text-sm leading-relaxed">
-              {{ msg.content }}
-            </div>
-          </div>
-          
-          <div v-else class="flex self-end max-w-[85%] mt-2">
-            <div class="mr-2 px-4 py-2 bg-blue-600 text-white rounded-2xl rounded-tr-none shadow-md text-sm leading-relaxed">
-              {{ msg.content }}
-            </div>
-            <div class="w-8 h-8 rounded-full bg-blue-900 flex-shrink-0 flex items-center justify-center border border-blue-400 text-blue-200">
-              <van-icon name="friends-o" />
-            </div>
-          </div>
-        </div>
-        
-        <!-- Loading 状态 -->
-        <div v-if="isLoading" class="flex self-start max-w-[85%] mt-2">
-           <div class="w-8 h-8 rounded-full bg-red-900/50 flex-shrink-0 flex items-center justify-center border border-red-700/50 text-red-300">
-              <van-icon name="contact" />
-            </div>
-            <div class="ml-2 px-4 py-2 bg-slate-800 text-slate-400 rounded-2xl rounded-tl-none border border-slate-700 flex items-center space-x-1">
-              <div class="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce"></div>
-              <div class="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" style="animation-delay: 0.1s"></div>
-              <div class="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
-            </div>
-        </div>
-      </div>
-    </div>
-    
-    <!-- 底部输入框 (完美还原草图) -->
-    <div class="p-3 bg-slate-900 border-t border-slate-800 flex items-center space-x-2">
-      <div class="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center text-slate-400 flex-shrink-0">
-        <van-icon name="play-circle-o" size="22" class="transform rotate-90"/> <!-- Mictophone placeholder -->
-      </div>
-      
-      <div class="flex-1 bg-slate-800 rounded-full border border-slate-700 overflow-hidden flex items-center relative">
-        <input 
-          v-model="inputMessage" 
-          @keyup.enter="sendMessage"
-          type="text" 
-          class="w-full bg-transparent text-white px-4 py-2.5 outline-none placeholder-slate-500 text-sm"
-          placeholder="请输入问话..."
-        />
-        <div class="absolute right-2 top-1.5 w-7 h-7 rounded-full bg-slate-700 flex items-center justify-center text-slate-300" v-if="!inputMessage">
-          <van-icon name="plus" />
-        </div>
-      </div>
-      
-      <div class="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white flex-shrink-0 shadow-lg shadow-blue-500/30" @click="sendMessage">
-        <van-icon name="send-gift-o" size="20" class="transform -rotate-45 ml-0.5 mt-0.5"/>
-      </div>
-    </div>
-    
-  </div>
-</template>
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+</style>

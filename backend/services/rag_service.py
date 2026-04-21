@@ -24,10 +24,13 @@ class RAGService:
         embeddings = self.model.encode(texts).tolist()
         ids = [f"id_{i}_{os.urandom(4).hex()}" for i in range(len(texts))]
         
+        # Ensure metadata is non-empty to satisfy some Chroma versions
+        valid_metadatas = metadatas if metadatas else [{"source": "system_seed"} for _ in range(len(texts))]
+        
         self.collection.add(
             embeddings=embeddings,
             documents=texts,
-            metadatas=metadatas if metadatas else [{}] * len(texts),
+            metadatas=valid_metadatas,
             ids=ids
         )
         print(f"Added {len(texts)} documents to ChromaDB.")

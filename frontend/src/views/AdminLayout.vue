@@ -1,25 +1,67 @@
 <template>
-  <div class="h-screen bg-slate-900 pb-12 flex flex-col">
-    <van-nav-bar 
-      :title="getTitle()" 
-      :border="false"
-      class="!bg-slate-900 nav-dark flex-shrink-0 z-10"
-    />
-    
-    <div class="flex-1 overflow-y-auto relative">
-      <router-view v-slot="{ Component }">
-        <transition name="van-fade">
-          <component :is="Component" />
-        </transition>
-      </router-view>
-    </div>
-    
-    <van-tabbar v-model="active" @change="onChange" class="!bg-slate-900 !border-t !border-slate-800" active-color="#818cf8" inactive-color="#64748b">
-      <van-tabbar-item name="cases" icon="orders-o">案件管理</van-tabbar-item>
-      <van-tabbar-item name="roles" icon="friends-o">账号角色</van-tabbar-item>
-      <van-tabbar-item name="dashboard" icon="bar-chart-o">数据知识</van-tabbar-item>
-      <van-tabbar-item name="profile" icon="user-o">我的</van-tabbar-item>
-    </van-tabbar>
+  <div class="flex h-screen bg-[#F2F3F5]">
+    <!-- Left Sidebar -->
+    <aside class="w-[240px] bg-[#1D3557] flex flex-col shadow-xl z-20">
+      <div class="p-6">
+        <h1 class="text-white text-xl font-bold flex items-center">
+          <van-icon name="shield-reveal-o" class="mr-2" />
+          警情模拟平台
+        </h1>
+        <p class="text-blue-300/60 text-xs mt-1 uppercase tracking-wider">Management Terminal</p>
+      </div>
+
+      <nav class="flex-1 mt-4 px-3 space-y-1">
+        <div 
+          v-for="item in navItems" 
+          :key="item.name"
+          @click="onChange(item.name)"
+          :class="[
+            'flex items-center px-4 py-3 rounded-lg cursor-pointer transition-all duration-200',
+            active === item.name 
+              ? 'bg-[#457B9D] text-white shadow-lg' 
+              : 'text-blue-100/70 hover:bg-white/5 hover:text-white'
+          ]"
+        >
+          <van-icon :name="item.icon" class="text-lg mr-3" />
+          <span class="font-medium">{{ item.label }}</span>
+        </div>
+      </nav>
+
+      <div class="p-4 border-t border-white/5">
+        <div class="flex items-center px-4 py-3 text-blue-100/50 hover:text-white cursor-pointer" @click="router.push('/login')">
+          <van-icon name="log-out" class="mr-3" />
+          <span>退出系统</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 flex flex-col overflow-hidden">
+      <!-- Top Header -->
+      <header class="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-8 flex-shrink-0">
+        <div class="flex items-center">
+          <van-icon name="bars" class="text-gray-400 mr-4 cursor-pointer hover:text-blue-600 transition-colors" />
+          <h2 class="text-gray-700 font-bold text-lg">{{ getTitle() }}</h2>
+        </div>
+        <div class="flex items-center space-x-4">
+          <div class="text-right mr-4">
+            <p class="text-sm font-bold text-gray-700">超级管理员</p>
+            <p class="text-xs text-gray-400">admin@police.gov.cn</p>
+          </div>
+          <van-image round width="40" height="40" src="https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg" />
+        </div>
+      </header>
+
+      <!-- Content Area -->
+      <div class="flex-1 overflow-y-auto p-8">
+        <router-view :key="route.path" v-slot="{ Component }">
+          <transition name="fade-slide" mode="out-in">
+
+            <component :is="Component" />
+          </transition>
+        </router-view>
+      </div>
+    </main>
   </div>
 </template>
 
@@ -31,11 +73,19 @@ const router = useRouter()
 const route = useRoute()
 const active = ref('cases')
 
-// 同步路由状态到 tabbar
+const navItems = [
+  { name: 'dashboard', label: '数据总览', icon: 'bar-chart-o' },
+  { name: 'cases', label: '案件剧本库', icon: 'orders-o' },
+  { name: 'knowledge', label: '知识库管理', icon: 'cluster-o' },
+  { name: 'roles', label: 'AI角色库', icon: 'friends-o' },
+  { name: 'profile', label: '个人中心', icon: 'user-o' }
+]
+
 watch(() => route.path, (val) => {
-  if (val.includes('/cases')) active.value = 'cases'
+  if (val.includes('/dashboard')) active.value = 'dashboard'
+  else if (val.includes('/cases')) active.value = 'cases'
+  else if (val.includes('/knowledge')) active.value = 'knowledge'
   else if (val.includes('/roles')) active.value = 'roles'
-  else if (val.includes('/dashboard')) active.value = 'dashboard'
   else if (val.includes('/profile')) active.value = 'profile'
 }, { immediate: true })
 
@@ -44,21 +94,23 @@ const onChange = (name: string) => {
 }
 
 const getTitle = () => {
-  switch (active.value) {
-    case 'cases': return '案件与场景管理';
-    case 'roles': return '角色与属性配置';
-    case 'dashboard': return '知识库与数据监控';
-    case 'profile': return '警员中心';
-    default: return '控制台';
-  }
+  return navItems.find(i => i.name === active.value)?.label || '管理后台'
 }
 </script>
 
-<style>
-.nav-dark .van-nav-bar__title {
-  color: white !important;
+<style scoped>
+.fade-slide-enter-active,
+.fade-slide-leave-active {
+  transition: all 0.3s ease;
 }
-.van-tabbar {
-  z-index: 50;
+
+.fade-slide-enter-from {
+  opacity: 0;
+  transform: translateX(10px);
+}
+
+.fade-slide-leave-to {
+  opacity: 0;
+  transform: translateX(-10px);
 }
 </style>
