@@ -44,6 +44,9 @@
           <h2 class="text-gray-700 font-bold text-lg">{{ getTitle() }}</h2>
         </div>
         <div class="flex items-center space-x-4">
+          <van-button size="small" plain type="primary" @click="router.push('/student/hall')" class="!rounded-full !px-4 border-gray-200 text-gray-600">
+            切换到学员端
+          </van-button>
           <div class="text-right mr-4">
             <p class="text-sm font-bold text-gray-700">超级管理员</p>
             <p class="text-xs text-gray-400">admin@police.gov.cn</p>

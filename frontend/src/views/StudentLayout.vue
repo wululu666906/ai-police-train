@@ -22,6 +22,9 @@
       </nav>
       <div class="nav-right">
         <div class="user-info">
+          <van-button size="small" plain type="primary" @click="$router.push('/admin/dashboard')" class="!bg-white/10 !border-white/20 !text-white !rounded-full !px-4 mr-2">
+            切换到管理端
+          </van-button>
           <van-icon name="manager-o" size="18" />
           <span>学员 001</span>
         </div>
