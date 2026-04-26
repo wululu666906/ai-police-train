@@ -63,7 +63,7 @@
       >
         <div class="card-header">
           <van-tag 
-            :type="getTypeColor(c.case_type) as any" 
+            :type="(getTypeColor(c.case_type) as any)" 
             plain 
             size="medium"
           >{{ c.case_type }}</van-tag>
