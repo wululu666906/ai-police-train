@@ -63,13 +63,28 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
     
     try:
         # 1. 创建案件
-        # 优先使用前端传入的 title，如果没有则使用 AI 解析出的 case_name
         case_title = case_data.get("title") or case_data.get("case_name") or "未命名案件"
+        
+        # 优先级：顶层 original_content > structured_data 内的 rawText > 默认
+        orig_content = case_data.get("original_content") or case_data.get("rawText") or ""
+        
+        # 优先级：顶层 background > case_background > 默认
+        bg_info = case_data.get("background") or case_data.get("case_background") or "暂无背景描述"
+        
+        # 提取或重组 structured_data
+        structured_data_to_save = {
+            "fact_sheet": case_data.get("fact_sheet", {}),
+            "full_narrative": case_data.get("full_narrative", ""),
+            "criminal_process": case_data.get("criminal_process", ""),
+            **case_data
+        }
+
         db_case = models.Case(
             title=case_title,
             case_type=case_data.get("case_type") or "未分类",
-            background=case_data.get("case_background") or case_data.get("background") or "暂无背景描述",
-            structured_data=json.dumps(case_data, ensure_ascii=False)
+            background=bg_info,
+            original_content=orig_content, 
+            structured_data=json.dumps(structured_data_to_save, ensure_ascii=False)
         )
         db.add(db_case)
         db.flush() # 获取 ID 但不提交
@@ -91,7 +106,13 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
                 init_emotion=p.get("init_emotion", 50),
                 init_trust=p.get("init_trust", 30),
                 status=p.get("status") or "正常",
-                hidden_truths=json.dumps(case_data.get("key_facts", []), ensure_ascii=False)
+                hidden_truths=json.dumps(p.get("hidden_truths", []), ensure_ascii=False),
+                knows_facts=json.dumps(p.get("knows_facts", []), ensure_ascii=False),
+                does_not_know=json.dumps(p.get("does_not_know", []), ensure_ascii=False),
+                iq_level=p.get("iq_level", "中等"),
+                eq_level=p.get("eq_level", "中等"),
+                lying_ability=p.get("lying_ability", "一般"),
+                weakness=p.get("weakness", "")
             )
             db.add(db_role)
             db.flush()
@@ -103,15 +124,44 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
                 name=sc.get("scene_name") or "未命名场景",
                 description=sc.get("scene_description") or "",
                 difficulty=sc.get("difficulty") or "中等",
+                dispatch_brief=sc.get("dispatch_brief") or "暂无接警信息",
+                first_impression=sc.get("first_impression") or "暂无现场景象描述",
                 stages=json.dumps(sc.get("stages") or [], ensure_ascii=False)
             )
             db.add(db_scene)
             db.flush()
             
-            # 角色关联：将场景指定的角色关联到该场景记录
+            # 角色关联：使用 SceneRole 中间表
+            primary_assigned = False
             for role_name in (sc.get("roles") or []):
                 if role_name in created_roles:
-                    created_roles[role_name].scene_id = db_scene.id
+                    r_obj = created_roles[role_name]
+                    # 只有当角色没有被分配为主角色，且状态不是死亡/重伤/昏迷时，才可能被分配为对话主角色
+                    can_speak = r_obj.status not in ["死亡", "重伤", "昏迷"]
+                    
+                    is_primary = False
+                    if not primary_assigned and can_speak:
+                        is_primary = True
+                        primary_assigned = True
+                        
+                    db.add(models.SceneRole(
+                        scene_id=db_scene.id,
+                        role_id=r_obj.id,
+                        is_primary=is_primary
+                    ))
+                    # 兼容保留原有的 scene_id
+                    r_obj.scene_id = db_scene.id
+            
+            # 如果循环完都没有找到能说话的主角色（比如只关联了死者），兜底找本案中第一个活人强制作为主角色关联
+            if not primary_assigned:
+                for r_obj in created_roles.values():
+                    if r_obj.status not in ["死亡", "重伤", "昏迷"]:
+                        db.add(models.SceneRole(
+                            scene_id=db_scene.id,
+                            role_id=r_obj.id,
+                            is_primary=True
+                        ))
+                        break
         
         db.commit()
         db.refresh(db_case)

@@ -17,10 +17,20 @@
         </div>
         <div class="info-item">
           <span class="info-label">难度等级</span>
-          <van-tag :color="getDifficultyColor(caseInfo.difficulty)" plain size="small">
+          <van-tag :color="getDifficultyColor(caseInfo.difficulty)" plain size="medium">
             {{ caseInfo.difficulty }}
           </van-tag>
         </div>
+        <van-button 
+          block 
+          plain 
+          type="primary" 
+          size="mini" 
+          style="margin-top: 10px; border-radius: 4px;"
+          @click="showCaseBrief = true"
+        >
+          查看接警记录与现场
+        </van-button>
       </div>
 
       <!-- NEW: Training Phase & Goal -->
@@ -173,6 +183,74 @@
         </van-button>
       </div>
     </div>
+
+    <!-- Case Brief Modal (Fullscreen) -->
+    <van-popup
+      v-model:show="showCaseBrief"
+      position="right"
+      class="case-brief-popup"
+      :style="{ width: '100%', height: '100%' }"
+    >
+      <div class="popup-header">
+        <van-nav-bar
+          title="警情与现场初查"
+          left-text="返回训练"
+          left-arrow
+          @click-left="showCaseBrief = false"
+        />
+      </div>
+      <div class="popup-content">
+        <div class="brief-container">
+          <!-- Main Header -->
+          <div class="brief-header">
+            <div class="flex items-center space-x-2 mb-2">
+              <van-tag type="primary" size="large" round>{{ caseInfo.caseType || '其他' }}</van-tag>
+              <span class="text-xs text-gray-400 font-bold tracking-widest">ID: #{{ sessionId }}</span>
+            </div>
+            <h2 class="brief-main-title">{{ caseInfo.title }}</h2>
+          </div>
+
+          <!-- Section: Dispatch Brief -->
+          <div class="brief-section">
+            <h4 class="brief-label">
+              <span class="label-line"></span> 110 接警简报 (DISPATCH)
+            </h4>
+            <div class="abstract-box" style="background-color: #f2f3f5; color: #1d2129; border-left: 4px solid #165dff;">
+              "{{ caseInfo.dispatchBrief || '（指挥中心暂无详细指令下发）' }}"
+            </div>
+          </div>
+          
+          <!-- Section: First Impression -->
+          <div class="brief-section">
+            <h4 class="brief-label">
+              <span class="label-line grey"></span> 现场第一印象 (OBSERVATION)
+            </h4>
+            <div class="original-source-box" style="font-family: inherit; font-size: 14px;">
+              {{ caseInfo.firstImpression || '（你到达了现场，暂未发现明显异常景象）' }}
+            </div>
+          </div>
+
+          <!-- Section: Standard Operating Procedure (SOP) -->
+          <div class="brief-section">
+            <van-divider dashed />
+            <h4 class="brief-label">
+              <span class="label-line blue"></span> 执法操作指引 (SOP)
+            </h4>
+            <div class="structured-grid">
+               <div class="sub-section">
+                  <span class="sub-title">当前阶段建议</span>
+                  <div style="font-size: 13px; color: #4e5969; margin-top: 8px; line-height: 1.6;">
+                    1. 核实对话人员身份信息。<br/>
+                    2. 控制现场情绪，避免冲突升级。<br/>
+                    3. 针对接警简报中的核心问题进行初步询问。<br/>
+                    4. 留意对方神态，判断是否有所隐瞒。
+                  </div>
+               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </van-popup>
   </div>
 </template>
 
@@ -188,13 +266,21 @@ const router = useRouter()
 const sessionId = ref(route.params.id)
 const inputMessage = ref('')
 const isLoading = ref(false)
+const showCaseBrief = ref(false)
 
 const caseInfo = reactive({ 
   title: '加载中...', 
   sceneName: '', 
   difficulty: '中等',
   currentStage: '',
-  currentStageGoal: ''
+  currentStageGoal: '',
+  caseBackground: '',
+  caseOriginalContent: '',
+  dispatchBrief: '',
+  firstImpression: '',
+  caseType: '',
+  roleStatus: '正常',
+  structuredData: null as any
 })
 const roleInfo = reactive({ name: '对话对象' })
 const revealedInfo = ref<string[]>([])
@@ -208,6 +294,13 @@ const fetchSessionData = async () => {
     caseInfo.sceneName = res.scene_name
     caseInfo.currentStage = res.current_stage
     caseInfo.currentStageGoal = res.current_stage_goal
+    caseInfo.caseBackground = res.case_background
+    caseInfo.caseOriginalContent = res.case_original_content
+    caseInfo.dispatchBrief = res.dispatch_brief
+    caseInfo.firstImpression = res.first_impression
+    caseInfo.caseType = res.case_type
+    caseInfo.roleStatus = res.role_status
+    caseInfo.structuredData = res.structured_data ? JSON.parse(res.structured_data) : null
     roleInfo.name = res.role_name
     currentState.value.emotion = res.current_emotion
     currentState.value.trust = res.current_trust
@@ -684,4 +777,104 @@ onMounted(fetchSessionData)
 .chat-messages::-webkit-scrollbar-thumb { background: #C9CDD4; border-radius: 2px; }
 .info-panel::-webkit-scrollbar { width: 3px; }
 .info-panel::-webkit-scrollbar-thumb { background: #E5E6EB; border-radius: 2px; }
+
+/* Popup Styling Re-design */
+.popup-content {
+  padding: 32px 24px;
+  background: #F8F9FA;
+  height: calc(100vh - 46px);
+  overflow-y: auto;
+}
+
+.brief-container {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.brief-header {
+  margin-bottom: 48px;
+}
+
+.brief-main-title {
+  font-size: 32px;
+  font-weight: 800;
+  color: #1D2129;
+  letter-spacing: -0.5px;
+}
+
+.brief-section {
+  margin-bottom: 40px;
+}
+
+.brief-label {
+  font-size: 13px;
+  font-weight: 900;
+  color: #86909C;
+  letter-spacing: 0.2em;
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.label-line {
+  width: 40px;
+  height: 1px;
+  background: #E5E6EB;
+  margin-right: 12px;
+}
+
+.label-line.blue { background: #165DFF; opacity: 0.3; }
+
+.abstract-box {
+  background: white;
+  padding: 24px 32px;
+  border-radius: 16px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+  line-height: 1.8;
+  color: #4E5969;
+  font-style: italic;
+  font-size: 15px;
+}
+
+.original-source-box {
+  background: #F2F3F5;
+  padding: 32px;
+  border-radius: 16px;
+  line-height: 1.9;
+  color: #1D2129;
+  font-size: 17px;
+  white-space: pre-wrap;
+  font-family: "PingFang SC", "Microsoft YaHei", "Heiti SC", "SimHei", sans-serif;
+  letter-spacing: 0.02em;
+  border: 1px solid #E5E6EB;
+}
+
+.sub-section {
+  margin-top: 16px;
+}
+
+.sub-title {
+  display: block;
+  font-size: 12px;
+  font-weight: bold;
+  color: #4E5969;
+  margin-bottom: 8px;
+}
+
+.tag-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.fact-dots {
+  padding-left: 20px;
+  color: #4E5969;
+}
+
+.fact-dots li {
+  margin-bottom: 10px;
+  font-size: 14px;
+  list-style-type: square;
+}
 </style>

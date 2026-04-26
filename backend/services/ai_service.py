@@ -15,167 +15,184 @@ client = OpenAI(
 
 SYSTEM_PROMPT_TEMPLATE = """
 # 你的身份
-你是一名{role_name}，正在接受警察的询问/正在和警察对话。
+你是【{role_name}】，正在接受警察盘问。这是一场心理与事实的博弈。
 
-# 案件背景
-{case_description}
+# 🧱 核心规则 (必须遵守)
+1. **禁止沉默与空场**：你必须对警察的每一句话做出实质性回应！就算完全不想配合，也必须用动作神态加冷漠的话语来表达。**绝对禁止返回空字符串或不符合 JSON 格式的内容**。
+2. **知识边界**：你只知道【你的知识范围】里的内容。对于【你不知道的事】，你必须如实表示不知道（用符合人设的方式表达）。
+3. **秘密保护**：对于【你的秘密】，你要根据当前的信任度和情绪决定是否透露。
+4. **尊重客观**：对于【案件事实档案】中的公开客观信息（如你的报警时间、具体案发地点），你可以如实回答，**严禁自行编造时间/地点等硬事实**。
+5. **输出格式**：你必须输出且仅输出一个合法的 JSON 对象，确保 `response` 字段的内容至少包含一段动作描写和一句台词。
 
-# 训练进度与目标
-你现在处于：【{current_stage}】阶段。
-本次实战的完整阶段规划为：
-{stages_info}
-你的任务是根据对话进展，引导学员完成这些阶段。
+# 📋 案件事实档案 (客观信息参考)
+案发时间: {case_time}
+案发地点: {case_location}
+报警时间: {report_time}
+事件时间线:
+{timeline}
 
-# 你的角色设定
-- 性格：{personality}
-- 类型：{role_type}
-- 当前情绪：{emotion} (0=完全冷静，100=情绪失控)
-- 信任度：{trust} (0=完全不信任，100=完全信任)
-- 说话风格：{speaking_style}
+# 🧠 你的知识范围 (你确实知道的)
+{knows_facts}
 
-# ⚠️ 核心交互规则 (重要)
-1. **绝不冷场（No-Silence Rule）**：即使学员问得不专业、或者你对他的信任度极低，你也**绝对禁止**完全拒绝释放信息或说“我不知道/我不告诉你”。
-2. **渐进式释放**：
-   - 信任度低时：你可以表现得抗拒，给出**极简、模糊、甚至带点情绪**的简短回复，但必须包含一点点事实碎片。
-   - 信任度高时：给出详细、准确、配合的回答。
-   - 目的：通过这种方式延长对话轮数，诱导学员运用更好的谈话技巧（如共情、法律震慑）来获取更多信息。
-3. **阶段管理**：
-   - 只有当你认为学员在本阶段的表现已经达到了目标（stage_goal），你才可以在 JSON 中将 `is_stage_completed` 设为 true。
-   - 完成后，你应在回答中通过言语巧妙地向下一阶段过渡（例如：由“谈论案发经过”过渡到“谈论赔偿意愿”）。
+# 🚫 你不知道的 (被问到请坚决表示不知情)
+{does_not_know}
 
-# 信息控制
-- 掌握信息：{all_info}
-- 已说：{revealed_info}
-- 未说：{hidden_info}
+# 🔒 你的秘密 (信任度达标后才可能说出)
+{hidden_truths}
 
-# 执法知识参考
-{rag_knowledge}
+# 🎭 你的人设与状态
+- 性格: {personality}
+- 智商: {iq_level} (低=容易说漏嘴, 高=逻辑严密)
+- 情商: {eq_level} (低=易被激怒, 高=善于控制)
+- 撒谎能力: {lying_ability} (差=破绽百出, 强=面不改色)
+- 软肋: {weakness}
+- 当前指标：情绪 {emotion}/100，信任 {trust}/100
 
-# 输出要求
-必须且只能输出 JSON 格式。
+# 🎯 动态信息释放规则
+- 信任度 < {release_threshold}: 严守秘密，被追问则转移话题、回避或表现对抗。
+- 信任度 >= {release_threshold}: 可以开始"不小心"透露一条隐藏信息。
+- 信任度 > 80 + 被触及软肋: 心理防线崩塌，主动坦白所有秘密。
+
+# 🎯 当前训练阶段目标
+{current_stage}
+
+# 输出要求 (JSON 格式)
 {{
-  "response": "你扮演角色说的话...",
-  "updated_emotion": 整数(0-100),
-  "updated_trust": 整数(0-100),
-  "new_fact_revealed": "本轮吐露的新事实关键词，无则null",
-  "is_stage_completed": 布尔值 (本阶段目标是否已达成),
-  "stage_transition_msg": "如果你认为阶段已完成，给出下一步建议（仅供系统参考，不展示给学员）"
+  "response": "角色回复（包含动作描写和真实台词，绝不可为空）",
+  "inner_thought": "角色当前的真实心理活动",
+  "updated_emotion": 整数,
+  "updated_trust": 整数,
+  "new_fact_revealed": "新吐露的秘密事实关键词，无则null",
+  "is_stage_completed": true/false
 }}
 """
+
 def generate_dialogue(db: Session, session_id: int, user_message: str):
-    # 1. 获取会话与上下文 (增加多级容错)
-    training_session = db.query(models.TrainingSession).filter(models.TrainingSession.id == session_id).first()
-    if not training_session:
-        return None
-    
-    scene = db.query(models.Scene).filter(models.Scene.id == training_session.scene_id).first()
-    if not scene:
-        return None
-        
-    case = db.query(models.Case).filter(models.Case.id == scene.case_id).first()
-    
-    # 获取该场景下的所有角色设定
-    scene_roles = db.query(models.Role).filter(models.Role.scene_id == scene.id).all()
-    if not scene_roles:
-        scene_roles = db.query(models.Role).filter(models.Role.case_id == case.id).all()
-    
-    # 确定当前主视角角色 (优先取第一个，或根据逻辑动态切换)
-    role = scene_roles[0] if scene_roles else models.Role(name="当事人", personality="普通群众", role_type="配合型", speaking_style="平实", hidden_truths="[]")
-    
-    # 汇总所有角色设定作为上下文
-    roles_context = ""
-    for r in scene_roles:
-        roles_context += f"- 姓名：{r.name}, 身份：{r.role_type}, 性格：{r.personality}, 风格：{r.speaking_style}\n"
-    
-    # 获取历史记录(最近10条)
-    history = db.query(models.Message).filter(models.Message.session_id == session_id).order_by(models.Message.created_at.desc()).limit(10).all()
-    history.reverse()
-    
-    # 2. RAG 检索
-    knowledge = rag_service.search(user_message, limit=2)
-    rag_knowledge = "\n".join([f"- {k}" for k in knowledge]) if knowledge else "暂无相关法律参考。"
-
-    # 汇总所有阶段信息作为上下文
-    stages_raw = json.loads(scene.stages or "[]")
-    stages_info = ""
-    for idx, s in enumerate(stages_raw):
-        stages_info += f"{idx+1}. {s.get('stage_name')}: {s.get('stage_goal')}\n"
-
-    # 3. 信息控制逻辑
-    all_info_list = json.loads(role.hidden_truths or "[]")
-    revealed_info_list = json.loads(training_session.revealed_info or "[]")
-    hidden_info_list = [i for i in all_info_list if i not in revealed_info_list]
-
-    # 4. 构建更加直接的 Prompt
-    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-        role_name=role.name,
-        case_description=case.background,
-        current_stage=training_session.current_stage or "训练开始",
-        stages_info=stages_info,
-        personality=f"{role.personality} (当前场景中所有人角色设定: {roles_context})",
-        role_type=role.role_type,
-        emotion=training_session.current_emotion,
-        trust=training_session.current_trust,
-        speaking_style=role.speaking_style,
-        all_info=json.dumps(all_info_list, ensure_ascii=False),
-        revealed_info=json.dumps(revealed_info_list, ensure_ascii=False),
-        hidden_info=json.dumps(hidden_info_list, ensure_ascii=False),
-        rag_knowledge=rag_knowledge,
-        user_input=user_message
-    )
-    
-    messages = [{"role": "system", "content": system_prompt}]
-    for msg in history:
-        messages.append({"role": msg.role if msg.role != "ai" else "assistant", "content": msg.content})
-    messages.append({"role": "user", "content": user_message})
-    
-    # 5. 调用 OpenAI/DeepSeek
     try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages,
-            response_format={"type": "json_object"}
+        # 1. 获取上下文
+        ts = db.query(models.TrainingSession).filter(models.TrainingSession.id == session_id).first()
+        if not ts: return None
+        
+        scene = db.query(models.Scene).filter(models.Scene.id == ts.scene_id).first()
+        case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
+        
+        # ✅ 精准获取当前场景的主对话角色
+        primary_link = db.query(models.SceneRole).filter(
+            models.SceneRole.scene_id == scene.id,
+            models.SceneRole.is_primary == True
+        ).first()
+        
+        if primary_link:
+            role = db.query(models.Role).get(primary_link.role_id)
+        else:
+            # 如果极端情况没有 is_primary 标记，取关联的第一个角色
+            fallback_link = db.query(models.SceneRole).filter(models.SceneRole.scene_id == scene.id).first()
+            if fallback_link:
+                role = db.query(models.Role).get(fallback_link.role_id)
+            else:
+                # 最后的兜底
+                role = models.Role(name="当事人", role_type="配合型", personality="普通人", iq_level="中等", eq_level="中等", lying_ability="一般")
+        
+        history = db.query(models.Message).filter(models.Message.session_id == session_id).order_by(models.Message.created_at.desc()).limit(12).all()
+        history.reverse()
+        
+        # ✅ 从 structured_data 提取事实档案
+        structured = json.loads(case.structured_data or "{}") if case and case.structured_data else {}
+        fact_sheet = structured.get("fact_sheet", {})
+        
+        # 格式化时间线
+        timeline_items = fact_sheet.get("timeline", [])
+        if isinstance(timeline_items, list):
+            timeline_text = "\n".join([f"  {t.get('time', '')} - {t.get('event', '')}" for t in timeline_items if isinstance(t, dict)])
+        else:
+            timeline_text = str(timeline_items)
+            
+        # 动态释放阈值
+        thresholds = {"配合型": 40, "情绪型": 50, "隐瞒型": 60, "对抗型": 70}
+        release_threshold = thresholds.get(role.role_type, 50)
+        
+        # 2. 填充 Prompt
+        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+            role_name=role.name,
+            case_time=fact_sheet.get("case_time", "未记录"),
+            case_location=fact_sheet.get("case_location", "未记录"),
+            report_time=fact_sheet.get("report_time", "未记录"),
+            timeline=timeline_text or "未记录",
+            knows_facts=role.knows_facts or "[]",
+            does_not_know=role.does_not_know or "[]",
+            hidden_truths=role.hidden_truths or "[]",
+            personality=role.personality or "平民",
+            iq_level=role.iq_level or "中等",
+            eq_level=role.eq_level or "中等",
+            lying_ability=role.lying_ability or "一般",
+            weakness=role.weakness or "无明显弱点",
+            current_stage=ts.current_stage or "初步接触",
+            emotion=ts.current_emotion,
+            trust=ts.current_trust,
+            release_threshold=release_threshold
         )
         
-        result = json.loads(response.choices[0].message.content)
+        msgs = [{"role": "system", "content": system_prompt}]
+        for m in history:
+            msgs.append({"role": "assistant" if m.role in ["ai", "assistant"] else "user", "content": m.content})
+        msgs.append({"role": "user", "content": user_message})
         
-        # 6. 更新数据库状态
-        training_session.current_emotion = result.get("updated_emotion", training_session.current_emotion)
-        training_session.current_trust = result.get("updated_trust", training_session.current_trust)
+        # 3. API 调用与重试机制 (最多重试 2 次)
+        max_retries = 2
+        result = None
         
-        # 处理阶段流转
-        if result.get("is_stage_completed"):
-            stages_list = json.loads(scene.stages or "[]")
-            current_idx = -1
-            for idx, s in enumerate(stages_list):
-                if s.get("stage_name") == training_session.current_stage:
-                    current_idx = idx
-                    break
+        for attempt in range(max_retries):
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=msgs,
+                response_format={"type": "json_object"},
+                temperature=0.7 + (attempt * 0.2) # 失败后稍微增加随机性
+            )
             
-            # 如果还有下一阶段，则自动切换
-            if current_idx != -1 and current_idx < len(stages_list) - 1:
-                next_stage = stages_list[current_idx + 1]
-                training_session.current_stage = next_stage.get("stage_name")
-        
-        new_fact = result.get("new_fact_revealed")
-        if new_fact and str(new_fact).lower() != "null":
+            raw_content = response.choices[0].message.content or ""
+            print(f"--- AI RAW (Attempt {attempt+1}) ---\n{raw_content}\n--------------")
+            
             try:
-                current_revealed = json.loads(training_session.revealed_info or "[]")
-                if new_fact not in current_revealed:
-                    current_revealed.append(new_fact)
-                    training_session.revealed_info = json.dumps(current_revealed, ensure_ascii=False)
-            except:
-                training_session.revealed_info = json.dumps([new_fact], ensure_ascii=False)
+                start_idx = raw_content.find('{')
+                end_idx = raw_content.rfind('}')
+                if start_idx != -1 and end_idx != -1:
+                    clean_json = raw_content[start_idx:end_idx+1]
+                    result = json.loads(clean_json)
+                else:
+                    result = json.loads(raw_content)
+                break # 成功则跳出循环
+            except Exception as parse_e:
+                print(f"!!! JSON Parsing Error on attempt {attempt+1}: {parse_e}")
+                if attempt == max_retries - 1:
+                    # 最后一次仍然失败，不保存到数据库，直接抛出提示
+                    return {
+                        "response": "（系统提示：角色当前状态异常，可能由于问题触发了安全限制或解析失败，请尝试换种问法）",
+                        "inner_thought": "ERROR: LLM JSON Parse Failed after retries.",
+                        "updated_emotion": ts.current_emotion,
+                        "updated_trust": ts.current_trust,
+                        "is_stage_completed": False
+                    }
         
-        # 保存对话记录
-        user_msg_db = models.Message(session_id=session_id, role="user", content=user_message)
-        ai_msg_db = models.Message(session_id=session_id, role="assistant", content=result.get("response"))
+        # 5. 更新与持久化
+        ts.current_emotion = result.get("updated_emotion", ts.current_emotion)
+        ts.current_trust = result.get("updated_trust", ts.current_trust)
         
-        db.add(user_msg_db)
-        db.add(ai_msg_db)
+        ai_reply = result.get("response", "...")
+        ai_thought = result.get("inner_thought", "...")
+        
+        db.add(models.Message(session_id=session_id, role="assistant", content=ai_reply, inner_thought=ai_thought))
         db.commit()
         
-        return result
+        return {
+            "response": ai_reply,
+            "inner_thought": ai_thought,
+            "updated_emotion": ts.current_emotion,
+            "updated_trust": ts.current_trust,
+            "new_fact_revealed": result.get("new_fact_revealed"),
+            "is_stage_completed": result.get("is_stage_completed", False)
+        }
+
     except Exception as e:
-        print(f"Error in generate_dialogue: {e}")
-        return {"error": str(e)}
+        if db: db.rollback()
+        print(f"!!! DIALOGUE ERROR: {e}")
+        return {"response": f"(由于系统异常，对话暂时无法继续。错误详情: {str(e)})", "inner_thought": "ERROR"}

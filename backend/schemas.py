@@ -12,6 +12,12 @@ class RoleBase(BaseModel):
     init_emotion: int = 50
     init_trust: int = 30
     status: Optional[str] = "正常"
+    iq_level: Optional[str] = "中等"
+    eq_level: Optional[str] = "中等"
+    lying_ability: Optional[str] = "一般"
+    weakness: Optional[str] = None
+    knows_facts: Optional[str] = "[]"
+    does_not_know: Optional[str] = "[]"
     hidden_truths: Optional[str] = "[]"
 
 class RoleCreate(RoleBase):
@@ -26,6 +32,8 @@ class SceneBase(BaseModel):
     name: str
     description: Optional[str] = None
     difficulty: str
+    dispatch_brief: Optional[str] = None
+    first_impression: Optional[str] = None
     stages: Optional[str] = "[]"
 
 class SceneCreate(SceneBase):
@@ -43,6 +51,7 @@ class CaseBase(BaseModel):
     title: Optional[str] = None
     case_type: Optional[str] = None
     background: Optional[str] = None
+    original_content: Optional[str] = None
     structured_data: Optional[str] = "{}"
 
 class CaseCreate(CaseBase):
@@ -108,11 +117,16 @@ class SessionDetail(BaseModel):
     current_emotion: int
     current_trust: int
     revealed_info: str
+    evaluation_result: Optional[str] = None
     status: str
     case_title: Optional[str] = None
+    case_type: Optional[str] = None
     case_background: Optional[str] = None
+    case_original_content: Optional[str] = None
     role_name: Optional[str] = None
     scene_name: Optional[str] = None
+    dispatch_brief: Optional[str] = None
+    first_impression: Optional[str] = None
     messages: List[Message] = []
     model_config = ConfigDict(from_attributes=True)
 

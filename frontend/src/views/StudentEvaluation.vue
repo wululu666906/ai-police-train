@@ -120,17 +120,41 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
+import { showToast } from 'vant'
+import request from '../utils/request'
 
 const router = useRouter()
+const route = useRoute()
 const report = ref<any>(null)
 const loading = ref(true)
 
-onMounted(() => {
-  const data = localStorage.getItem('last_evaluation')
-  if (data) {
-    report.value = JSON.parse(data)
+const fetchEvaluation = async () => {
+  // 1. 尝试从本路由参数获取（用于从历史记录跳转）
+  const sessionId = route.query.session_id
+  if (sessionId) {
+    try {
+      const res: any = await request.get(`/training/session/${sessionId}`)
+      if (res.evaluation_result) {
+        report.value = JSON.parse(res.evaluation_result)
+        return
+      }
+    } catch (e) {
+      console.error('Fetch evaluation failed', e)
+    }
   }
+
+  // 2. 兜底：从 localStorage 获取（用于刚结束训练跳转）
+  const lastEval = localStorage.getItem('last_evaluation')
+  if (lastEval) {
+    report.value = JSON.parse(lastEval)
+  } else {
+    showToast('未找到评分记录')
+  }
+}
+
+onMounted(async () => {
+  await fetchEvaluation()
   loading.value = false
 })
 

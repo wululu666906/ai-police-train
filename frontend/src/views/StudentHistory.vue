@@ -32,6 +32,7 @@
             <th>最终信任</th>
             <th>状态</th>
             <th>训练时间</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -39,11 +40,11 @@
             <td class="id-cell">#{{ r.id }}</td>
             <td class="title-cell">{{ r.case_title }}</td>
             <td>
-              <van-tag type="primary" plain size="small">{{ r.case_type }}</van-tag>
+              <van-tag type="primary" plain size="medium">{{ r.case_type }}</van-tag>
             </td>
             <td>{{ r.scene_name }}</td>
             <td>
-              <van-tag :color="getDifficultyColor(r.difficulty)" plain size="small">
+              <van-tag :color="getDifficultyColor(r.difficulty)" plain size="medium">
                 {{ r.difficulty }}
               </van-tag>
             </td>
@@ -57,11 +58,31 @@
               <span style="color: #165DFF;">{{ r.final_trust }}</span>
             </td>
             <td>
-              <van-tag :type="r.status === 'finished' ? 'success' : 'warning'" size="small">
+              <van-tag :type="r.status === 'finished' ? 'success' : 'warning'" size="medium">
                 {{ r.status === 'finished' ? '已完成' : '进行中' }}
               </van-tag>
             </td>
             <td class="time-cell">{{ formatTime(r.created_at) }}</td>
+            <td>
+              <van-button 
+                v-if="r.status === 'finished'" 
+                size="mini" 
+                type="primary" 
+                plain
+                @click="router.push(`/student/evaluation?session_id=${r.id}`)"
+              >
+                查看报告
+              </van-button>
+              <van-button 
+                v-else 
+                size="mini" 
+                type="success" 
+                plain
+                @click="router.push(`/student/training/${r.id}`)"
+              >
+                继续训练
+              </van-button>
+            </td>
           </tr>
         </tbody>
       </table>

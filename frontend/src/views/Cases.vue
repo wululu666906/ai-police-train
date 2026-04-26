@@ -229,7 +229,7 @@
             <h4 class="text-xs font-black text-gray-400 uppercase tracking-[0.2em] flex items-center leading-none">
               <span class="w-8 h-px bg-gray-200 mr-3"></span> 案件信息原文 (Original Source)
             </h4>
-            <div class="bg-gray-100/50 p-6 rounded-2xl border border-gray-100 leading-relaxed text-gray-500 text-sm whitespace-pre-wrap font-mono">
+            <div class="bg-gray-100/50 p-6 rounded-2xl border border-gray-100 leading-relaxed text-gray-500 text-sm whitespace-pre-wrap original-source-kaiti">
               {{ getRawText(selectedCase) }}
             </div>
           </section>
@@ -291,14 +291,14 @@
                      <h5 class="font-bold text-gray-800 flex items-center">
                         <van-icon name="play-circle-o" class="mr-2 text-blue-500" /> {{ scene.name }}
                      </h5>
-                     <van-tag type="warning" plain size="small">{{ scene.difficulty }}</van-tag>
+                     <van-tag type="warning" plain size="medium">{{ scene.difficulty }}</van-tag>
                   </div>
                   <p class="text-sm text-gray-500 mb-6 leading-relaxed">{{ scene.description }}</p>
                   <div class="space-y-3">
                      <div v-for="(stage, sidx) in parseStages(scene.stages)" :key="sidx" class="flex items-start space-x-3">
                         <div class="flex flex-col items-center">
-                           <div class="w-5 h-5 rounded-full bg-[#1D3557] text-white text-[10px] flex items-center justify-center font-bold">{{ sidx + 1 }}</div>
-                           <div v-if="sidx < parseStages(scene.stages).length - 1" class="w-px h-8 bg-gray-100 my-1"></div>
+                           <div class="w-5 h-5 rounded-full bg-[#1D3557] text-white text-[10px] flex items-center justify-center font-bold">{{ Number(sidx) + 1 }}</div>
+                           <div v-if="Number(sidx) < parseStages(scene.stages).length - 1" class="w-px h-8 bg-gray-100 my-1"></div>
                         </div>
                         <div class="flex-1 pt-0.5">
                            <div class="text-xs font-bold text-gray-700">{{ stage.stage_name }}</div>
@@ -393,7 +393,11 @@ const startGenerating = async () => {
 const submitFinal = async () => {
   try {
     await request.post('/cases/full-create', {
-      case: { ...form, ...aiParsedData.value },
+      case: { 
+        ...form, 
+        ...aiParsedData.value,
+        original_content: form.rawText // 显式传递原文
+      },
       scenes: generatedScenes.value
     })
     showToast({ type: 'success', message: '发布成功' })
@@ -445,6 +449,7 @@ const getStructuredData = (c: any) => {
 }
 
 const getRawText = (c: any) => {
+  if (c && c.original_content) return c.original_content
   const data = getStructuredData(c)
   return data.rawText || '未记录原文'
 }
@@ -458,7 +463,7 @@ const parseStages = (stagesStr: string) => {
   }
 }
 
-const formatDate = (date: string) => new Date(date).toLocaleDateString()
+
 
 onMounted(fetchCases)
 </script>
@@ -469,5 +474,12 @@ onMounted(fetchCases)
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.original-source-kaiti {
+  font-family: "PingFang SC", "Microsoft YaHei", "Heiti SC", "SimHei", sans-serif;
+  font-size: 17px;
+  line-height: 2.02;
+  letter-spacing: 0.02em;
 }
 </style>

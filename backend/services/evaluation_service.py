@@ -34,20 +34,20 @@ EVALUATION_PROMPT_TEMPLATE = """
 
 # 输出格式
 严格JSON：
-{
+{{
   "scores": [
-    {
+    {{
       "dimension": "执法语言规范性",
       "score": 20,
       "full_score": 25,
       "reason": "整体语言规范，但在XX地方有不恰当表述"
-    }
+    }}
   ],
   "total_score": 85,
   "strengths": ["做得好的地方1"],
   "improvements": ["需要改进的地方1"],
   "suggestions": "整体改进建议总结"
-}
+}}
 
 # 约束
 1. 严格扣分制：没有问题就给满分，有问题根据严重程度扣分
@@ -60,6 +60,10 @@ def evaluate_session(db: Session, session_id: int):
     session = db.query(models.TrainingSession).filter(models.TrainingSession.id == session_id).first()
     if not session:
          return None
+    
+    # 如果已经评分过，直接返回保存的结果
+    if session.status == "finished" and session.evaluation_result:
+        return json.loads(session.evaluation_result)
     
     scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
     case = db.query(models.Case).filter(models.Case.id == scene.case_id).first()
@@ -87,12 +91,13 @@ def evaluate_session(db: Session, session_id: int):
             response_format={"type": "json_object"}
         )
         
-        report = json.loads(response.choices[0].message.content)
+        report_json = response.choices[0].message.content
+        report = json.loads(report_json)
         
-        # 3. 持久化状态
+        # 3. 持久化状态与结果
         session.status = "finished"
-        # 注意：建议在 TrainingSession 模型中增加 evaluation_result 字段存储该 JSON
-        # db.commit()
+        session.evaluation_result = report_json
+        db.commit()
         
         return report
     except Exception as e:
