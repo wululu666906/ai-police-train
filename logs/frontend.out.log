@@ -1,17 +1,63 @@
 
 > frontend@0.0.0 dev
-> vite --host localhost --port 5173
+> vite --host 127.0.0.1 --port 5173
 
 
-  [32m[1mVITE[22m v6.4.2[39m  [2mready in [0m[1m312[22m[2m[0m ms[22m
+  [32m[1mVITE[22m v6.4.2[39m  [2mready in [0m[1m329[22m[2m[0m ms[22m
 
-  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5173[22m/[39m
-[2m15:47:15[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue, /src/style.css[22m
-[2m15:49:45[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue, /src/style.css[22m
-[2m15:49:57[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue?vue&type=style&index=0&scoped=37d568bf&lang.css[22m
-[2m15:55:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/style.css, /src/views/Cases.vue?vue&type=style&index=0&scoped=796127aa&lang.css[22m
-[2m15:55:46[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentTraining.vue?vue&type=style&index=0&scoped=ca20e766&lang.css[22m
-[2m15:58:19[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue?vue&type=style&index=0&scoped=796127aa&lang.css[22m
-[2m15:58:31[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentTraining.vue?vue&type=style&index=0&scoped=ca20e766&lang.css[22m
-[2m15:59:56[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue?vue&type=style&index=0&scoped=796127aa&lang.css[22m
-[2m16:00:14[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentTraining.vue?vue&type=style&index=0&scoped=ca20e766&lang.css[22m
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5173[22m/[39m
+[2m15:19:19[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentTraining.vue, /src/style.css, /src/views/StudentTraining.vue?vue&type=style&index=0&scoped=ca20e766&lang.css[22m
+[2m15:22:16[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHistory.vue, /src/style.css[22m
+[2m15:22:16[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentEvaluation.vue, /src/style.css[22m
+[2m15:53:08[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentLayout.vue, /src/style.css[22m
+[2m15:57:08[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue, /src/style.css[22m
+[2m16:00:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/main.ts[22m
+[2m16:00:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentLayout.vue, /src/style.css[22m
+[2m16:00:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHistory.vue, /src/style.css, /src/views/StudentHistory.vue?vue&type=style&index=0&scoped=8fb253d2&lang.css[22m
+[2m16:03:59[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentLayout.vue, /src/style.css, /src/views/StudentLayout.vue?vue&type=style&index=0&scoped=3ab3df0e&lang.css[22m
+[2m16:08:47[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue, /src/style.css[22m
+[2m16:08:47[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHistory.vue, /src/style.css[22m
+[2m16:16:57[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentTraining.vue, /src/style.css[22m
+[2m16:18:13[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue, /src/style.css[22m
+[2m16:18:19[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue, /src/style.css[22m
+[2m16:18:23[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue, /src/style.css[22m
+[2m16:18:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue, /src/style.css[22m
+[2m16:19:09[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue?vue&type=style&index=0&scoped=37d568bf&lang.css[22m
+[2m16:21:41[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentTraining.vue, /src/style.css[22m
+[2m16:21:51[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentTraining.vue, /src/style.css[22m
+[2m16:21:57[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentEvaluation.vue, /src/style.css[22m
+[2m16:33:49[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue, /src/style.css[22m
+[2m16:33:55[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue?vue&type=style&index=0&scoped=37d568bf&lang.css[22m
+[2m16:34:16[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHistory.vue, /src/style.css[22m
+[2m16:34:34[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHistory.vue, /src/style.css[22m
+[2m16:34:39[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHistory.vue?vue&type=style&index=0&scoped=8fb253d2&lang.css[22m
+[2m16:48:58[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHistory.vue, /src/style.css, /src/views/StudentHistory.vue?vue&type=style&index=0&scoped=8fb253d2&lang.css[22m
+[2m16:54:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/main.ts[22m
+[2m16:55:18[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/AdminLayout.vue, /src/style.css[22m
+[2m16:55:59[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/views/DataQuality.vue[22m
+[2m17:11:00[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue, /src/style.css[22m
+[2m17:11:26[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue?vue&type=style&index=0&scoped=37d568bf&lang.css[22m
+[2m17:12:12[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/DataQuality.vue, /src/style.css[22m
+[2m17:14:08[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/style.css[22m
+[2m17:14:18[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/style.css[22m
+[2m17:14:25[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/style.css[22m
+[2m17:14:59[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/style.css[22m
+[2m17:15:05[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/style.css[22m
+[2m17:15:22[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHistory.vue, /src/style.css[22m
+[2m17:41:59[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/style.css, /src/views/Cases.vue?vue&type=style&index=0&scoped=796127aa&lang.css[22m
+[2m17:46:18[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/views/Cases.vue?vue&type=style&index=0&scoped=796127aa&lang.css[22m
+[2m17:46:44[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/views/Cases.vue?vue&type=style&index=0&scoped=796127aa&lang.css[22m
+[2m17:53:30[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue, /src/style.css, /src/views/StudentHall.vue?vue&type=style&index=0&scoped=37d568bf&lang.css[22m
+[2m17:55:06[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHall.vue, /src/views/StudentHall.vue?vue&type=style&index=0&scoped=37d568bf&lang.css[22m
+[2m17:55:16[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentTraining.vue, /src/style.css, /src/views/StudentTraining.vue?vue&type=style&index=0&scoped=ca20e766&lang.css[22m
+[2m17:57:17[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentTraining.vue, /src/views/StudentTraining.vue?vue&type=style&index=0&scoped=ca20e766&lang.css[22m
+[2m17:57:30[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentEvaluation.vue, /src/style.css, /src/views/StudentEvaluation.vue?vue&type=style&index=0&scoped=fb35d099&lang.css[22m
+[2m17:58:32[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentEvaluation.vue, /src/views/StudentEvaluation.vue?vue&type=style&index=0&scoped=fb35d099&lang.css[22m
+[2m17:58:59[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHistory.vue, /src/style.css, /src/views/StudentHistory.vue?vue&type=style&index=0&scoped=8fb253d2&lang.css[22m
+[2m18:00:07[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/StudentHistory.vue, /src/views/StudentHistory.vue?vue&type=style&index=0&scoped=8fb253d2&lang.css[22m
+[2m19:57:07[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/style.css, /src/views/Cases.vue?vue&type=style&index=0&scoped=796127aa&lang.css[22m
+[2m20:00:19[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/views/Cases.vue?vue&type=style&index=0&scoped=796127aa&lang.css[22m
+[2m20:07:39[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/views/Cases.vue?vue&type=style&index=0&scoped=796127aa&lang.css[22m
+[2m20:39:25[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue[22m
+[2m20:46:20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/views/Cases.vue?vue&type=style&index=0&scoped=796127aa&lang.css[22m
+[2m20:49:44[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/Cases.vue, /src/views/Cases.vue?vue&type=style&index=0&scoped=796127aa&lang.css[22m

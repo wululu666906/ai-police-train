@@ -1,6 +1,5 @@
 <template>
   <div class="training-page">
-    <!-- Left Sidebar: Case Info Panel -->
     <aside class="info-panel">
       <div class="panel-section">
         <h3 class="panel-title">
@@ -21,19 +20,11 @@
             {{ caseInfo.difficulty }}
           </van-tag>
         </div>
-        <van-button 
-          block 
-          plain 
-          type="primary" 
-          size="mini" 
-          style="margin-top: 10px; border-radius: 4px;"
-          @click="showCaseBrief = true"
-        >
-          查看接警记录与现场
+        <van-button block plain type="primary" size="mini" class="brief-btn" @click="showCaseBrief = true">
+          查看接警简报与现场信息
         </van-button>
       </div>
 
-      <!-- NEW: Training Phase & Goal -->
       <div class="panel-section stage-section">
         <h3 class="panel-title">
           <van-icon name="send-gift-o" />
@@ -45,13 +36,12 @@
             <span class="stage-name-text">{{ caseInfo.currentStage }}</span>
           </div>
           <div class="stage-goal-box">
-            <div class="goal-label">本阶段目标：</div>
-            <div class="goal-text">{{ caseInfo.currentStageGoal || '请开始与对方交流获取信息' }}</div>
+            <div class="goal-label">本阶段目标</div>
+            <div class="goal-text">{{ caseInfo.currentStageGoal || '请开始与对方交流，获取关键事实。' }}</div>
           </div>
         </div>
       </div>
 
-      <!-- State Indicators -->
       <div class="panel-section">
         <h3 class="panel-title">
           <van-icon name="chart-trending-o" />
@@ -65,10 +55,7 @@
             </span>
           </div>
           <div class="progress-track">
-            <div 
-              class="progress-fill emotion-fill"
-              :style="{ width: currentState.emotion + '%' }"
-            ></div>
+            <div class="progress-fill emotion-fill" :style="{ width: currentState.emotion + '%' }"></div>
           </div>
         </div>
         <div class="state-bar">
@@ -77,15 +64,11 @@
             <span class="state-num" style="color: #165DFF;">{{ currentState.trust }}</span>
           </div>
           <div class="progress-track">
-            <div 
-              class="progress-fill trust-fill"
-              :style="{ width: currentState.trust + '%' }"
-            ></div>
+            <div class="progress-fill trust-fill" :style="{ width: currentState.trust + '%' }"></div>
           </div>
         </div>
       </div>
 
-      <!-- Revealed Info -->
       <div class="panel-section facts-section">
         <h3 class="panel-title">
           <van-icon name="bookmark-o" />
@@ -93,9 +76,7 @@
           <span class="fact-count">{{ revealedInfo.length }}</span>
         </h3>
         <div class="fact-list">
-          <div v-if="revealedInfo.length === 0" class="fact-empty">
-            暂未获取关键信息
-          </div>
+          <div v-if="revealedInfo.length === 0" class="fact-empty">暂未获取关键线索</div>
           <div v-for="(info, idx) in revealedInfo" :key="idx" class="fact-item">
             <van-icon name="success" color="#00B42A" />
             <span>{{ info }}</span>
@@ -103,31 +84,20 @@
         </div>
       </div>
 
-      <!-- Actions -->
       <div class="panel-actions">
-        <van-button 
-          block 
-          type="danger" 
-          size="small"
-          class="finish-btn"
-          @click="finishTraining"
-        >
-          <van-icon name="flag-o" /> 结束训练并评分
+        <van-button block type="danger" size="small" class="finish-btn" @click="finishTraining">
+          <van-icon name="flag-o" /> 结束训练并生成评估
         </van-button>
       </div>
     </aside>
 
-    <!-- Right: Chat Area -->
     <div class="chat-area">
-      <!-- Chat Messages -->
-      <div class="chat-messages" ref="chatContainer">
+      <div ref="chatContainer" class="chat-messages">
         <div v-for="msg in chatHistory" :key="msg.id" class="msg-wrapper">
-          <!-- System Message -->
           <div v-if="msg.role === 'system'" class="msg-system">
             <span>{{ msg.content }}</span>
           </div>
 
-          <!-- AI (Role) Message -->
           <div v-else-if="msg.role === 'assistant'" class="msg-row msg-ai">
             <div class="avatar avatar-ai">
               <van-icon name="contact" size="20" />
@@ -138,10 +108,9 @@
             </div>
           </div>
 
-          <!-- Human (Student) Message -->
           <div v-else class="msg-row msg-human">
             <div class="msg-body">
-              <span class="msg-sender">执法警员</span>
+              <span class="msg-sender">执法民警</span>
               <div class="msg-bubble bubble-human">{{ msg.content }}</div>
             </div>
             <div class="avatar avatar-human">
@@ -150,7 +119,6 @@
           </div>
         </div>
 
-        <!-- Typing Indicator -->
         <div v-if="isLoading" class="msg-row msg-ai">
           <div class="avatar avatar-ai">
             <van-icon name="contact" size="20" />
@@ -161,18 +129,17 @@
         </div>
       </div>
 
-      <!-- Input Area -->
       <div class="chat-input-area">
         <div class="input-wrapper">
-          <textarea 
-            v-model="inputMessage" 
+          <textarea
+            v-model="inputMessage"
             rows="2"
             class="chat-input"
-            placeholder="请输入执法话术或提问..."
+            placeholder="请输入执法话术、追问内容或安抚表达..."
             @keyup.enter.exact.prevent="sendMessage"
           ></textarea>
         </div>
-        <van-button 
+        <van-button
           type="primary"
           class="send-btn"
           :loading="isLoading"
@@ -184,7 +151,6 @@
       </div>
     </div>
 
-    <!-- Case Brief Modal (Fullscreen) -->
     <van-popup
       v-model:show="showCaseBrief"
       position="right"
@@ -192,60 +158,51 @@
       :style="{ width: '100%', height: '100%' }"
     >
       <div class="popup-header">
-        <van-nav-bar
-          title="警情与现场初查"
-          left-text="返回训练"
-          left-arrow
-          @click-left="showCaseBrief = false"
-        />
+        <van-nav-bar title="接警简报与现场信息" left-text="返回训练" left-arrow @click-left="showCaseBrief = false" />
       </div>
       <div class="popup-content">
         <div class="brief-container">
-          <!-- Main Header -->
           <div class="brief-header">
-            <div class="flex items-center space-x-2 mb-2">
+            <div class="brief-meta">
               <van-tag type="primary" size="large" round>{{ caseInfo.caseType || '其他' }}</van-tag>
-              <span class="text-xs text-gray-400 font-bold tracking-widest">ID: #{{ sessionId }}</span>
+              <span class="brief-id">会话 #{{ sessionId }}</span>
             </div>
             <h2 class="brief-main-title">{{ caseInfo.title }}</h2>
           </div>
 
-          <!-- Section: Dispatch Brief -->
           <div class="brief-section">
             <h4 class="brief-label">
-              <span class="label-line"></span> 110 接警简报 (DISPATCH)
+              <span class="label-line"></span> 110 接警简报
             </h4>
-            <div class="abstract-box" style="background-color: #f2f3f5; color: #1d2129; border-left: 4px solid #165dff;">
-              "{{ caseInfo.dispatchBrief || '（指挥中心暂无详细指令下发）' }}"
-            </div>
-          </div>
-          
-          <!-- Section: First Impression -->
-          <div class="brief-section">
-            <h4 class="brief-label">
-              <span class="label-line grey"></span> 现场第一印象 (OBSERVATION)
-            </h4>
-            <div class="original-source-box" style="font-family: inherit; font-size: 14px;">
-              {{ caseInfo.firstImpression || '（你到达了现场，暂未发现明显异常景象）' }}
+            <div class="abstract-box dispatch-box">
+              {{ caseInfo.dispatchBrief || '指挥中心暂未下发更详细的接警简报。' }}
             </div>
           </div>
 
-          <!-- Section: Standard Operating Procedure (SOP) -->
+          <div class="brief-section">
+            <h4 class="brief-label">
+              <span class="label-line grey"></span> 现场第一印象
+            </h4>
+            <div class="original-source-box">
+              {{ caseInfo.firstImpression || '你已到达现场，暂未发现特别明显的异常情况。' }}
+            </div>
+          </div>
+
           <div class="brief-section">
             <van-divider dashed />
             <h4 class="brief-label">
-              <span class="label-line blue"></span> 执法操作指引 (SOP)
+              <span class="label-line blue"></span> 执法提示
             </h4>
             <div class="structured-grid">
-               <div class="sub-section">
-                  <span class="sub-title">当前阶段建议</span>
-                  <div style="font-size: 13px; color: #4e5969; margin-top: 8px; line-height: 1.6;">
-                    1. 核实对话人员身份信息。<br/>
-                    2. 控制现场情绪，避免冲突升级。<br/>
-                    3. 针对接警简报中的核心问题进行初步询问。<br/>
-                    4. 留意对方神态，判断是否有所隐瞒。
-                  </div>
-               </div>
+              <div class="sub-section">
+                <span class="sub-title">当前阶段建议</span>
+                <div class="sop-text">
+                  1. 先核实对话对象身份与所处位置。<br />
+                  2. 结合场景目标围绕时间、地点、人物、经过展开询问。<br />
+                  3. 注意控制现场情绪，避免冲突升级。<br />
+                  4. 留意对方表述中的矛盾点、隐瞒点和风险点。
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -255,10 +212,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick, reactive } from 'vue'
+import { nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { showLoadingToast, showToast } from 'vant'
 import request from '../utils/request'
-import { showToast, showLoadingToast } from 'vant'
 
 const route = useRoute()
 const router = useRouter()
@@ -268,9 +225,9 @@ const inputMessage = ref('')
 const isLoading = ref(false)
 const showCaseBrief = ref(false)
 
-const caseInfo = reactive({ 
-  title: '加载中...', 
-  sceneName: '', 
+const caseInfo = reactive({
+  title: '加载中...',
+  sceneName: '',
   difficulty: '中等',
   currentStage: '',
   currentStageGoal: '',
@@ -282,16 +239,31 @@ const caseInfo = reactive({
   roleStatus: '正常',
   structuredData: null as any
 })
+
 const roleInfo = reactive({ name: '对话对象' })
 const revealedInfo = ref<string[]>([])
 const currentState = ref({ emotion: 50, trust: 30 })
 const chatHistory = ref<any[]>([])
+
+const buildSystemIntro = (sceneName: string, roleName: string) =>
+  `训练已开始，当前场景：${sceneName || '现场'}，对话对象：${roleName || '未指定角色'}`
+
+const safeParse = <T>(value: any, fallback: T): T => {
+  if (value === null || value === undefined || value === '') return fallback
+  if (typeof value !== 'string') return value as T
+  try {
+    return JSON.parse(value) as T
+  } catch (error) {
+    return fallback
+  }
+}
 
 const fetchSessionData = async () => {
   try {
     const res: any = await request.get(`/training/session/${sessionId.value}`)
     caseInfo.title = res.case_title
     caseInfo.sceneName = res.scene_name
+    caseInfo.difficulty = res.difficulty || '中等'
     caseInfo.currentStage = res.current_stage
     caseInfo.currentStageGoal = res.current_stage_goal
     caseInfo.caseBackground = res.case_background
@@ -300,77 +272,75 @@ const fetchSessionData = async () => {
     caseInfo.firstImpression = res.first_impression
     caseInfo.caseType = res.case_type
     caseInfo.roleStatus = res.role_status
-    caseInfo.structuredData = res.structured_data ? JSON.parse(res.structured_data) : null
+    caseInfo.structuredData = safeParse(res.structured_data, null)
     roleInfo.name = res.role_name
     currentState.value.emotion = res.current_emotion
     currentState.value.trust = res.current_trust
-    revealedInfo.value = JSON.parse(res.revealed_info || '[]')
-    
+    revealedInfo.value = safeParse<string[]>(res.revealed_info, [])
+
     chatHistory.value = [
-      { id: 0, role: 'system', content: `训练已开始，场景：${res.scene_name || '现场'}，对话对象：${res.role_name}` },
-      ...res.messages.map((m: any) => ({
-        id: m.id,
-        role: m.role === 'user' ? 'human' : 'assistant',
-        content: m.content
+      { id: 0, role: 'system', content: buildSystemIntro(res.scene_name, res.role_name) },
+      ...(res.messages || []).map((message: any) => ({
+        id: message.id,
+        role: message.role === 'user' ? 'human' : message.role === 'system' ? 'system' : 'assistant',
+        content: message.content
       }))
     ]
     scrollToBottom()
-  } catch (e) {
+  } catch (error) {
     showToast('获取训练数据失败')
   }
 }
 
 const sendMessage = async () => {
   if (!inputMessage.value.trim() || isLoading.value) return
-  
-  const msg = inputMessage.value
+
+  const msg = inputMessage.value.trim()
   chatHistory.value.push({ id: Date.now(), role: 'human', content: msg })
   inputMessage.value = ''
   isLoading.value = true
   scrollToBottom()
-  
+
   try {
     const res: any = await request.post(`/training/chat/${sessionId.value}`, {
       role: 'user',
       content: msg
     })
-    
-    if (res && res.response) {
+
+    if (res?.response) {
       chatHistory.value.push({
-        id: Date.now(),
+        id: Date.now() + 1,
         role: 'assistant',
         content: res.response
       })
       currentState.value.emotion = res.updated_emotion
       currentState.value.trust = res.updated_trust
-      
-      if (res.new_fact_revealed && res.new_fact_revealed !== 'null') {
+
+      if (res.new_fact_revealed && res.new_fact_revealed !== 'null' && !revealedInfo.value.includes(res.new_fact_revealed)) {
         revealedInfo.value.push(res.new_fact_revealed)
-        chatHistory.value.push({ 
-          id: Date.now(), 
-          role: 'system', 
-          content: `[关键事实获取] ${res.new_fact_revealed}` 
+        chatHistory.value.push({
+          id: Date.now() + 2,
+          role: 'system',
+          content: `[关键线索获取] ${res.new_fact_revealed}`
         })
       }
 
-      // 检查阶段流转
       if (res.is_stage_completed) {
-        // 重新获取会话信息以拉取最新阶段目标
         const updatedRes: any = await request.get(`/training/session/${sessionId.value}`)
         if (updatedRes.current_stage !== caseInfo.currentStage) {
           const oldStage = caseInfo.currentStage
           caseInfo.currentStage = updatedRes.current_stage
           caseInfo.currentStageGoal = updatedRes.current_stage_goal
           chatHistory.value.push({
-            id: Date.now() + 1,
+            id: Date.now() + 3,
             role: 'system',
-            content: `【阶段切换】由于表现出色，已由 [${oldStage}] 进入到 [${caseInfo.currentStage}] 阶段。`
+            content: `【阶段切换】已由「${oldStage}」进入「${caseInfo.currentStage}」阶段。`
           })
         }
       }
     }
-  } catch (e) {
-    showToast('AI响应异常，请重试')
+  } catch (error) {
+    showToast('AI 响应异常，请稍后重试')
   } finally {
     isLoading.value = false
     scrollToBottom()
@@ -378,15 +348,14 @@ const sendMessage = async () => {
 }
 
 const finishTraining = async () => {
-  const loader = showLoadingToast({ message: '正在生成评分报告...', forbidClick: true })
+  const loader = showLoadingToast({ message: '正在生成评估报告...', forbidClick: true })
   try {
-    const res = await request.post(`/training/finish/${sessionId.value}`)
-    localStorage.setItem('last_evaluation', JSON.stringify(res))
+    await request.post(`/training/finish/${sessionId.value}`)
     loader.close()
-    router.push('/student/evaluation')
-  } catch (e) {
+    router.push(`/student/evaluation?session_id=${sessionId.value}`)
+  } catch (error) {
     loader.close()
-    showToast('报告生成失败')
+    showToast('评估报告生成失败')
   }
 }
 
@@ -416,11 +385,10 @@ onMounted(fetchSessionData)
   font-family: 'PingFang SC', 'Microsoft YaHei', 'Inter', sans-serif;
 }
 
-/* Left Panel */
 .info-panel {
-  width: 280px;
+  width: 296px;
   background: white;
-  border-right: 1px solid #E5E6EB;
+  border-right: 1px solid #e5e6eb;
   display: flex;
   flex-direction: column;
   overflow-y: auto;
@@ -429,223 +397,179 @@ onMounted(fetchSessionData)
 
 .panel-section {
   padding: 20px;
-  border-bottom: 1px solid #F2F3F5;
+  border-bottom: 1px solid #f2f3f5;
 }
 
 .panel-title {
   font-size: 13px;
-  font-weight: 600;
-  color: #1D2129;
-  margin: 0 0 14px;
+  font-weight: 700;
+  color: #1d2129;
   display: flex;
   align-items: center;
-  gap: 6px;
-}
-
-.fact-count {
-  background: #165DFF;
-  color: white;
-  font-size: 11px;
-  padding: 1px 7px;
-  border-radius: 10px;
-  margin-left: auto;
+  gap: 8px;
+  margin: 0 0 14px;
 }
 
 .info-item {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  padding: 8px 0;
-}
-
-.info-item + .info-item {
-  border-top: 1px dashed #F2F3F5;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-size: 13px;
 }
 
 .info-label {
-  font-size: 13px;
-  color: #86909C;
+  color: #86909c;
 }
 
 .info-value {
-  font-size: 13px;
-  color: #1D2129;
-  font-weight: 500;
-  max-width: 150px;
+  color: #1d2129;
   text-align: right;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: 500;
 }
 
-/* State Bars */
-.state-bar {
-  margin-bottom: 14px;
+.brief-btn {
+  margin-top: 10px;
+  border-radius: 8px;
+}
+
+.stage-card {
+  background: #f7f8fa;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.stage-tag {
+  display: inline-block;
+  font-size: 11px;
+  color: #165dff;
+  background: #e8f3ff;
+  padding: 4px 8px;
+  border-radius: 999px;
+}
+
+.stage-name-text {
+  display: block;
+  margin-top: 10px;
+  font-size: 18px;
+  font-weight: 700;
+  color: #1d2129;
+}
+
+.goal-label {
+  margin-top: 12px;
+  font-size: 12px;
+  color: #86909c;
+}
+
+.goal-text {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #4e5969;
+  line-height: 1.7;
+}
+
+.state-bar + .state-bar {
+  margin-top: 16px;
 }
 
 .state-header {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+  font-size: 13px;
 }
 
 .state-label {
-  font-size: 12px;
-  color: #86909C;
+  color: #4e5969;
 }
 
 .state-num {
-  font-size: 14px;
   font-weight: 700;
 }
 
 .progress-track {
-  height: 6px;
-  background: #F2F3F5;
-  border-radius: 3px;
+  height: 8px;
+  border-radius: 999px;
+  background: #f2f3f5;
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
-  border-radius: 3px;
-  transition: width 0.8s ease;
+  border-radius: inherit;
 }
 
 .emotion-fill {
-  background: linear-gradient(90deg, #FF7D00, #F53F3F);
+  background: linear-gradient(90deg, #fb7185 0%, #f97316 100%);
 }
 
 .trust-fill {
-  background: linear-gradient(90deg, #86909C, #165DFF);
+  background: linear-gradient(90deg, #60a5fa 0%, #2563eb 100%);
 }
 
-/* Facts */
-.facts-section {
-  flex: 1;
-  overflow-y: auto;
+.fact-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: #165dff;
+}
+
+.fact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .fact-empty {
-  font-size: 12px;
-  color: #C9CDD4;
-  text-align: center;
-  padding: 20px 0;
+  font-size: 13px;
+  color: #86909c;
 }
 
 .fact-item {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 8px 0;
-  font-size: 12px;
-  color: #4E5969;
-  line-height: 1.5;
-}
-
-.fact-item + .fact-item {
-  border-top: 1px dashed #F2F3F5;
-}
-
-/* Stage Section */
-.stage-section {
-  background: #fdfdfd;
-}
-
-.stage-card {
-  background: #F2F3F5;
-  border-radius: 8px;
-  padding: 12px;
-}
-
-.stage-name-box {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.stage-tag {
-  background: #165DFF;
-  color: white;
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-
-.stage-name-text {
-  font-size: 14px;
-  font-weight: 700;
-  color: #1D2129;
-}
-
-.stage-goal-box {
-  background: white;
-  padding: 10px;
-  border-radius: 4px;
-  border-left: 3px solid #165DFF;
-}
-
-.goal-label {
-  font-size: 11px;
-  color: #86909C;
-  margin-bottom: 4px;
-}
-
-.goal-text {
-  font-size: 12px;
-  color: #4E5969;
+  font-size: 13px;
   line-height: 1.6;
+  color: #4e5969;
 }
 
 .panel-actions {
-  padding: 16px 20px;
-  border-top: 1px solid #F2F3F5;
+  padding: 20px;
+  margin-top: auto;
 }
 
 .finish-btn {
-  border-radius: 4px !important;
-  font-size: 13px !important;
+  border-radius: 10px;
 }
 
-/* Chat Area */
 .chat-area {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  background: #F7F8FA;
+  background: #f7f8fa;
 }
 
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 32px;
+  padding: 24px;
 }
 
 .msg-wrapper + .msg-wrapper {
-  margin-top: 16px;
+  margin-top: 14px;
 }
 
-/* System Message */
 .msg-system {
   text-align: center;
-}
-
-.msg-system span {
-  display: inline-block;
-  padding: 4px 16px;
-  background: #E5E6EB;
-  border-radius: 12px;
+  color: #86909c;
   font-size: 12px;
-  color: #86909C;
 }
 
-/* Message Row */
 .msg-row {
   display: flex;
+  gap: 12px;
   align-items: flex-start;
-  gap: 10px;
 }
 
 .msg-human {
@@ -653,9 +577,9 @@ onMounted(fetchSessionData)
 }
 
 .avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -663,81 +587,51 @@ onMounted(fetchSessionData)
 }
 
 .avatar-ai {
-  background: #F2F3F5;
-  color: #4E5969;
-  border: 1px solid #E5E6EB;
+  background: #e8f3ff;
+  color: #165dff;
 }
 
 .avatar-human {
-  background: #165DFF;
+  background: #1d3557;
   color: white;
 }
 
 .msg-body {
-  max-width: 65%;
+  max-width: min(680px, 72%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .msg-sender {
-  display: block;
   font-size: 12px;
-  color: #86909C;
-  margin-bottom: 4px;
+  color: #86909c;
 }
 
-.msg-human .msg-sender {
-  text-align: right;
-}
-
-/* Bubble - follows UI doc specs */
 .msg-bubble {
-  padding: 10px 14px;
-  font-size: 14px;
-  line-height: 1.6;
+  padding: 14px 16px;
+  border-radius: 16px;
+  line-height: 1.75;
+  white-space: pre-wrap;
   word-break: break-word;
 }
 
 .bubble-ai {
   background: white;
-  color: #1D2129;
-  border-radius: 2px 12px 12px 12px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  color: #1d2129;
+  border-top-left-radius: 6px;
 }
 
 .bubble-human {
-  background: #165DFF;
+  background: #165dff;
   color: white;
-  border-radius: 12px 2px 12px 12px;
-  box-shadow: 0 1px 4px rgba(22, 93, 255, 0.2);
+  border-top-right-radius: 6px;
 }
 
-/* Typing indicator */
-.typing-indicator {
-  display: flex;
-  gap: 4px;
-  padding: 14px 18px;
-}
-
-.typing-indicator span {
-  width: 6px;
-  height: 6px;
-  background: #C9CDD4;
-  border-radius: 50%;
-  animation: blink 1.2s infinite;
-}
-
-.typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
-.typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
-
-@keyframes blink {
-  0%, 80%, 100% { opacity: 0.3; }
-  40% { opacity: 1; }
-}
-
-/* Input Area */
 .chat-input-area {
-  padding: 16px 32px;
+  padding: 16px 20px;
   background: white;
-  border-top: 1px solid #E5E6EB;
+  border-top: 1px solid #e5e6eb;
   display: flex;
   gap: 12px;
   align-items: flex-end;
@@ -749,132 +643,152 @@ onMounted(fetchSessionData)
 
 .chat-input {
   width: 100%;
-  padding: 10px 14px;
-  border: 1px solid #C9CDD4;
-  border-radius: 4px;
-  font-size: 14px;
-  font-family: inherit;
+  border: 1px solid #d9dde5;
+  border-radius: 14px;
   resize: none;
+  padding: 14px 16px;
+  font-size: 14px;
   outline: none;
-  transition: border-color 0.2s;
-  box-sizing: border-box;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .chat-input:focus {
-  border-color: #165DFF;
+  border-color: #165dff;
+  box-shadow: 0 0 0 3px rgba(22, 93, 255, 0.08);
 }
 
 .send-btn {
-  background: #165DFF !important;
-  border: none !important;
-  border-radius: 4px !important;
-  height: 42px !important;
-  padding: 0 24px !important;
+  min-width: 92px;
+  height: 44px;
+  border-radius: 12px;
 }
 
-/* Scrollbar */
-.chat-messages::-webkit-scrollbar { width: 4px; }
-.chat-messages::-webkit-scrollbar-thumb { background: #C9CDD4; border-radius: 2px; }
-.info-panel::-webkit-scrollbar { width: 3px; }
-.info-panel::-webkit-scrollbar-thumb { background: #E5E6EB; border-radius: 2px; }
+.typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 
-/* Popup Styling Re-design */
-.popup-content {
-  padding: 32px 24px;
-  background: #F8F9FA;
-  height: calc(100vh - 46px);
-  overflow-y: auto;
+.typing-indicator span {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #c9cdd4;
+  animation: blink 1.2s infinite ease-in-out;
+}
+
+.typing-indicator span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-indicator span:nth-child(3) {
+  animation-delay: 0.3s;
 }
 
 .brief-container {
-  max-width: 800px;
+  max-width: 900px;
   margin: 0 auto;
+  padding: 24px;
 }
 
-.brief-header {
-  margin-bottom: 48px;
+.brief-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brief-id {
+  font-size: 12px;
+  color: #86909c;
+  font-weight: 700;
 }
 
 .brief-main-title {
-  font-size: 32px;
-  font-weight: 800;
-  color: #1D2129;
-  letter-spacing: -0.5px;
+  margin: 12px 0 0;
+  font-size: 28px;
+  color: #1d2129;
 }
 
 .brief-section {
-  margin-bottom: 40px;
+  margin-top: 24px;
 }
 
 .brief-label {
-  font-size: 13px;
-  font-weight: 900;
-  color: #86909C;
-  letter-spacing: 0.2em;
   display: flex;
   align-items: center;
-  margin-bottom: 16px;
+  gap: 10px;
+  font-size: 14px;
+  color: #1d2129;
+  margin-bottom: 12px;
 }
 
 .label-line {
-  width: 40px;
-  height: 1px;
-  background: #E5E6EB;
-  margin-right: 12px;
+  width: 24px;
+  height: 2px;
+  background: #165dff;
 }
 
-.label-line.blue { background: #165DFF; opacity: 0.3; }
+.label-line.grey {
+  background: #94a3b8;
+}
 
-.abstract-box {
+.label-line.blue {
+  background: #1d3557;
+}
+
+.abstract-box,
+.original-source-box,
+.structured-grid {
+  border-radius: 14px;
   background: white;
-  padding: 24px 32px;
-  border-radius: 16px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+  padding: 16px 18px;
   line-height: 1.8;
-  color: #4E5969;
-  font-style: italic;
-  font-size: 15px;
+  color: #4e5969;
+  border: 1px solid #e5e6eb;
 }
 
-.original-source-box {
-  background: #F2F3F5;
-  padding: 32px;
-  border-radius: 16px;
-  line-height: 1.9;
-  color: #1D2129;
-  font-size: 17px;
-  white-space: pre-wrap;
-  font-family: "PingFang SC", "Microsoft YaHei", "Heiti SC", "SimHei", sans-serif;
-  letter-spacing: 0.02em;
-  border: 1px solid #E5E6EB;
-}
-
-.sub-section {
-  margin-top: 16px;
+.dispatch-box {
+  background: #f2f3f5;
+  border-left: 4px solid #165dff;
 }
 
 .sub-title {
-  display: block;
-  font-size: 12px;
-  font-weight: bold;
-  color: #4E5969;
-  margin-bottom: 8px;
+  font-weight: 700;
+  color: #1d3557;
 }
 
-.tag-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.sop-text {
+  margin-top: 10px;
+  font-size: 13px;
+  color: #4e5969;
+  line-height: 1.8;
 }
 
-.fact-dots {
-  padding-left: 20px;
-  color: #4E5969;
+@keyframes blink {
+  0%, 80%, 100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
 }
 
-.fact-dots li {
-  margin-bottom: 10px;
-  font-size: 14px;
-  list-style-type: square;
+@media (max-width: 960px) {
+  .training-page {
+    flex-direction: column;
+    height: auto;
+  }
+
+  .info-panel {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid #e5e6eb;
+  }
+
+  .msg-body {
+    max-width: 84%;
+  }
 }
 </style>

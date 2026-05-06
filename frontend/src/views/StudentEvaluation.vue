@@ -1,11 +1,10 @@
 <template>
   <div class="evaluation-page">
     <div v-if="loading" class="loading-state">
-      <van-loading color="#165DFF" vertical>正在生成评分报告...</van-loading>
+      <van-loading color="#165DFF" vertical>正在生成评估报告...</van-loading>
     </div>
 
     <div v-else-if="report" class="report-content">
-      <!-- Score Header -->
       <div class="score-header">
         <div class="score-bg-icon">
           <van-icon name="medal-o" size="120" />
@@ -13,17 +12,12 @@
         <p class="score-label">综合评分</p>
         <div class="score-number">{{ report.total_score }}</div>
         <div class="score-level">
-          <van-tag 
-            :color="getLevelColor(report.total_score)" 
-            size="large" 
-            round
-          >
+          <van-tag :color="getLevelColor(report.total_score)" size="large" round>
             {{ getLevel(report.total_score) }}
           </van-tag>
         </div>
       </div>
 
-      <!-- Dimension Scores -->
       <section class="section">
         <h3 class="section-title">
           <span class="title-bar"></span>
@@ -38,7 +32,7 @@
               </span>
             </div>
             <div class="dim-bar-track">
-              <div 
+              <div
                 class="dim-bar-fill"
                 :class="getBarClass(s.score, s.full_score)"
                 :style="{ width: (s.score / s.full_score * 100) + '%' }"
@@ -49,7 +43,6 @@
         </div>
       </section>
 
-      <!-- Strengths & Improvements -->
       <div class="two-col">
         <section class="feedback-card strengths-card">
           <h3 class="feedback-title">
@@ -78,49 +71,37 @@
         </section>
       </div>
 
-      <!-- Expert Summary -->
-      <section class="section" v-if="report.suggestions">
+      <section v-if="report.suggestions" class="section">
         <div class="expert-card">
           <van-icon name="comment-o" class="expert-icon" />
-          <h3 class="expert-title">专家综合点评</h3>
+          <h3 class="expert-title">综合点评</h3>
           <p class="expert-text">{{ report.suggestions }}</p>
         </div>
       </section>
 
-      <!-- Actions -->
       <div class="action-bar">
-        <van-button 
-          size="large" 
-          class="btn-secondary"
-          @click="router.push('/student/hall')"
-        >
+        <van-button size="large" class="btn-secondary" @click="router.push('/student/hall')">
           返回训练大厅
         </van-button>
-        <van-button 
-          type="primary" 
-          size="large" 
-          class="btn-primary"
-          @click="router.push('/student/history')"
-        >
+        <van-button type="primary" size="large" class="btn-primary" @click="router.push('/student/history')">
           查看训练历史
         </van-button>
       </div>
     </div>
 
-    <!-- No Data -->
     <div v-else class="empty-state">
       <van-icon name="info-o" size="48" color="#C9CDD4" />
-      <p>暂无评分数据</p>
+      <p>暂无评估数据</p>
       <van-button type="primary" size="small" @click="router.push('/student/hall')">
-        前往训练大厅
+        返回训练大厅
       </van-button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
+import { onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import request from '../utils/request'
 
@@ -129,27 +110,37 @@ const route = useRoute()
 const report = ref<any>(null)
 const loading = ref(true)
 
+const safeParse = <T>(value: any, fallback: T): T => {
+  if (value === null || value === undefined || value === '') return fallback
+  if (typeof value !== 'string') return value as T
+  try {
+    return JSON.parse(value) as T
+  } catch (error) {
+    return fallback
+  }
+}
+
 const fetchEvaluation = async () => {
-  // 1. 尝试从本路由参数获取（用于从历史记录跳转）
-  const sessionId = route.query.session_id
-  if (sessionId) {
-    try {
-      const res: any = await request.get(`/training/session/${sessionId}`)
-      if (res.evaluation_result) {
-        report.value = JSON.parse(res.evaluation_result)
-        return
-      }
-    } catch (e) {
-      console.error('Fetch evaluation failed', e)
-    }
+  const rawSessionId = route.query.session_id
+  const sessionId = Number(rawSessionId)
+
+  if (!rawSessionId || Number.isNaN(sessionId) || sessionId <= 0) {
+    showToast('缺少训练会话编号，无法加载评估报告')
+    return
   }
 
-  // 2. 兜底：从 localStorage 获取（用于刚结束训练跳转）
-  const lastEval = localStorage.getItem('last_evaluation')
-  if (lastEval) {
-    report.value = JSON.parse(lastEval)
-  } else {
-    showToast('未找到评分记录')
+  try {
+    const res: any = await request.get(`/training/session/${sessionId}`)
+    if (!res.evaluation_result) {
+      showToast('当前训练尚未生成评估报告')
+      return
+    }
+    report.value = safeParse(res.evaluation_result, null)
+    if (!report.value) {
+      showToast('评估报告解析失败')
+    }
+  } catch (error) {
+    showToast('获取评估报告失败')
   }
 }
 
@@ -188,7 +179,7 @@ const getBarClass = (score: number, full: number) => {
 
 <style scoped>
 .evaluation-page {
-  max-width: 800px;
+  max-width: 860px;
   margin: 0 auto;
   padding: 32px;
   font-family: 'PingFang SC', 'Microsoft YaHei', 'Inter', sans-serif;
@@ -202,13 +193,12 @@ const getBarClass = (score: number, full: number) => {
   justify-content: center;
   padding: 100px 0;
   gap: 16px;
-  color: #86909C;
+  color: #86909c;
 }
 
-/* Score Header */
 .score-header {
-  background: #0E2F56;
-  border-radius: 6px;
+  background: #0e2f56;
+  border-radius: 18px;
   padding: 40px 0;
   text-align: center;
   position: relative;
@@ -225,9 +215,8 @@ const getBarClass = (score: number, full: number) => {
 
 .score-label {
   font-size: 13px;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 0.55);
   letter-spacing: 2px;
-  text-transform: uppercase;
   margin: 0 0 8px;
 }
 
@@ -239,12 +228,6 @@ const getBarClass = (score: number, full: number) => {
   margin-bottom: 12px;
 }
 
-.score-level {
-  position: relative;
-  z-index: 1;
-}
-
-/* Section */
 .section {
   margin-bottom: 24px;
 }
@@ -252,7 +235,7 @@ const getBarClass = (score: number, full: number) => {
 .section-title {
   font-size: 16px;
   font-weight: 600;
-  color: #1D2129;
+  color: #1d2129;
   margin: 0 0 16px;
   display: flex;
   align-items: center;
@@ -262,22 +245,23 @@ const getBarClass = (score: number, full: number) => {
 .title-bar {
   width: 3px;
   height: 16px;
-  background: #165DFF;
+  background: #165dff;
   border-radius: 2px;
 }
 
-/* Score Grid */
 .score-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 12px;
 }
 
-.score-card {
+.score-card,
+.feedback-card,
+.expert-card {
   background: white;
-  border-radius: 6px;
-  padding: 16px 20px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  border-radius: 16px;
+  padding: 18px 20px;
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.06);
 }
 
 .score-card-header {
@@ -290,7 +274,7 @@ const getBarClass = (score: number, full: number) => {
 .dim-name {
   font-size: 14px;
   font-weight: 600;
-  color: #1D2129;
+  color: #1d2129;
 }
 
 .dim-score {
@@ -301,143 +285,145 @@ const getBarClass = (score: number, full: number) => {
 .dim-full {
   font-size: 12px;
   font-weight: 400;
-  color: #86909C;
+  color: #86909c;
 }
 
-.score-green { color: #00B42A; }
-.score-orange { color: #FF7D00; }
-.score-red { color: #F53F3F; }
-
 .dim-bar-track {
-  height: 6px;
-  background: #F2F3F5;
-  border-radius: 3px;
+  height: 8px;
+  border-radius: 999px;
+  background: #f2f3f5;
   overflow: hidden;
-  margin-bottom: 10px;
 }
 
 .dim-bar-fill {
   height: 100%;
-  border-radius: 3px;
-  transition: width 1s ease;
+  border-radius: inherit;
 }
-
-.bar-green { background: #00B42A; }
-.bar-orange { background: #FF7D00; }
-.bar-red { background: #F53F3F; }
 
 .dim-reason {
+  margin: 12px 0 0;
   font-size: 13px;
-  color: #86909C;
-  line-height: 1.6;
-  margin: 0;
+  line-height: 1.7;
+  color: #4e5969;
 }
 
-/* Two Column */
 .two-col {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   margin-bottom: 24px;
 }
 
-.feedback-card {
-  background: white;
-  border-radius: 6px;
-  padding: 20px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-.strengths-card { border-top: 3px solid #00B42A; }
-.improvements-card { border-top: 3px solid #FF7D00; }
-
 .feedback-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1D2129;
-  margin: 0 0 14px;
   display: flex;
   align-items: center;
   gap: 8px;
+  margin: 0 0 14px;
+  font-size: 16px;
+  color: #1d2129;
 }
 
 .feedback-list {
   list-style: none;
-  padding: 0;
   margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .feedback-list li {
   display: flex;
+  gap: 10px;
   align-items: flex-start;
-  gap: 8px;
-  padding: 6px 0;
-  font-size: 13px;
-  color: #4E5969;
-  line-height: 1.6;
+  line-height: 1.7;
+  color: #4e5969;
 }
 
 .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  margin-top: 7px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  margin-top: 8px;
   flex-shrink: 0;
 }
 
-.dot-green { background: #00B42A; }
-.dot-orange { background: #FF7D00; }
+.dot-green {
+  background: #00b42a;
+}
 
-/* Expert Card */
+.dot-orange {
+  background: #ff7d00;
+}
+
 .expert-card {
-  background: white;
-  border-radius: 6px;
-  padding: 24px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  position: relative;
+  text-align: center;
 }
 
 .expert-icon {
-  position: absolute;
-  right: 24px;
-  top: 24px;
-  font-size: 40px;
-  color: #F2F3F5;
+  font-size: 28px;
+  color: #165dff;
 }
 
 .expert-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1D2129;
-  margin: 0 0 12px;
+  margin: 10px 0 12px;
+  font-size: 18px;
+  color: #1d2129;
 }
 
 .expert-text {
-  font-size: 14px;
-  color: #4E5969;
-  line-height: 1.8;
   margin: 0;
+  line-height: 1.85;
+  color: #4e5969;
 }
 
-/* Actions */
 .action-bar {
   display: flex;
-  gap: 12px;
-  padding: 24px 0;
+  justify-content: center;
+  gap: 16px;
 }
 
-.btn-secondary {
-  flex: 1;
-  border-radius: 4px !important;
-  border: 1px solid #C9CDD4 !important;
-  color: #4E5969 !important;
-  background: white !important;
-}
-
+.btn-secondary,
 .btn-primary {
-  flex: 1;
-  border-radius: 4px !important;
-  background: #165DFF !important;
-  border: none !important;
+  min-width: 180px;
+  border-radius: 12px;
+}
+
+.score-green {
+  color: #00b42a;
+}
+
+.score-orange {
+  color: #ff7d00;
+}
+
+.score-red {
+  color: #f53f3f;
+}
+
+.bar-green {
+  background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%);
+}
+
+.bar-orange {
+  background: linear-gradient(90deg, #fb923c 0%, #f97316 100%);
+}
+
+.bar-red {
+  background: linear-gradient(90deg, #fb7185 0%, #ef4444 100%);
+}
+
+@media (max-width: 768px) {
+  .evaluation-page {
+    padding: 16px;
+  }
+
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .action-bar {
+    flex-direction: column;
+  }
 }
 </style>

@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --primary-color: #1d3557; /* Deep Blue - Police themed */
+  --primary-hover: #457b9d;
+  --secondary-color: #f1faee;
+  --accent-color: #e63946;
+  --background-color: #f2f3f5;
+  --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: "PingFang SC", "Microsoft YaHei", "Inter", -apple-system, sans-serif;
+  background-color: var(--background-color);
+  color: #2c3e50;
+  -webkit-font-smoothing: antialiased;
+}

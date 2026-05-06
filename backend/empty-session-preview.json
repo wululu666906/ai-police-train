@@ -1,0 +1,42 @@
+{
+  "mode": "dry-run",
+  "min_age_hours": 0,
+  "empty_session_count": 92,
+  "preview": [
+    {
+      "session_id": 2,
+      "user_id": 1,
+      "scene_id": 2,
+      "status": "active",
+      "created_at": "2026-04-21T08:23:38.585347"
+    },
+    {
+      "session_id": 3,
+      "user_id": 1,
+      "scene_id": 1,
+      "status": "active",
+      "created_at": "2026-04-21T08:23:50.554326"
+    },
+    {
+      "session_id": 4,
+      "user_id": 1,
+      "scene_id": 2,
+      "status": "active",
+      "created_at": "2026-04-21T08:23:53.150791"
+    },
+    {
+      "session_id": 5,
+      "user_id": 1,
+      "scene_id": 1,
+      "status": "active",
+      "created_at": "2026-04-21T08:24:03.712812"
+    },
+    {
+      "session_id": 6,
+      "user_id": 1,
+      "scene_id": 2,
+      "status": "active",
+      "created_at": "2026-04-21T08:24:06.367739"
+    }
+  ]
+}

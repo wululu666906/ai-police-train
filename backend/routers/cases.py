@@ -1,40 +1,60 @@
 import json
-from fastapi import APIRouter, Depends, HTTPException, Body
-from sqlalchemy.orm import Session
 from typing import List
 
-import models, schemas, database
+from fastapi import APIRouter, Body, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+import database
+import models
+import schemas
+from services.data_quality_service import build_data_quality_report
+from services.role_resolver import is_role_speakable
+from services.scene_role_service import audit_scene_roles, normalize_scene_roles
 from services.workflow_service import workflow_service
 
 router = APIRouter(prefix="/cases", tags=["Cases"])
 
+
+def _safe_json_loads(value, default):
+    if isinstance(value, (dict, list)):
+        return value
+    if not value:
+        return default
+    try:
+        return json.loads(value)
+    except Exception:
+        return default
+
+
 @router.get("/", response_model=List[schemas.Case])
 def read_cases(skip: int = 0, limit: int = 100, db: Session = Depends(database.get_db)):
-    cases = db.query(models.Case).offset(skip).limit(limit).all()
-    return cases
+    return db.query(models.Case).offset(skip).limit(limit).all()
+
 
 @router.get("/all/roles")
 def read_all_roles(db: Session = Depends(database.get_db)):
-    # 联表查询获取角色及其所属案件名称，用于前端分组展示
-    roles = db.query(
-        models.Role,
-        models.Case.title.label("case_title")
-    ).outerjoin(models.Case, models.Role.case_id == models.Case.id).all()
-    
+    roles = (
+        db.query(models.Role, models.Case.title.label("case_title"))
+        .outerjoin(models.Case, models.Role.case_id == models.Case.id)
+        .all()
+    )
+
     result = []
     for role, case_title in roles:
-        role_dict = {
-            "id": role.id,
-            "name": role.name,
-            "role_type": role.role_type,
-            "personality": role.personality,
-            "speaking_style": role.speaking_style,
-            "init_emotion": role.init_emotion,
-            "init_trust": role.init_trust,
-            "case_title": case_title or "公共角色库"
-        }
-        result.append(role_dict)
+        result.append(
+            {
+                "id": role.id,
+                "name": role.name,
+                "role_type": role.role_type,
+                "personality": role.personality,
+                "speaking_style": role.speaking_style,
+                "init_emotion": role.init_emotion,
+                "init_trust": role.init_trust,
+                "case_title": case_title or "公共角色库",
+            }
+        )
     return result
+
 
 @router.post("/parse")
 def parse_case(payload: dict = Body(...)):
@@ -46,6 +66,7 @@ def parse_case(payload: dict = Body(...)):
         raise HTTPException(status_code=500, detail="AI Parsing failed")
     return result
 
+
 @router.post("/generate-scenes")
 def generate_scenes(payload: dict = Body(...)):
     case_info = payload.get("case_info")
@@ -56,120 +77,218 @@ def generate_scenes(payload: dict = Body(...)):
         raise HTTPException(status_code=500, detail="AI Scene generation failed")
     return result
 
+
+@router.get("/scene-role-audit")
+def get_scene_role_audit(case_id: int | None = None, db: Session = Depends(database.get_db)):
+    return audit_scene_roles(db, case_id=case_id)
+
+
+@router.get("/data-quality-report")
+def get_data_quality_report(db: Session = Depends(database.get_db)):
+    return build_data_quality_report(db)
+
+
+@router.post("/scene-role-repair")
+def repair_scene_roles(payload: dict = Body(default={}), db: Session = Depends(database.get_db)):
+    case_id = payload.get("case_id")
+    repair_result = normalize_scene_roles(db, case_id=case_id)
+    audit_result = audit_scene_roles(db, case_id=case_id)
+    return {
+        **repair_result,
+        "audit": audit_result,
+    }
+
+
 @router.post("/full-create", response_model=schemas.Case)
 def full_create_case(payload: dict = Body(...), db: Session = Depends(database.get_db)):
     case_data = payload.get("case") or {}
     scenes_data = payload.get("scenes") or []
-    
+
     try:
-        # 1. 创建案件
         case_title = case_data.get("title") or case_data.get("case_name") or "未命名案件"
-        
-        # 优先级：顶层 original_content > structured_data 内的 rawText > 默认
-        orig_content = case_data.get("original_content") or case_data.get("rawText") or ""
-        
-        # 优先级：顶层 background > case_background > 默认
-        bg_info = case_data.get("background") or case_data.get("case_background") or "暂无背景描述"
-        
-        # 提取或重组 structured_data
+        original_content = case_data.get("original_content") or case_data.get("rawText") or ""
+        background = case_data.get("background") or case_data.get("case_background") or "暂无案件背景"
+        normalized_case_type = workflow_service.normalize_case_type(
+            text=original_content,
+            ai_case_type=case_data.get("case_type") or ""
+        )
+
         structured_data_to_save = {
             "fact_sheet": case_data.get("fact_sheet", {}),
             "full_narrative": case_data.get("full_narrative", ""),
             "criminal_process": case_data.get("criminal_process", ""),
-            **case_data
+            **case_data,
+            "case_type": normalized_case_type,
         }
 
         db_case = models.Case(
             title=case_title,
-            case_type=case_data.get("case_type") or "未分类",
-            background=bg_info,
-            original_content=orig_content, 
-            structured_data=json.dumps(structured_data_to_save, ensure_ascii=False)
+            case_type=normalized_case_type or "其他",
+            background=background,
+            original_content=original_content,
+            structured_data=json.dumps(structured_data_to_save, ensure_ascii=False),
         )
         db.add(db_case)
-        db.flush() # 获取 ID 但不提交
-        
-        # 2. 创建场景与角色
+        db.flush()
+
         persons_data = case_data.get("persons") or []
         created_roles = {}
-        
-        for p in persons_data:
-            role_name = p.get("name")
-            if not role_name: continue
-            
+
+        for person in persons_data:
+            role_name = person.get("name")
+            if not role_name:
+                continue
+
             db_role = models.Role(
                 case_id=db_case.id,
                 name=role_name,
-                role_type=p.get("role_type") or "配合型",
-                personality=p.get("personality") or "暂无详细性格描述",
-                speaking_style=p.get("speaking_style") or "常规",
-                init_emotion=p.get("init_emotion", 50),
-                init_trust=p.get("init_trust", 30),
-                status=p.get("status") or "正常",
-                hidden_truths=json.dumps(p.get("hidden_truths", []), ensure_ascii=False),
-                knows_facts=json.dumps(p.get("knows_facts", []), ensure_ascii=False),
-                does_not_know=json.dumps(p.get("does_not_know", []), ensure_ascii=False),
-                iq_level=p.get("iq_level", "中等"),
-                eq_level=p.get("eq_level", "中等"),
-                lying_ability=p.get("lying_ability", "一般"),
-                weakness=p.get("weakness", "")
+                role_type=person.get("role_type") or "配合型",
+                personality=person.get("personality") or "暂无详细性格描述",
+                speaking_style=person.get("speaking_style") or "常规",
+                init_emotion=person.get("init_emotion", 50),
+                init_trust=person.get("init_trust", 30),
+                status=person.get("status") or "正常",
+                hidden_truths=json.dumps(person.get("hidden_truths", []), ensure_ascii=False),
+                knows_facts=json.dumps(person.get("knows_facts", []), ensure_ascii=False),
+                does_not_know=json.dumps(person.get("does_not_know", []), ensure_ascii=False),
+                iq_level=person.get("iq_level", "中等"),
+                eq_level=person.get("eq_level", "中等"),
+                lying_ability=person.get("lying_ability", "一般"),
+                weakness=person.get("weakness", ""),
             )
             db.add(db_role)
             db.flush()
             created_roles[role_name] = db_role
-            
-        for sc in scenes_data:
+
+        for scene_data in scenes_data:
             db_scene = models.Scene(
                 case_id=db_case.id,
-                name=sc.get("scene_name") or "未命名场景",
-                description=sc.get("scene_description") or "",
-                difficulty=sc.get("difficulty") or "中等",
-                dispatch_brief=sc.get("dispatch_brief") or "暂无接警信息",
-                first_impression=sc.get("first_impression") or "暂无现场景象描述",
-                stages=json.dumps(sc.get("stages") or [], ensure_ascii=False)
+                name=scene_data.get("scene_name") or "未命名场景",
+                description=scene_data.get("scene_description") or "",
+                difficulty=scene_data.get("difficulty") or "中等",
+                dispatch_brief=scene_data.get("dispatch_brief") or "暂无接警信息",
+                first_impression=scene_data.get("first_impression") or "暂无现场第一印象描述",
+                stages=json.dumps(scene_data.get("stages") or [], ensure_ascii=False),
             )
             db.add(db_scene)
             db.flush()
-            
-            # 角色关联：使用 SceneRole 中间表
+
             primary_assigned = False
-            for role_name in (sc.get("roles") or []):
-                if role_name in created_roles:
-                    r_obj = created_roles[role_name]
-                    # 只有当角色没有被分配为主角色，且状态不是死亡/重伤/昏迷时，才可能被分配为对话主角色
-                    can_speak = r_obj.status not in ["死亡", "重伤", "昏迷"]
-                    
-                    is_primary = False
-                    if not primary_assigned and can_speak:
-                        is_primary = True
-                        primary_assigned = True
-                        
-                    db.add(models.SceneRole(
-                        scene_id=db_scene.id,
-                        role_id=r_obj.id,
-                        is_primary=is_primary
-                    ))
-                    # 兼容保留原有的 scene_id
-                    r_obj.scene_id = db_scene.id
-            
-            # 如果循环完都没有找到能说话的主角色（比如只关联了死者），兜底找本案中第一个活人强制作为主角色关联
+            linked_role_ids = set()
+
+            for role_name in scene_data.get("roles") or []:
+                role = created_roles.get(role_name)
+                if not role or role.id in linked_role_ids:
+                    continue
+
+                linked_role_ids.add(role.id)
+                can_speak = is_role_speakable(role)
+                is_primary = False
+                if not primary_assigned and can_speak:
+                    is_primary = True
+                    primary_assigned = True
+
+                db.add(models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=is_primary))
+                role.scene_id = db_scene.id
+
             if not primary_assigned:
-                for r_obj in created_roles.values():
-                    if r_obj.status not in ["死亡", "重伤", "昏迷"]:
-                        db.add(models.SceneRole(
-                            scene_id=db_scene.id,
-                            role_id=r_obj.id,
-                            is_primary=True
-                        ))
-                        break
-        
+                for role in created_roles.values():
+                    if not is_role_speakable(role):
+                        continue
+                    if role.id in linked_role_ids:
+                        continue
+
+                    db.add(models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=True))
+                    linked_role_ids.add(role.id)
+                    role.scene_id = db_scene.id
+                    primary_assigned = True
+                    break
+
         db.commit()
         db.refresh(db_case)
         return db_case
     except Exception as e:
         db.rollback()
         print(f"Full create failed: {e}")
-        raise HTTPException(status_code=500, detail=f"保存案件由于服务器内部错误失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"保存案件失败: {str(e)}")
+
+
+@router.put("/{case_id}", response_model=schemas.Case)
+def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(database.get_db)):
+    db_case = db.query(models.Case).filter(models.Case.id == case_id).first()
+    if not db_case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    case_data = payload.get("case") or {}
+    scenes_data = payload.get("scenes") or []
+
+    try:
+        if "title" in case_data:
+            db_case.title = case_data.get("title") or db_case.title
+        if "case_type" in case_data:
+            db_case.case_type = workflow_service.normalize_case_type(
+                text=case_data.get("original_content") or db_case.original_content or "",
+                ai_case_type=case_data.get("case_type") or db_case.case_type or ""
+            )
+        if "background" in case_data:
+            db_case.background = case_data.get("background") or ""
+        if "original_content" in case_data:
+            db_case.original_content = case_data.get("original_content") or ""
+
+        structured_data = _safe_json_loads(db_case.structured_data, {})
+        if not isinstance(structured_data, dict):
+            structured_data = {}
+
+        if "title" in case_data:
+            structured_data["case_name"] = db_case.title
+        if "case_type" in case_data:
+            structured_data["case_type"] = db_case.case_type
+        if "background" in case_data:
+            structured_data["case_background"] = db_case.background
+        if "original_content" in case_data:
+            structured_data["rawText"] = db_case.original_content
+
+        incoming_structured_data = _safe_json_loads(case_data.get("structured_data"), None)
+        if isinstance(incoming_structured_data, dict):
+            structured_data.update(incoming_structured_data)
+
+        db_case.structured_data = json.dumps(structured_data, ensure_ascii=False)
+
+        scene_map = {scene.id: scene for scene in db_case.scenes}
+        for scene_data in scenes_data:
+            scene_id = scene_data.get("id")
+            db_scene = scene_map.get(scene_id)
+            if not db_scene:
+                continue
+
+            if "name" in scene_data:
+                db_scene.name = scene_data.get("name") or db_scene.name
+            if "description" in scene_data:
+                db_scene.description = scene_data.get("description") or ""
+            if "difficulty" in scene_data:
+                db_scene.difficulty = scene_data.get("difficulty") or "中等"
+            if "dispatch_brief" in scene_data:
+                db_scene.dispatch_brief = scene_data.get("dispatch_brief") or ""
+            if "first_impression" in scene_data:
+                db_scene.first_impression = scene_data.get("first_impression") or ""
+            if "stages" in scene_data:
+                stages = scene_data.get("stages") or []
+                if isinstance(stages, str):
+                    stages = _safe_json_loads(stages, [])
+                if not isinstance(stages, list):
+                    raise HTTPException(status_code=400, detail=f"Scene {scene_id} stages must be a list")
+                db_scene.stages = json.dumps(stages, ensure_ascii=False)
+
+        db.commit()
+        db.refresh(db_case)
+        return db_case
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Update case failed: {e}")
+        raise HTTPException(status_code=500, detail=f"更新案件失败: {str(e)}")
 
 
 @router.get("/{case_id}", response_model=schemas.Case)
@@ -178,6 +297,7 @@ def read_case(case_id: int, db: Session = Depends(database.get_db)):
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found")
     return case
+
 
 @router.delete("/{case_id}")
 def delete_case(case_id: int, db: Session = Depends(database.get_db)):

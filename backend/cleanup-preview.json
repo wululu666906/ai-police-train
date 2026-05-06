@@ -1,0 +1,12 @@
+{
+  "mode": "dry-run",
+  "stats": {
+    "cases": 0,
+    "scenes": 0,
+    "roles": 0,
+    "messages": 0,
+    "sessions": 0
+  },
+  "change_count": 0,
+  "preview": []
+}

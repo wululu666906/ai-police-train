@@ -22,12 +22,18 @@
       </nav>
       <div class="nav-right">
         <div class="user-info">
-          <van-button size="small" plain type="primary" @click="$router.push('/admin/dashboard')" class="!bg-white/10 !border-white/20 !text-white !rounded-full !px-4 mr-2">
-            切换到管理端
-          </van-button>
           <van-icon name="manager-o" size="18" />
-          <span>学员 001</span>
+          <span>{{ displayName }}</span>
         </div>
+        <van-button
+          size="small"
+          plain
+          icon="revoke"
+          class="logout-btn"
+          @click="logout"
+        >
+          退出登录
+        </van-button>
       </div>
     </header>
 
@@ -43,14 +49,26 @@
 </template>
 
 <script setup lang="ts">
-import { useRoute } from 'vue-router'
+import { computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 const route = useRoute()
+const router = useRouter()
+const displayName = computed(() => localStorage.getItem('username') || '学员')
 
 const navItems = [
   { label: '训练大厅', icon: 'apps-o', path: '/student/hall' },
   { label: '训练历史', icon: 'records-o', path: '/student/history' }
 ]
+
+const logout = () => {
+  localStorage.removeItem('token')
+  localStorage.removeItem('role')
+  localStorage.removeItem('username')
+  localStorage.removeItem('user_id')
+  localStorage.removeItem('last_evaluation')
+  router.push('/login')
+}
 </script>
 
 <style scoped>
@@ -114,12 +132,25 @@ const navItems = [
   background: #165DFF;
 }
 
+.nav-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .nav-right .user-info {
   display: flex;
   align-items: center;
   gap: 8px;
   color: rgba(255, 255, 255, 0.7);
   font-size: 13px;
+}
+
+.logout-btn {
+  border-radius: 999px !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: white !important;
+  background: rgba(255, 255, 255, 0.08) !important;
 }
 
 /* Main Content */

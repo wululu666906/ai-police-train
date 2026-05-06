@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ai_police_backend
+    volumes:
+      # 持久化 SQLite 数据库和 ChromaDB 知识库数据
+      - ./backend/ai_police.db:/app/ai_police.db
+      - ./backend/chroma_db:/app/chroma_db
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000" # 若仅通过前端 nginx 访问，可注释此行
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ai_police_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

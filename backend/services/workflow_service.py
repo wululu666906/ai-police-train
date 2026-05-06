@@ -1,58 +1,193 @@
-import os
 import json
-from openai import OpenAI
+import os
+
 from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv()
 
-# 根据用户额度，使用 DeepSeek-V3 模型 (deepseek-chat)
 client = OpenAI(
     api_key=os.getenv("DEEPSEEK_API_KEY"),
-    base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
 )
 
-# 🎯 一、案件文本自动解析岗位提示词
-PARSE_PROMPT = """
+CASE_TYPE_GROUPS = {
+    "纠纷求助类": [
+        "邻里纠纷",
+        "家庭纠纷",
+        "感情纠纷",
+        "劳资纠纷",
+        "消费纠纷",
+        "噪音扰民",
+        "失踪求助",
+        "自杀干预",
+        "校园警情",
+        "宠物纠纷",
+    ],
+    "治安案件类": [
+        "打架斗殴",
+        "寻衅滋事",
+        "故意伤害",
+        "损毁财物",
+        "醉酒闹事",
+        "赌博",
+        "卖淫嫖娼",
+        "非法侵入住宅",
+    ],
+    "刑事案件类": [
+        "故意杀人",
+        "盗窃",
+        "扒窃",
+        "诈骗",
+        "电信网络诈骗",
+        "入室盗窃",
+        "抢夺抢劫",
+        "敲诈勒索",
+        "涉毒",
+    ],
+    "交通警情类": [
+        "交通事故",
+        "酒驾醉驾",
+        "肇事逃逸",
+    ],
+}
+
+CASE_TYPE_OPTIONS = [item for group in CASE_TYPE_GROUPS.values() for item in group] + ["其他"]
+
+CASE_TYPE_SYNONYMS = {
+    "民间纠纷": "邻里纠纷",
+    "邻里矛盾": "邻里纠纷",
+    "夫妻纠纷": "家庭纠纷",
+    "婚恋纠纷": "感情纠纷",
+    "情感纠纷": "感情纠纷",
+    "工资纠纷": "劳资纠纷",
+    "欠薪纠纷": "劳资纠纷",
+    "消费维权": "消费纠纷",
+    "扰民": "噪音扰民",
+    "斗殴": "打架斗殴",
+    "打架": "打架斗殴",
+    "伤害": "故意伤害",
+    "伤人": "故意伤害",
+    "命案": "故意杀人",
+    "杀人": "故意杀人",
+    "偷窃": "盗窃",
+    "盗窃案": "盗窃",
+    "电诈": "电信网络诈骗",
+    "网络诈骗": "电信网络诈骗",
+    "电信诈骗": "电信网络诈骗",
+    "室内盗窃": "入室盗窃",
+    "入户盗窃": "入室盗窃",
+    "抢劫": "抢夺抢劫",
+    "抢夺": "抢夺抢劫",
+    "勒索": "敲诈勒索",
+    "毁坏财物": "损毁财物",
+    "砸车": "损毁财物",
+    "轻生": "自杀干预",
+    "跳楼": "自杀干预",
+    "醉酒滋事": "醉酒闹事",
+    "车祸": "交通事故",
+    "醉驾": "酒驾醉驾",
+    "酒驾": "酒驾醉驾",
+    "逃逸": "肇事逃逸",
+    "吸毒": "涉毒",
+    "贩毒": "涉毒",
+    "涉黄": "卖淫嫖娼",
+    "强行入室": "非法侵入住宅",
+}
+
+CASE_TYPE_KEYWORDS = [
+    ("电信网络诈骗", ["刷单", "冒充客服", "冒充公检法", "验证码", "转账", "诈骗电话", "被骗", "电信诈骗", "网络诈骗"]),
+    ("入室盗窃", ["入室盗窃", "入户盗窃", "撬门", "翻窗", "家中被盗"]),
+    ("抢夺抢劫", ["抢劫", "抢夺", "持刀抢", "拦路抢", "飞车抢夺"]),
+    ("敲诈勒索", ["敲诈", "勒索", "威胁转账", "要挟"]),
+    ("肇事逃逸", ["肇事逃逸", "撞人后逃逸", "交通逃逸", "逃逸"]),
+    ("故意杀人", ["杀人", "命案", "尸体", "死亡", "被捅死", "致死"]),
+    ("故意伤害", ["持刀伤人", "砍伤", "打伤", "轻伤", "重伤", "受伤"]),
+    ("打架斗殴", ["打架", "斗殴", "互殴", "群殴"]),
+    ("寻衅滋事", ["寻衅滋事", "故意挑衅", "无故滋事", "闹事"]),
+    ("盗窃", ["盗窃", "偷窃", "被偷", "扒窃", "偷手机", "偷电动车"]),
+    ("扒窃", ["扒窃", "扒手"]),
+    ("涉毒", ["吸毒", "贩毒", "毒品", "冰毒", "海洛因", "K粉"]),
+    ("赌博", ["赌博", "赌资", "赌局", "麻将馆赌博"]),
+    ("卖淫嫖娼", ["卖淫", "嫖娼", "招嫖", "色情交易"]),
+    ("酒驾醉驾", ["酒驾", "醉驾", "酒后驾驶"]),
+    ("交通事故", ["交通事故", "追尾", "碰撞", "车祸", "剐蹭"]),
+    ("家庭纠纷", ["家庭纠纷", "夫妻吵架", "家暴", "婆媳矛盾"]),
+    ("感情纠纷", ["感情纠纷", "恋爱纠纷", "分手", "情感矛盾"]),
+    ("邻里纠纷", ["邻里纠纷", "邻居", "楼上楼下", "小区住户争吵"]),
+    ("劳资纠纷", ["劳资纠纷", "欠薪", "讨薪", "工资", "老板拖欠", "工钱", "围堵工地", "讨要工资"]),
+    ("消费纠纷", ["消费纠纷", "退款", "商家", "售后", "商品质量"]),
+    ("噪音扰民", ["扰民", "噪音", "施工噪音", "深夜唱歌", "音响太大"]),
+    ("损毁财物", ["砸车", "砸门", "损坏", "毁坏财物", "打砸"]),
+    ("失踪求助", ["失踪", "走失", "找不到人", "离家出走"]),
+    ("自杀干预", ["轻生", "跳楼", "自杀", "割腕", "站上天台"]),
+    ("醉酒闹事", ["醉酒闹事", "醉汉", "酒后滋事", "喝多了闹事"]),
+    ("非法侵入住宅", ["非法侵入住宅", "强行进入住宅", "私闯民宅"]),
+    ("校园警情", ["校园", "学生打架", "宿舍纠纷", "老师报警"]),
+    ("宠物纠纷", ["宠物", "狗咬人", "遛狗纠纷", "养狗纠纷"]),
+]
+
+PARSE_PROMPT = f"""
 # 你的角色
-你是顶尖的警务案件文本结构化解析专家及逻辑侦查专家，擅长从海量、琐碎、甚至混乱的文字描述中梳理出极其严密的案件逻辑网。
+你是警务案件文本结构化解析专家。你需要把原始案件文本解析成适合训练平台使用的稳定 JSON。
 
-# 核心指令
-1. 无论输入文本多长，你都必须逐字阅读并进行全盘深度分析，绝对禁止因字数原因而罢工、跳过细节或生成简略摘要。
-2. 你的分析必须包含：完整的案发事实档案（包含时间、地点等）、案件发展全过程、以及各方角色的独立知识边界（他知道什么、不知道什么）。
+# 任务要求
+请从输入文本中提取并输出以下信息：
+1. case_name：案件名称
+2. case_type：案件类型。必须优先从以下受控类型中选择最贴近的一项，不要自造类型：
+{json.dumps(CASE_TYPE_OPTIONS, ensure_ascii=False)}
+3. case_background：案件背景。这里必须是案件级别的背景介绍，供学员进入训练前快速了解事件背景，要求简洁、客观、非上帝视角总结。
+4. fact_sheet：客观事实表，尽量包含案发时间、地点、报警时间、关键时间线、人物关系
+5. full_narrative：案件全景叙述
+6. criminal_process：如果涉及违法犯罪，请描述作案或冲突发展过程；如果不适用可写“未明确提及”
+7. main_culprit：主要嫌疑人或主要责任方；如果无法确定可写“未明确”
+8. persons：所有涉及人物，必须区分谁活着、谁死亡、谁重伤、谁昏迷
 
-# 任务目标
-请从输入的案件原始文本中，结构化输出以下核心信息：
-1. 案件名称与类型。
-2. 事实档案 (fact_sheet)：像警务卷宗一样，提取出确切的案发时间、地点、相关人物角色、死因/伤情、作案工具、核心证据、完整时间线、人物关系网。这部分是绝对的客观事实。
-3. 案情全景描述 (full_narrative)与犯罪过程详解 (criminal_process)。
-4. 人物列表 (persons)：列出所有涉及的人物，**非常重要：必须严格区分每个角色的知识边界！**
-   - knows_facts: 这个角色目前确实知道哪些事实（比如：他只看到了结果，不知道过程）。
-   - does_not_know: 这个角色绝对不知道的事情（比如：报警人通常不知道凶手是谁，不知道具体的凶器）。
-   - hidden_truths: 他知道但打算隐瞒的事情。
-   - iq_level/eq_level/lying_ability/weakness: 评估角色的智商、情商、撒谎能力及性格软肋。
-   - init_emotion/init_trust: 评估角色的初始状态（注意：配合型角色信任度应在55左右，隐瞒型在25左右）。
-   
+# 对人物的严格要求
+每个人物都必须包含：
+- name
+- role
+- role_type
+- personality
+- speaking_style
+- init_emotion
+- init_trust
+- status
+- knows_facts
+- does_not_know
+- hidden_truths
+- iq_level
+- eq_level
+- lying_ability
+- weakness
+
+# 关键约束
+1. 严禁把死者、重伤无法交流者、昏迷者当成可正常对话对象。
+2. 严禁把报警人、受害人、嫌疑人身份混淆。
+3. 如果原文没有明确时间、地点、身份，请写“未明确”或空列表，不要脑补。
+4. 必须输出合法 JSON，不要输出解释性文字。
+
 # 输出格式
-必须严格按照JSON格式输出，不要有额外解释：
-{
+{{
   "case_name": "...",
   "case_type": "...",
-  "fact_sheet": {
+  "case_background": "...",
+  "fact_sheet": {{
     "case_time": "...",
     "case_location": "...",
     "report_time": "...",
     "timeline": [
-      {"time": "...", "event": "..."}
+      {{"time": "...", "event": "..."}}
     ],
     "relationships": [
-      {"from": "...", "to": "...", "relation": "..."}
+      {{"from": "...", "to": "...", "relation": "..."}}
     ]
-  },
+  }},
   "full_narrative": "...",
   "criminal_process": "...",
   "main_culprit": "...",
   "persons": [
-    {
+    {{
       "name": "...",
       "role": "...",
       "role_type": "...",
@@ -65,97 +200,167 @@ PARSE_PROMPT = """
       "does_not_know": ["...", "..."],
       "hidden_truths": ["..."],
       "iq_level": "中等",
-      "eq_level": "较高",
+      "eq_level": "中等",
       "lying_ability": "一般",
       "weakness": "..."
-    }
+    }}
   ]
-}
-
-# 约束规则
-- 细节至上：确保所有细节体现在 JSON 中。
-- 严禁脑补事实档案：若文本中确实缺失时间/地点等信息，填"未记录"。
-- 知识边界隔离：报警人绝对不可能拥有上帝视角，必须仔细斟酌每个角色的 `knows_facts` 和 `does_not_know`。
-
-# 🚨 致命错误防范 (CRITICAL WARNING - 必须绝对遵守)
-1. 身份与生死反转防范：你必须极其仔细地阅读原文，确认**谁是死者/受害者，谁是行凶者/嫌疑人，谁是报警人**。绝对不能把死者写成嫌疑人，也绝对不能让死者去报警！
-2. 逻辑自洽：如果某角色在案发后已死亡，其 status 必须是 "死亡"。死人不能作为接警对话的对象。
-3. 名字匹配错误防范：提取姓名时，确保姓名与身份精确对应，严禁将加害者和受害者的名字或性别张冠李戴。
+}}
 """
 
 SCENE_GEN_PROMPT = """
 # 你的角色
-你是警情训练场景设计专家，基于结构化案件生成多阶段训练场景。
+你是警情训练场景设计专家，需要基于案件结构化信息生成可直接用于学员训练的场景。
 
-# 核心任务
-基于提供的结构化案件信息，生成多个训练场景，并为每个场景设计对话推进阶段。
+# 任务目标
+请生成 2-3 个训练场景。每个场景都必须可落地、符合办案流程，并且人物安排必须与案件事实一致。
 
-# 输出要求
-1. 一个案件至少生成1-3个不同训练场景（例如：接警对话、现场询问、后续调查）
-2. 每个场景需要包含：
-    - scene_name: 场景名称
-    - scene_description: 说明训练目标和场景特点
-    - difficulty: 难度等级（简单/中等/困难）
-    - dispatch_brief: 接警简报 (模拟 110 指挥中心下发给一线警员的指令，如："接报，XX小区有人纠纷，请速往处置"，绝不能包含案件真相)
-    - first_impression: 现场第一印象 (客观描述警察到达现场/接通电话时看到、听到的情况，如："现场一片狼藉，地上有碎裂的酒瓶"，绝不能包含上帝视角的结论)
-    - roles: 涉及角色名称列表
-    - stages: 对话阶段列表，每个阶段包含 stage_name 和 stage_goal
+# 每个场景必须输出
+1. scene_name：场景名称
+2. scene_description：训练目标与场景说明
+3. difficulty：简单 / 中等 / 困难
+4. dispatch_brief：接警简报。用于学员进入场景前看到的 110 指令信息，只能写学员此时合理能知道的信息，绝不能暴露真相。
+5. first_impression：现场第一印象。用于学员进入场景后第一眼看到、听到、感受到的客观情况，不能写上帝视角结论。
+6. roles：该场景会出场的人物姓名列表，必须严格使用 persons 里已有的人名
+7. stages：对话推进阶段，数组元素包含 stage_name 和 stage_goal
+
+# 强约束
+1. 已死亡、昏迷、重伤无法交流的人物，不能被安排为问话对象。
+2. 如果案件文本里明确某人已死亡，这个人可以存在于案件里，但只能用于现场勘查、尸体发现、证据核验类场景，不能开口说话。
+3. dispatch_brief 和 first_impression 不能为空。
+4. roles 中不要编造新人物。
+5. 所有输出必须是合法 JSON。
 
 # 输出格式
-严格JSON格式：
 {
   "scenes": [
     {
-      "scene_name": "接警对话",
-      "scene_description": "训练民警接警时的询问能力，如何快速获取关键信息",
+      "scene_name": "...",
+      "scene_description": "...",
       "difficulty": "中等",
-      "dispatch_brief": "接到110指挥中心指令：XX路发生一起群众纠纷，请前往处置。",
-      "first_impression": "你推开门，看到两名男子正在大声争吵，周围有几名围观群众。",
-      "roles": ["报警人"],
+      "dispatch_brief": "...",
+      "first_impression": "...",
+      "roles": ["..."],
       "stages": [
         {
-          "stage_name": "初始接触",
-          "stage_goal": "报警人说明基本情况"
-        },
-        {
-          "stage_name": "信息收集",
-          "stage_goal": "逐步询问关键细节"
+          "stage_name": "...",
+          "stage_goal": "..."
         }
       ]
     }
   ]
 }
-
-# 设计原则
-1. 符合真实办案流程，循序渐进
-2. 难度匹配：简单=配合型，中等=情绪型，困难=对抗型+隐瞒
-3. 每个场景聚焦训练一个具体能力
-4. 角色复用约束：roles 列表必须严格使用在全景分析中提取出的角色姓名，严禁编造新的角色名字。
-5. 无法审讯约束：对于解析结果中 status 为“死亡”、“重伤”或“昏迷”的角色，严禁为其设计任何询问、审讯类场景，应转为现场勘查或调查场景。
 """
 
 
 class WorkflowService:
+    @staticmethod
+    def _safe_json_loads(value, default):
+        if isinstance(value, (dict, list)):
+            return value
+        if not value:
+            return default
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _truncate_text(text: str, size: int = 120) -> str:
+        return (text or "").strip()[:size]
+
+    @staticmethod
+    def _normalize_case_type_name(value: str) -> str:
+        raw = (value or "").strip()
+        if not raw:
+            return ""
+        if raw in CASE_TYPE_OPTIONS:
+            return raw
+        if raw in CASE_TYPE_SYNONYMS:
+            return CASE_TYPE_SYNONYMS[raw]
+        compact = raw.replace("类", "").replace("案件", "").replace("警情", "").strip()
+        if compact in CASE_TYPE_OPTIONS:
+            return compact
+        if compact in CASE_TYPE_SYNONYMS:
+            return CASE_TYPE_SYNONYMS[compact]
+        return ""
+
+    def normalize_case_type(self, text: str = "", ai_case_type: str = "") -> str:
+        direct = self._normalize_case_type_name(ai_case_type)
+        if direct:
+            return direct
+
+        combined = f"{ai_case_type or ''}\n{text or ''}"
+        for case_type, keywords in CASE_TYPE_KEYWORDS:
+            if any(keyword in combined for keyword in keywords):
+                return case_type
+        return "其他"
+
+    @staticmethod
+    def _default_dispatch_brief(case_info: dict, scene_name: str) -> str:
+        case_name = case_info.get("case_name") or "该案件"
+        fact_sheet = case_info.get("fact_sheet") or {}
+        location = fact_sheet.get("case_location") or "相关现场"
+        return f"接警指令：请前往{location}处置与“{case_name}”相关警情，并尽快核实现场情况。"
+
+    @staticmethod
+    def _default_first_impression(scene_name: str, dispatch_brief: str) -> str:
+        if "接警" in scene_name or "报警" in scene_name:
+            return "你接通后，能听到对方语气急促，正在试图说明现场发生的情况。"
+        if dispatch_brief:
+            return "你到场后发现现场气氛紧张，已有相关人员或群众在场，需先稳定秩序并核实情况。"
+        return "你到场后先对现场环境、人员状态和异常迹象进行了初步观察。"
+
     def parse_case_text(self, text: str):
         default_res = {
             "case_name": "解析失败",
             "case_type": "其他",
-            "case_background": text[:100],
+            "case_background": self._truncate_text(text, 120) or "未提取到案件背景",
+            "fact_sheet": {
+                "case_time": "未明确",
+                "case_location": "未明确",
+                "report_time": "未明确",
+                "timeline": [],
+                "relationships": [],
+            },
+            "full_narrative": self._truncate_text(text, 500),
+            "criminal_process": "未明确提及",
+            "main_culprit": "未明确",
             "persons": [],
             "conflict_points": [],
             "key_facts": [],
-            "hidden_info": []
+            "hidden_info": [],
         }
         try:
             response = client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[
                     {"role": "system", "content": PARSE_PROMPT},
-                    {"role": "user", "content": text}
+                    {"role": "user", "content": text},
                 ],
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
             )
-            return json.loads(response.choices[0].message.content)
+            result = self._safe_json_loads(response.choices[0].message.content, default_res)
+            if not isinstance(result, dict):
+                return default_res
+            result.setdefault("case_name", default_res["case_name"])
+            raw_case_type = result.get("case_type") or ""
+            result["ai_case_type_raw"] = raw_case_type
+            result["case_type"] = self.normalize_case_type(text=text, ai_case_type=raw_case_type)
+            result["case_background"] = (
+                result.get("case_background")
+                or result.get("background")
+                or default_res["case_background"]
+            )
+            result.setdefault("fact_sheet", default_res["fact_sheet"])
+            result.setdefault("full_narrative", default_res["full_narrative"])
+            result.setdefault("criminal_process", default_res["criminal_process"])
+            result.setdefault("main_culprit", default_res["main_culprit"])
+            result.setdefault("persons", [])
+            result.setdefault("conflict_points", [])
+            result.setdefault("key_facts", [])
+            result.setdefault("hidden_info", [])
+            return result
         except Exception as e:
             print(f"Error parsing case: {e}")
             return default_res
@@ -167,11 +372,35 @@ class WorkflowService:
                 model="deepseek-chat",
                 messages=[
                     {"role": "system", "content": SCENE_GEN_PROMPT},
-                    {"role": "user", "content": json.dumps(case_info, ensure_ascii=False)}
+                    {"role": "user", "content": json.dumps(case_info, ensure_ascii=False)},
                 ],
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
             )
-            return json.loads(response.choices[0].message.content)
+            result = self._safe_json_loads(response.choices[0].message.content, default_scenes)
+            if not isinstance(result, dict):
+                return default_scenes
+
+            scenes = result.get("scenes") or []
+            normalized_scenes = []
+            for index, scene in enumerate(scenes, start=1):
+                if not isinstance(scene, dict):
+                    continue
+                scene_name = scene.get("scene_name") or f"训练场景{index}"
+                dispatch_brief = (scene.get("dispatch_brief") or "").strip()
+                first_impression = (scene.get("first_impression") or "").strip()
+                normalized_scenes.append(
+                    {
+                        **scene,
+                        "scene_name": scene_name,
+                        "scene_description": scene.get("scene_description") or "围绕案件关键节点开展训练。",
+                        "difficulty": scene.get("difficulty") or "中等",
+                        "dispatch_brief": dispatch_brief or self._default_dispatch_brief(case_info, scene_name),
+                        "first_impression": first_impression or self._default_first_impression(scene_name, dispatch_brief),
+                        "roles": scene.get("roles") or [],
+                        "stages": scene.get("stages") or [],
+                    }
+                )
+            return {"scenes": normalized_scenes}
         except Exception as e:
             print(f"Error generating scenes: {e}")
             return default_scenes
