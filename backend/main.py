@@ -43,10 +43,33 @@ app.include_router(knowledge.router)
 app.include_router(student.router)
 
 
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os
+
+# Serve static assets from the frontend/dist folder
+frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+
+if os.path.exists(os.path.join(frontend_dist, "assets")):
+    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
+    
+    # Optional: serve root icon files if needed (favicon, etc)
+    @app.get("/favicon.svg")
+    def serve_favicon():
+        return FileResponse(os.path.join(frontend_dist, "favicon.svg"))
+        
+    @app.get("/icons.svg")
+    def serve_icons():
+        return FileResponse(os.path.join(frontend_dist, "icons.svg"))
+
 @app.on_event("startup")
 def on_startup():
     ensure_default_users()
 
-@app.get("/")
-def read_root():
-    return {"message": "AI虚拟警情模拟训练平台 - 核心引擎已启动"}
+# Catch-all route to serve the Vue SPA (Single Page Application)
+@app.get("/{catchall:path}")
+def serve_vue_app(catchall: str):
+    index_path = os.path.join(frontend_dist, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "AI虚拟警情模拟训练平台 - 核心引擎已启动 (Frontend not built)"}
