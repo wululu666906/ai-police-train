@@ -3,7 +3,7 @@
     <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
       <div>
         <h1 class="text-2xl font-bold text-gray-800">数据质检</h1>
-        <p class="text-sm text-gray-500 mt-1">扫描案件、场景和角色配置问题，避免错误数据直接进入学员训练。</p>
+        <p class="mt-1 text-sm text-gray-500">扫描案件、场景和角色配置问题，避免错误数据直接进入学员训练。</p>
       </div>
       <div class="flex gap-3">
         <van-button plain type="primary" :loading="loading" @click="fetchReport">
@@ -15,7 +15,7 @@
       </div>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+    <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
       <div class="stat-card">
         <div class="stat-label">案件总数</div>
         <div class="stat-value">{{ summary.case_count }}</div>
@@ -34,7 +34,7 @@
       </div>
     </div>
 
-    <div class="bg-white rounded-[2rem] shadow-sm border border-gray-100 p-6">
+    <div class="rounded-[2rem] border border-gray-100 bg-white p-6 shadow-sm">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div class="flex flex-wrap gap-3">
           <span
@@ -53,27 +53,29 @@
       </div>
     </div>
 
-    <div v-if="loading" class="bg-white rounded-[2rem] shadow-sm border border-gray-100 p-12 flex justify-center">
-      <van-loading color="#1D3557" vertical>正在扫描数据质量...</van-loading>
+    <div v-if="loading" class="rounded-[2rem] border border-gray-100 bg-white p-12 shadow-sm">
+      <div class="flex justify-center">
+        <van-loading color="#1D3557" vertical>正在扫描数据质量...</van-loading>
+      </div>
     </div>
 
-    <div v-else-if="filteredIssues.length === 0" class="bg-white rounded-[2rem] shadow-sm border border-gray-100 p-12 text-center">
+    <div v-else-if="filteredIssues.length === 0" class="rounded-[2rem] border border-gray-100 bg-white p-12 text-center shadow-sm">
       <van-icon name="passed" size="48" color="#00B42A" />
-      <h3 class="text-lg font-bold text-gray-800 mt-4">当前未发现匹配问题</h3>
-      <p class="text-sm text-gray-400 mt-2">如果刚修改过案件配置，可以点击“重新扫描”同步最新结果。</p>
+      <h3 class="mt-4 text-lg font-bold text-gray-800">当前未发现匹配问题</h3>
+      <p class="mt-2 text-sm text-gray-400">如果刚修改过案件配置，可以点击“重新扫描”同步最新结果。</p>
     </div>
 
     <div v-else class="space-y-4">
       <div
         v-for="(issue, index) in filteredIssues"
         :key="`${issue.type}-${issue.case_id}-${issue.scene_id}-${issue.role_id}-${index}`"
-        class="bg-white rounded-[1.5rem] shadow-sm border border-gray-100 p-6"
+        class="rounded-[1.5rem] border border-gray-100 bg-white p-6 shadow-sm"
       >
         <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div class="space-y-3">
-            <div class="flex items-center gap-3 flex-wrap">
+            <div class="flex flex-wrap items-center gap-3">
               <van-tag :color="getSeverityColor(issue.severity)" plain size="medium">{{ getSeverityLabel(issue.severity) }}</van-tag>
-              <span class="text-xs uppercase tracking-widest text-gray-400 font-black">{{ issue.type }}</span>
+              <span class="text-xs font-black uppercase tracking-widest text-gray-400">{{ issue.type }}</span>
             </div>
             <div class="text-lg font-bold text-gray-800">{{ issue.message }}</div>
             <div class="text-sm text-gray-500">建议处理：{{ issue.recommendation }}</div>
@@ -121,19 +123,17 @@ const severityFilters = [
 ]
 
 const filteredIssues = computed(() => {
-  if (selectedSeverity.value === 'all') {
-    return issues.value
-  }
+  if (selectedSeverity.value === 'all') return issues.value
   return issues.value.filter((item: any) => item.severity === selectedSeverity.value)
 })
 
 const fetchReport = async () => {
   loading.value = true
   try {
-    const res: any = await request.get('/cases/data-quality-report')
+    const res: any = await request.get('/cases/data-quality-report', { _skipErrorToast: true } as any)
     issues.value = res.issues || []
     Object.assign(summary, res.summary || {})
-  } catch (error) {
+  } catch {
     showToast('数据质检扫描失败')
   } finally {
     loading.value = false
@@ -166,7 +166,7 @@ onMounted(fetchReport)
 <style scoped>
 .stat-card {
   background: white;
-  border: 1px solid #F2F3F5;
+  border: 1px solid #f2f3f5;
   border-radius: 1.5rem;
   padding: 20px 22px;
   box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);

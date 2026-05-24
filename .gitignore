@@ -6,19 +6,27 @@ env/
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
 
-# Database
+# Database & runtime data
 *.db
 *.sqlite3
 chroma_db/
+data/
+backend/chroma_db/
 
-# Environment variables
+# Secrets — never commit real keys (keep local backend/.env)
 .env
 .env.local
+.env.*.local
+backend/.env
+!backend/.env.example
+!frontend/.env.example
 
 # IDEs
 .vscode/
 .idea/
+.cursor/
 
 # OS files
 .DS_Store
@@ -29,12 +37,31 @@ dist/
 build/
 frontend/dist/
 
-# 数据库备份文件
-*.db.bak*
-*.bak
+# Logs
+*.log
+logs/
+backend/logs/
 
-# Word 文档（如果是设计文档想保留可以不加这行）
-*.docx
+# Archives & release artifacts
+*.zip
+*.tar.gz
+release/
+deploy_*_bundle/
+deploy_*.tar.gz
+deploy_*.zip
+ai_police*.zip
+frontend_dist_sync.tar.gz
 
-# 临时文件
+# Local-only / scratch
+duiyou/
+scripts/_*
+scripts/native_deploy_remote.py
+temp_*
+result.txt
+fileio.json
 ~$*
+*.bak
+*.db.bak*
+
+# Word docs (design drafts)
+*.docx

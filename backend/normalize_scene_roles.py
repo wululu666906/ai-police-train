@@ -17,7 +17,8 @@ def build_alarm_role(db, case_id: int):
     role = models.Role(
         case_id=case_id,
         name="报警人",
-        role_type="配合型",
+        role_type="证人",
+        interaction_style="配合型",
         personality="情绪紧张，愿意配合，但表达可能不完整",
         speaking_style="急促",
         init_emotion=70,
@@ -83,28 +84,37 @@ def main():
             if scene.name and "接警" in scene.name and getattr(primary_role, "name", "") == "报警人":
                 primary_role = build_alarm_role(db, case.id)
 
-            secondary_roles = []
-            seen_role_ids = {getattr(primary_role, "id", None)}
-            for role in case_roles:
-                if role.id in seen_role_ids:
-                    continue
-                if not is_role_speakable(role):
-                    continue
+            from services.role_resolver import _configured_scene_role_names
 
-                person_meta = person_meta_map.get(role.name, {})
-                role_is_named = bool(role.name and role.name in scene_text)
+            configured_names = _configured_scene_role_names(case, scene)
+            roles_by_name = {str(role.name or "").strip(): role for role in case_roles}
+            if configured_names:
+                selected_roles = [roles_by_name[name] for name in configured_names if name in roles_by_name]
+                primary_role = roles_by_name.get(configured_names[0]) or (selected_roles[0] if selected_roles else primary_role)
+                secondary_roles = [role for role in selected_roles if role.id != getattr(primary_role, "id", None)]
+            else:
+                secondary_roles = []
+                seen_role_ids = {getattr(primary_role, "id", None)}
+                for role in case_roles:
+                    if role.id in seen_role_ids:
+                        continue
+                    if not is_role_speakable(role):
+                        continue
 
-                include = False
-                if role_is_named:
-                    include = True
-                elif scene.name and any(keyword in scene.name for keyword in ("现场", "勘查", "调查")) and witness_like(person_meta):
-                    include = True
-                elif scene.name and any(keyword in scene.name for keyword in ("审讯", "讯问", "嫌疑人")) and suspect_like(person_meta):
-                    include = True
+                    person_meta = person_meta_map.get(role.name, {})
+                    role_is_named = bool(role.name and role.name in scene_text)
 
-                if include:
-                    secondary_roles.append(role)
-                    seen_role_ids.add(role.id)
+                    include = False
+                    if role_is_named:
+                        include = True
+                    elif scene.name and any(keyword in scene.name for keyword in ("现场", "勘查", "调查")) and witness_like(person_meta):
+                        include = True
+                    elif scene.name and any(keyword in scene.name for keyword in ("审讯", "讯问", "嫌疑人")) and suspect_like(person_meta):
+                        include = True
+
+                    if include:
+                        secondary_roles.append(role)
+                        seen_role_ids.add(role.id)
 
             db.query(models.SceneRole).filter(models.SceneRole.scene_id == scene.id).delete()
 

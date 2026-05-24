@@ -1,28 +1,24 @@
-version: '3.8'
-
 services:
-  backend:
-    build: 
-      context: ./backend
+  app:
+    build:
+      context: .
       dockerfile: Dockerfile
-    container_name: ai_police_backend
-    volumes:
-      # 持久化 SQLite 数据库和 ChromaDB 知识库数据
-      - ./backend/ai_police.db:/app/ai_police.db
-      - ./backend/chroma_db:/app/chroma_db
+    container_name: ai_police_app
     env_file:
       - ./backend/.env
+    environment:
+      # 与 ./data 挂载一致，避免 SQLite 文件被 Docker 误建为目录
+      DATABASE_URL: sqlite:///data/ai_police.db
+      CHROMA_DB_PATH: data/chroma_db
+      PORT: "8000"
     ports:
-      - "8000:8000" # 若仅通过前端 nginx 访问，可注释此行
+      - "${APP_PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/backend/data
     restart: unless-stopped
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: ai_police_frontend
-    ports:
-      - "80:80"
-    depends_on:
-      - backend
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s

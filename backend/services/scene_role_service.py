@@ -4,7 +4,11 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 import models
-from .role_resolver import is_role_speakable, resolve_scene_role
+from .role_resolver import (
+    _configured_scene_role_names,
+    is_role_speakable,
+    resolve_scene_role,
+)
 
 
 ALARM_ROLE_NAME = "报警人"
@@ -33,7 +37,8 @@ def _build_alarm_role(db: Session, case_id: int) -> models.Role:
     role = models.Role(
         case_id=case_id,
         name=ALARM_ROLE_NAME,
-        role_type="配合型",
+        role_type="证人",
+        interaction_style="配合型",
         personality="情绪紧张，愿意配合，但表达可能不完整",
         speaking_style="急促",
         init_emotion=70,
@@ -148,69 +153,106 @@ def normalize_scene_roles(db: Session, case_id: Optional[int] = None) -> Dict[st
     touched_case_count = 0
 
     for case in cases:
-        person_meta_map = _person_meta_map(case)
         scenes = db.query(models.Scene).filter(models.Scene.case_id == case.id).order_by(models.Scene.id.asc()).all()
         case_roles = db.query(models.Role).filter(models.Role.case_id == case.id).order_by(models.Role.id.asc()).all()
+        roles_by_name = {str(role.name or "").strip(): role for role in case_roles if str(role.name or "").strip()}
         case_changed = False
 
         for scene in scenes:
-            scene_text = " ".join(
-                [str(scene.name or ""), str(scene.description or ""), str(scene.dispatch_brief or ""), str(scene.first_impression or "")]
-            )
-
-            primary_role = resolve_scene_role(db, scene, case)
-            if scene.name and "接警" in scene.name and getattr(primary_role, "name", "") == ALARM_ROLE_NAME:
-                primary_role = _build_alarm_role(db, case.id)
-
-            secondary_roles = []
-            seen_role_ids = {getattr(primary_role, "id", None)}
-
-            for role in case_roles:
-                if role.id in seen_role_ids:
-                    continue
-                if not is_role_speakable(role):
-                    continue
-
-                person_meta = person_meta_map.get(role.name, {})
-                role_is_named = bool(role.name and role.name in scene_text)
-
-                include = False
-                if role_is_named:
-                    include = True
-                elif scene.name and any(keyword in scene.name for keyword in ("现场", "勘查", "调查")) and _witness_like(person_meta):
-                    include = True
-                elif scene.name and any(keyword in scene.name for keyword in ("审讯", "讯问", "嫌疑人")) and _suspect_like(person_meta):
-                    include = True
-
-                if include:
-                    secondary_roles.append(role)
-                    seen_role_ids.add(role.id)
-
+            configured_names = _configured_scene_role_names(case, scene)
             old_links = (
                 db.query(models.SceneRole, models.Role)
                 .join(models.Role, models.Role.id == models.SceneRole.role_id)
                 .filter(models.SceneRole.scene_id == scene.id)
                 .all()
             )
+
+            if old_links and not configured_names:
+                continue
+
+            if configured_names:
+                selected_roles = [roles_by_name[name] for name in configured_names if name in roles_by_name]
+                selected_roles = [role for role in selected_roles if is_role_speakable(role)]
+                if not selected_roles:
+                    continue
+                scene_map = _person_meta_map(case)
+                primary_name = ""
+                try:
+                    structured = json.loads(case.structured_data or "{}")
+                    entry = (structured.get("scene_role_map") or {}).get(str(scene.name or "").strip(), {})
+                    primary_name = str(entry.get("primary_role_name") or "").strip()
+                except Exception:
+                    primary_name = ""
+                if not primary_name or primary_name not in configured_names:
+                    primary_name = configured_names[0]
+                primary_role = roles_by_name.get(primary_name) or selected_roles[0]
+                new_signature = sorted(
+                    (role.name, role.id == primary_role.id) for role in selected_roles
+                )
+            else:
+                person_meta_map = _person_meta_map(case)
+                scene_text = " ".join(
+                    [
+                        str(scene.name or ""),
+                        str(scene.description or ""),
+                        str(scene.dispatch_brief or ""),
+                        str(scene.first_impression or ""),
+                    ]
+                )
+                primary_role = resolve_scene_role(db, scene, case)
+                if scene.name and "接警" in scene.name and getattr(primary_role, "name", "") == ALARM_ROLE_NAME:
+                    primary_role = _build_alarm_role(db, case.id)
+
+                secondary_roles = []
+                seen_role_ids = {getattr(primary_role, "id", None)}
+                for role in case_roles:
+                    if role.id in seen_role_ids:
+                        continue
+                    if not is_role_speakable(role):
+                        continue
+                    person_meta = person_meta_map.get(role.name, {})
+                    role_is_named = bool(role.name and role.name in scene_text)
+                    include = role_is_named
+                    if not include and scene.name and any(
+                        keyword in scene.name for keyword in ("现场", "勘查", "调查")
+                    ):
+                        include = _witness_like(person_meta)
+                    if not include and scene.name and any(
+                        keyword in scene.name for keyword in ("审讯", "讯问", "嫌疑人")
+                    ):
+                        include = _suspect_like(person_meta)
+                    if include:
+                        secondary_roles.append(role)
+                        seen_role_ids.add(role.id)
+
+                selected_roles = []
+                if primary_role and getattr(primary_role, "id", None):
+                    selected_roles.append(primary_role)
+                selected_roles.extend(secondary_roles)
+                if not selected_roles:
+                    continue
+                primary_role = selected_roles[0]
+                new_signature = sorted(
+                    [(primary_role.name, True)]
+                    + [(role.name, False) for role in selected_roles[1:]]
+                )
+
             old_signature = sorted((row[1].name, bool(row[0].is_primary)) for row in old_links)
-            new_signature = []
-            if primary_role and getattr(primary_role, "id", None):
-                new_signature.append((primary_role.name, True))
-            new_signature.extend(sorted((role.name, False) for role in secondary_roles))
+            if old_signature == new_signature:
+                continue
 
-            if old_signature != sorted(new_signature):
-                case_changed = True
-                repaired_scene_count += 1
-
+            case_changed = True
+            repaired_scene_count += 1
             db.query(models.SceneRole).filter(models.SceneRole.scene_id == scene.id).delete()
-
-            if primary_role and getattr(primary_role, "id", None):
-                db.add(models.SceneRole(scene_id=scene.id, role_id=primary_role.id, is_primary=True))
-                if primary_role.name != ALARM_ROLE_NAME:
-                    primary_role.scene_id = scene.id
-
-            for role in secondary_roles:
-                db.add(models.SceneRole(scene_id=scene.id, role_id=role.id, is_primary=False))
+            for role in selected_roles:
+                role.scene_id = scene.id
+                db.add(
+                    models.SceneRole(
+                        scene_id=scene.id,
+                        role_id=role.id,
+                        is_primary=role.id == primary_role.id,
+                    )
+                )
 
         if case_changed:
             touched_case_count += 1

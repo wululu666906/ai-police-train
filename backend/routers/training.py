@@ -7,10 +7,30 @@ import database
 import models
 import schemas
 from routers.auth import get_current_user
-from services.ai_service import generate_dialogue
+from services.ai_service import (
+    _build_available_actions,
+    _build_feedback,
+    _build_persona_hint,
+    _build_recommended_questions,
+    _evaluate_stage_coverage,
+    _get_case_type,
+    _get_stage_config,
+    _get_stage_goal,
+    _infer_truth_stage,
+    _role_state_label,
+    apply_training_action,
+    generate_dialogue,
+)
 from services.evaluation_service import evaluate_session
+from services.persona_engine import build_persona_profile
+from services.recommended_questions_service import (
+    build_recommended_question_items,
+    serialize_message_history,
+)
+from services.multi_role_service import serialize_scene_roles
 from services.role_resolver import resolve_scene_role
 from services.text_repair import repair_payload, repair_text
+from services.training_runtime_service import dump_runtime_state, load_runtime_state
 
 router = APIRouter(prefix="/training", tags=["Training"])
 
@@ -26,6 +46,230 @@ def safe_json_loads(value, default):
         return default
 
 
+def _clamp_score(value, fallback):
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        numeric = fallback
+    return max(0, min(100, numeric))
+
+
+def _default_state_snapshot(role: models.Role | None, case: models.Case | None, scene: models.Scene | None):
+    snapshot = {
+        "cooperation": _clamp_score(getattr(role, "init_trust", 30), 30),
+        "risk": 50,
+        "clarity": 50,
+    }
+    if role is None:
+        return snapshot
+    try:
+        persona_profile = build_persona_profile(role, case, scene)
+    except Exception:
+        persona_profile = {}
+    snapshot["cooperation"] = _clamp_score(persona_profile.get("init_cooperation"), snapshot["cooperation"])
+    snapshot["risk"] = _clamp_score(persona_profile.get("init_risk"), snapshot["risk"])
+    snapshot["clarity"] = _clamp_score(persona_profile.get("init_expression_clarity"), snapshot["clarity"])
+    return snapshot
+
+
+def _resolve_state_snapshot(
+    runtime_state: dict | None,
+    role: models.Role | None,
+    case: models.Case | None,
+    scene: models.Scene | None,
+    *,
+    current_trust: int | None = None,
+):
+    snapshot = _default_state_snapshot(role, case, scene)
+    raw_snapshot = (runtime_state or {}).get("state_snapshot") if isinstance(runtime_state, dict) else {}
+    if isinstance(raw_snapshot, dict):
+        snapshot["cooperation"] = _clamp_score(raw_snapshot.get("cooperation"), snapshot["cooperation"])
+        snapshot["risk"] = _clamp_score(raw_snapshot.get("risk"), snapshot["risk"])
+        snapshot["clarity"] = _clamp_score(raw_snapshot.get("clarity"), snapshot["clarity"])
+    if current_trust is not None:
+        snapshot["cooperation"] = _clamp_score(current_trust, snapshot["cooperation"])
+    return snapshot
+
+
+def _serialize_session_response(
+    session: models.TrainingSession,
+    role: models.Role | None,
+    case: models.Case | None,
+    scene: models.Scene | None,
+):
+    runtime_state = load_runtime_state(session.revealed_info)
+    state_snapshot = _resolve_state_snapshot(
+        runtime_state,
+        role,
+        case,
+        scene,
+        current_trust=session.current_trust,
+    )
+    return schemas.Session(
+        id=session.id,
+        scene_id=session.scene_id,
+        user_id=session.user_id,
+        current_stage=session.current_stage or "",
+        current_emotion=session.current_emotion,
+        current_trust=state_snapshot["cooperation"],
+        current_cooperation=state_snapshot["cooperation"],
+        current_risk=state_snapshot["risk"],
+        current_clarity=state_snapshot["clarity"],
+        revealed_info=session.revealed_info or dump_runtime_state(runtime_state),
+        status=session.status,
+        messages=[],
+    )
+
+
+def get_owned_session(db: Session, session_id: int, user_id: int) -> models.TrainingSession:
+    session = (
+        db.query(models.TrainingSession)
+        .filter(
+            models.TrainingSession.id == session_id,
+            models.TrainingSession.user_id == user_id,
+        )
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found or not accessible")
+    return session
+
+
+def _build_session_guidance(
+    db: Session,
+    session: models.TrainingSession,
+    scene: models.Scene | None,
+    case: models.Case | None,
+    role: models.Role | None,
+    messages: list[models.Message],
+    current_stage_goal: str | None,
+):
+    runtime_state = load_runtime_state(session.revealed_info)
+    state_snapshot = _resolve_state_snapshot(
+        runtime_state,
+        role,
+        case,
+        scene,
+        current_trust=session.current_trust,
+    )
+    revealed_info = [repair_text(str(item)) for item in runtime_state.get("revealed_info", []) if str(item).strip()]
+    case_type = _get_case_type(case)
+    stage_goal = current_stage_goal or ""
+    stage_coverage = _evaluate_stage_coverage(
+        messages,
+        "",
+        revealed_info,
+        None,
+        session.current_stage or "",
+        stage_goal,
+        scene,
+        case_type=case_type,
+    )
+    truth_stage = _infer_truth_stage(state_snapshot["cooperation"], session.current_emotion)
+    last_user_message = next(
+        (repair_text(message.content) for message in reversed(messages) if message.role == "user"),
+        "",
+    )
+    stage_config = _get_stage_config(scene, session.current_stage or "", case_type=case_type)
+    custom_prompts = list(stage_config.get("recommended_prompts") or []) if stage_config else []
+    recommended_question_items = build_recommended_question_items(
+        current_stage=session.current_stage or "",
+        current_stage_goal=stage_goal,
+        case_type=case_type,
+        case_title=case.title if case else "",
+        scene_name=scene.name if scene else "",
+        role_name=role.name if role else "",
+        role_type=role.role_type if role else "",
+        scene_roles=[
+            {"name": item.get("name"), "speakable": item.get("speakable", True), "role_type": item.get("role_type")}
+            for item in serialize_scene_roles(db, scene, case, runtime_state=runtime_state)
+        ]
+        if scene
+        else [],
+        revealed_info=revealed_info,
+        missing_requirements=stage_coverage.get("missing") or [],
+        truth_stage=truth_stage,
+        emotion=session.current_emotion,
+        cooperation=state_snapshot["cooperation"],
+        last_user_message=last_user_message,
+        recent_messages=serialize_message_history(messages),
+        custom_prompts=custom_prompts,
+        use_llm=bool(last_user_message or any(message.role == "assistant" for message in messages)),
+    )
+    recommended_questions = [item["text"] for item in recommended_question_items]
+    communication_feedback = _build_feedback(
+        last_user_message,
+        state_snapshot["cooperation"],
+        session.current_emotion,
+        truth_stage,
+        risk=state_snapshot["risk"],
+        clarity=state_snapshot["clarity"],
+    )
+    if stage_coverage["missing"]:
+        missing_preview = "、".join(stage_coverage["missing"][:3])
+        if last_user_message.strip():
+            communication_feedback["message"] = f"继续补齐这些关键项会更稳：{missing_preview}。"
+        else:
+            communication_feedback["message"] = f"当前阶段建议先补齐：{missing_preview}。"
+        communication_feedback["all_messages"] = list(
+            dict.fromkeys([communication_feedback["message"], *communication_feedback.get("all_messages", [])])
+        )
+        communication_feedback["tags"] = list(dict.fromkeys(["stage_gap", *communication_feedback.get("tags", [])]))
+    elif not last_user_message.strip():
+        bootstrap_message = "训练已恢复，建议先从时间、地点、人物或风险情况打开第一轮问询。"
+        communication_feedback = {
+            "level": "info",
+            "tags": ["session_resume"],
+            "message": bootstrap_message,
+            "all_messages": [bootstrap_message],
+        }
+
+    stage_config = _get_stage_config(scene, session.current_stage or "", case_type=case_type)
+    available_actions = _build_available_actions(
+        stage_config,
+        runtime_state.get("completed_action_ids") or [],
+    )
+
+    return {
+        "stage_completion_requirements": stage_coverage["requirements"],
+        "stage_completion_satisfied": stage_coverage["satisfied"],
+        "stage_completion_missing": stage_coverage["missing"],
+        "recommended_questions": recommended_questions,
+        "recommended_question_items": recommended_question_items,
+        "communication_feedback": communication_feedback,
+        "persona_hint": _build_persona_hint(role),
+        "role_state_label": _role_state_label(
+            state_snapshot["cooperation"],
+            session.current_emotion,
+            state_snapshot["risk"],
+            state_snapshot["clarity"],
+        ),
+        "truth_stage": truth_stage,
+        "available_actions": available_actions,
+        "assessment_progress": runtime_state.get("assessment_progress") or stage_coverage.get("assessment_progress"),
+        "completed_point_ids": runtime_state.get("completed_point_ids") or [],
+        "completed_action_ids": runtime_state.get("completed_action_ids") or [],
+        "auto_finish_ready": bool(runtime_state.get("auto_finish_ready", False)),
+        "closure_summary": runtime_state.get("closure_summary") or {},
+        "state_snapshot": state_snapshot,
+    }
+
+
+def _trigger_auto_evaluation_if_needed(
+    db: Session,
+    session_id: int,
+    user_id: int,
+    result: dict,
+):
+    if result.get("auto_finished"):
+        report = evaluate_session(db, session_id, user_id)
+        if report and "error" not in report:
+            result["evaluation_ready"] = True
+        else:
+            result["evaluation_ready"] = False
+    return result
+
+
 @router.post("/start/{scene_id}", response_model=schemas.Session)
 def start_training(
     scene_id: int,
@@ -35,7 +279,7 @@ def start_training(
     try:
         scene = db.query(models.Scene).filter(models.Scene.id == scene_id).first()
         if not scene:
-            raise HTTPException(status_code=404, detail="未找到该训练场景")
+            raise HTTPException(status_code=404, detail="Training scene not found")
 
         latest_session = (
             db.query(models.TrainingSession)
@@ -46,35 +290,33 @@ def start_training(
             .order_by(models.TrainingSession.created_at.desc())
             .first()
         )
+        case = db.query(models.Case).filter(models.Case.id == scene.case_id).first()
+        role = resolve_scene_role(db, scene, case)
         if latest_session and latest_session.status == "active":
-            return latest_session
-
-        role = resolve_scene_role(db, scene)
-        stages = safe_json_loads(scene.stages, [])
-        first_stage = (
-            stages[0].get("stage_name", "初始接触")
-            if isinstance(stages, list) and stages
-            else "初始接触"
-        )
+            return _serialize_session_response(latest_session, role, case, scene)
+        stage_config = _get_stage_config(scene, "", case_type=_get_case_type(case))
+        initial_runtime_state = load_runtime_state([])
+        initial_state_snapshot = _default_state_snapshot(role, case, scene)
+        initial_runtime_state["state_snapshot"] = initial_state_snapshot
+        first_stage = str(stage_config.get("stage_name") or "初始接触")
 
         new_session = models.TrainingSession(
             user_id=current_user.id,
             scene_id=scene_id,
             current_stage=first_stage,
             current_emotion=role.init_emotion if role else 50,
-            current_trust=role.init_trust if role else 30,
-            revealed_info="[]",
+            current_trust=initial_state_snapshot["cooperation"],
+            revealed_info=dump_runtime_state(initial_runtime_state),
         )
         db.add(new_session)
         db.commit()
         db.refresh(new_session)
-        return new_session
+        return _serialize_session_response(new_session, role, case, scene)
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception as error:
         db.rollback()
-        print(f"Error in start_training: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"训练启动失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to start training: {error}") from error
 
 
 @router.post("/chat/{session_id}")
@@ -84,21 +326,62 @@ def training_chat(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    session = db.query(models.TrainingSession).filter(models.TrainingSession.id == session_id).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if session.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="无权操作该训练会话")
+    session = get_owned_session(db, session_id, current_user.id)
     if session.status != "active":
         raise HTTPException(status_code=400, detail="Training session has already been finished")
     if not message.content or not message.content.strip():
-        raise HTTPException(status_code=400, detail="消息内容不能为空")
+        raise HTTPException(status_code=400, detail="Message content cannot be empty")
 
-    db.add(models.Message(session_id=session_id, role="user", content=message.content.strip()))
-    db.commit()
+    result = generate_dialogue(
+        db,
+        session_id,
+        message.content.strip(),
+        current_user.id,
+        target_role_name=message.target_role_name,
+    )
+    if not result:
+        raise HTTPException(status_code=502, detail="训练环境暂时无法响应，请稍后重试")
+    if result.get("inner_thought") == "ACCESS_DENIED":
+        raise HTTPException(status_code=403, detail="当前账号无权访问这条训练会话")
+    if result.get("inner_thought") == "ERROR":
+        detail = result.get("communication_feedback", {}).get("message") or "训练环境暂时无法响应，请稍后重试"
+        raise HTTPException(status_code=502, detail=detail)
 
-    result = generate_dialogue(db, session_id, message.content.strip())
-    return result
+    return _trigger_auto_evaluation_if_needed(db, session_id, current_user.id, result)
+
+
+@router.post("/action/{session_id}")
+def training_action(
+    session_id: int,
+    payload: schemas.ActionTrigger,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    session = get_owned_session(db, session_id, current_user.id)
+    if session.status != "active":
+        raise HTTPException(status_code=400, detail="Training session has already been finished")
+    if not payload.action_id or not payload.action_id.strip():
+        raise HTTPException(status_code=400, detail="Action id cannot be empty")
+
+    result = apply_training_action(
+        db,
+        session_id,
+        payload.action_id.strip(),
+        payload.note or "",
+        current_user.id,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if result.get("inner_thought") == "ACCESS_DENIED":
+        raise HTTPException(status_code=403, detail="当前账号无权访问这条训练会话")
+    if result.get("inner_thought") == "INVALID_ACTION":
+        detail = result.get("communication_feedback", {}).get("message") or "该动作与当前阶段不匹配"
+        raise HTTPException(status_code=400, detail=detail)
+    if result.get("inner_thought") == "ERROR":
+        detail = result.get("communication_feedback", {}).get("message") or "动作处理失败，请稍后重试"
+        raise HTTPException(status_code=502, detail=detail)
+
+    return _trigger_auto_evaluation_if_needed(db, session_id, current_user.id, result)
 
 
 @router.get("/session/{session_id}", response_model=schemas.SessionDetail)
@@ -107,11 +390,7 @@ def get_session(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    session = db.query(models.TrainingSession).filter(models.TrainingSession.id == session_id).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if session.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="无权查看该训练会话")
+    session = get_owned_session(db, session_id, current_user.id)
 
     scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
     case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
@@ -129,24 +408,23 @@ def get_session(
             session_id=message.session_id,
             role=message.role,
             content=repair_text(message.content),
+            speaker_role_id=getattr(message, "speaker_role_id", None),
+            speaker_name=repair_text(getattr(message, "speaker_name", None)) if getattr(message, "speaker_name", None) else None,
             created_at=message.created_at,
         )
         for message in messages
     ]
 
-    current_goal = None
-    if scene:
-        stages_list = safe_json_loads(scene.stages, [])
-        for stage in stages_list:
-            if stage.get("stage_name") == session.current_stage:
-                current_goal = stage.get("stage_goal")
-                break
-
-    repaired_revealed_info = repair_payload(session.revealed_info)
-    if isinstance(repaired_revealed_info, list):
-        repaired_revealed_info = json.dumps(repaired_revealed_info, ensure_ascii=False)
-    else:
-        repaired_revealed_info = session.revealed_info
+    current_goal = _get_stage_goal(scene, session.current_stage or "", case_type=_get_case_type(case))
+    runtime_state = load_runtime_state(session.revealed_info)
+    state_snapshot = _resolve_state_snapshot(
+        runtime_state,
+        role,
+        case,
+        scene,
+        current_trust=session.current_trust,
+    )
+    repaired_revealed_info = json.dumps(runtime_state.get("revealed_info") or [], ensure_ascii=False)
 
     repaired_evaluation_result = session.evaluation_result
     if repaired_evaluation_result:
@@ -158,6 +436,16 @@ def get_session(
         except Exception:
             repaired_evaluation_result = repair_text(repaired_evaluation_result)
 
+    guidance_payload = _build_session_guidance(
+        db,
+        session=session,
+        scene=scene,
+        case=case,
+        role=role,
+        messages=messages,
+        current_stage_goal=current_goal,
+    )
+
     return schemas.SessionDetail(
         id=session.id,
         scene_id=session.scene_id,
@@ -165,7 +453,10 @@ def get_session(
         current_stage=session.current_stage or "训练中",
         current_stage_goal=current_goal,
         current_emotion=session.current_emotion,
-        current_trust=session.current_trust,
+        current_trust=state_snapshot["cooperation"],
+        current_cooperation=state_snapshot["cooperation"],
+        current_risk=state_snapshot["risk"],
+        current_clarity=state_snapshot["clarity"],
         revealed_info=repaired_revealed_info,
         evaluation_result=repaired_evaluation_result,
         status=session.status,
@@ -173,8 +464,12 @@ def get_session(
         case_type=repair_text(case.case_type) if case else "其他",
         case_background=repair_text(case.background) if case else "暂无背景描述",
         case_original_content=repair_text(case.original_content) if case else "暂无原文信息",
-        role_name=repair_text(role.name) if role else "对话人员",
+        role_name=repair_text(role.name) if role else "对话对象",
         role_status=repair_text(role.status) if role else "正常",
+        scene_roles=[
+            schemas.SceneRoleBrief(**item)
+            for item in serialize_scene_roles(db, scene, case, runtime_state=runtime_state)
+        ],
         scene_name=repair_text(scene.name) if scene else "训练场景",
         difficulty=repair_text(scene.difficulty) if scene else "中等",
         dispatch_brief=repair_text(scene.dispatch_brief) if scene else None,
@@ -184,6 +479,23 @@ def get_session(
             if case and case.structured_data
             else None
         ),
+        stage_completion_requirements=guidance_payload["stage_completion_requirements"],
+        stage_completion_satisfied=guidance_payload["stage_completion_satisfied"],
+        stage_completion_missing=guidance_payload["stage_completion_missing"],
+        recommended_questions=guidance_payload["recommended_questions"],
+        recommended_question_items=[
+            schemas.RecommendedQuestionItem(**item) for item in guidance_payload.get("recommended_question_items") or []
+        ],
+        communication_feedback=guidance_payload["communication_feedback"],
+        persona_hint=guidance_payload["persona_hint"],
+        role_state_label=guidance_payload["role_state_label"],
+        truth_stage=guidance_payload["truth_stage"],
+        available_actions=guidance_payload["available_actions"],
+        assessment_progress=guidance_payload["assessment_progress"],
+        completed_point_ids=guidance_payload["completed_point_ids"],
+        completed_action_ids=guidance_payload["completed_action_ids"],
+        auto_finish_ready=guidance_payload["auto_finish_ready"],
+        closure_summary=guidance_payload["closure_summary"],
         messages=repaired_messages,
     )
 
@@ -194,11 +506,7 @@ def finish_training(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    session = db.query(models.TrainingSession).filter(models.TrainingSession.id == session_id).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if session.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="无权结束该训练会话")
+    get_owned_session(db, session_id, current_user.id)
 
     user_message_count = (
         db.query(models.Message)
@@ -206,10 +514,77 @@ def finish_training(
         .count()
     )
     if user_message_count <= 0:
-        raise HTTPException(status_code=400, detail="至少完成一轮有效对话后再结束训练")
+        raise HTTPException(status_code=400, detail="At least one valid round of dialogue is required before finishing")
 
-    report = evaluate_session(db, session_id)
+    report = evaluate_session(db, session_id, current_user.id)
     if not report:
         raise HTTPException(status_code=404, detail="Session not found")
-
+    if report.get("error"):
+        raise HTTPException(status_code=502, detail=report["error"])
     return report
+
+
+@router.post("/re-evaluate/{session_id}")
+def re_evaluate_training(
+    session_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    session = get_owned_session(db, session_id, current_user.id)
+
+    user_message_count = (
+        db.query(models.Message)
+        .filter(models.Message.session_id == session.id, models.Message.role == "user")
+        .count()
+    )
+    if user_message_count <= 0:
+        raise HTTPException(status_code=400, detail="At least one valid round of dialogue is required before evaluation")
+
+    report = evaluate_session(db, session.id, current_user.id, force_recompute=True)
+    if not report:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if report.get("error"):
+        raise HTTPException(status_code=502, detail=report["error"])
+    return report
+
+
+@router.delete("/session/{session_id}")
+def delete_training_session(
+    session_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    session = get_owned_session(db, session_id, current_user.id)
+
+    db.query(models.Message).filter(models.Message.session_id == session.id).delete(synchronize_session=False)
+    db.delete(session)
+    db.commit()
+
+    return {"message": "训练记录已删除", "session_id": session_id}
+
+
+@router.delete("/sessions/active")
+def delete_active_training_sessions(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    active_sessions = (
+        db.query(models.TrainingSession)
+        .filter(
+            models.TrainingSession.user_id == current_user.id,
+            models.TrainingSession.status == "active",
+        )
+        .all()
+    )
+    session_ids = [session.id for session in active_sessions]
+
+    if session_ids:
+        db.query(models.Message).filter(models.Message.session_id.in_(session_ids)).delete(synchronize_session=False)
+        db.query(models.TrainingSession).filter(models.TrainingSession.id.in_(session_ids)).delete(synchronize_session=False)
+        db.commit()
+
+    return {
+        "message": "进行中的训练记录已删除",
+        "deleted_count": len(session_ids),
+        "session_ids": session_ids,
+    }

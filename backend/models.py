@@ -55,6 +55,7 @@ class Role(Base):
     scene_id = Column(Integer, ForeignKey("scenes.id"), nullable=True)
     name = Column(String(50))
     role_type = Column(String(20))
+    interaction_style = Column(String(20), default="配合型")
     personality = Column(Text)
     speaking_style = Column(String(100))
     init_emotion = Column(Integer, default=50)
@@ -67,6 +68,7 @@ class Role(Base):
     knows_facts = Column(Text, default="[]")
     does_not_know = Column(Text, default="[]")
     hidden_truths = Column(Text, default="[]")
+    persona_meta = Column(Text, default="{}")
 
     case = relationship("Case", back_populates="roles")
     scene = relationship("Scene", back_populates="roles")
@@ -113,6 +115,8 @@ class Message(Base):
     session_id = Column(Integer, ForeignKey("training_sessions.id"))
     role = Column(String(20))
     content = Column(Text)
+    speaker_role_id = Column(Integer, ForeignKey("roles.id"), nullable=True)
+    speaker_name = Column(String(50), nullable=True)
     inner_thought = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 

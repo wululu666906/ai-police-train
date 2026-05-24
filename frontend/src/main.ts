@@ -1,14 +1,12 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import { createRouter, createWebHistory } from 'vue-router'
-import { Button, NavBar, Icon, Toast, ConfigProvider, Field, CellGroup, Form, Cell, Tabbar, TabbarItem, Loading, Circle, Progress, Popup, Dialog, Tag, Step, Steps, Slider, Divider, Image } from 'vant'
+import { Button, NavBar, Icon, Toast, ConfigProvider, Field, CellGroup, Form, Cell, Tabbar, TabbarItem, Loading, Circle, Progress, Popup, Dialog, Tag, Step, Steps, Slider, Divider, Image, Switch } from 'vant'
 
 import 'vant/lib/index.css'
 import './style.css'
 import App from './App.vue'
-
-const getStoredRole = () => localStorage.getItem('role')
-const isLoggedIn = () => Boolean(localStorage.getItem('token'))
+import { clearAuth, getStoredRole, isLoggedIn, resetLoginRedirectState } from './utils/auth'
 
 // 配置路由
 const routes = [
@@ -24,12 +22,11 @@ const routes = [
       { path: 'data-quality', component: () => import('./views/DataQuality.vue') },
       { path: 'knowledge', component: () => import('./views/Knowledge.vue') },
       { path: 'roles', component: () => import('./views/Roles.vue') },
+      { path: 'students', component: () => import('./views/Students.vue') },
       { path: 'profile', component: () => import('./views/Profile.vue') }
     ]
   },
   { path: '/', redirect: () => (getStoredRole() === 'student' ? '/student/hall' : '/admin/dashboard') },
-  { path: '/training/:id', component: () => import('./views/Training.vue'), meta: { requiresAuth: true, roles: ['admin'] } },
-  { path: '/evaluation', component: () => import('./views/EvaluationReport.vue'), meta: { requiresAuth: true, roles: ['admin'] } },
   {
     path: '/student',
     component: () => import('./views/StudentLayout.vue'),
@@ -50,6 +47,10 @@ const router = createRouter({
 })
 
 router.beforeEach((to) => {
+  if (to.path === '/login') {
+    resetLoginRedirectState()
+  }
+
   const token = localStorage.getItem('token')
   const role = getStoredRole()
   const requiredRoles = to.meta.roles as string[] | undefined
@@ -67,10 +68,7 @@ router.beforeEach((to) => {
   }
 
   if (requiredRoles && !role && token) {
-    localStorage.removeItem('token')
-    localStorage.removeItem('role')
-    localStorage.removeItem('username')
-    localStorage.removeItem('user_id')
+    clearAuth()
     return '/login'
   }
 
@@ -85,7 +83,7 @@ app.use(Field).use(CellGroup).use(Form).use(Cell)
 app.use(Tabbar).use(TabbarItem)
 app.use(Loading).use(Circle).use(Progress).use(Popup).use(Dialog)
 app.use(Tag).use(Step).use(Steps).use(Slider)
-app.use(Divider).use(Image).use(Dialog)
+app.use(Divider).use(Image).use(Dialog).use(Switch)
 
 app.use(createPinia())
 app.use(router)

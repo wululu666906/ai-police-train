@@ -42,6 +42,40 @@
         </div>
       </div>
 
+
+      <div v-if="sceneRoles.length" class="panel-section scene-roles-section">
+        <h3 class="panel-title">
+          <van-icon name="friends-o" />
+          现场角色
+        </h3>
+        <p class="scene-role-hint">点击或输入里写出角色名即可指定对象；点名多人会依次发言。仅左侧列出的角色能直接对话。</p>
+        <div class="scene-role-list">
+          <button
+            v-for="role in sceneRoles"
+            :key="role.id"
+            type="button"
+            class="scene-role-chip"
+            :class="{
+              active: targetRoleName === role.name,
+              primary: role.is_primary,
+              'scene-role-chip--active': role.is_active,
+              'scene-role-chip--risk': (role.risk ?? 0) >= 70,
+            }"
+            :disabled="!role.speakable || isLoading"
+            @click="toggleTargetRole(role)"
+          >
+            <span class="scene-role-chip__name">{{ role.name }}</span>
+            <span class="scene-role-chip__meta">
+              {{ role.state_label || role.role_type || '角色' }}
+              <template v-if="role.emotion != null"> · 情绪{{ role.emotion }}</template>
+            </span>
+            <span v-if="role.cooperation != null" class="scene-role-chip__bar">
+              <span class="scene-role-chip__bar-fill" :style="{ width: `${role.cooperation}%` }"></span>
+            </span>
+          </button>
+        </div>
+      </div>
+
       <div class="panel-section">
         <h3 class="panel-title">
           <van-icon name="chart-trending-o" />
@@ -65,6 +99,24 @@
           </div>
           <div class="progress-track">
             <div class="progress-fill trust-fill" :style="{ width: currentState.trust + '%' }"></div>
+          </div>
+        </div>
+        <div class="state-bar">
+          <div class="state-header">
+            <span class="state-label">失控风险</span>
+            <span class="state-num" :style="{ color: currentState.risk > 70 ? '#C2410C' : '#EA580C' }">{{ currentState.risk }}</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill risk-fill" :style="{ width: currentState.risk + '%' }"></div>
+          </div>
+        </div>
+        <div class="state-bar">
+          <div class="state-header">
+            <span class="state-label">表达清晰度</span>
+            <span class="state-num" :style="{ color: currentState.clarity < 40 ? '#7C3AED' : '#0F766E' }">{{ currentState.clarity }}</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill clarity-fill" :style="{ width: currentState.clarity + '%' }"></div>
           </div>
         </div>
       </div>
@@ -92,6 +144,11 @@
     </aside>
 
     <div class="chat-area">
+      <div v-if="routingSummary || addressingWarning" class="scene-session-bar">
+        <span class="scene-session-bar__title">场景会话</span>
+        <span v-if="routingSummary" class="scene-session-bar__hint">{{ routingSummary }}</span>
+        <span v-if="addressingWarning" class="scene-session-bar__warn">{{ addressingWarning }}</span>
+      </div>
       <div ref="chatContainer" class="chat-messages">
         <div v-for="msg in chatHistory" :key="msg.id" class="msg-wrapper">
           <div v-if="msg.role === 'system'" class="msg-system">
@@ -103,7 +160,7 @@
               <van-icon name="contact" size="20" />
             </div>
             <div class="msg-body">
-              <span class="msg-sender">{{ roleInfo.name }}</span>
+              <span class="msg-sender">{{ msg.speakerName || roleInfo.name }}</span>
               <div class="msg-bubble bubble-ai">{{ msg.content }}</div>
             </div>
           </div>
@@ -130,24 +187,39 @@
       </div>
 
       <div class="chat-input-area">
-        <div class="input-wrapper">
-          <textarea
-            v-model="inputMessage"
-            rows="2"
-            class="chat-input"
-            placeholder="请输入执法话术、追问内容或安抚表达..."
-            @keyup.enter.exact.prevent="sendMessage"
-          ></textarea>
+        <div v-if="communicationFeedback.message" class="coach-feedback" :class="`coach-feedback--${communicationFeedback.level || 'info'}`">
+          <span class="coach-feedback__label">问法提示</span>
+          <span class="coach-feedback__text">{{ communicationFeedback.message }}</span>
         </div>
-        <van-button
-          type="primary"
-          class="send-btn"
+        <div v-if="stageMissing.length" class="stage-missing">
+          <span class="stage-missing__label">本阶段待补齐</span>
+          <span v-for="item in stageMissing" :key="item" class="stage-missing__tag">{{ item }}</span>
+        </div>
+        <div v-if="suggestedQuestionItems.length" class="suggested-questions">
+          <div class="suggested-questions__head">
+            <span class="suggested-questions__title">建议追问</span>
+            <span class="suggested-questions__hint">点选填入输入框，将自动对准询问对象</span>
+          </div>
+          <div class="suggested-questions__list">
+            <button
+              v-for="(item, index) in suggestedQuestionItems"
+              :key="`${index}-${item.text}`"
+              type="button"
+              class="suggested-question-chip"
+              :disabled="isLoading"
+              @click="applySuggestedQuestion(item)"
+            >
+              <span class="suggested-question-chip__cat">{{ item.category || '追问' }}</span>
+              <span class="suggested-question-chip__text">{{ item.text }}</span>
+            </button>
+          </div>
+          </div>
+        <TrainingInputBar
+          v-model="inputMessage"
           :loading="isLoading"
-          :disabled="!inputMessage.trim()"
-          @click="sendMessage"
-        >
-          发送
-        </van-button>
+          :disabled="isLoading"
+          @send="sendMessage"
+        />
       </div>
     </div>
 
@@ -216,6 +288,7 @@ import { nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showLoadingToast, showToast } from 'vant'
 import request from '../utils/request'
+import TrainingInputBar from '../components/TrainingInputBar.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -241,12 +314,152 @@ const caseInfo = reactive({
 })
 
 const roleInfo = reactive({ name: '对话对象' })
-const revealedInfo = ref<string[]>([])
-const currentState = ref({ emotion: 50, trust: 30 })
-const chatHistory = ref<any[]>([])
+interface SceneRoleBrief {
+  id: number
+  name: string
+  role_type?: string
+  is_primary?: boolean
+  speakable?: boolean
+  emotion?: number
+  cooperation?: number
+  risk?: number
+  clarity?: number
+  state_label?: string
+  is_active?: boolean
+  is_targeted?: boolean
+}
+const sceneRoles = ref<SceneRoleBrief[]>([])
+const routingSummary = ref('')
+const addressingWarning = ref('')
+const targetRoleName = ref('')
+interface SuggestedQuestionItem {
+  text: string
+  category?: string
+  target_role_name?: string | null
+}
+const suggestedQuestionItems = ref<SuggestedQuestionItem[]>([])
+const communicationFeedback = ref<{ level?: string; message?: string }>({ message: '' })
+const stageMissing = ref<string[]>([])
 
-const buildSystemIntro = (sceneName: string, roleName: string) =>
-  `训练已开始，当前场景：${sceneName || '现场'}，对话对象：${roleName || '未指定角色'}`
+const revealedInfo = ref<string[]>([])
+const currentState = ref({ emotion: 50, trust: 30, risk: 50, clarity: 50 })
+const chatHistory = ref<Array<{ id: number; role: string; content: string; speakerName?: string }>>([])
+
+
+
+const META_QUESTION_PATTERN = /先围绕|把最关键|这一点|训练已恢复|补齐这些关键项/
+
+const normalizeSuggestedItems = (payload: unknown): SuggestedQuestionItem[] => {
+  if (Array.isArray(payload) && payload.length && typeof payload[0] === 'object') {
+    return payload
+      .map((item: any) => ({
+        text: String(item?.text || '').trim(),
+        category: String(item?.category || '追问').trim() || '追问',
+        target_role_name: item?.target_role_name || null,
+      }))
+      .filter((item) => item.text && !META_QUESTION_PATTERN.test(item.text) && item.text.length <= 48)
+      .slice(0, 4)
+  }
+  const list = Array.isArray(payload) ? payload : []
+  return list
+    .map((item) => String(item || '').trim())
+    .filter((item) => item && !META_QUESTION_PATTERN.test(item) && item.length <= 48)
+    .slice(0, 4)
+    .map((text) => ({ text, category: '追问', target_role_name: null }))
+}
+
+const applySuggestedQuestions = (items: unknown, fallbackTexts?: unknown) => {
+  const normalized = normalizeSuggestedItems(items)
+  if (normalized.length) {
+    suggestedQuestionItems.value = normalized
+    return
+  }
+  suggestedQuestionItems.value = normalizeSuggestedItems(fallbackTexts)
+}
+
+const applyGuidancePayload = (res: any) => {
+  applySuggestedQuestions(res?.recommended_question_items, res?.recommended_questions)
+  const feedback = res?.communication_feedback
+  communicationFeedback.value = {
+    level: feedback?.level || 'info',
+    message: feedback?.message || '',
+  }
+  stageMissing.value = Array.isArray(res?.stage_completion_missing)
+    ? res.stage_completion_missing.filter(Boolean)
+    : []
+}
+
+const applySuggestedQuestion = (item: SuggestedQuestionItem | string) => {
+  const payload = typeof item === 'string' ? { text: item } : item
+  const text = String(payload?.text || '').trim()
+  if (!text || isLoading.value) return
+  inputMessage.value = text
+  const roleName = String(payload?.target_role_name || '').trim()
+  if (roleName) {
+    targetRoleName.value = roleName
+    return
+  }
+  const matched = sceneRoles.value.find((role) => text.startsWith(`${role.name}，`))
+  if (matched) targetRoleName.value = matched.name
+}
+
+const toggleTargetRole = (role: SceneRoleBrief) => {
+  if (!role?.speakable) return
+  targetRoleName.value = targetRoleName.value === role.name ? '' : role.name
+}
+
+/** 从输入文案识别在场角色名，同步询问对象（长名优先，避免短名误匹配）。 */
+const syncTargetFromMessage = (msg: string) => {
+  const speakable = sceneRoles.value.filter((role) => role.speakable !== false && role.name)
+  const matched = speakable
+    .filter((role) => msg.includes(role.name))
+    .sort((a, b) => b.name.length - a.name.length)
+  if (matched.length === 1) {
+    targetRoleName.value = matched[0].name
+  } else if (matched.length >= 2) {
+    targetRoleName.value = ''
+  }
+}
+
+const appendAssistantReplies = (res: any, baseId: number) => {
+  const turns = Array.isArray(res?.reply_turns) ? res.reply_turns : []
+  if (turns.length) {
+    turns
+      .filter((item: any) => String(item?.content || '').trim())
+      .forEach((item: any, index: number) => {
+        chatHistory.value.push({
+          id: baseId + index,
+          role: 'assistant',
+          content: String(item.content),
+          speakerName: item.speaker_name || item.speakerName || roleInfo.name,
+        })
+      })
+    return
+  }
+  const sequence =
+    Array.isArray(res?.reply_sequence) && res.reply_sequence.length
+      ? res.reply_sequence
+      : [res?.response].filter(Boolean)
+  sequence
+    .filter((item: string) => String(item || '').trim())
+    .forEach((content: string, index: number) => {
+      chatHistory.value.push({
+        id: baseId + index,
+        role: 'assistant',
+        content,
+        speakerName: roleInfo.name,
+      })
+    })
+}
+
+const buildSystemIntro = (sceneName: string, roleName: string, roles: SceneRoleBrief[] = []) => {
+  const names = roles.filter((r) => r.speakable !== false).map((r) => r.name)
+  const cast =
+    names.length >= 2
+      ? `现场角色：${names.join('、')}`
+      : `对话对象：${roleName || names[0] || '未指定角色'}`
+  return `训练已开始，当前场景：${sceneName || '现场'}，${cast}`
+}
 
 const safeParse = <T>(value: any, fallback: T): T => {
   if (value === null || value === undefined || value === '') return fallback
@@ -274,16 +487,25 @@ const fetchSessionData = async () => {
     caseInfo.roleStatus = res.role_status
     caseInfo.structuredData = safeParse(res.structured_data, null)
     roleInfo.name = res.role_name
+    sceneRoles.value = Array.isArray(res.scene_roles) ? res.scene_roles : []
+    applyGuidancePayload(res)
     currentState.value.emotion = res.current_emotion
     currentState.value.trust = res.current_trust
+    currentState.value.risk = res.current_risk ?? 50
+    currentState.value.clarity = res.current_clarity ?? 50
     revealedInfo.value = safeParse<string[]>(res.revealed_info, [])
 
     chatHistory.value = [
-      { id: 0, role: 'system', content: buildSystemIntro(res.scene_name, res.role_name) },
+      {
+        id: 0,
+        role: 'system',
+        content: buildSystemIntro(res.scene_name, res.role_name, sceneRoles.value),
+      },
       ...(res.messages || []).map((message: any) => ({
         id: message.id,
         role: message.role === 'user' ? 'human' : message.role === 'system' ? 'system' : 'assistant',
-        content: message.content
+        content: message.content,
+        speakerName: message.speaker_name || undefined,
       }))
     ]
     scrollToBottom()
@@ -296,6 +518,7 @@ const sendMessage = async () => {
   if (!inputMessage.value.trim() || isLoading.value) return
 
   const msg = inputMessage.value.trim()
+  syncTargetFromMessage(msg)
   chatHistory.value.push({ id: Date.now(), role: 'human', content: msg })
   inputMessage.value = ''
   isLoading.value = true
@@ -304,17 +527,22 @@ const sendMessage = async () => {
   try {
     const res: any = await request.post(`/training/chat/${sessionId.value}`, {
       role: 'user',
-      content: msg
+      content: msg,
+      target_role_name: targetRoleName.value || undefined,
     })
 
-    if (res?.response) {
-      chatHistory.value.push({
-        id: Date.now() + 1,
-        role: 'assistant',
-        content: res.response
-      })
+    if (res?.response || (Array.isArray(res?.reply_turns) && res.reply_turns.length)) {
+      appendAssistantReplies(res, Date.now() + 1)
+      if (Array.isArray(res.scene_roles) && res.scene_roles.length) {
+        sceneRoles.value = res.scene_roles
+      }
+      routingSummary.value = String(res.routing_summary || '').trim()
+      addressingWarning.value = String(res.addressing_warning || '').trim()
+      applyGuidancePayload(res)
       currentState.value.emotion = res.updated_emotion
       currentState.value.trust = res.updated_trust
+      currentState.value.risk = res.updated_risk ?? currentState.value.risk
+      currentState.value.clarity = res.updated_clarity ?? currentState.value.clarity
 
       if (res.new_fact_revealed && res.new_fact_revealed !== 'null' && !revealedInfo.value.includes(res.new_fact_revealed)) {
         revealedInfo.value.push(res.new_fact_revealed)
@@ -327,10 +555,13 @@ const sendMessage = async () => {
 
       if (res.is_stage_completed) {
         const updatedRes: any = await request.get(`/training/session/${sessionId.value}`)
+        currentState.value.risk = updatedRes.current_risk ?? currentState.value.risk
+        currentState.value.clarity = updatedRes.current_clarity ?? currentState.value.clarity
         if (updatedRes.current_stage !== caseInfo.currentStage) {
           const oldStage = caseInfo.currentStage
           caseInfo.currentStage = updatedRes.current_stage
           caseInfo.currentStageGoal = updatedRes.current_stage_goal
+          applyGuidancePayload(updatedRes)
           chatHistory.value.push({
             id: Date.now() + 3,
             role: 'system',
@@ -378,6 +609,113 @@ onMounted(fetchSessionData)
 </script>
 
 <style scoped>
+.scene-role-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: #86909c;
+  line-height: 1.5;
+}
+
+.scene-role-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scene-role-chip {
+  border: 1px solid #e5e6eb;
+  background: #f7f8fa;
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  text-align: left;
+  min-width: 88px;
+}
+
+.scene-role-chip.primary {
+  border-color: #bedaff;
+}
+
+.scene-role-chip.active {
+  border-color: #165dff;
+  background: #e8f3ff;
+}
+
+.scene-role-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.scene-role-chip__name {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1d2129;
+}
+
+.scene-role-chip__meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #86909c;
+}
+
+.scene-role-chip--active {
+  box-shadow: 0 0 0 1px #ff7d00 inset;
+}
+
+.scene-role-chip--risk {
+  border-color: #f53f3f;
+}
+
+.scene-role-chip__bar {
+  display: block;
+  margin-top: 6px;
+  height: 3px;
+  background: #e5e6eb;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.scene-role-chip__bar-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #165dff, #4080ff);
+  border-radius: 2px;
+}
+
+.scene-session-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: #f2f3f5;
+  border-bottom: 1px solid #e5e6eb;
+  flex-shrink: 0;
+}
+
+.scene-session-bar__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1d2129;
+}
+
+.scene-session-bar__hint {
+  font-size: 11px;
+  color: #86909c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-session-bar__warn {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #b45309;
+}
+
 .training-page {
   display: flex;
   height: calc(100vh - 56px);
@@ -508,6 +846,14 @@ onMounted(fetchSessionData)
   background: linear-gradient(90deg, #60a5fa 0%, #2563eb 100%);
 }
 
+.risk-fill {
+  background: linear-gradient(90deg, #fdba74 0%, #ea580c 100%);
+}
+
+.clarity-fill {
+  background: linear-gradient(90deg, #5eead4 0%, #0f766e 100%);
+}
+
 .fact-count {
   margin-left: auto;
   font-size: 12px;
@@ -628,39 +974,115 @@ onMounted(fetchSessionData)
   border-top-right-radius: 6px;
 }
 
-.chat-input-area {
-  padding: 16px 20px;
-  background: white;
-  border-top: 1px solid #e5e6eb;
+
+
+.coach-feedback {
   display: flex;
-  gap: 12px;
-  align-items: flex-end;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
 }
-
-.input-wrapper {
-  flex: 1;
+.coach-feedback--info { background: #e8f3ff; color: #1d2129; }
+.coach-feedback--good { background: #e8ffea; color: #1d2129; }
+.coach-feedback--warning { background: #fff7e8; color: #1d2129; }
+.coach-feedback__label { font-weight: 700; flex-shrink: 0; }
+.stage-missing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
 }
-
-.chat-input {
-  width: 100%;
-  border: 1px solid #d9dde5;
-  border-radius: 14px;
-  resize: none;
-  padding: 14px 16px;
-  font-size: 14px;
-  outline: none;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+.stage-missing__label { font-size: 11px; color: #86909c; }
+.stage-missing__tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid #e5e6eb;
+  color: #4e5969;
 }
-
-.chat-input:focus {
-  border-color: #165dff;
-  box-shadow: 0 0 0 3px rgba(22, 93, 255, 0.08);
-}
-
-.send-btn {
-  min-width: 92px;
-  height: 44px;
+.suggested-question-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border-radius: 12px;
+  padding: 8px 10px;
+}
+.suggested-question-chip__cat {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: #e8f3ff;
+  color: #165dff;
+}
+.suggested-question-chip__text { flex: 1; min-width: 0; }
+
+.suggested-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.suggested-questions__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.suggested-questions__title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #4e5969;
+}
+
+.suggested-questions__hint {
+  font-size: 11px;
+  color: #86909c;
+}
+
+.suggested-questions__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.suggested-question-chip {
+  max-width: 100%;
+  border: 1px solid #d9e8ff;
+  background: #fff;
+  color: #1d2129;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.suggested-question-chip:hover:not(:disabled) {
+  border-color: #165dff;
+  background: #e8f3ff;
+}
+
+.suggested-question-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-input-area {
+  padding: 12px 16px;
+  background: #f2f3f5;
+  border-top: 1px solid #e5e6eb;
 }
 
 .typing-indicator {

@@ -1,0 +1,80 @@
+{
+  "mode": "dry-run",
+  "database": "C:\\Users\\Auraa\\Desktop\\AI虚拟警情处置模拟训练平台\\backend\\ai_police.db",
+  "orphan_session_count": 104,
+  "placeholder_message_count": 9,
+  "orphan_session_preview": [
+    {
+      "id": 1,
+      "user_id": 1,
+      "scene_id": 1,
+      "status": "active",
+      "created_at": "2026-04-21 08:23:30.591289"
+    },
+    {
+      "id": 2,
+      "user_id": 1,
+      "scene_id": 2,
+      "status": "active",
+      "created_at": "2026-04-21 08:23:38.585347"
+    },
+    {
+      "id": 3,
+      "user_id": 1,
+      "scene_id": 1,
+      "status": "active",
+      "created_at": "2026-04-21 08:23:50.554326"
+    },
+    {
+      "id": 4,
+      "user_id": 1,
+      "scene_id": 2,
+      "status": "active",
+      "created_at": "2026-04-21 08:23:53.150791"
+    },
+    {
+      "id": 5,
+      "user_id": 1,
+      "scene_id": 1,
+      "status": "active",
+      "created_at": "2026-04-21 08:24:03.712812"
+    }
+  ],
+  "placeholder_message_preview": [
+    {
+      "id": 134,
+      "session_id": 121,
+      "role": "user",
+      "content": "??????????????????????",
+      "created_at": "2026-05-06 10:03:40.425149"
+    },
+    {
+      "id": 136,
+      "session_id": 123,
+      "role": "user",
+      "content": "?????????",
+      "created_at": "2026-05-06 10:08:43.705305"
+    },
+    {
+      "id": 142,
+      "session_id": 125,
+      "role": "user",
+      "content": "?????????????????",
+      "created_at": "2026-05-12 14:54:07.472658"
+    },
+    {
+      "id": 150,
+      "session_id": 127,
+      "role": "user",
+      "content": "?????????????????????",
+      "created_at": "2026-05-13 04:58:19.229496"
+    },
+    {
+      "id": 152,
+      "session_id": 127,
+      "role": "user",
+      "content": "??????????????????????????????",
+      "created_at": "2026-05-13 05:11:56.933182"
+    }
+  ]
+}

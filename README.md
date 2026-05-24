@@ -1,63 +1,97 @@
 # AI虚拟警情处置模拟训练平台
-> **基于真实案件数据与垂直大模型的闭环式警务实战训练系统**
----
-## 🌟 项目定位
-本项目是一款专为公安教育训练设计的 AI 虚拟仿真平台。它摒弃了传统的死板填空式训练，通过 **“大模型 + RAG 知识库 + 真实案例”** 的技术链条，构建出一个可对话、有情绪、能演变的虚实结合训练环境。
-核心目标是实现“**学、练、考、评**”的全生命周期数据闭环，帮助基层民警提升接处警规范性与突发情况处置能力。
----
-## ✨ 核心亮点
-*   **🎬 真实案件驱动**：支持执法记录仪视频、审讯报告等原始文档的一键导入，AI 自动结构化解析并生成训练场景。
-*   **🤖 高拟真 AI 对话**：集成 DeepSeek 本地大模型，角色（嫌疑人、报警人、证人）具备情绪波动和多轮对话逻辑，拒绝模板化回复。
-*   **⚖️ 智能执法评估**：基于公安部接处警标准，自动从“语言规范、流程完整、法律依据、控制力”等维度对学员表现进行量化评分。
-*   **🧠 知识增强 (RAG)**：训练过程中内置法律法规及操作规程知识库，AI 教官可实时进行专业指引与纠偏。
-*   **🔌 开放生态插件**：预留 VR/MR 接入、射击姿态识别、战术手语识别等插件接口，支持无限扩展。
----
-## 🏗️ 系统架构
-### 1. 技术架构
-*   **前端应用层**：Vue 3 + Vite + Tailwind CSS + Vant (移动化体验最佳)
-*   **业务后端层**：FastAPI (Python) + SQLAlchemy (异步 ORM) + SQLite/PostgreSQL
-*   **AI 引擎层**：
-    *   **LLM**: DeepSeek-V3 / R1 (支持私有化部署)
-    *   **向量库**: ChromaDB (本地语义检索)
-    *   **语音交互**: 讯飞 ASR/TTS (低延迟语音对讲)
-*   **数据存储层**：MinIO (非结构化文件) + 关系型数据库
-### 2. 核心模块
-*   **学员端**：情景模拟、对讲演练、个人得分图谱、复盘报告。
-*   **教官端**：训练任务配置、实时监考、人工考评辅助。
-*   **案件中心**：证据解析、自动化场景建模工具。
-*   **平台管理**：权限监控、AI 资源调度、知识库运维。
----
-## 🚀 快速开始
-### 1. 后端环境配置 (Backend)
-需 Python 3.10+
+
+基于 `FastAPI + Vue 3 + SQLite/可选外部数据库 + LLM/RAG` 的警情处置训练平台，面向案件导入、场景训练、对话评估和学生训练记录管理。
+
+**面向用户**：警校生、接受岗前/在职培训的基层民警；教官与教务管理员负责内容发布与学员管理。
+
+## 项目文档
+
+完整材料（调研报告、产品说明、技术摘要）见 **[docs/](./docs/)** 目录，主文档为 [docs/01-调研报告.md](./docs/01-调研报告.md)（含需求原因、竞品分析与调研结论）。
+
+## 源码压缩包
+
+生成可交付的源码包（不含 `node_modules`、`venv`、数据库、`.env` 等）：
+
+```bash
+python scripts/package_release.py
+```
+
+输出文件位于 `release/` 目录，解压后请阅读包内 `打包说明.txt`。
+
+## 本地启动
+
+后端：
+
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+venv\Scripts\activate
 pip install -r requirements.txt
-python init_db.py         # 初始化数据库
-python seed_knowledge.py  # 预装法律法规知识库
-python main.py            # 启动 API 服务
+python init_db.py
+uvicorn main:app --host 127.0.0.1 --port 8000
 ```
-### 2. 前端环境配置 (Frontend)
-需 Node.js 18+
+
+前端：
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-访问地址: `http://localhost:5173`
----
-## 📅 开发计划 (Roadmap)
-- [x] **MVP 阶段**：基础架构搭建、DeepSeek 接入、案件文本解析、核心对话逻辑。
-- [ ] **增强阶段**：接入 ASR/TTS 实现全语音交互、自动化评分模型精调。
-- [ ] **平台化阶段**：多租户管理系统、多端适配、Unity / VR 场景集成。
-- [ ] **生态阶段**：公安内网私有化部署、插件化战术动作识别。
----
-## 🛡️ 部署要求
-*   **操作系统**：Windows/Linux (生产环境推荐 Ubuntu)
-*   **私有化建议**：GPU 显存 ≥ 24GB (用于本地运行 DeepSeek 模型)
-*   **网络**：支持公安内网环境私有化部署，无需公网依赖。
----
-> **致开发者**：本项目不仅是一个工具，更是对“AI 赋能实战”的深度探索。欢迎通过提交 Issue 或 Pull Request 加入我们的行列。
-© 2026 AI 警务实验室 | 科技强警，未来已来。
+
+默认访问：
+
+- 前端开发环境：`http://localhost:5173`
+- 后端接口文档：`http://127.0.0.1:8000/docs`
+
+## 数据库路径说明
+
+项目默认使用 SQLite，数据库文件位于：
+
+```text
+backend/ai_police.db
+```
+
+`backend/database.py` 已经固定把相对 SQLite 路径解析到 `backend/` 目录，因此推荐这样配置：
+
+```env
+DATABASE_URL=sqlite:///ai_police.db
+```
+
+不要再把数据库放在项目根目录，否则不同启动方式下容易出现“连到两份不同数据库”的问题。
+
+## 常用维护脚本
+
+- `python backend/cleanup_training_data.py`
+  用于清理和修复历史文本乱码、异常分值和 JSON 字段。
+- `python backend/cleanup_history_artifacts.py`
+  用于预览或清理孤儿训练记录与纯问号占位消息。
+
+示例：
+
+```bash
+python backend/cleanup_history_artifacts.py --report backend/history-artifacts-preview.json
+python backend/cleanup_history_artifacts.py --apply --report backend/history-artifacts-apply.json
+```
+
+## 云部署
+
+当前项目推荐直接使用根目录部署入口：
+
+```bash
+cp backend/.env.example backend/.env
+docker compose up -d --build
+```
+
+部署说明见：
+
+- **[DEPLOY.md](./DEPLOY.md)**（云服务器通用）
+- [DEPLOY_TENCENT_CLOUD.md](./DEPLOY_TENCENT_CLOUD.md)（腾讯云简要）
+
+## 部署提醒
+
+- 生产环境请替换 `JWT_SECRET_KEY`
+- 不要提交真实 `.env`
+- 若改用 PostgreSQL，请显式设置完整 `DATABASE_URL`
+- 若前后端分离部署，再补充 CORS 白名单配置
+- 根目录 `Dockerfile` 和 `docker-compose.yml` 现在是唯一推荐部署入口

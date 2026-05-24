@@ -1,5 +1,9 @@
 import models
 from database import SessionLocal, engine
+from routers.auth import hash_password
+
+DEFAULT_PASSWORD = "123456"
+
 
 def init_db():
     print("Creating database tables...")
@@ -9,8 +13,8 @@ def init_db():
         if db.query(models.User).count() == 0:
             db.add_all(
                 [
-                    models.User(username="admin", hashed_password="123456", role="admin"),
-                    models.User(username="student001", hashed_password="123456", role="student"),
+                    models.User(username="admin", hashed_password=hash_password(DEFAULT_PASSWORD), role="admin"),
+                    models.User(username="student001", hashed_password=hash_password(DEFAULT_PASSWORD), role="student"),
                 ]
             )
             db.commit()

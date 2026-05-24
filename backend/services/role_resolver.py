@@ -121,7 +121,8 @@ def _match_rank(scene_name: str, scene_text: str, role: models.Role, person_meta
 def _build_virtual_role(name: str, personality: str, speaking_style: str = "紧张") -> models.Role:
     return models.Role(
         name=name,
-        role_type="配合型",
+        role_type="相关人员",
+        interaction_style="配合型",
         personality=personality,
         speaking_style=speaking_style,
         init_emotion=65,
@@ -137,65 +138,52 @@ def _build_virtual_role(name: str, personality: str, speaking_style: str = "紧�
     )
 
 
-def resolve_scene_role(
-    db: Session,
-    scene: Optional[models.Scene],
-    case: Optional[models.Case] = None,
-) -> Optional[models.Role]:
-    if not scene:
-        return None
+def _load_scene_role_map(case: Optional[models.Case]) -> Dict[str, dict]:
+    if not case or not case.structured_data:
+        return {}
+    try:
+        structured = json.loads(case.structured_data)
+    except Exception:
+        return {}
+    mapping = structured.get("scene_role_map") if isinstance(structured, dict) else {}
+    return mapping if isinstance(mapping, dict) else {}
 
-    if case is None:
-        case = db.query(models.Case).filter(models.Case.id == scene.case_id).first()
 
-    person_meta_map = _load_person_meta(case)
-    scene_name = _text(scene.name)
-    scene_text = _scene_text(scene)
+def _configured_scene_role_names(case: Optional[models.Case], scene: models.Scene) -> List[str]:
+    entry = _load_scene_role_map(case).get(_text(scene.name), {})
+    if not isinstance(entry, dict):
+        return []
+    names: List[str] = []
+    seen: set[str] = set()
+    for item in entry.get("role_names") or []:
+        name = _text(item)
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
 
-    linked_rows = db.query(models.SceneRole).filter(models.SceneRole.scene_id == scene.id).all()
+
+def _build_link_meta(linked_rows: list[models.SceneRole]) -> Dict[int, Dict[str, bool]]:
     link_meta: Dict[int, Dict[str, bool]] = {}
     for row in linked_rows:
         current = link_meta.setdefault(row.role_id, {"linked": True, "primary": False})
         current["primary"] = current["primary"] or bool(row.is_primary)
+    return link_meta
 
-    candidates: List[models.Role] = []
-    seen_role_ids = set()
 
-    linked_role_ids = list(link_meta.keys())
-    if linked_role_ids:
-        linked_roles = db.query(models.Role).filter(models.Role.id.in_(linked_role_ids)).all()
-        for role in linked_roles:
-            candidates.append(role)
-            seen_role_ids.add(role.id)
+def _sort_scene_roles(
+    roles: List[models.Role],
+    *,
+    scene: models.Scene,
+    case: Optional[models.Case],
+    link_meta: Dict[int, Dict[str, bool]],
+) -> List[models.Role]:
+    person_meta_map = _load_person_meta(case)
+    scene_name = _text(scene.name)
+    scene_text = _scene_text(scene)
 
-    legacy_roles = db.query(models.Role).filter(models.Role.scene_id == scene.id).all()
-    for role in legacy_roles:
-        if role.id not in seen_role_ids:
-            candidates.append(role)
-            seen_role_ids.add(role.id)
-
-    case_roles = db.query(models.Role).filter(models.Role.case_id == scene.case_id).all()
-    for role in case_roles:
-        if role.id not in seen_role_ids:
-            candidates.append(role)
-            seen_role_ids.add(role.id)
-
-    if not candidates:
-        return None
-
-    speakable_candidates = [role for role in candidates if is_role_speakable(role)]
-    if speakable_candidates:
-        candidates = speakable_candidates
-
-    if "接警" in scene_name:
-        witness_candidates = []
-        for role in candidates:
-            person_meta = person_meta_map.get(_text(role.name), {})
-            person_role = _text(person_meta.get("role"))
-            if "报警" in person_role or "报案" in person_role or any(hint in person_role for hint in WITNESS_HINTS):
-                witness_candidates.append(role)
-        if not witness_candidates:
-            return _build_virtual_role("报警人", "情绪紧张，正在向警方描述自己看到或发现的情况")
+    speakable = [role for role in roles if is_role_speakable(role)]
+    candidates = speakable or list(roles)
 
     def sort_key(role: models.Role):
         meta = link_meta.get(role.id, {})
@@ -209,4 +197,128 @@ def resolve_scene_role(
             role.id,
         )
 
-    return sorted(candidates, key=sort_key)[0]
+    return sorted(candidates, key=sort_key)
+
+
+def _resolve_linked_scene_roles(
+    db: Session,
+    scene: models.Scene,
+    case: Optional[models.Case],
+    linked_rows: list[models.SceneRole],
+) -> List[models.Role]:
+    link_meta = _build_link_meta(linked_rows)
+    linked_role_ids = list(link_meta.keys())
+    if not linked_role_ids:
+        return []
+
+    linked_roles = db.query(models.Role).filter(models.Role.id.in_(linked_role_ids)).all()
+    return _sort_scene_roles(linked_roles, scene=scene, case=case, link_meta=link_meta)
+
+
+def _resolve_fallback_scene_roles(
+    db: Session,
+    scene: models.Scene,
+    case: Optional[models.Case],
+) -> List[models.Role]:
+    if case is None:
+        case = db.query(models.Case).filter(models.Case.id == scene.case_id).first()
+
+    configured_names = _configured_scene_role_names(case, scene)
+    case_roles = db.query(models.Role).filter(models.Role.case_id == scene.case_id).all()
+    roles_by_name = {_text(role.name): role for role in case_roles if _text(role.name)}
+
+    if configured_names:
+        selected = [roles_by_name[name] for name in configured_names if name in roles_by_name]
+        selected = [role for role in selected if is_role_speakable(role)]
+        if selected:
+            primary_name = _text(_load_scene_role_map(case).get(_text(scene.name), {}).get("primary_role_name"))
+            link_meta: Dict[int, Dict[str, bool]] = {}
+            for role in selected:
+                link_meta[role.id] = {"linked": True, "primary": _text(role.name) == primary_name}
+            if primary_name and not any(meta.get("primary") for meta in link_meta.values()):
+                link_meta[selected[0].id]["primary"] = True
+            return _sort_scene_roles(selected, scene=scene, case=case, link_meta=link_meta)
+
+    person_meta_map = _load_person_meta(case)
+    scene_name = _text(scene.name)
+    scene_text = _scene_text(scene)
+
+    candidates: List[models.Role] = []
+    seen_role_ids: set[int] = set()
+
+    legacy_roles = db.query(models.Role).filter(models.Role.scene_id == scene.id).all()
+    for role in legacy_roles:
+        if role.id not in seen_role_ids:
+            candidates.append(role)
+            seen_role_ids.add(role.id)
+
+    for role in case_roles:
+        if role.id in seen_role_ids:
+            continue
+        if not is_role_speakable(role):
+            continue
+        person_meta = person_meta_map.get(_text(role.name), {})
+        role_is_named = bool(role.name and role.name in scene_text)
+        include = role_is_named
+        if not include and any(keyword in scene_name for keyword in ("现场", "勘查", "调查")):
+            person_role = _text(person_meta.get("role"))
+            include = any(hint in person_role for hint in WITNESS_HINTS)
+        if not include and any(keyword in scene_name for keyword in ("审讯", "讯问", "嫌疑人")):
+            person_role = _text(person_meta.get("role"))
+            person_role_type = _text(person_meta.get("role_type"))
+            include = any(hint in person_role for hint in SUSPECT_HINTS) or any(
+                hint in person_role_type for hint in SUSPECT_HINTS
+            )
+        if include:
+            candidates.append(role)
+            seen_role_ids.add(role.id)
+
+    if not candidates and case_roles:
+        speakable = [role for role in case_roles if is_role_speakable(role)]
+        candidates = speakable[:1] if speakable else case_roles[:1]
+
+    return _sort_scene_roles(candidates, scene=scene, case=case, link_meta={})
+
+
+def resolve_scene_role(
+    db: Session,
+    scene: Optional[models.Scene],
+    case: Optional[models.Case] = None,
+) -> Optional[models.Role]:
+    roles = resolve_scene_roles(db, scene, case)
+    if roles:
+        return roles[0]
+
+    if not scene:
+        return None
+
+    if case is None:
+        case = db.query(models.Case).filter(models.Case.id == scene.case_id).first()
+
+    scene_name = _text(scene.name)
+    if "接警" in scene_name:
+        return _build_virtual_role("报警人", "情绪紧张，正在向警方描述自己看到或发现的情况")
+    return None
+
+
+def resolve_scene_roles(
+    db: Session,
+    scene: Optional[models.Scene],
+    case: Optional[models.Case] = None,
+) -> List[models.Role]:
+    if not scene:
+        return []
+
+    if case is None:
+        case = db.query(models.Case).filter(models.Case.id == scene.case_id).first()
+
+    linked_rows = db.query(models.SceneRole).filter(models.SceneRole.scene_id == scene.id).all()
+    if linked_rows:
+        return _resolve_linked_scene_roles(db, scene, case, linked_rows)
+
+    return _resolve_fallback_scene_roles(db, scene, case)
+
+
+def get_primary_scene_role(db: Session, scene: Optional[models.Scene], case: Optional[models.Case] = None) -> Optional[models.Role]:
+    roles = resolve_scene_roles(db, scene, case)
+    return roles[0] if roles else resolve_scene_role(db, scene, case)
