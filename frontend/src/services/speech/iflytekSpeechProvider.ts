@@ -1,6 +1,7 @@
 import { IFlytekPcmRecorder } from '../../utils/iflytekPcmRecorder'
-import { IFlytekResultAccumulator, type IFlytekMessage } from '../../utils/iflytekResultParser'
+import { IFlytekResultAccumulator, parseIFlytekResultText, type IFlytekMessage } from '../../utils/iflytekResultParser'
 import { fetchIFlytekStatus, fetchIFlytekWsUrl } from './iflytekAuth'
+import { speechConfig } from '../../config/speech'
 import type {
   SpeechRecognitionCallbacks,
   SpeechRecognitionProvider,
@@ -19,6 +20,15 @@ export class IFlytekSpeechProvider implements SpeechRecognitionProvider {
   private started = false
   private readonly resultAccumulator = new IFlytekResultAccumulator()
   private autoStopTimer: ReturnType<typeof setTimeout> | null = null
+  private sessionId = ''
+
+  private logDebug(stage: string, detail: Record<string, unknown>) {
+    if (!speechConfig.iflytekDebug) return
+    const payload = speechConfig.iflytekDebugVerbose
+      ? { ...detail, sessionId: this.sessionId || 'n/a', ts: Date.now() }
+      : detail
+    console.debug(`[iflytek-debug] ${stage}`, payload)
+  }
 
   isSupported() {
     return typeof window !== 'undefined' && Boolean(window.WebSocket && navigator.mediaDevices?.getUserMedia)
@@ -29,7 +39,6 @@ export class IFlytekSpeechProvider implements SpeechRecognitionProvider {
   }
 
   private async ensureConfigured() {
-    if (cachedConfigured !== null) return cachedConfigured
     try {
       const status = await fetchIFlytekStatus()
       this.appId = status.app_id || ''
@@ -50,6 +59,7 @@ export class IFlytekSpeechProvider implements SpeechRecognitionProvider {
           domain: 'iat',
           accent: 'mandarin',
           vad_eos: 2000,
+          dwa: 'wpgs',
         },
         data: {
           status: 0,
@@ -83,19 +93,42 @@ export class IFlytekSpeechProvider implements SpeechRecognitionProvider {
     }
 
     if (payload.code !== 0) {
+      this.logDebug('error', {
+        code: payload.code,
+        message: payload.message || '',
+      })
       this.callbacks?.onError?.(payload.message || `科大讯飞听写失败（${payload.code}）`)
       this.setStatus('error')
       this.abort()
       return
     }
 
+    this.logDebug('raw-result', {
+      status: payload.data?.status,
+      sid: (payload as any).sid || '',
+      sn: payload.data?.result?.sn,
+      pgs: payload.data?.result?.pgs,
+      rg: payload.data?.result?.rg,
+      ls: payload.data?.result?.ls,
+      piece: parseIFlytekResultText(payload.data?.result),
+    })
+
     const { display, sentenceEnd, finalSentence, ignoreInterim } = this.resultAccumulator.feed(
       payload.data?.result
     )
+    this.logDebug('accumulated', {
+      sentenceEnd,
+      finalSentence,
+      ignoreInterim,
+      display,
+      snapshot: this.resultAccumulator.getDebugSnapshot(),
+    })
     const streamEnded = payload.data?.status === 2
 
-    if (sentenceEnd && finalSentence) {
-      this.callbacks?.onFinal?.(finalSentence)
+    if (sentenceEnd) {
+      if (finalSentence) {
+        this.callbacks?.onFinal?.(finalSentence)
+      }
       const fullDisplay = this.resultAccumulator.getDisplay()
       if (fullDisplay) {
         this.callbacks?.onInterim?.(fullDisplay)
@@ -146,7 +179,7 @@ export class IFlytekSpeechProvider implements SpeechRecognitionProvider {
     }
   }
 
-  async start(_options: SpeechRecognitionStartOptions, callbacks: SpeechRecognitionCallbacks) {
+  async start(options: SpeechRecognitionStartOptions, callbacks: SpeechRecognitionCallbacks) {
     this.callbacks = callbacks
 
     const configured = await this.ensureConfigured()
@@ -160,6 +193,8 @@ export class IFlytekSpeechProvider implements SpeechRecognitionProvider {
 
     try {
       const { url } = await fetchIFlytekWsUrl()
+      this.sessionId = Math.random().toString(36).slice(2, 10)
+      this.logDebug('ws-url-ready', { hasUrl: Boolean(url) })
       this.ws = new WebSocket(url)
     } catch (error: any) {
       const detail = error?.response?.data?.detail || error?.message || '无法获取听写鉴权地址'
@@ -176,10 +211,15 @@ export class IFlytekSpeechProvider implements SpeechRecognitionProvider {
 
     this.ws.onopen = async () => {
       try {
-        await this.recorder?.start((audio, status) => {
-          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
-          this.ws.send(JSON.stringify(this.buildPayload(audio, status)))
-        })
+        await this.recorder?.start(
+          (audio, status) => {
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+            this.ws.send(JSON.stringify(this.buildPayload(audio, status)))
+          },
+          options.mediaStream,
+          this.callbacks?.onAudioLevel,
+          (snapshot) => this.logDebug('recorder', snapshot)
+        )
       } catch (error: any) {
         callbacks.onError?.(error?.message || '无法访问麦克风')
         this.setStatus('error')
@@ -219,6 +259,7 @@ export class IFlytekSpeechProvider implements SpeechRecognitionProvider {
       }
       this.ws = null
       this.callbacks = null
+      this.sessionId = ''
       this.setStatus('idle')
     }, 400)
   }
@@ -237,6 +278,7 @@ export class IFlytekSpeechProvider implements SpeechRecognitionProvider {
     }
     this.ws = null
     this.callbacks = null
+    this.sessionId = ''
     this.setStatus('idle')
   }
 }

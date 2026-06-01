@@ -17,9 +17,9 @@ class RoleBase(BaseModel):
     eq_level: Optional[str] = "中等"
     lying_ability: Optional[str] = "一般"
     weakness: Optional[str] = None
-    knows_facts: Optional[str] = "[]"
-    does_not_know: Optional[str] = "[]"
-    hidden_truths: Optional[str] = "[]"
+    knows_facts: Optional[List[str] | str] = "[]"
+    does_not_know: Optional[List[str] | str] = "[]"
+    hidden_truths: Optional[List[str] | str] = "[]"
 
 
 class RoleCreate(RoleBase):

@@ -388,12 +388,14 @@ def _build_stage_template(case_type: str, scene_name: str, stage_name: str, stag
 def _normalize_assessment_point(point: dict[str, Any], stage_key: str, index: int) -> dict[str, Any]:
     label = str(point.get("label") or f"考察点{index}").strip()
     point_id = str(point.get("id") or _slugify(label, "ap", f"{stage_key}_{index}")).strip()
+    content = str(point.get("content") or point.get("requirement") or "").strip()
     keywords = _dedupe_strings(point.get("keywords") or [label])
     if not keywords:
         keywords = [label]
     return {
         "id": point_id,
         "label": label,
+        "content": content,
         "category": str(point.get("category") or "procedure").strip() or "procedure",
         "required": bool(point.get("required", True)),
         "weight": max(1, int(point.get("weight", 10) or 10)),

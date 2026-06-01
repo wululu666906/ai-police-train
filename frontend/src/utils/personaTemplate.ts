@@ -168,6 +168,46 @@ export const sceneBehaviorModeOptions = [
   },
 ] as const
 
+export const PERSON_CANONICAL_FIELDS = [
+  'behavior_archetype',
+  'police_attitude',
+  'scene_behavior_mode',
+  'current_goal',
+  'core_concern',
+  'relationship_pressure',
+  'surface_stance',
+  'pressure_response',
+  'trigger_points',
+  'calming_points',
+  'emotion_level',
+  'cooperation_level',
+  'risk_level',
+  'clarity_level',
+  'known_key_points',
+  'withheld_key_points',
+  'conflict_core',
+  'acceptable_outcomes',
+  'no_go_topics',
+  'trigger_sources',
+  'concerned_targets',
+  'taboo_actions',
+  'escalation_actions',
+  'deescalation_conditions',
+  'impairment_state',
+] as const
+
+export const PERSON_ALIAS_TO_CANONICAL: Record<string, string> = {
+  authority_attitude: 'police_attitude',
+  current_need: 'current_goal',
+  private_drive: 'current_goal',
+  weakness: 'core_concern',
+  stress_response: 'pressure_response',
+  public_mask: 'surface_stance',
+  trigger_topics: 'trigger_points',
+  knows_facts: 'known_key_points',
+  hidden_truths: 'withheld_key_points',
+}
+
 export const sceneBoundaryFieldMap = {
   核查取证型: [
     {

@@ -11,6 +11,10 @@ import models
 import schemas
 from routers.auth import require_admin_user
 from services.data_quality_service import build_data_quality_report
+from services.case_schema_service import (
+    canonicalize_person_payload,
+    migrate_structured_data_payload,
+)
 from services.document_extract_service import document_extract_service
 from services.role_resolver import is_role_speakable
 from services.scene_role_service import audit_scene_roles, normalize_scene_roles
@@ -119,7 +123,7 @@ def _extract_person_meta(payload: dict | None, base_meta: dict | None = None):
         except (TypeError, ValueError):
             return None
 
-    return {
+    result = {
         "behavior_archetype": _text_field("behavior_archetype"),
         "police_attitude": _text_field("police_attitude"),
         "scene_behavior_mode": _text_field("scene_behavior_mode"),
@@ -160,6 +164,8 @@ def _extract_person_meta(payload: dict | None, base_meta: dict | None = None):
         "public_mask": _text_field("public_mask"),
         "private_drive": _text_field("private_drive"),
     }
+    canonical_result, _ = canonicalize_person_payload(result)
+    return canonical_result
 
 
 def _get_case_person_meta(case: models.Case | None, role_name: str):
@@ -238,7 +244,8 @@ def _sync_case_person(case: models.Case, role: models.Role, old_name: str | None
         persons = []
 
     new_person_payload = _role_to_person_payload(role)
-    new_person_payload.update(extra_meta or {})
+    canonical_meta, _ = canonicalize_person_payload(extra_meta or {})
+    new_person_payload.update(canonical_meta)
     replaced = False
     for index, person in enumerate(persons):
         person_name = str((person or {}).get("name") or "").strip()
@@ -251,6 +258,7 @@ def _sync_case_person(case: models.Case, role: models.Role, old_name: str | None
         persons.append(new_person_payload)
 
     structured["persons"] = persons
+    structured, _ = migrate_structured_data_payload(structured)
     case.structured_data = json.dumps(structured, ensure_ascii=False)
 
 
@@ -776,10 +784,10 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
             "evidence_points": case_data.get("evidence_points", []),
             "inconsistencies": case_data.get("inconsistencies", []),
             "parse_warnings": case_data.get("parse_warnings", []),
-            "scene_role_map": _build_scene_role_map(scenes_data),
             **case_data,
             "case_type": normalized_case_type,
         }
+        structured_data_to_save, _ = migrate_structured_data_payload(structured_data_to_save)
 
         db_case = models.Case(
             title=case_title,
@@ -926,6 +934,7 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
         if isinstance(incoming_structured_data, dict):
             structured_data.update(incoming_structured_data)
 
+        structured_data, _ = migrate_structured_data_payload(structured_data)
         db_case.structured_data = json.dumps(structured_data, ensure_ascii=False)
         _upsert_case_roles_from_structured_persons(db, db_case)
 
@@ -985,7 +994,7 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
                     for role in selected_roles:
                         db.add(models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=role.id == primary_role.id))
 
-        structured_data["scene_role_map"] = _build_scene_role_map(scenes_data)
+        structured_data, _ = migrate_structured_data_payload(structured_data)
         db_case.structured_data = json.dumps(structured_data, ensure_ascii=False)
         db.commit()
         db.refresh(db_case)

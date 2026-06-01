@@ -253,6 +253,14 @@ const getSessionId = () => {
   return sessionId
 }
 
+const normalizeReportPayload = (payload: any) => {
+  if (!payload) return null
+  if (payload.evaluation_result !== undefined) {
+    return safeParse(payload.evaluation_result, null)
+  }
+  return safeParse(payload, null)
+}
+
 const fetchEvaluation = async () => {
   const sessionId = getSessionId()
   if (!sessionId) {
@@ -274,7 +282,7 @@ const fetchEvaluation = async () => {
       }
       return
     }
-    report.value = safeParse(res.evaluation_result, null)
+    report.value = normalizeReportPayload(res)
     if (!report.value) {
       showToast('评估报告解析失败')
       setEmptyState('评估报告解析失败', '当前报告内容格式异常，暂时无法正常展示。你可以在训练历史里尝试重新评估。')
@@ -293,8 +301,13 @@ const refreshEvaluation = async () => {
   refreshing.value = true
   try {
     const res: any = await request.post(`/training/re-evaluate/${sessionId}`, null, { _skipErrorToast: true } as any)
-    report.value = res || report.value
-    showToast({ type: 'success', message: '评估报告已更新' })
+    const nextReport = normalizeReportPayload(res)
+    if (nextReport) {
+      report.value = nextReport
+      showToast({ type: 'success', message: '评估报告已更新' })
+    } else {
+      showToast('评估报告更新成功，但结果格式异常')
+    }
   } catch (error: any) {
     const errorMsg = error?.response?.data?.detail || '重新评估失败'
     showToast(errorMsg)
@@ -341,7 +354,15 @@ const getBarClass = (score: number, full: number) => {
   return 'bar-red'
 }
 
-onMounted(fetchEvaluation)
+onMounted(async () => {
+  await fetchEvaluation()
+  if (route.query.refresh === '1') {
+    await refreshEvaluation()
+    const nextQuery = { ...route.query }
+    delete nextQuery.refresh
+    router.replace({ query: nextQuery })
+  }
+})
 </script>
 
 <style scoped>

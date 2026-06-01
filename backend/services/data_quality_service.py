@@ -1,3 +1,4 @@
+import json
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -5,7 +6,17 @@ from sqlalchemy.orm import Session
 import models
 from services.role_resolver import is_role_speakable, resolve_scene_role
 from services.scene_role_service import audit_scene_roles
+from services.case_schema_service import PERSON_ALIAS_TO_CANONICAL, SCHEMA_VERSION
 from services.text_repair import repair_text
+
+
+def _as_text_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    return []
 
 
 def _push_issue(
@@ -47,10 +58,66 @@ def build_data_quality_report(db: Session) -> Dict[str, Any]:
     issue_case_ids = set()
     issue_scene_ids = set()
     issue_role_ids = set()
+    alias_conflict_count = 0
+    deprecated_field_residue_count = 0
+    person_boundary_duplication_count = 0
+    scene_role_mismatch_count = 0
 
     for case in cases:
         scenes = db.query(models.Scene).filter(models.Scene.case_id == case.id).order_by(models.Scene.id.asc()).all()
         case_roles = db.query(models.Role).filter(models.Role.case_id == case.id).all()
+        structured = {}
+        if case.structured_data:
+            try:
+                structured = json.loads(case.structured_data)
+            except Exception:
+                structured = {}
+
+        if structured and str(structured.get("schema_version") or "").strip() != SCHEMA_VERSION:
+            _push_issue(
+                issues,
+                issue_type="schema_version_outdated",
+                severity="medium",
+                message="案件 structured_data 未使用最新 schema_version，存在字段契约漂移风险。",
+                recommendation="执行兼容迁移并写回最新 schema_version。",
+                case=case,
+            )
+            issue_case_ids.add(case.id)
+
+        for person in structured.get("persons") or []:
+            if not isinstance(person, dict):
+                continue
+            for alias, target in PERSON_ALIAS_TO_CANONICAL.items():
+                alias_value = person.get(alias)
+                target_value = person.get(target)
+                if alias_value in (None, "", []):
+                    continue
+                if target_value in (None, "", []):
+                    continue
+                if alias_value != target_value:
+                    alias_conflict_count += 1
+                    _push_issue(
+                        issues,
+                        issue_type="person_alias_conflict",
+                        severity="medium",
+                        message=f"人物字段 {alias} 与 {target} 值不一致，存在双写漂移。",
+                        recommendation=f"停止写入 {alias}，统一以 {target} 为准。",
+                        case=case,
+                    )
+                    issue_case_ids.add(case.id)
+                    break
+
+            for alias, target in PERSON_ALIAS_TO_CANONICAL.items():
+                if person.get(alias) in (None, "", []):
+                    continue
+                if person.get(target) not in (None, "", []):
+                    deprecated_field_residue_count += 1
+
+            trigger_points = set(_as_text_list(person.get("trigger_points")))
+            trigger_sources = set(_as_text_list(person.get("trigger_sources")))
+            no_go_topics = set(_as_text_list(person.get("no_go_topics")))
+            if trigger_points and (trigger_points & trigger_sources or trigger_points & no_go_topics):
+                person_boundary_duplication_count += 1
 
         for scene in scenes:
             scene_issue_found = False
@@ -96,6 +163,8 @@ def build_data_quality_report(db: Session) -> Dict[str, Any]:
             snapshot = audit_by_scene_id.get(scene.id)
             if snapshot:
                 issue_codes = snapshot.get("issues", [])
+                if any(code in issue_codes for code in ("missing_primary", "multiple_primary", "dead_primary", "missing_links", "primary_mismatch")):
+                    scene_role_mismatch_count += 1
                 if "missing_primary" in issue_codes:
                     _push_issue(
                         issues,
@@ -192,6 +261,10 @@ def build_data_quality_report(db: Session) -> Dict[str, Any]:
             "high_count": sum(1 for item in issues if item["severity"] == "high"),
             "medium_count": sum(1 for item in issues if item["severity"] == "medium"),
             "low_count": sum(1 for item in issues if item["severity"] == "low"),
+            "alias_conflict_count": alias_conflict_count,
+            "deprecated_field_residue_count": deprecated_field_residue_count,
+            "person_boundary_duplication_count": person_boundary_duplication_count,
+            "scene_role_mismatch_count": scene_role_mismatch_count,
         },
         "issues": issues,
     }

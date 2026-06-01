@@ -1,12 +1,15 @@
 <template>
   <div class="training-input-bar">
-    <div v-if="voicePreview" class="voice-preview">
-      <span class="voice-preview__label">听写中</span>
-      <span class="voice-preview__text">{{ voicePreview }}</span>
-    </div>
-
     <div class="composer-row">
-      <div class="input-shell" :class="{ 'is-listening': isVoiceActive, 'is-disabled': disabled }">
+      <VoiceRecordingBar
+        v-if="isVoiceActive"
+        ref="voiceBarRef"
+        :elapsed-label="voiceElapsedLabel"
+        @cancel="cancelVoiceListening"
+        @confirm="confirmVoiceListening"
+      />
+
+      <div v-else class="input-shell" :class="{ 'is-disabled': disabled }">
         <textarea
           ref="textareaRef"
           :value="modelValue"
@@ -20,19 +23,27 @@
         <button
           type="button"
           class="mic-btn"
-          :class="{ 'is-active': isVoiceActive }"
           :disabled="disabled || !speech.isSupported()"
-          :title="isVoiceActive ? '点击可提前结束听写' : '点击开始听写，说完约 2 秒自动结束'"
-          @click="toggleVoiceListening"
+          title="点击开始听写，说完约 2 秒自动结束"
+          @click="startVoiceListening"
         >
-          <van-icon name="audio" size="22" color="currentColor" />
+          <svg class="mic-btn__icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.7" />
+            <path
+              d="M6 11a6 6 0 0 0 12 0"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+            />
+            <path d="M12 17v3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+          </svg>
         </button>
       </div>
 
       <button
         type="button"
         class="send-btn-card"
-        :disabled="!modelValue.trim() || disabled || loading"
+        :disabled="!modelValue.trim() || disabled || loading || isVoiceActive"
         @click="emitSend"
       >
         {{ loading ? '发送中' : '发送' }}
@@ -42,9 +53,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import { showToast } from 'vant'
 import { useSpeechInput } from '../composables/useSpeechInput'
+import {
+  acquireSharedMicrophoneLease,
+  type MicrophoneLease,
+} from '../composables/useSharedMicrophone'
+import VoiceRecordingBar from './VoiceRecordingBar.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -70,12 +86,18 @@ const isVoiceActive = ref(false)
 const voiceSessionBase = ref('')
 const recognizedInSession = ref('')
 const lastSessionDisplay = ref('')
+const voiceElapsedSeconds = ref(0)
+let voiceTimerId: ReturnType<typeof setInterval> | null = null
+let microphoneLease: MicrophoneLease | null = null
 
 const speech = useSpeechInput()
+const voiceBarRef = ref<InstanceType<typeof VoiceRecordingBar> | null>(null)
 
-const voicePreview = computed(() => {
-  if (!isVoiceActive.value) return ''
-  return speech.getLivePreview() || speech.interimText.value || '正在聆听，点击麦克风结束...'
+const voiceElapsedLabel = computed(() => {
+  const total = voiceElapsedSeconds.value
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
 })
 
 const appendText = (base: string, chunk: string) => {
@@ -103,6 +125,32 @@ const resizeTextarea = () => {
   el.style.height = `${Math.min(el.scrollHeight, 120)}px`
 }
 
+const startVoiceTimer = () => {
+  stopVoiceTimer()
+  voiceElapsedSeconds.value = 0
+  voiceTimerId = setInterval(() => {
+    voiceElapsedSeconds.value += 1
+  }, 1000)
+}
+
+const stopVoiceTimer = () => {
+  if (voiceTimerId) {
+    clearInterval(voiceTimerId)
+    voiceTimerId = null
+  }
+  voiceElapsedSeconds.value = 0
+}
+
+const stopMicVisual = () => {
+  voiceBarRef.value?.stopWaveformCapture()
+}
+
+const releaseVoiceMicrophone = () => {
+  stopMicVisual()
+  microphoneLease?.release()
+  microphoneLease = null
+}
+
 const emitSend = () => {
   if (!props.modelValue.trim() || props.disabled || props.loading) return
   if (isVoiceActive.value) {
@@ -112,9 +160,24 @@ const emitSend = () => {
   requestAnimationFrame(() => resizeTextarea())
 }
 
-const startVoiceListening = () => {
-  if (props.disabled || !speech.isSupported()) {
+const startVoiceListening = async () => {
+  const providerReady = await speech.prepareProviderForListening()
+  if (!providerReady || !speech.isSupported()) {
     showToast(speech.getUnsupportedReason() || speech.errorMessage.value || '当前环境不支持语音听写')
+    return
+  }
+
+  if (speech.providerLabel.value !== '科大讯飞听写') {
+    showToast(`当前使用${speech.providerLabel.value}，如需讯飞请确认已登录且 backend/.env 已配置密钥`)
+  }
+
+  let mediaStream: MediaStream
+  try {
+    const lease = await acquireSharedMicrophoneLease()
+    microphoneLease = lease
+    mediaStream = lease.stream
+  } catch {
+    showToast('无法访问麦克风，请检查浏览器权限')
     return
   }
 
@@ -123,6 +186,10 @@ const startVoiceListening = () => {
   lastSessionDisplay.value = ''
   isVoiceActive.value = true
   speech.resetSession()
+  startVoiceTimer()
+
+  await nextTick()
+  voiceBarRef.value?.startWaveformDisplay()
 
   const composeModel = (sessionText: string) => appendText(voiceSessionBase.value, sessionText)
 
@@ -130,51 +197,47 @@ const startVoiceListening = () => {
     const next = sessionDisplay.trim()
     if (!next) return
 
-    const prev = lastSessionDisplay.value
-    if (prev) {
-      if (next.length < prev.length && !prev.startsWith(next) && !next.startsWith(prev)) {
-        const isPunctOnly = /^[。！？，、；：…．.?!,;:]+$/.test(next)
-        if (isPunctOnly) {
-          const merged = appendText(prev, next)
-          lastSessionDisplay.value = merged
-          recognizedInSession.value = merged
-          updateModel(composeModel(merged))
-          requestAnimationFrame(() => resizeTextarea())
-        }
-        return
-      }
-    }
-
     lastSessionDisplay.value = next
     recognizedInSession.value = next
     updateModel(composeModel(next))
-    requestAnimationFrame(() => resizeTextarea())
   }
 
-  speech.startListening({
-    onInterim: (sessionDisplay) => {
-      if (!isVoiceActive.value) return
-      applySessionDisplay(sessionDisplay)
+  speech.startListening(
+    {
+      onInterim: (sessionDisplay) => {
+        if (!isVoiceActive.value) return
+        applySessionDisplay(sessionDisplay)
+        requestAnimationFrame(() => resizeTextarea())
+      },
+      onAppendFinal: (chunk) => {
+        if (!isVoiceActive.value) return
+        const trimmed = chunk.trim()
+        if (!trimmed) return
+        applySessionDisplay(
+          recognizedInSession.value ? appendText(recognizedInSession.value, trimmed) : trimmed
+        )
+        requestAnimationFrame(() => resizeTextarea())
+      },
+      onAutoEnd: () => {
+        if (isVoiceActive.value) {
+          stopVoiceListening(false)
+        }
+      },
+      onError: () => {
+        if (!isVoiceActive.value) return
+        isVoiceActive.value = false
+        stopVoiceTimer()
+        releaseVoiceMicrophone()
+        showToast(speech.errorMessage.value || '语音听写失败')
+      },
     },
-    onAppendFinal: (chunk) => {
-      if (!isVoiceActive.value) return
-      const trimmed = chunk.trim()
-      if (!trimmed) return
-      let merged = recognizedInSession.value
-      if (!merged.includes(trimmed)) {
-        merged = appendText(merged, trimmed)
-      }
-      recognizedInSession.value = merged
-      lastSessionDisplay.value = merged
-      updateModel(composeModel(merged))
-      requestAnimationFrame(() => resizeTextarea())
-    },
-    onAutoEnd: () => {
-      if (isVoiceActive.value) {
-        stopVoiceListening(false)
-      }
-    },
-  })
+    {
+      mediaStream,
+      onAudioLevel: (level) => {
+        voiceBarRef.value?.pushAudioLevel(level)
+      },
+    }
+  )
 }
 
 const stopVoiceListening = (showEmptyHint: boolean) => {
@@ -182,6 +245,8 @@ const stopVoiceListening = (showEmptyHint: boolean) => {
 
   const pendingInterim = speech.stopListening()
   isVoiceActive.value = false
+  stopVoiceTimer()
+  releaseVoiceMicrophone()
 
   const interim = pendingInterim.trim()
   if (interim) {
@@ -196,18 +261,29 @@ const stopVoiceListening = (showEmptyHint: boolean) => {
   }
 }
 
-const toggleVoiceListening = () => {
-  if (isVoiceActive.value) {
-    stopVoiceListening(true)
-    return
-  }
-  startVoiceListening()
+const cancelVoiceListening = () => {
+  if (!isVoiceActive.value) return
+
+  speech.cancelListening()
+  isVoiceActive.value = false
+  stopVoiceTimer()
+  releaseVoiceMicrophone()
+  updateModel(voiceSessionBase.value)
+  recognizedInSession.value = ''
+  lastSessionDisplay.value = ''
+}
+
+const confirmVoiceListening = () => {
+  stopVoiceListening(true)
 }
 
 onBeforeUnmount(() => {
   if (isVoiceActive.value) {
-    stopVoiceListening(false)
+    speech.cancelListening()
+    isVoiceActive.value = false
   }
+  stopVoiceTimer()
+  releaseVoiceMicrophone()
 })
 </script>
 
@@ -216,28 +292,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.voice-preview {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: rgba(18, 183, 245, 0.1);
-  color: #0e9fe0;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.voice-preview__label {
-  flex-shrink: 0;
-  font-weight: 700;
-}
-
-.voice-preview__text {
-  flex: 1;
-  color: #0f172a;
 }
 
 .composer-row {
@@ -261,11 +315,6 @@ onBeforeUnmount(() => {
 .input-shell:focus-within {
   border-color: rgba(18, 183, 245, 0.35);
   box-shadow: 0 0 0 2px rgba(18, 183, 245, 0.08);
-}
-
-.input-shell.is-listening {
-  border-color: rgba(18, 183, 245, 0.55);
-  background: #f4fbff;
 }
 
 .input-shell.is-disabled {
@@ -313,9 +362,9 @@ onBeforeUnmount(() => {
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.mic-btn.is-active {
-  background: rgba(18, 183, 245, 0.16);
-  color: #12b7f5;
+.mic-btn__icon {
+  width: 22px;
+  height: 22px;
 }
 
 .mic-btn:disabled {

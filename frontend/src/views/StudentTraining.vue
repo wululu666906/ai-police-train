@@ -471,12 +471,19 @@ const safeParse = <T>(value: any, fallback: T): T => {
   }
 }
 
+const normalizeDifficulty = (value: string) => {
+  const text = String(value || '').trim()
+  if (['简单', '低'].includes(text)) return '低'
+  if (['困难', '高'].includes(text)) return '高'
+  return text || '中等'
+}
+
 const fetchSessionData = async () => {
   try {
     const res: any = await request.get(`/training/session/${sessionId.value}`)
     caseInfo.title = res.case_title
     caseInfo.sceneName = res.scene_name
-    caseInfo.difficulty = res.difficulty || '中等'
+    caseInfo.difficulty = normalizeDifficulty(res.difficulty || '中等')
     caseInfo.currentStage = res.current_stage
     caseInfo.currentStageGoal = res.current_stage_goal
     caseInfo.caseBackground = res.case_background
@@ -519,7 +526,8 @@ const sendMessage = async () => {
 
   const msg = inputMessage.value.trim()
   syncTargetFromMessage(msg)
-  chatHistory.value.push({ id: Date.now(), role: 'human', content: msg })
+  const pendingId = Date.now()
+  chatHistory.value.push({ id: pendingId, role: 'human', content: msg })
   inputMessage.value = ''
   isLoading.value = true
   scrollToBottom()
@@ -531,19 +539,22 @@ const sendMessage = async () => {
       target_role_name: targetRoleName.value || undefined,
     })
 
-    if (res?.response || (Array.isArray(res?.reply_turns) && res.reply_turns.length)) {
-      appendAssistantReplies(res, Date.now() + 1)
-      if (Array.isArray(res.scene_roles) && res.scene_roles.length) {
-        sceneRoles.value = res.scene_roles
-      }
-      routingSummary.value = String(res.routing_summary || '').trim()
-      addressingWarning.value = String(res.addressing_warning || '').trim()
-      applyGuidancePayload(res)
-      currentState.value.emotion = res.updated_emotion
-      currentState.value.trust = res.updated_trust
-      currentState.value.risk = res.updated_risk ?? currentState.value.risk
-      currentState.value.clarity = res.updated_clarity ?? currentState.value.clarity
+    const beforeReplyCount = chatHistory.value.length
+    appendAssistantReplies(res, Date.now() + 1)
+    const hasAssistantReply = chatHistory.value.length > beforeReplyCount
 
+    if (Array.isArray(res.scene_roles) && res.scene_roles.length) {
+      sceneRoles.value = res.scene_roles
+    }
+    routingSummary.value = String(res.routing_summary || '').trim()
+    addressingWarning.value = String(res.addressing_warning || '').trim()
+    applyGuidancePayload(res)
+    currentState.value.emotion = res.updated_emotion
+    currentState.value.trust = res.updated_trust
+    currentState.value.risk = res.updated_risk ?? currentState.value.risk
+    currentState.value.clarity = res.updated_clarity ?? currentState.value.clarity
+
+    if (hasAssistantReply) {
       if (res.new_fact_revealed && res.new_fact_revealed !== 'null' && !revealedInfo.value.includes(res.new_fact_revealed)) {
         revealedInfo.value.push(res.new_fact_revealed)
         chatHistory.value.push({
@@ -569,8 +580,12 @@ const sendMessage = async () => {
           })
         }
       }
+    } else {
+      showToast('AI 回复出错，请稍后重试')
     }
   } catch (error) {
+    chatHistory.value = chatHistory.value.filter((item) => item.id !== pendingId)
+    inputMessage.value = msg
     showToast('AI 响应异常，请稍后重试')
   } finally {
     isLoading.value = false
@@ -591,8 +606,9 @@ const finishTraining = async () => {
 }
 
 const getDifficultyColor = (diff: string) => {
-  if (diff === '简单') return '#00B42A'
-  if (diff === '困难') return '#F53F3F'
+  const normalized = normalizeDifficulty(diff)
+  if (normalized === '低') return '#00B42A'
+  if (normalized === '高') return '#F53F3F'
   return '#FF7D00'
 }
 

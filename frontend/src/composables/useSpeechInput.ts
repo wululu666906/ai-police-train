@@ -16,16 +16,22 @@ export const useSpeechInput = () => {
   const errorMessage = ref('')
   const sessionFinalized = ref(false)
 
-  const bootstrapProvider = async () => {
-    if (speechConfig.provider === 'web') return
+  /** 每次听写前刷新：避免「先打开页面未登录 → 永久走浏览器听写」 */
+  const prepareProviderForListening = async () => {
+    if (speechConfig.provider === 'web') {
+      provider.value = new WebSpeechProvider()
+      providerLabel.value = '浏览器听写'
+      return provider.value.isSupported()
+    }
+
+    resetIFlytekConfigCache()
 
     try {
       const iflytekStatus = await fetchIFlytekStatus()
-      resetIFlytekConfigCache()
       if (iflytekStatus.configured) {
         provider.value = createSpeechProvider()
         providerLabel.value = '科大讯飞听写'
-        return
+        return true
       }
     } catch {
       // fallback below
@@ -35,12 +41,14 @@ export const useSpeechInput = () => {
     if (webProvider.isSupported()) {
       provider.value = webProvider
       providerLabel.value = '浏览器听写（讯飞未配齐）'
-    } else {
-      providerLabel.value = '听写不可用'
+      return true
     }
+
+    providerLabel.value = '听写不可用'
+    return false
   }
 
-  void bootstrapProvider()
+  void prepareProviderForListening()
 
   const isSupported = () => {
     if (typeof window !== 'undefined' && !window.isSecureContext) {
@@ -67,37 +75,56 @@ export const useSpeechInput = () => {
     sessionFinalized.value = false
   }
 
-  const startListening = (handlers: {
-    onAppendFinal?: (chunk: string) => void
-    onInterim?: (text: string) => void
-    onAutoEnd?: () => void
-  }) => {
+  const startListening = (
+    handlers: {
+      onAppendFinal?: (chunk: string) => void
+      onInterim?: (text: string) => void
+      onAutoEnd?: () => void
+      onError?: () => void
+    },
+    options?: { mediaStream?: MediaStream; onAudioLevel?: (level: number) => void }
+  ) => {
     if (status.value === 'listening') return false
 
     resetSession()
 
     provider.value.start(
-      { lang: 'zh-CN', continuous: true, interimResults: true },
+      {
+        lang: 'zh-CN',
+        continuous: true,
+        interimResults: true,
+        mediaStream: options?.mediaStream,
+      },
       {
         onStatusChange: (next) => {
           status.value = next
         },
         onInterim: (text) => {
           interimText.value = text
-          handlers.onInterim?.(text)
+          const sessionDisplay =
+            provider.value.name === 'web' ? `${finalBuffer.value}${text}`.trim() : text
+          handlers.onInterim?.(sessionDisplay)
         },
         onFinal: (text) => {
           sessionFinalized.value = true
-          finalBuffer.value += text
+          const chunk = text.trim()
+          if (!chunk) return
+          if (!finalBuffer.value.endsWith(chunk)) {
+            finalBuffer.value += chunk
+          }
           interimText.value = ''
-          handlers.onAppendFinal?.(text)
+          handlers.onAppendFinal?.(chunk)
         },
         onAutoEnd: () => {
           handlers.onAutoEnd?.()
         },
+        onAudioLevel: (level) => {
+          options?.onAudioLevel?.(level)
+        },
         onError: (message) => {
           errorMessage.value = message
           status.value = 'error'
+          handlers.onError?.()
         },
       }
     )
@@ -138,6 +165,7 @@ export const useSpeechInput = () => {
     interimText,
     finalBuffer,
     errorMessage,
+    prepareProviderForListening,
     startListening,
     stopListening,
     cancelListening,

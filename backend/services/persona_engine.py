@@ -1332,6 +1332,57 @@ def blend_state_updates(
     return {"emotion": next_emotion, "trust": next_trust}
 
 
+def derive_stage_dynamic_adjustment(
+    persona_profile: dict[str, Any],
+    momentum: dict[str, Any],
+    truth_state: dict[str, Any] | None,
+    current_stage: str,
+    stage_turn_count: int,
+) -> dict[str, Any]:
+    truth_state = truth_state or {}
+    pressure = str(momentum.get("pressure") or "medium")
+    rapport = str(momentum.get("rapport") or "neutral")
+    truth_stage = str(truth_state.get("stage") or "guarded_denial")
+    base_density = "中"
+    if stage_turn_count <= 1:
+        base_density = "低"
+    elif stage_turn_count >= 4:
+        base_density = "中高"
+
+    if pressure == "high":
+        tone_hint = "先短句应对，容易打断或回避，除非命中软肋。"
+        defense_bias = 0.75
+    elif rapport == "warming":
+        tone_hint = "语气逐步放松，愿意补充可验证细节。"
+        defense_bias = 0.35
+    else:
+        tone_hint = "保持观察与试探，先给有限信息。"
+        defense_bias = 0.55
+
+    disclosure_bias = 0.28
+    if truth_stage in {"partial_release", "meaningful_disclosure"}:
+        disclosure_bias = 0.52
+    if truth_stage == "emotional_leak":
+        disclosure_bias = 0.44
+
+    next_probe_hint = "围绕时间线与可核实细节继续追问。"
+    if persona_profile.get("scene_behavior_mode") == "调解型":
+        next_probe_hint = "优先问可接受结果与不可触碰话题。"
+    elif persona_profile.get("scene_behavior_mode") == "危机干预型":
+        next_probe_hint = "优先问刺激源、牵挂对象与禁忌动作。"
+    elif persona_profile.get("scene_behavior_mode") == "管控型":
+        next_probe_hint = "优先问升级动作与缓和条件。"
+
+    return {
+        "stage": current_stage or "初始接触",
+        "response_density": base_density,
+        "defense_bias": defense_bias,
+        "disclosure_bias": disclosure_bias,
+        "tone_hint": tone_hint,
+        "next_probe_hint": next_probe_hint,
+    }
+
+
 def build_personalized_questions(
     persona_profile: dict[str, Any],
     current_stage: str,
@@ -1381,7 +1432,13 @@ def build_personalized_questions(
     )
 
 
-def format_persona_block(persona_profile: dict[str, Any], role_script: dict[str, Any], memory: dict[str, list[str]], momentum: dict[str, Any]) -> str:
+def format_persona_block(
+    persona_profile: dict[str, Any],
+    role_script: dict[str, Any],
+    memory: dict[str, list[str]],
+    momentum: dict[str, Any],
+    dynamic_adjustment: dict[str, Any] | None = None,
+) -> str:
     relation_map = persona_profile.get("relationship_map", {})
     scene_boundary = persona_profile.get("scene_boundary") or {}
     boundary_preview = []
@@ -1427,6 +1484,7 @@ def format_persona_block(persona_profile: dict[str, Any], role_script: dict[str,
         f"最近民警关注点：{'; '.join(memory.get('user_focuses', []) or ['暂无'])}",
         f"最近角色回应表现：{'; '.join(memory.get('ai_reactions', []) or ['暂无'])}",
         f"当前互动动量：rapport={momentum.get('rapport')} / pressure={momentum.get('pressure')} / notes={'; '.join(momentum.get('notes', [])[:2])}",
+        f"阶段动态修正：{dynamic_adjustment or {'response_density': '中', 'defense_bias': 0.5, 'disclosure_bias': 0.3}}",
     ]
     return "\n".join(f"- {item}" for item in sections)
 

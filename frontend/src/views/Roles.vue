@@ -616,7 +616,6 @@ onMounted(refreshPage)
     <div v-else-if="roles.length === 0" class="rounded-3xl border border-dashed border-slate-200 bg-white py-20 text-center">
       <van-icon name="friends-o" size="60" class="mb-4 text-slate-200" />
       <p class="text-base font-bold text-slate-500">暂无角色数据</p>
-      <p class="mt-2 text-sm text-slate-400">先创建公共模板或案件人物，后续才能参与学员端训练。</p>
       <van-button type="primary" round class="!bg-[#1D3557] !border-none mt-6" @click="openCreate">
         新增第一个角色
       </van-button>
@@ -709,9 +708,6 @@ onMounted(refreshPage)
           <h3 class="text-xl font-black text-[#1D3557]">{{ form.id ? '编辑角色' : '新增角色' }}</h3>
           <van-icon name="cross" class="cursor-pointer text-slate-300" @click="closeDetail" />
         </div>
-        <p class="mb-6 text-xs leading-6 text-slate-400">
-          案件人物会同步到案件人物清单，并按分配场景进入学员端；公共模板则保留为可复用角色模板。
-        </p>
 
         <div class="flex-1 space-y-6 overflow-y-auto pr-2">
           <section class="section-card">
@@ -720,7 +716,6 @@ onMounted(refreshPage)
                 <div class="section-card__eyebrow">Scope</div>
                 <h4 class="section-card__title">角色范围</h4>
               </div>
-              <p class="section-card__hint">公共模板只做沉淀，案件人物才会进入具体训练场景。</p>
             </div>
             <div class="grid grid-cols-2 gap-3">
               <button
@@ -731,7 +726,6 @@ onMounted(refreshPage)
                 @click="form.scope = 'public'"
               >
                 <span class="scope-card__title">公共模板</span>
-                <span class="scope-card__desc">不会直接进入学员端，适合沉淀典型人物。</span>
               </button>
               <button
                 type="button"
@@ -741,7 +735,6 @@ onMounted(refreshPage)
                 @click="form.scope = 'case'"
               >
                 <span class="scope-card__title">案件人物</span>
-                <span class="scope-card__desc">绑定案件并按场景进入学员端训练。</span>
               </button>
             </div>
             <p v-if="form.id" class="section-card__tip">编辑已有角色时，范围保持不变；如需迁移范围，建议新建后删除旧角色。</p>
@@ -753,7 +746,6 @@ onMounted(refreshPage)
                 <div class="section-card__eyebrow">Scenes</div>
                 <h4 class="section-card__title">案件与场景绑定</h4>
               </div>
-              <p class="section-card__hint">只有被分配到场景的人物，学员端对话里才会真正出现。</p>
             </div>
             <div class="space-y-4">
               <div>
@@ -791,7 +783,6 @@ onMounted(refreshPage)
                 <div class="section-card__eyebrow">Basics</div>
                 <h4 class="section-card__title">基础信息</h4>
               </div>
-              <p class="section-card__hint">先定身份、状态和开场原型，再去补他眼下的真实顾虑。</p>
             </div>
             <div class="space-y-4">
               <div>
@@ -845,7 +836,6 @@ onMounted(refreshPage)
                 <div class="section-card__eyebrow">Persona</div>
                 <h4 class="section-card__title">简化角色模板</h4>
               </div>
-              <p class="section-card__hint">这些字段直接决定 AI 的开场状态、情绪触发点和松口条件。</p>
             </div>
             <div class="grid grid-cols-1 gap-4">
               <div>
@@ -873,10 +863,6 @@ onMounted(refreshPage)
                 <div class="section-card__eyebrow">State</div>
                 <h4 class="section-card__title">开场状态与高级补充</h4>
               </div>
-              <p class="section-card__hint">四轴状态会直接影响学生端反馈；信息边界则跟随当前场景行为模式动态切换。</p>
-            </div>
-            <div class="rounded-2xl border border-amber-200 bg-white/80 px-4 py-3 text-xs leading-6 text-amber-800">
-              {{ sceneBehaviorModeOptions.find((item) => item.value === form.scene_behavior_mode)?.summary || '先选择当前场景的行为模式，信息边界会自动切换。' }}
             </div>
             <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div>
@@ -903,9 +889,6 @@ onMounted(refreshPage)
                   <option v-for="item in stateLevelOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
                 </select>
               </div>
-            </div>
-            <div class="rounded-2xl border border-amber-200 bg-white/80 px-4 py-3 text-xs leading-6 text-amber-800">
-              高情绪 + 高风险会更容易抢话、冲动或升级；高清晰度则更容易在学生问到位时给出可用信息。
             </div>
             <details class="rounded-2xl border border-amber-200 bg-white/80 px-4 py-3">
               <summary class="cursor-pointer text-sm font-bold text-amber-900">高级补充字段</summary>
@@ -1045,7 +1028,6 @@ onMounted(refreshPage)
                 <div class="section-card__eyebrow">Facts</div>
                 <h4 class="section-card__title">信息边界</h4>
               </div>
-              <p class="section-card__hint">不再固定成三种框，而是跟着当前场景模式走。管理员只补学生真正需要碰到的边界即可。</p>
             </div>
             <div class="space-y-4">
               <div v-for="field in currentBoundaryFields" :key="field.key">

@@ -12,6 +12,7 @@ from .persona_engine import (
     build_personalized_questions,
     build_recent_memory,
     build_role_script,
+    derive_stage_dynamic_adjustment,
     evaluate_truth_stage,
     format_memory_block,
     format_persona_block,
@@ -1081,9 +1082,17 @@ def _run_training_turn(
         ts.current_emotion,
         revealed_info,
     )
+    dynamic_adjustment = derive_stage_dynamic_adjustment(
+        persona_profile,
+        momentum,
+        truth_state,
+        current_stage,
+        stage_turn_count,
+    )
+    runtime_state["dynamic_adjustment"] = dynamic_adjustment
     role_script = build_role_script(role, case, scene, persona_profile)
     session_memory = summarize_session_memory(history[-12:], revealed_info, current_stage_goal)
-    persona_block = format_persona_block(persona_profile, role_script, recent_memory, momentum)
+    persona_block = format_persona_block(persona_profile, role_script, recent_memory, momentum, dynamic_adjustment)
     memory_block = format_memory_block(session_memory, truth_state)
 
     multi_turn_payload: dict[str, Any] | None = None

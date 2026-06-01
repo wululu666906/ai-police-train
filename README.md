@@ -41,7 +41,7 @@ npm run dev
 
 默认访问：
 
-- 前端开发环境：`http://localhost:5173`
+- 前端开发环境：`http://localhost:5175`
 - 后端接口文档：`http://127.0.0.1:8000/docs`
 
 ## 数据库路径说明

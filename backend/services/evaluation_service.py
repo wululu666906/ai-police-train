@@ -42,7 +42,7 @@ SCENE_RUBRICS = {
 }
 
 EVALUATION_PROMPT_TEMPLATE = """
-你是一名严格、公正、专业的警务训练评估官，需要根据完整对话、动作执行和考察点命中情况给出结构化评分。
+你是一名严格、公正、专业的警务训练评估官，需要根据完整对话、动作执行和“考察点要求表”逐条核查结果给出结构化评分。
 
 评分维度（总分 100）：
 1. 执法语言规范性（25）
@@ -66,8 +66,8 @@ EVALUATION_PROMPT_TEMPLATE = """
 完整对话历史：
 {dialogue_history}
 
-考察点与动作证据：
-{assessment_evidence}
+考察点要求表（你必须逐条核查“是否满足”，并在输出中给出 evidence 引用）：
+{assessment_requirements}
 
 参考知识：
 {knowledge_base}
@@ -90,6 +90,16 @@ EVALUATION_PROMPT_TEMPLATE = """
     }}
   ],
   "total_score": 80,
+  "assessment_check_results": [
+    {{
+      "id": "ap_xxx",
+      "label": "考察点名称",
+      "content": "考察内容/要求",
+      "status": "hit|partial|missed",
+      "evidence": ["引用对话或动作的原句"],
+      "reason": "为何判定为命中/部分/未命中"
+    }}
+  ],
   "strengths": ["示例"],
   "improvements": ["示例"],
   "suggestions": "示例"
@@ -531,63 +541,58 @@ def _collect_structured_assessment(
         scene_name=str(getattr(scene, "name", "") or ""),
     ) if scene else []
 
-    point_results: List[dict] = []
-    action_results: List[dict] = []
+    requirement_rows: List[dict] = []
     knowledge_ref_ids: List[str] = []
-    requirements: List[str] = []
-    satisfied: List[str] = []
-    missing: List[str] = []
 
     for stage in stages:
-        progress = collect_stage_progress(stage, msgs, revealed_info)
         stage_name = str(stage.get("stage_name") or "").strip()
-
-        for point in progress.get("points", []):
+        for point in stage.get("assessment_points") or []:
+            if not isinstance(point, dict):
+                continue
             label = str(point.get("label") or "").strip()
-            requirements.append(label)
-            if point.get("status") == "hit":
-                satisfied.append(label)
-            elif point.get("status") != "partial":
-                missing.append(label)
-            feedback = (
-                "已完整体现该考察点。"
-                if point.get("status") == "hit"
-                else "已提及但仍不完整，建议继续追问或补足动作。"
-                if point.get("status") == "partial"
-                else "本次训练未体现该考察点。"
-            )
-            point_results.append(
+            content = str(point.get("content") or "").strip()
+            if not label and not content:
+                continue
+            requirement_rows.append(
                 {
-                    **point,
-                    "stage_name": stage_name,
-                    "feedback": point.get("feedback") or feedback,
+                    "id": str(point.get("id") or "").strip() or "",
+                    "label": label or content[:18] or "未命名考察点",
+                    "content": content,
+                    "stage_name": stage_name or "",
                 }
             )
             knowledge_ref_ids.extend(point.get("knowledge_refs") or [])
 
-        for action in progress.get("actions", []):
-            feedback = "关键动作已完成。" if action.get("status") == "hit" else "关键动作未完成或未被明确触发。"
-            action_results.append(
-                {
-                    **action,
-                    "stage_name": stage_name,
-                    "feedback": feedback,
-                }
-            )
-
     summary = {
         "scene_type": infer_scene_type(scene) if scene else "通用",
-        "requirements": _dedupe_strings(requirements),
-        "satisfied": _dedupe_strings(satisfied),
-        "missing": [item for item in _dedupe_strings(requirements) if item not in set(_dedupe_strings(satisfied))],
+        "requirements": [row.get("label") for row in requirement_rows if row.get("label")],
+        "satisfied": [],
+        "missing": [],
     }
     return {
-        "assessment_point_results": point_results,
-        "action_results": action_results,
+        "assessment_requirements": requirement_rows,
+        "action_results": [],
         "knowledge_ref_ids": _dedupe_strings(knowledge_ref_ids),
         "stage_gap_summary": summary,
         "closure_summary": runtime_state.get("closure_summary") or {},
     }
+
+
+def _render_assessment_requirements(requirement_rows: List[dict]) -> str:
+    if not requirement_rows:
+        return "暂无考察点要求表。"
+    lines: List[str] = ["考察点要求："]
+    for idx, row in enumerate(requirement_rows[:30], start=1):
+        label = str(row.get("label") or "").strip()
+        content = str(row.get("content") or "").strip()
+        stage_name = str(row.get("stage_name") or "").strip()
+        header = f"{idx}. {label}"
+        if stage_name:
+            header += f"（场景/阶段：{stage_name}）"
+        lines.append(f"- {header}")
+        if content:
+            lines.append(f"  要求：{content}")
+    return "\n".join(lines)
 
 
 def _knowledge_index(knowledge_ref_ids: List[str]) -> Dict[str, dict]:
@@ -646,6 +651,60 @@ def _enrich_report_from_structured_evidence(report: Dict[str, Any], point_result
     return report
 
 
+def _apply_assessment_completion_adjustments(
+    report: Dict[str, Any],
+    point_results: List[dict],
+    action_results: List[dict],
+) -> Dict[str, Any]:
+    # After switching to "label + content" checklist, we treat all points as required by default.
+    required_points = [p for p in point_results if str(p.get("label") or "").strip()]
+    required_hit = [p for p in required_points if p.get("status") == "hit"]
+    all_points = [p for p in point_results if str(p.get("label") or "").strip()]
+    all_hit = [p for p in all_points if p.get("status") == "hit"]
+
+    required_rate = (len(required_hit) / len(required_points)) if required_points else 1.0
+    overall_rate = (len(all_hit) / len(all_points)) if all_points else 1.0
+
+    # Strongly tie total score to completion: low completion -> cap, high completion -> small bonus.
+    total = int(report.get("total_score") or 0)
+    cap = 100
+    bonus = 0
+    if required_rate < 0.35:
+        cap = 58
+    elif required_rate < 0.55:
+        cap = 70
+    elif required_rate < 0.75:
+        cap = 82
+
+    if required_rate >= 0.85 and overall_rate >= 0.75 and len(action_results) > 0:
+        bonus = 3
+    if required_rate >= 0.95 and overall_rate >= 0.85:
+        bonus = 5
+
+    total = min(total, cap)
+    total = max(0, min(100, total + bonus))
+    report["total_score"] = total
+
+    # Also nudge "流程完整性/信息获取效率" reasons to reference completion explicitly.
+    for item in report.get("scores") or []:
+        if item.get("dimension") in {"执法流程完整性", "信息获取效率"}:
+            item["reason"] = f"{item.get('reason', '')} 考察点完成率：必考={required_rate:.0%}，总体={overall_rate:.0%}。"
+
+    if "evaluation_meta" not in report:
+        report["evaluation_meta"] = {}
+    report["evaluation_meta"]["assessment_completion"] = {
+        "required_total": len(required_points),
+        "required_hit": len(required_hit),
+        "required_rate": required_rate,
+        "overall_total": len(all_points),
+        "overall_hit": len(all_hit),
+        "overall_rate": overall_rate,
+        "score_cap": cap,
+        "score_bonus": bonus,
+    }
+    return report
+
+
 def evaluate_session(db: Session, session_id: int, user_id: int | None = None, force_recompute: bool = False):
     session = db.query(models.TrainingSession).filter(models.TrainingSession.id == session_id).first()
     if not session:
@@ -671,8 +730,8 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
     rule_checks = build_rule_checks(scene, student_lines, role) if scene else {"findings": [], "deductions": {}, "scene_type": "通用"}
     rule_check_summary = render_rule_summary(rule_checks)
     structured_assessment = _collect_structured_assessment(session, scene, case, msgs)
-    knowledge_docs = _knowledge_index(structured_assessment["knowledge_ref_ids"])
-    point_results = _attach_knowledge_titles(structured_assessment["assessment_point_results"], knowledge_docs)
+    requirement_rows = structured_assessment.get("assessment_requirements") or []
+    point_results = []
     action_results = structured_assessment["action_results"]
     knowledge = build_knowledge_hits(
         case,
@@ -682,7 +741,7 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
         knowledge_refs=structured_assessment["knowledge_ref_ids"],
     )
     knowledge_base = "\n".join([f"- {item}" for item in knowledge]) if knowledge else "暂无相关法律标准参考。"
-    assessment_evidence = _render_assessment_evidence(point_results, action_results)
+    assessment_requirements = _render_assessment_requirements(requirement_rows)
 
     scene_rubric = "\n".join([f"- {item}" for item in SCENE_RUBRICS.get(scene_type, SCENE_RUBRICS["通用"])])
     case_info = "暂无案件信息"
@@ -696,7 +755,7 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
         rule_check_summary=rule_check_summary,
         case_info=case_info,
         dialogue_history=dialogue_history or "暂无对话内容",
-        assessment_evidence=assessment_evidence,
+        assessment_requirements=assessment_requirements,
         knowledge_base=knowledge_base,
     )
 
@@ -718,8 +777,10 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
         report = normalize_llm_report(report)
         report = apply_rule_adjustments(report, rule_checks)
         report = calibrate_report(report, student_lines, scene_type)
-        report = _enrich_report_from_structured_evidence(report, point_results, action_results)
-        report["assessment_point_results"] = point_results
+        check_results = report.get("assessment_check_results") if isinstance(report.get("assessment_check_results"), list) else []
+        report["assessment_point_results"] = check_results
+        report = _enrich_report_from_structured_evidence(report, check_results, action_results)
+        report = _apply_assessment_completion_adjustments(report, check_results, action_results)
         report["action_results"] = action_results
         report["closure_summary"] = structured_assessment["closure_summary"]
 

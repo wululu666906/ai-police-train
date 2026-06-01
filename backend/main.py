@@ -116,9 +116,23 @@ app.include_router(knowledge.router)
 app.include_router(student.router)
 app.include_router(speech.router)
 
+# 兼容 Docker 静态前端的 /api 前缀调用（frontend/.env.production 默认 VITE_API_URL=/api）
+app.include_router(auth.router, prefix="/api")
+app.include_router(cases.router, prefix="/api")
+app.include_router(training.router, prefix="/api")
+app.include_router(dashboard.router, prefix="/api")
+app.include_router(knowledge.router, prefix="/api")
+app.include_router(student.router, prefix="/api")
+app.include_router(speech.router, prefix="/api")
+
 
 @app.get("/healthz")
 def health_check():
+    return {"status": "ok"}
+
+
+@app.get("/api/healthz")
+def health_check_api():
     return {"status": "ok"}
 
 frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")

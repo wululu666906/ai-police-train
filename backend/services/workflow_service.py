@@ -6,6 +6,7 @@ from typing import Any
 
 from .llm_provider import create_json_chat_completion, extract_json_payload, extract_message_text, get_chat_model
 from .persona_engine import get_behavior_archetype_defaults, infer_persona_template, normalize_compact_persona_fields
+from .case_schema_service import canonicalize_person_payload, migrate_structured_data_payload
 from .stage_config_service import normalize_stages
 
 CASE_TYPE_GROUPS = {
@@ -522,7 +523,8 @@ class WorkflowService:
             "persona_template_version": "minimal_v3",
         }
         cleaned.update(infer_persona_template({**person, **cleaned}))
-        return cleaned
+        canonical_cleaned, _ = canonicalize_person_payload(cleaned)
+        return canonical_cleaned
 
     @staticmethod
     def _is_valid_person_name(name: str) -> bool:
@@ -786,7 +788,8 @@ class WorkflowService:
             result["source_file_type"] = source_meta.get("type")
             result["source_file_size"] = source_meta.get("size")
             result["extracted_text_preview"] = str(text or "")[:500]
-        return result
+        migrated_result, _ = migrate_structured_data_payload(result)
+        return migrated_result
 
     def _heuristic_parse_case(self, text: str, source_mode: str, source_meta: dict[str, Any] | None) -> dict[str, Any]:
         result = self._default_parse_result(text, "笔录" if source_mode == "transcript_file" else "普通案件文本")

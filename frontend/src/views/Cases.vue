@@ -95,7 +95,6 @@
       <div class="flex h-16 items-center justify-between border-b border-slate-100 bg-white px-6">
         <div>
           <h3 class="font-bold text-slate-800">录入新案件</h3>
-          <p class="mt-1 text-xs text-slate-400">支持普通文本录入与笔录文件导入</p>
         </div>
         <van-icon name="cross" class="cursor-pointer text-slate-400" @click="showAdd = false" />
       </div>
@@ -116,11 +115,9 @@
               <div class="grid grid-cols-2 gap-3">
                 <button type="button" class="mode-card" :class="{ active: importMode === 'plain_case' }" @click="switchImportMode('plain_case')">
                   <span class="mode-card__title">普通案件文本录入</span>
-                  <span class="mode-card__desc">适合直接粘贴案件摘要、警情原文或接处警记录。</span>
                 </button>
                 <button type="button" class="mode-card" :class="{ active: importMode === 'transcript_file' }" @click="switchImportMode('transcript_file')">
                   <span class="mode-card__title">笔录文件导入</span>
-                  <span class="mode-card__desc">上传 PDF、DOCX、MD 材料后自动识别。</span>
                 </button>
               </div>
             </div>
@@ -129,7 +126,6 @@
               <div>
                 <label class="form-label">案件标题</label>
                 <input v-model="form.title" type="text" class="form-input" placeholder="例如：某小区邻里纠纷调解" />
-                <p class="mt-2 text-xs leading-5 text-slate-400">这里填写的是最终展示标题。纯文本录入模式下，标题为必填项。</p>
               </div>
 
               <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -246,7 +242,6 @@
                     <div class="section-block__eyebrow">第一步</div>
                     <div class="section-block__title">识别概览与最终发布值</div>
                   </div>
-                  <div class="section-block__hint">先看 AI 识别结果，再在下方填写最终发布内容。</div>
                 </div>
                 <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div class="preview-card">
@@ -291,13 +286,11 @@
                     <div class="section-block__eyebrow">第二步</div>
                     <div class="section-block__title">发布信息确认</div>
                   </div>
-                  <div class="section-block__hint">这里修改的是最终对外发布内容。</div>
                 </div>
                 <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
                   <label class="form-label">最终发布标题</label>
                   <input v-model="form.title" type="text" class="form-input" placeholder="可在发布前调整" />
-                  <p class="mt-2 text-xs leading-5 text-slate-400">发布后案件列表、学生大厅和训练页都会显示这里的标题。</p>
                   </div>
                   <div>
                   <label class="form-label">最终发布类型</label>
@@ -307,7 +300,6 @@
                       {{ type }}
                     </option>
                   </select>
-                  <p class="mt-2 text-xs leading-5 text-slate-400">默认带入 AI 识别结果，你可以在发布前人工改成最终归类。</p>
                   </div>
                 </div>
                 <div class="mt-4">
@@ -532,7 +524,6 @@
                   <div class="section-block__eyebrow">辅助文案</div>
                   <div class="section-block__title">训练入口提示文案</div>
                 </div>
-                <div class="section-block__hint">这些内容用于帮助学员快速理解接警状态和现场第一印象。</div>
               </div>
               <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
               <div class="rounded-2xl border border-slate-100 bg-white p-5">
@@ -553,23 +544,6 @@
             <van-loading color="#1D3557" vertical>正在生成训练场景...</van-loading>
           </div>
           <div v-else class="space-y-4">
-            <div class="scene-workbench">
-              <div class="scene-workbench__header">
-                <div>
-                  <div class="scene-workbench__eyebrow">场景复核</div>
-                  <div class="scene-workbench__title">逐场景确认角色、文案与流程</div>
-                </div>
-                <div class="scene-workbench__hint">建议按概览、角色、文案的顺序检查。</div>
-              </div>
-              <div class="scene-workbench__legend">
-                <span class="scene-workbench__chip scene-workbench__chip--slate">场景概览</span>
-                <span class="scene-workbench__chip scene-workbench__chip--blue">角色分配</span>
-                <span class="scene-workbench__chip scene-workbench__chip--violet">训练文案</span>
-              </div>
-            </div>
-            <div class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              发布前请重点核对场景顺序、角色分配和训练提示是否准确。
-            </div>
             <div v-if="sceneGenerationWarning(aiParsedData)" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
               <div class="font-bold">{{ sceneGenerationLabel(aiParsedData) }}</div>
               <div class="mt-1">{{ sceneGenerationWarning(aiParsedData) }}</div>
@@ -582,7 +556,6 @@
               <div class="scene-editor-card__panel scene-editor-card__panel--summary">
                 <div class="scene-editor-card__section-head">
                   <div>
-                    <div class="scene-editor-card__eyebrow">概览</div>
                     <h4 class="scene-editor-card__title">{{ scene.scene_name }}</h4>
                   </div>
                 </div>
@@ -592,10 +565,8 @@
               <div class="scene-editor-card__panel scene-editor-card__panel--roles">
                 <div class="scene-editor-card__section-head">
                   <div>
-                    <div class="scene-editor-card__eyebrow">角色分配</div>
                     <div class="scene-editor-card__section-title">参与角色与主对话人</div>
                   </div>
-                  <div class="scene-editor-card__helper">先确认到场角色，再确认主对话人。</div>
                 </div>
                 <div class="mt-2 flex flex-wrap gap-2">
                   <span
@@ -606,7 +577,6 @@
                     {{ roleName }}
                   </span>
                 </div>
-                <div class="mt-2 text-xs text-slate-400">默认主对话人：{{ scene.primary_role_name || scene.roles?.[0] || '待人工确认' }}</div>
                 <div v-if="getSceneRoleRecommendation({ persons: aiParsedData.persons || [] }, { role_names: scene.roles || [] })" class="mt-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-700">
                   推荐理由：{{ getSceneRoleRecommendation({ persons: aiParsedData.persons || [] }, { role_names: scene.roles || [] })?.reason }}
                 </div>
@@ -614,11 +584,7 @@
 
               <div class="scene-editor-card__panel scene-editor-card__panel--copy">
                 <div class="scene-editor-card__section-head">
-                  <div>
-                    <div class="scene-editor-card__eyebrow">训练文案</div>
-                    <div class="scene-editor-card__section-title">接警简报与现场印象</div>
-                  </div>
-                  <div class="scene-editor-card__helper">用于帮助学员快速进入场景。</div>
+                  <div></div>
                 </div>
                 <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
                   <div class="preview-card">
@@ -651,7 +617,6 @@
       <div class="flex h-16 items-center justify-between border-b border-slate-100 bg-white px-6">
         <div>
           <h3 class="font-bold text-slate-800">案件详情与二次编辑</h3>
-          <p class="mt-1 text-xs text-slate-400">按模块分步审核：基础信息 → 角色 → 场景。</p>
         </div>
         <div class="flex items-center gap-3">
           <van-button plain size="small" :disabled="!editableCase" @click="resetEditableCase">重置修改</van-button>
@@ -677,19 +642,12 @@
               <span class="review-module-nav__label">{{ module.label }}</span>
             </button>
           </nav>
-          <p class="review-module-nav__hint">
-            当前：{{ reviewModules.find((item) => item.id === activeReviewModule)?.label || '基础信息' }}
-            <template v-if="activeReviewModule === 'scenes' && activeEditableScene">
-              · {{ activeEditableScene.name || `场景 ${activeSceneIndex + 1}` }}
-            </template>
-          </p>
 
           <section v-show="activeReviewModule === 'basic'" class="workspace-panel workspace-panel--indigo">
             <div class="workspace-panel__header">
               <div>
                 <div class="workspace-panel__eyebrow">01 基础信息</div>
                 <h4 class="workspace-panel__title">案件标题、分类与背景</h4>
-                <p class="workspace-panel__desc">确认案件名称、类型、背景与原文；空白项可 AI 补全。</p>
               </div>
               <van-button size="small" type="primary" class="!border-none !bg-[#1D3557]" :loading="supplementingAi" :disabled="!canRunAiSupplement" @click="runAiSupplement">
                 AI 补全
@@ -698,18 +656,15 @@
             <div class="workspace-panel__body">
           <section class="space-y-3 rounded-2xl border border-slate-100 bg-white p-4">
             <div class="supplement-toolbar supplement-toolbar--inline">
-              <div class="supplement-toolbar__desc">从原文自动填写空白的人物、场景与阶段；已填内容默认保留。</div>
               <van-button size="small" plain type="primary" :loading="supplementingAi" :disabled="!canRunAiSupplement" @click="runAiSupplement">
                 AI 补全全部
               </van-button>
             </div>
-            <p v-if="!canRunAiSupplement" class="text-xs text-slate-400">需保留案件原始文本后才能 AI 补全。</p>
             <div class="flex items-center justify-between gap-4">
               <div class="flex items-center gap-3">
                 <van-tag type="primary" round>{{ editableCase.case_type || '未分类' }}</van-tag>
                 <span class="text-xs font-bold uppercase tracking-widest text-slate-400">ID: #{{ editableCase.id }}</span>
               </div>
-              <span class="text-xs text-slate-400">{{ getCaseTypeGroup(editableCase.case_type) || '未分组' }}</span>
             </div>
 
             <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -778,7 +733,6 @@
                 <div>
                   <div class="workspace-panel__eyebrow">02 角色审核</div>
                   <h4 class="workspace-panel__title">角色信息复核</h4>
-                  <p class="workspace-panel__desc">确认角色姓名、身份、状态与人物设定；默认折叠，点开可编辑详情。</p>
                 </div>
                 <div class="workspace-panel__badge">人工复核</div>
               </div>
@@ -787,7 +741,6 @@
               <div class="flex items-center justify-between gap-3">
                 <div>
                   <div class="text-sm font-bold text-slate-700">角色模板</div>
-                  <p class="mt-1 text-xs leading-5 text-slate-400">可删除误提取角色，并修正姓名、身份、状态和人物设定。</p>
                 </div>
                 <div class="flex items-center gap-2">
                   <van-button
@@ -996,13 +949,12 @@
               <div>
                 <div class="workspace-panel__eyebrow">03 场景编辑</div>
                 <h4 class="workspace-panel__title">训练场景与流程配置</h4>
-                <p class="workspace-panel__desc">左侧选场景，右侧分「概览 / 角色与文案 / 流程配置」审核。</p>
               </div>
               <van-tag plain type="success">{{ (editableCase.scenes || []).length }} 个场景</van-tag>
             </div>
             <div class="workspace-panel__body">
             <section class="scene-studio rounded-2xl border border-slate-100 bg-white p-4">
-            <div v-if="!(editableCase.scenes || []).length" class="scene-studio__empty py-8 text-center text-sm text-slate-500">暂无场景，请先在「基础信息」中 AI 补全。</div>
+            <div v-if="!(editableCase.scenes || []).length" class="scene-studio__empty py-8 text-center text-sm text-slate-500">暂无场景</div>
             <div v-else class="scene-studio__layout">
               <aside class="scene-studio__nav">
                 <button
@@ -1037,10 +989,8 @@
               <div v-show="activeSceneTab === 'overview'" class="scene-editor-card__panel scene-editor-card__panel--summary">
                 <div class="scene-editor-card__section-head">
                   <div>
-                    <div class="scene-editor-card__eyebrow">场景概览</div>
                     <div class="scene-editor-card__section-title">场景名称、难度与描述</div>
                   </div>
-                  <div class="scene-editor-card__helper">先确认场景内容，再调整角色分配与流程。</div>
                 </div>
                 <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
@@ -1065,10 +1015,8 @@
               <div v-show="activeSceneTab === 'roles_copy'" v-if="editableCase.persons?.length" class="scene-editor-card__panel scene-editor-card__panel--roles">
                 <div class="scene-editor-card__section-head">
                   <div>
-                    <div class="scene-editor-card__eyebrow">角色分配</div>
                     <div class="scene-editor-card__section-title">参与角色与主对话人</div>
                   </div>
-                  <div class="scene-editor-card__helper">勾选本场景到场可对话角色；「主对话人」仅作默认推荐与排序，训练时仍可由导演安排多名角色发言。</div>
                 </div>
                 <div class="mt-3 flex flex-wrap gap-2">
                   <button
@@ -1105,10 +1053,7 @@
               <div v-show="activeSceneTab === 'flow'" class="space-y-4">
                 <div class="scene-editor-card__panel scene-editor-card__panel--copy">
                   <div class="scene-editor-card__section-head">
-                    <div>
-                      <div class="scene-editor-card__eyebrow">训练文案</div>
-                      <div class="scene-editor-card__section-title">接警简报与现场印象</div>
-                    </div>
+                    <div></div>
                   </div>
                   <div class="mt-3 grid grid-cols-1 gap-4">
                     <div>
@@ -1124,54 +1069,62 @@
 
                 <div class="scene-flow-panel">
                   <div class="scene-flow-panel__toolbar">
-                    <span class="scene-flow-panel__badge">{{ (scene.stagesModel || []).length }} 个阶段</span>
-                    <van-button plain size="small" @click="addStageToScene(scene)">新增阶段</van-button>
+                    <span class="scene-flow-panel__badge">{{ (scene.assessmentPointsModel || []).length }} 个考察点</span>
+                    <div class="scene-flow-panel__actions">
+                      <van-button
+                        v-if="(scene.assessmentPointsModel || []).length"
+                        size="small"
+                        class="persona-toolbar-button"
+                        :plain="!areAllSceneAssessmentPointsExpanded(scene)"
+                        type="primary"
+                        @click="toggleAllSceneAssessmentPoints(scene)"
+                      >
+                        {{ areAllSceneAssessmentPointsExpanded(scene) ? '全部收起' : '全部展开' }}
+                      </van-button>
+                      <van-button plain size="small" @click="addAssessmentPointToScene(scene)">新增考察点</van-button>
+                    </div>
                   </div>
 
-                  <div v-if="!(scene.stagesModel || []).length" class="scene-flow-panel__empty">
-                    暂无阶段。请先在「基础信息」使用 AI 补全，或点击「新增阶段」。
+                  <div v-if="!(scene.assessmentPointsModel || []).length" class="scene-flow-panel__empty">
+                    暂无考察点。请先在「基础信息」使用 AI 补全，或点击「新增考察点」。
                   </div>
 
                   <div
-                    v-for="(stage, stageIndex) in scene.stagesModel || []"
-                    :key="`${scene.id}-flow-${stageIndex}`"
-                    class="scene-flow-stage"
+                    v-for="(point, pointIndex) in scene.assessmentPointsModel || []"
+                    :key="`${scene.id}-ap-${point._editor_id || pointIndex}`"
+                    :class="['scene-flow-stage', point._collapsed ? 'scene-flow-stage--collapsed' : '']"
                   >
                     <div class="scene-flow-stage__head">
-                      <span class="scene-flow-stage__index">阶段 {{ Number(stageIndex) + 1 }}</span>
-                      <van-button plain size="mini" class="!text-rose-600" @click="removeStageFromScene(scene, Number(stageIndex))">删除</van-button>
-                    </div>
-                    <div class="scene-flow-stage__core">
-                      <div>
-                        <label class="form-label form-label--muted">阶段名称</label>
-                        <input v-model="stage.stage_name" type="text" class="form-input" placeholder="如：现场控制" />
-                      </div>
-                      <div>
-                        <label class="form-label form-label--muted">阶段目标</label>
-                        <textarea
-                          v-model="stage.stage_goal"
-                          rows="2"
-                          class="form-textarea"
-                          placeholder="本阶段学员需完成的核心任务"
-                        ></textarea>
+                      <span class="scene-flow-stage__index">考察点 {{ Number(pointIndex) + 1 }}</span>
+                      <div class="flex items-center gap-2">
+                        <span class="persona-stack-toggle" @click.stop="toggleAssessmentPointCollapsed(point)">{{ point._collapsed ? '展开详情' : '收起详情' }}</span>
+                        <van-button plain size="mini" class="!text-rose-600" @click="removeAssessmentPointFromScene(scene, Number(pointIndex))">删除</van-button>
                       </div>
                     </div>
-
-                    <div class="scene-flow-stage__audit">
+                    <div v-if="!point._collapsed" class="scene-flow-stage__core">
+                      <div class="scene-flow-stage__row">
+                        <div class="scene-flow-stage__col">
+                          <label class="form-label form-label--muted">考察点名称</label>
+                          <input v-model="point.label" type="text" class="form-input" placeholder="如：建立关系与基本信息核实" />
+                        </div>
+                        <div class="scene-flow-stage__col">
+                          <label class="form-label form-label--muted">考察内容</label>
+                          <textarea
+                            v-model="point.content"
+                            rows="1"
+                            class="form-textarea"
+                            placeholder="写清楚学员需要做到什么，评估时会据此核查对话内容是否满足。"
+                          ></textarea>
+                        </div>
+                      </div>
+                    </div>
+                    <div v-else class="scene-flow-stage__audit">
                       <span class="scene-flow-stage__stats">
-                        {{ getStageFlowStats(stage).pointCount }} 个考察点 · {{ getStageFlowStats(stage).actionCount }} 个动作
+                        {{ String(point.label || '').trim() ? '已配置' : '待补全' }}
                       </span>
-                      <div v-if="getStageFlowStats(stage).points.length" class="scene-flow-tag-list">
-                        <span
-                          v-for="(point, pointIndex) in getStageFlowStats(stage).points"
-                          :key="`${scene.id}-flow-tag-${stageIndex}-${pointIndex}`"
-                          class="scene-flow-tag"
-                          :class="{ 'scene-flow-tag--required': point.required }"
-                        >
-                          {{ point.label || `考察点 ${Number(pointIndex) + 1}` }}
-                        </span>
+                      <div class="mt-1 text-xs text-slate-500">
+                        {{ String(point.label || '').trim() || `考察点 ${Number(pointIndex) + 1}` }}
                       </div>
-                      <p v-else class="scene-flow-stage__hint">考察点与动作由 AI 补全，保存后生效。</p>
                     </div>
                   </div>
                 </div>
@@ -1200,6 +1153,8 @@ import {
   dedupeStringList,
   getSceneBoundaryFields,
   normalizeBehaviorTemplate,
+  PERSON_ALIAS_TO_CANONICAL,
+  PERSON_CANONICAL_FIELDS,
   policeAttitudeOptions,
   sceneBehaviorModeOptions,
   stateLevelOptions,
@@ -1261,6 +1216,92 @@ const getStageFlowStats = (stage: any) => {
   const points = Array.isArray(stage?.assessment_points) ? stage.assessment_points : []
   const actions = Array.isArray(stage?.action_catalog) ? stage.action_catalog : []
   return { pointCount: points.length, actionCount: actions.length, points, actions }
+}
+
+let assessmentPointSeed = 1
+
+const normalizeAssessmentPointEditors = (points: any) => {
+  if (!Array.isArray(points)) return []
+  return points.map((point: any, index: number) => ({
+    ...createPointEditor(point, index),
+    _editor_id: Number(point?._editor_id) || assessmentPointSeed++,
+    _collapsed: typeof point?._collapsed === 'boolean' ? point._collapsed : true,
+    content: String(point?.content || point?.requirement || '').trim(),
+  }))
+}
+
+const normalizeAssessmentPointsFromStages = (stagesModel: any[]) => {
+  const points: any[] = []
+  for (const stage of stagesModel || []) {
+    const stagePoints = Array.isArray(stage?.assessment_points) ? stage.assessment_points : []
+    points.push(...stagePoints)
+  }
+  return normalizeAssessmentPointEditors(points)
+}
+
+const ensureSceneAssessmentPointsModel = (scene: any) => {
+  if (!scene) return
+  if (!Array.isArray(scene.assessmentPointsModel)) {
+    scene.assessmentPointsModel = normalizeAssessmentPointsFromStages(scene.stagesModel || [])
+  }
+}
+
+const addAssessmentPointToScene = (scene: any) => {
+  if (!scene) return
+  ensureSceneAssessmentPointsModel(scene)
+  const nextIndex = (scene.assessmentPointsModel || []).length
+  scene.assessmentPointsModel.push({
+    ...createPointEditor({ label: `考察点 ${nextIndex + 1}` }, nextIndex),
+    _editor_id: assessmentPointSeed++,
+    _collapsed: false,
+    content: '',
+  })
+}
+
+const removeAssessmentPointFromScene = (scene: any, index: number) => {
+  if (!scene) return
+  ensureSceneAssessmentPointsModel(scene)
+  scene.assessmentPointsModel = (scene.assessmentPointsModel || []).filter((_: any, i: number) => i !== index)
+}
+
+const toggleAssessmentPointCollapsed = (point: any) => {
+  if (!point) return
+  point._collapsed = !point._collapsed
+}
+
+const areAllSceneAssessmentPointsExpanded = (scene: any) => {
+  const points = scene?.assessmentPointsModel || []
+  return Array.isArray(points) && points.length > 0 && points.every((item: any) => !item?._collapsed)
+}
+
+const collapseAllSceneAssessmentPoints = (scene: any) => {
+  ensureSceneAssessmentPointsModel(scene)
+  for (const item of scene?.assessmentPointsModel || []) {
+    item._collapsed = true
+  }
+}
+
+const expandAllSceneAssessmentPoints = (scene: any) => {
+  ensureSceneAssessmentPointsModel(scene)
+  for (const item of scene?.assessmentPointsModel || []) {
+    item._collapsed = false
+  }
+}
+
+const toggleAllSceneAssessmentPoints = (scene: any) => {
+  if (areAllSceneAssessmentPointsExpanded(scene)) {
+    collapseAllSceneAssessmentPoints(scene)
+    return
+  }
+  expandAllSceneAssessmentPoints(scene)
+}
+
+const serializeAssessmentPointsForSave = (pointsModel: any[]) => {
+  return (Array.isArray(pointsModel) ? pointsModel : []).map((point: any, index: number) => ({
+    id: String(point?.id || `ap_${index + 1}`).trim(),
+    label: String(point?.label || '').trim(),
+    content: String(point?.content || '').trim(),
+  }))
 }
 
 const resetReviewWorkspace = () => {
@@ -1430,6 +1471,8 @@ const safeJsonParse = (value: any, fallback: any) => {
   }
 }
 
+const CASE_SCHEMA_VERSION = '2026.05.canonical-v1'
+
 const normalizePersonEditors = (persons: any, options: { collapsed?: boolean } = {}) => {
   if (!Array.isArray(persons)) return []
   return persons.map((person: any) => {
@@ -1556,6 +1599,42 @@ const updatePersonListField = (person: any, field: string, rawValue: string) => 
     .split('\n')
     .map((item) => item.trim())
     .filter(Boolean))
+}
+
+const toComparableList = (value: any) => {
+  if (Array.isArray(value)) return dedupeStringList(value)
+  const text = String(value || '').trim()
+  return text ? [text] : []
+}
+
+const listEquals = (left: any, right: any) => {
+  const leftList = toComparableList(left)
+  const rightList = toComparableList(right)
+  if (leftList.length !== rightList.length) return false
+  return leftList.every((item, idx) => item === rightList[idx])
+}
+
+const getPersonDedupInsights = (person: any) => {
+  const issues: string[] = []
+  for (const [alias, canonical] of Object.entries(PERSON_ALIAS_TO_CANONICAL)) {
+    const aliasValue = person?.[alias]
+    const canonicalValue = person?.[canonical]
+    if (!toComparableList(aliasValue).length || !toComparableList(canonicalValue).length) continue
+    if (!listEquals(aliasValue, canonicalValue)) {
+      issues.push(`${alias} 与 ${canonical} 不一致，将以 ${canonical} 为准`)
+    }
+  }
+
+  const merged = normalizeBehaviorTemplate(person || {})
+  const mergedPreview = [
+    merged.current_goal ? `诉求=${merged.current_goal}` : '',
+    merged.core_concern ? `顾虑=${merged.core_concern}` : '',
+    merged.trigger_points?.length ? `触发点(${merged.trigger_points.length})` : '',
+    merged.calming_points?.length ? `安抚点(${merged.calming_points.length})` : '',
+    merged.scene_behavior_mode ? `模式=${merged.scene_behavior_mode}` : '',
+  ].filter(Boolean)
+
+  return { issues, mergedPreview }
 }
 
 const getCompactPersonaSummary = (person: any) => buildBehaviorSummary(person)
@@ -1761,6 +1840,9 @@ const validatePersonsBeforeSave = (persons: any[]) => {
 const serializePersonsForSave = (persons: any[]) => {
   return (persons || []).map((person: any) => {
     const cloned = { ...person }
+    for (const [alias, canonical] of Object.entries(PERSON_ALIAS_TO_CANONICAL)) {
+      if (!cloned[canonical] && cloned[alias]) cloned[canonical] = cloned[alias]
+    }
     delete cloned._editor_id
     delete cloned._original_name
     delete cloned._collapsed
@@ -1890,6 +1972,7 @@ const normalizeSceneEditors = (scenes: any, structuredData: any, persons: any[])
       stagesText: stringifyStages(scene.stages),
       stagesModel,
       stagesAdvanced: false,
+      assessmentPointsModel: normalizeAssessmentPointsFromStages(stagesModel),
       role_names: normalizedRoleNames,
       primary_role_name: normalizedRoleNames.includes(mappedPrimaryRoleName)
         ? mappedPrimaryRoleName
@@ -2494,6 +2577,9 @@ const applyCaseCompletionPayload = (target: any, payload: any, rawText: string) 
     case_type: target.case_type,
     case_background: target.background,
     persons: serializePersonsForSave(target.persons || []),
+    schema_version: CASE_SCHEMA_VERSION,
+    canonical_person_fields: PERSON_CANONICAL_FIELDS,
+    canonical_alias_map: PERSON_ALIAS_TO_CANONICAL,
     rawText,
   }
   target.structured_data = JSON.stringify(structuredData, null, 2)
@@ -2554,8 +2640,28 @@ const saveCaseDetail = async () => {
 
   const scenesPayload = []
   for (const scene of editableCase.value.scenes || []) {
-    let parsedStages = []
-    parsedStages = serializeStageEditors(scene.stagesModel || [])
+    ensureSceneAssessmentPointsModel(scene)
+    const parsedStages = [
+      {
+        stage_name: '考察点',
+        stage_goal: '',
+        recommended_prompts: [],
+        assessment_points: serializeAssessmentPointsForSave(scene.assessmentPointsModel || []),
+        action_catalog: [],
+        completion_rules: {
+          min_user_turns: 3,
+          required_point_ids: [],
+          required_action_ids: [],
+        },
+        end_conditions: {
+          must_complete_current_stage: true,
+          required_point_ids: [],
+          required_action_ids: [],
+          closure_actions: [],
+          closing_script: '',
+        },
+      },
+    ]
     scene.stagesText = JSON.stringify(parsedStages, null, 2)
 
     scenesPayload.push({
@@ -2580,6 +2686,9 @@ const saveCaseDetail = async () => {
       case_type: editableCase.value.case_type,
       case_background: editableCase.value.background,
       persons: personsPayload,
+      schema_version: CASE_SCHEMA_VERSION,
+      canonical_person_fields: PERSON_CANONICAL_FIELDS,
+      canonical_alias_map: PERSON_ALIAS_TO_CANONICAL,
       rawText: editableCase.value.original_content,
     }
 
@@ -2989,6 +3098,14 @@ onMounted(refreshCasesPage)
   border: 1px solid #e2e8f0;
   border-radius: 14px;
   background: #f8fafc;
+  width: 100%;
+  max-width: 100%;
+  transition: max-width 0.2s ease, padding 0.2s ease;
+}
+
+.scene-flow-stage--collapsed {
+  max-width: 100%;
+  padding: 8px 12px;
 }
 
 .scene-flow-stage__head {
@@ -3005,15 +3122,13 @@ onMounted(refreshCasesPage)
 }
 
 .scene-flow-stage__core {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  display: block;
 }
 
 .scene-flow-stage__audit {
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px dashed #e2e8f0;
+  margin-top: 6px;
+  padding-top: 0;
+  border-top: none;
 }
 
 .scene-flow-stage__stats {
@@ -3021,7 +3136,27 @@ onMounted(refreshCasesPage)
   font-size: 12px;
   font-weight: 600;
   color: #64748b;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
+}
+
+.scene-flow-stage__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.scene-flow-stage__row .form-input,
+.scene-flow-stage__row .form-textarea {
+  min-height: 44px;
+}
+
+.scene-flow-stage__row .form-textarea {
+  resize: vertical;
+}
+
+.scene-flow-stage__col {
+  min-width: 0;
 }
 
 .scene-flow-stage__hint {
@@ -4092,6 +4227,36 @@ onMounted(refreshCasesPage)
 
 .source-panel__textarea {
   font-family: 'KaiTi', 'STKaiti', 'FangSong', serif;
+}
+
+/* 全局精简：隐藏说明性小字，保留核心输入信息 */
+.cases-compact .section-block__hint,
+.cases-compact .workspace-panel__desc,
+.cases-compact .workspace-panel__badge,
+.cases-compact .scene-editor-card__helper,
+.cases-compact .supplement-toolbar__desc,
+.cases-compact .source-panel__meta,
+.cases-compact .preview-label,
+.cases-compact .mode-card__desc,
+.cases-compact .section-block__eyebrow,
+.cases-compact .workspace-panel__eyebrow,
+.cases-compact .review-module-nav__step,
+.cases-compact .scene-editor-card__section-title,
+.cases-compact p.mt-1.text-xs,
+.cases-compact p.mt-2.text-xs,
+.cases-compact p.text-xs,
+.cases-compact .text-xs.text-slate-400 {
+  display: none !important;
+}
+
+/* 视觉收敛：统一更简约的大卡片风格 */
+.cases-compact .section-block,
+.cases-compact .workspace-panel,
+.cases-compact .scene-editor-card {
+  border-color: #e2e8f0;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: none;
 }
 
 @media (max-width: 960px) {

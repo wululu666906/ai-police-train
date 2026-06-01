@@ -100,7 +100,7 @@
             <div class="resume-meta">
               <span>{{ scene.name }}</span>
               <span>会话 #{{ scene.active_session_id }}</span>
-              <span>{{ scene.difficulty || '中等' }}</span>
+              <span>{{ normalizeDifficulty(scene.difficulty || '中等') }}</span>
               <span :class="scene.active_session_is_empty ? 'meta-empty' : 'meta-active'">
                 {{ scene.active_session_is_empty ? '仅创建未开聊' : '已有进行中对话' }}
               </span>
@@ -174,7 +174,7 @@
               <div class="scene-main">
                 <div class="scene-name">{{ scene.name }}</div>
                 <div class="scene-meta">
-                  <span>{{ scene.difficulty || '中等' }}</span>
+                  <span>{{ normalizeDifficulty(scene.difficulty || '中等') }}</span>
                   <span :class="scene.has_active_session ? 'meta-active' : 'meta-idle'">
                     {{ scene.has_active_session ? '进行中' : '未开始' }}
                   </span>
@@ -242,7 +242,7 @@
               <div>
                 <div class="scene-name">{{ scene.name }}</div>
                 <div class="scene-meta">
-                  <span>{{ scene.difficulty || '中等' }}</span>
+                  <span>{{ normalizeDifficulty(scene.difficulty || '中等') }}</span>
                   <span :class="scene.has_active_session ? 'meta-active' : 'meta-idle'">
                     {{ scene.has_active_session ? '进行中' : '未开始' }}
                   </span>
