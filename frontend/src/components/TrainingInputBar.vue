@@ -1,15 +1,30 @@
 <template>
   <div class="training-input-bar">
-    <div class="composer-row">
-      <VoiceRecordingBar
-        v-if="isVoiceActive"
-        ref="voiceBarRef"
-        :elapsed-label="voiceElapsedLabel"
-        @cancel="cancelVoiceListening"
-        @confirm="confirmVoiceListening"
-      />
+    <div v-if="inputMode === 'voice'" class="mode-switch">
+      <button type="button" class="mode-switch__link" :disabled="disabled || inVoiceCall" @click="inputMode = 'typing'">
+        切换打字输入
+      </button>
+    </div>
+    <div v-else class="mode-switch">
+      <button type="button" class="mode-switch__link" :disabled="disabled" @click="inputMode = 'voice'">
+        切换语音说话
+      </button>
+    </div>
 
-      <div v-else class="input-shell" :class="{ 'is-disabled': disabled }">
+    <VoiceCallDock
+      v-if="inputMode === 'voice'"
+      :in-call="inVoiceCall"
+      :is-muted="isMicMuted"
+      :is-ending="isEndingCall"
+      :disabled="disabled || loading"
+      :live-text="liveTranscript"
+      :idle-hint="voiceIdleHint"
+      @toggle-mic="onToggleMic"
+      @close="onCloseVoice"
+    />
+
+    <div v-else class="composer-row">
+      <div class="input-shell" :class="{ 'is-disabled': disabled }">
         <textarea
           ref="textareaRef"
           :value="modelValue"
@@ -20,30 +35,12 @@
           @input="onTextInput"
           @keydown.enter.exact.prevent="emitSend"
         ></textarea>
-        <button
-          type="button"
-          class="mic-btn"
-          :disabled="disabled || !speech.isSupported()"
-          title="点击开始听写，说完约 2 秒自动结束"
-          @click="startVoiceListening"
-        >
-          <svg class="mic-btn__icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.7" />
-            <path
-              d="M6 11a6 6 0 0 0 12 0"
-              stroke="currentColor"
-              stroke-width="1.7"
-              stroke-linecap="round"
-            />
-            <path d="M12 17v3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
-          </svg>
-        </button>
       </div>
 
       <button
         type="button"
         class="send-btn-card"
-        :disabled="!modelValue.trim() || disabled || loading || isVoiceActive"
+        :disabled="!modelValue.trim() || disabled || loading"
         @click="emitSend"
       >
         {{ loading ? '发送中' : '发送' }}
@@ -53,14 +50,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import { showToast } from 'vant'
 import { useSpeechInput } from '../composables/useSpeechInput'
 import {
   acquireSharedMicrophoneLease,
   type MicrophoneLease,
 } from '../composables/useSharedMicrophone'
-import VoiceRecordingBar from './VoiceRecordingBar.vue'
+import VoiceCallDock from './VoiceCallDock.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -79,42 +76,28 @@ const props = withDefaults(
 const emit = defineEmits<{
   'update:modelValue': [value: string]
   send: []
+  'voice-send': [transcript: string]
 }>()
 
+type InputMode = 'voice' | 'typing'
+
+const MIN_UTTERANCE_LEN = 2
+
+const inputMode = ref<InputMode>('voice')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
-const isVoiceActive = ref(false)
-const voiceSessionBase = ref('')
-const recognizedInSession = ref('')
-const lastSessionDisplay = ref('')
-const voiceElapsedSeconds = ref(0)
-let voiceTimerId: ReturnType<typeof setInterval> | null = null
+const inVoiceCall = ref(false)
+const isMicMuted = ref(false)
+const isEndingCall = ref(false)
+const liveTranscript = ref('')
+const voiceIdleHint = '点击麦克风开始，说完自动发送'
+const pendingUtterances = ref<string[]>([])
 let microphoneLease: MicrophoneLease | null = null
+let micStream: MediaStream | null = null
 
 const speech = useSpeechInput()
-const voiceBarRef = ref<InstanceType<typeof VoiceRecordingBar> | null>(null)
-
-const voiceElapsedLabel = computed(() => {
-  const total = voiceElapsedSeconds.value
-  const minutes = Math.floor(total / 60)
-  const seconds = total % 60
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`
-})
-
-const appendText = (base: string, chunk: string) => {
-  const prefix = base.trim()
-  const addition = chunk.trim()
-  if (!addition) return prefix
-  if (!prefix) return addition
-  const joiner = /[，。！？；：、]$/.test(prefix) ? '' : ' '
-  return `${prefix}${joiner}${addition}`
-}
-
-const updateModel = (value: string) => {
-  emit('update:modelValue', value)
-}
 
 const onTextInput = (event: Event) => {
-  updateModel((event.target as HTMLTextAreaElement).value)
+  emit('update:modelValue', (event.target as HTMLTextAreaElement).value)
   resizeTextarea()
 }
 
@@ -125,165 +108,167 @@ const resizeTextarea = () => {
   el.style.height = `${Math.min(el.scrollHeight, 120)}px`
 }
 
-const startVoiceTimer = () => {
-  stopVoiceTimer()
-  voiceElapsedSeconds.value = 0
-  voiceTimerId = setInterval(() => {
-    voiceElapsedSeconds.value += 1
-  }, 1000)
-}
-
-const stopVoiceTimer = () => {
-  if (voiceTimerId) {
-    clearInterval(voiceTimerId)
-    voiceTimerId = null
-  }
-  voiceElapsedSeconds.value = 0
-}
-
-const stopMicVisual = () => {
-  voiceBarRef.value?.stopWaveformCapture()
-}
-
-const releaseVoiceMicrophone = () => {
-  stopMicVisual()
+const releaseMicrophone = () => {
   microphoneLease?.release()
   microphoneLease = null
+  micStream = null
+}
+
+const setMicTracksEnabled = (enabled: boolean) => {
+  micStream?.getAudioTracks().forEach((track) => {
+    track.enabled = enabled
+  })
+  isMicMuted.value = !enabled
 }
 
 const emitSend = () => {
   if (!props.modelValue.trim() || props.disabled || props.loading) return
-  if (isVoiceActive.value) {
-    stopVoiceListening(false)
-  }
   emit('send')
   requestAnimationFrame(() => resizeTextarea())
 }
 
-const startVoiceListening = async () => {
+const isUtteranceValid = (transcript: string) => transcript.trim().length >= MIN_UTTERANCE_LEN
+
+const drainPendingUtterances = () => {
+  if (!inVoiceCall.value || props.disabled || isEndingCall.value || props.loading) return
+  while (pendingUtterances.value.length > 0) {
+    if (props.loading) break
+    const next = pendingUtterances.value.shift()
+    if (!next || !isUtteranceValid(next)) continue
+    liveTranscript.value = ''
+    emit('voice-send', next)
+    if (props.loading) break
+  }
+  if (!props.loading && pendingUtterances.value.length) {
+    liveTranscript.value = '等待上一条回复后再发送…'
+  }
+}
+
+watch(
+  () => props.loading,
+  (loading) => {
+    if (!loading) {
+      drainPendingUtterances()
+    }
+  }
+)
+
+const dispatchUtterance = (transcript: string) => {
+  if (!inVoiceCall.value || isMicMuted.value || !isUtteranceValid(transcript)) {
+    return
+  }
+
+  if (props.loading || props.disabled) {
+    pendingUtterances.value.push(transcript)
+    liveTranscript.value = '等待上一条回复后再发送…'
+    return
+  }
+
+  liveTranscript.value = ''
+  emit('voice-send', transcript)
+}
+
+const ensureMicReady = async () => {
   const providerReady = await speech.prepareProviderForListening()
   if (!providerReady || !speech.isSupported()) {
-    showToast(speech.getUnsupportedReason() || speech.errorMessage.value || '当前环境不支持语音听写')
-    return
+    showToast(speech.getUnsupportedReason() || speech.errorMessage.value || '当前环境不支持语音')
+    return false
   }
 
-  if (speech.providerLabel.value !== '科大讯飞听写') {
-    showToast(`当前使用${speech.providerLabel.value}，如需讯飞请确认已登录且 backend/.env 已配置密钥`)
+  if (!microphoneLease) {
+    try {
+      const lease = await acquireSharedMicrophoneLease()
+      microphoneLease = lease
+      micStream = lease.stream
+    } catch {
+      showToast('无法访问麦克风，请检查浏览器权限')
+      return false
+    }
   }
 
-  let mediaStream: MediaStream
-  try {
-    const lease = await acquireSharedMicrophoneLease()
-    microphoneLease = lease
-    mediaStream = lease.stream
-  } catch {
-    showToast('无法访问麦克风，请检查浏览器权限')
-    return
-  }
+  return true
+}
 
-  voiceSessionBase.value = props.modelValue
-  recognizedInSession.value = ''
-  lastSessionDisplay.value = ''
-  isVoiceActive.value = true
+const startVoiceCallSession = async () => {
+  if (props.disabled || props.loading || inVoiceCall.value) return
+  if (!(await ensureMicReady())) return
+
+  pendingUtterances.value = []
+  liveTranscript.value = ''
+  isMicMuted.value = false
+  setMicTracksEnabled(true)
+  inVoiceCall.value = true
   speech.resetSession()
-  startVoiceTimer()
 
-  await nextTick()
-  voiceBarRef.value?.startWaveformDisplay()
-
-  const composeModel = (sessionText: string) => appendText(voiceSessionBase.value, sessionText)
-
-  const applySessionDisplay = (sessionDisplay: string) => {
-    const next = sessionDisplay.trim()
-    if (!next) return
-
-    lastSessionDisplay.value = next
-    recognizedInSession.value = next
-    updateModel(composeModel(next))
-  }
-
-  speech.startListening(
+  speech.startVoiceCall(
     {
-      onInterim: (sessionDisplay) => {
-        if (!isVoiceActive.value) return
-        applySessionDisplay(sessionDisplay)
-        requestAnimationFrame(() => resizeTextarea())
+      onInterim: (text) => {
+        if (!inVoiceCall.value || isMicMuted.value) return
+        liveTranscript.value = text
       },
-      onAppendFinal: (chunk) => {
-        if (!isVoiceActive.value) return
-        const trimmed = chunk.trim()
-        if (!trimmed) return
-        applySessionDisplay(
-          recognizedInSession.value ? appendText(recognizedInSession.value, trimmed) : trimmed
-        )
-        requestAnimationFrame(() => resizeTextarea())
-      },
-      onAutoEnd: () => {
-        if (isVoiceActive.value) {
-          stopVoiceListening(false)
-        }
+      onUtteranceEnd: (transcript) => {
+        dispatchUtterance(transcript)
       },
       onError: () => {
-        if (!isVoiceActive.value) return
-        isVoiceActive.value = false
-        stopVoiceTimer()
-        releaseVoiceMicrophone()
-        showToast(speech.errorMessage.value || '语音听写失败')
+        inVoiceCall.value = false
+        isEndingCall.value = false
+        pendingUtterances.value = []
+        releaseMicrophone()
+        showToast(speech.errorMessage.value || '语音识别失败')
       },
     },
-    {
-      mediaStream,
-      onAudioLevel: (level) => {
-        voiceBarRef.value?.pushAudioLevel(level)
-      },
-    }
+    { mediaStream: micStream || undefined }
   )
 }
 
-const stopVoiceListening = (showEmptyHint: boolean) => {
-  if (!isVoiceActive.value) return
+const onToggleMic = async () => {
+  if (props.disabled || props.loading || isEndingCall.value) return
 
-  const pendingInterim = speech.stopListening()
-  isVoiceActive.value = false
-  stopVoiceTimer()
-  releaseVoiceMicrophone()
-
-  const interim = pendingInterim.trim()
-  if (interim) {
-    const merged = appendText(voiceSessionBase.value, interim)
-    updateModel(merged)
-    voiceSessionBase.value = merged
-    requestAnimationFrame(() => resizeTextarea())
+  if (!inVoiceCall.value) {
+    await startVoiceCallSession()
+    return
   }
 
-  if (showEmptyHint && !props.modelValue.trim()) {
-    showToast('未识别到语音内容，请重试')
+  setMicTracksEnabled(isMicMuted.value)
+  if (isMicMuted.value) {
+    liveTranscript.value = '麦克风已关闭'
   }
 }
 
-const cancelVoiceListening = () => {
-  if (!isVoiceActive.value) return
+const onCloseVoice = async () => {
+  if (!inVoiceCall.value || props.disabled || props.loading || isEndingCall.value) return
 
-  speech.cancelListening()
-  isVoiceActive.value = false
-  stopVoiceTimer()
-  releaseVoiceMicrophone()
-  updateModel(voiceSessionBase.value)
-  recognizedInSession.value = ''
-  lastSessionDisplay.value = ''
-}
+  isEndingCall.value = true
+  setMicTracksEnabled(true)
 
-const confirmVoiceListening = () => {
-  stopVoiceListening(true)
+  try {
+    const tail = await speech.hangUpVoiceCall()
+    inVoiceCall.value = false
+    liveTranscript.value = ''
+    pendingUtterances.value = []
+    releaseMicrophone()
+
+    if (tail && isUtteranceValid(tail) && !props.loading) {
+      emit('voice-send', tail)
+    }
+  } catch {
+    showToast('结束通话失败，请重试')
+    speech.cancelVoiceCall()
+    inVoiceCall.value = false
+    liveTranscript.value = ''
+    pendingUtterances.value = []
+    releaseMicrophone()
+  } finally {
+    isEndingCall.value = false
+  }
 }
 
 onBeforeUnmount(() => {
-  if (isVoiceActive.value) {
-    speech.cancelListening()
-    isVoiceActive.value = false
+  if (inVoiceCall.value) {
+    speech.cancelVoiceCall()
+    inVoiceCall.value = false
   }
-  stopVoiceTimer()
-  releaseVoiceMicrophone()
+  releaseMicrophone()
 })
 </script>
 
@@ -291,7 +276,27 @@ onBeforeUnmount(() => {
 .training-input-bar {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+}
+
+.mode-switch {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.mode-switch__link {
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+
+.mode-switch__link:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .composer-row {
@@ -305,16 +310,10 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-end;
   min-height: 40px;
-  padding: 6px 6px 6px 12px;
+  padding: 6px 12px;
   border-radius: 8px;
   background: #fff;
   border: 1px solid rgba(15, 23, 42, 0.06);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.input-shell:focus-within {
-  border-color: rgba(18, 183, 245, 0.35);
-  box-shadow: 0 0 0 2px rgba(18, 183, 245, 0.08);
 }
 
 .input-shell.is-disabled {
@@ -328,7 +327,7 @@ onBeforeUnmount(() => {
   max-height: 120px;
   resize: none;
   border: none;
-  padding: 4px 8px 4px 0;
+  padding: 4px 0;
   background: transparent;
   font-size: 15px;
   line-height: 1.45;
@@ -338,38 +337,6 @@ onBeforeUnmount(() => {
 
 .input-box::placeholder {
   color: #94a3b8;
-}
-
-.input-box:disabled {
-  color: #94a3b8;
-  cursor: not-allowed;
-}
-
-.mic-btn {
-  flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  margin-bottom: 1px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: #64748b;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  user-select: none;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.mic-btn__icon {
-  width: 22px;
-  height: 22px;
-}
-
-.mic-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }
 
 .send-btn-card {
@@ -383,32 +350,23 @@ onBeforeUnmount(() => {
   color: #fff;
   font-size: 15px;
   font-weight: 600;
-  line-height: 1;
   cursor: pointer;
-  white-space: nowrap;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 2px 8px rgba(18, 183, 245, 0.28);
-  transition: background 0.15s ease, opacity 0.15s ease, transform 0.12s ease;
-}
-
-.send-btn-card:not(:disabled):active {
-  transform: scale(0.98);
-  background: #0fa8e0;
 }
 
 .send-btn-card:disabled {
   background: #a8ddf3;
-  color: rgba(255, 255, 255, 0.92);
-  box-shadow: none;
   cursor: not-allowed;
 }
-
-@media (max-width: 768px) {
-  .send-btn-card {
-    min-width: 60px;
-    padding: 0 14px;
-  }
-}
 </style>
+
+
+
+
+
+
+
+
+
+
+
+

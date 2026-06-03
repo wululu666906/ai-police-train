@@ -75,7 +75,6 @@
         <article v-for="record in records" :key="record.id" class="history-card">
           <div class="card-top">
             <div>
-              <div class="record-id">会话 #{{ record.id }}</div>
               <h3 class="record-title">{{ record.case_title }}</h3>
               <div v-if="record.status !== 'finished'" class="record-substatus" :class="{ empty: record.is_empty_session }">
                 {{ record.is_empty_session ? '仅创建未开聊' : '已有进行中对话' }}
@@ -515,14 +514,8 @@ onMounted(fetchHistory)
   gap: 12px;
 }
 
-.record-id {
-  font-size: 12px;
-  color: #6b7c93;
-  font-weight: 700;
-}
-
 .record-title {
-  margin: 6px 0 0;
+  margin: 0;
   color: #1d2129;
   font-size: 18px;
 }

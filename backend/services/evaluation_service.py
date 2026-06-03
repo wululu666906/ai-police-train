@@ -19,6 +19,21 @@ DIMENSIONS = [
     ("信息获取效率", 15),
 ]
 
+GRADE_LEVELS: List[Tuple[int, str]] = [
+    (90, "卓越"),
+    (80, "优秀"),
+    (70, "良好"),
+    (60, "合格"),
+    (0, "需改进"),
+]
+
+ASSESSMENT_WEIGHTED_DIMENSIONS = {
+    "执法流程完整性": 0.55,
+    "信息获取效率": 0.45,
+}
+
+_STATUS_RANK = {"hit": 3, "partial": 2, "missed": 1}
+
 SCENE_RUBRICS = {
     "接警": [
         "优先确认地点、身份、伤情、风险和是否仍在持续。",
@@ -72,12 +87,20 @@ EVALUATION_PROMPT_TEMPLATE = """
 参考知识：
 {knowledge_base}
 
+评分锚点（必须遵守，不得随意给高分）：
+- 90-100：关键流程完整、追问连续、无明显规范问题，且大部分必考点已覆盖。
+- 75-89：主体流程到位，但存在 1-2 项明显遗漏或表述不够规范。
+- 60-74：能维持基本沟通，但流程缺口较多，或必考点完成不足一半。
+- 40-59：仅完成少量基础动作，关键事实、风险或身份核实明显不足。
+- 0-39：有效轮次过少、对话偏离目标，或出现明显不规范/激化冲突表达。
+
 输出要求：
-1. 每个维度都必须给出 score、full_score、reason。
-2. reason 必须引用具体轮次、具体发言或具体动作。
-3. strengths / improvements 必须具体、可执行。
-4. 不要因为 AI 角色说得多就高分，要看学员是否通过连续追问和动作推进拿到信息。
-5. 只输出合法 JSON。
+1. 每个维度都必须给出 score、full_score、reason；各维度 score 之和必须等于 total_score。
+2. reason 必须引用具体轮次、具体发言或具体动作，并说明扣分依据（如“未核实地点，扣 X 分”）。
+3. assessment_check_results 必须与“考察点要求表”逐条对应，不得遗漏 id。
+4. strengths / improvements 必须具体、可执行，各 2-4 条。
+5. 不要因为 AI 角色说得多就高分，要看学员是否通过连续追问和动作推进拿到信息。
+6. 只输出合法 JSON。
 
 严格输出 JSON：
 {{
@@ -526,6 +549,215 @@ def build_knowledge_hits(case: Any, scene: Any, scene_type: str, limit: int = 5,
     return hits[:limit]
 
 
+def compute_grade_level(total_score: int) -> str:
+    score = max(0, min(100, int(total_score or 0)))
+    for threshold, label in GRADE_LEVELS:
+        if score >= threshold:
+            return label
+    return "需改进"
+
+
+def _resolve_point_status(runtime_status: str | None, llm_status: str | None) -> str:
+    runtime_rank = _STATUS_RANK.get(str(runtime_status or "").strip(), 0)
+    llm_rank = _STATUS_RANK.get(str(llm_status or "").strip(), 0)
+    best = max(runtime_rank, llm_rank)
+    if best >= 3:
+        return "hit"
+    if best == 2:
+        return "partial"
+    return "missed"
+
+
+def _score_from_point_status(status: str, weight: int) -> int:
+    weight = max(1, int(weight or 10))
+    if status == "hit":
+        return weight
+    if status == "partial":
+        return max(1, weight // 2)
+    return 0
+
+
+def _default_point_feedback(point: dict) -> str:
+    status = str(point.get("status") or "missed")
+    evidence = point.get("evidence") or []
+    evidence_text = "；".join(_dedupe_strings(evidence)[:2])
+    if status == "hit":
+        return f"已达考察要求。{('依据：' + evidence_text) if evidence_text else ''}".strip()
+    if status == "partial":
+        return f"部分达成，仍需补全关键环节。{('已出现：' + evidence_text) if evidence_text else ''}".strip()
+    return "未在对话或动作中发现有效完成痕迹，建议按阶段要求补做。"
+
+
+def merge_assessment_point_results(
+    runtime_points: List[dict],
+    llm_points: List[dict],
+    requirement_rows: List[dict],
+) -> List[dict]:
+    req_map = {str(row.get("id") or "").strip(): row for row in requirement_rows if str(row.get("id") or "").strip()}
+    runtime_map = {str(point.get("id") or "").strip(): point for point in runtime_points if str(point.get("id") or "").strip()}
+    llm_map = {str(point.get("id") or "").strip(): point for point in llm_points if str(point.get("id") or "").strip()}
+    ordered_ids = [str(row.get("id") or "").strip() for row in requirement_rows if str(row.get("id") or "").strip()]
+    for point_id in runtime_map:
+        if point_id not in ordered_ids:
+            ordered_ids.append(point_id)
+    for point_id in llm_map:
+        if point_id not in ordered_ids:
+            ordered_ids.append(point_id)
+
+    merged: List[dict] = []
+    for point_id in ordered_ids:
+        runtime_point = runtime_map.get(point_id) or {}
+        llm_point = llm_map.get(point_id) or {}
+        req_row = req_map.get(point_id) or {}
+        label = str(runtime_point.get("label") or llm_point.get("label") or req_row.get("label") or "未命名考察点").strip()
+        weight = max(1, int(runtime_point.get("weight") or req_row.get("weight") or 10))
+        status = _resolve_point_status(runtime_point.get("status"), llm_point.get("status"))
+        evidence = _dedupe_strings((runtime_point.get("evidence") or []) + (llm_point.get("evidence") or []))[:3]
+        feedback = str(llm_point.get("reason") or llm_point.get("feedback") or runtime_point.get("feedback") or "").strip()
+        if not feedback:
+            feedback = _default_point_feedback({"status": status, "evidence": evidence})
+        merged.append(
+            {
+                "id": point_id,
+                "label": label,
+                "content": str(req_row.get("content") or llm_point.get("content") or "").strip(),
+                "stage_name": str(runtime_point.get("stage_name") or req_row.get("stage_name") or llm_point.get("stage_name") or "").strip(),
+                "category": str(runtime_point.get("category") or "procedure").strip() or "procedure",
+                "required": bool(runtime_point.get("required", req_row.get("required", True))),
+                "weight": weight,
+                "status": status,
+                "score": _score_from_point_status(status, weight),
+                "evidence": evidence,
+                "feedback": feedback,
+                "knowledge_refs": _dedupe_strings(runtime_point.get("knowledge_refs") or req_row.get("knowledge_refs") or []),
+            }
+        )
+    return merged
+
+
+def reconcile_dimension_scores(report: Dict[str, Any]) -> Dict[str, Any]:
+    scores = report.get("scores") or []
+    if not scores:
+        return report
+
+    target_total = max(0, min(100, int(report.get("total_score") or 0)))
+    dim_sum = sum(int(item.get("score") or 0) for item in scores)
+    if dim_sum == target_total:
+        report["total_score"] = dim_sum
+        return report
+
+    if dim_sum <= 0:
+        report["total_score"] = 0
+        return report
+
+    ratio = target_total / dim_sum
+    adjusted: List[dict] = []
+    running = 0
+    for index, item in enumerate(scores):
+        full_score = int(item.get("full_score") or 0)
+        raw = int(round(int(item.get("score") or 0) * ratio))
+        if index == len(scores) - 1:
+            score = max(0, min(full_score, target_total - running))
+        else:
+            score = max(0, min(full_score, raw))
+        running += score
+        adjusted.append({**item, "score": score})
+
+    report["scores"] = adjusted
+    report["total_score"] = sum(int(item.get("score") or 0) for item in adjusted)
+    return report
+
+
+def apply_assessment_driven_scoring(report: Dict[str, Any], point_results: List[dict], action_results: List[dict]) -> Dict[str, Any]:
+    required_points = [p for p in point_results if str(p.get("label") or "").strip()]
+    required_hit = [p for p in required_points if p.get("status") == "hit"]
+    all_points = [p for p in point_results if str(p.get("label") or "").strip()]
+    all_hit = [p for p in all_points if p.get("status") == "hit"]
+
+    required_rate = (len(required_hit) / len(required_points)) if required_points else 1.0
+    overall_rate = (len(all_hit) / len(all_points)) if all_points else 1.0
+    total_weight = sum(max(1, int(p.get("weight") or 10)) for p in all_points)
+    earned_weight = sum(int(p.get("score") or 0) for p in all_points)
+    weight_rate = (earned_weight / total_weight) if total_weight else 1.0
+
+    cap = 100
+    bonus = 0
+    if required_rate < 0.35:
+        cap = 58
+    elif required_rate < 0.55:
+        cap = 70
+    elif required_rate < 0.75:
+        cap = 82
+
+    if required_rate >= 0.85 and overall_rate >= 0.75 and len(action_results) > 0:
+        bonus = 3
+    if required_rate >= 0.95 and overall_rate >= 0.85:
+        bonus = 5
+
+    for item in report.get("scores") or []:
+        dimension = item.get("dimension")
+        if dimension not in ASSESSMENT_WEIGHTED_DIMENSIONS:
+            continue
+        full_score = int(item.get("full_score") or 0)
+        ceiling = int(full_score * (0.25 + 0.75 * weight_rate) * (0.55 + 0.45 * required_rate))
+        ceiling = max(0, min(full_score, ceiling))
+        if int(item.get("score") or 0) > ceiling:
+            gap = int(item.get("score") or 0) - ceiling
+            item["score"] = ceiling
+            item["reason"] = (
+                f"{item.get('reason', '')} 考察点加权完成率 {weight_rate:.0%}，"
+                f"必考命中率 {required_rate:.0%}，本项上限校准扣减 {gap} 分。"
+            ).strip()
+
+    report["total_score"] = max(0, min(100, min(sum(int(item.get("score") or 0) for item in report.get("scores") or []), cap) + bonus))
+    report = reconcile_dimension_scores(report)
+
+    if "evaluation_meta" not in report:
+        report["evaluation_meta"] = {}
+    report["evaluation_meta"]["assessment_completion"] = {
+        "required_total": len(required_points),
+        "required_hit": len(required_hit),
+        "required_rate": required_rate,
+        "overall_total": len(all_points),
+        "overall_hit": len(all_hit),
+        "overall_rate": overall_rate,
+        "total_weight": total_weight,
+        "earned_weight": earned_weight,
+        "weight_rate": weight_rate,
+        "score_cap": cap,
+        "score_bonus": bonus,
+    }
+    return report
+
+
+def finalize_evaluation_report(
+    report: Dict[str, Any],
+    session: models.TrainingSession,
+    scene: models.Scene | None,
+    case: models.Case | None,
+    student_lines: List[str],
+) -> Dict[str, Any]:
+    total_score = int(report.get("total_score") or 0)
+    report["grade_level"] = compute_grade_level(total_score)
+    report["total_score"] = total_score
+
+    if "evaluation_meta" not in report:
+        report["evaluation_meta"] = {}
+    report["evaluation_meta"]["report_header"] = {
+        "session_id": session.id,
+        "case_title": str(getattr(case, "title", "") or "未知案件").strip() or "未知案件",
+        "case_type": str(getattr(case, "case_type", "") or "").strip() or "其他",
+        "scene_name": str(getattr(scene, "name", "") or "训练场景").strip() or "训练场景",
+        "scene_type": report["evaluation_meta"].get("scene_type") or infer_scene_type(scene) if scene else "通用",
+        "dialogue_turns": len(student_lines),
+        "grade_level": report["grade_level"],
+        "total_score": total_score,
+    }
+    report["evaluation_meta"]["prompt_version"] = "formal_report_v3"
+    report["evaluation_meta"]["scene_template_version"] = "formal_report_v3"
+    return report
+
+
 def _collect_structured_assessment(
     session: models.TrainingSession,
     scene: models.Scene | None,
@@ -543,6 +775,12 @@ def _collect_structured_assessment(
 
     requirement_rows: List[dict] = []
     knowledge_ref_ids: List[str] = []
+    point_results: List[dict] = []
+    action_results: List[dict] = []
+    satisfied: List[str] = []
+    missing: List[str] = []
+    total_weight = 0
+    earned_weight = 0
 
     for stage in stages:
         stage_name = str(stage.get("stage_name") or "").strip()
@@ -559,19 +797,55 @@ def _collect_structured_assessment(
                     "label": label or content[:18] or "未命名考察点",
                     "content": content,
                     "stage_name": stage_name or "",
+                    "weight": max(1, int(point.get("weight", 10) or 10)),
+                    "required": bool(point.get("required", True)),
+                    "knowledge_refs": point.get("knowledge_refs") or [],
                 }
             )
             knowledge_ref_ids.extend(point.get("knowledge_refs") or [])
 
+        progress = collect_stage_progress(stage, msgs, revealed_info)
+        for point in progress.get("points") or []:
+            if not isinstance(point, dict):
+                continue
+            enriched = {
+                **point,
+                "stage_name": stage_name or str(point.get("stage_name") or "").strip(),
+                "feedback": str(point.get("feedback") or "").strip() or _default_point_feedback(point),
+            }
+            point_results.append(enriched)
+            total_weight += max(1, int(enriched.get("weight") or 10))
+            earned_weight += int(enriched.get("score") or 0)
+            label = str(enriched.get("label") or "").strip()
+            if not label:
+                continue
+            if enriched.get("status") == "hit":
+                satisfied.append(label)
+            elif enriched.get("status") != "partial":
+                missing.append(label)
+
+        for action in progress.get("actions") or []:
+            if isinstance(action, dict):
+                action_results.append({**action, "stage_name": stage_name or ""})
+
+    stored_progress = runtime_state.get("assessment_progress") or {}
+    if isinstance(stored_progress, dict):
+        stored_summary = stored_progress.get("summary") if isinstance(stored_progress.get("summary"), dict) else {}
+        total_weight = max(total_weight, int(stored_summary.get("total_weight") or 0))
+        earned_weight = max(earned_weight, int(stored_summary.get("earned_weight") or 0))
+
     summary = {
         "scene_type": infer_scene_type(scene) if scene else "通用",
         "requirements": [row.get("label") for row in requirement_rows if row.get("label")],
-        "satisfied": [],
-        "missing": [],
+        "satisfied": _dedupe_strings(satisfied),
+        "missing": _dedupe_strings(missing),
+        "total_weight": total_weight,
+        "earned_weight": earned_weight,
     }
     return {
         "assessment_requirements": requirement_rows,
-        "action_results": [],
+        "point_results": point_results,
+        "action_results": action_results,
         "knowledge_ref_ids": _dedupe_strings(knowledge_ref_ids),
         "stage_gap_summary": summary,
         "closure_summary": runtime_state.get("closure_summary") or {},
@@ -651,60 +925,6 @@ def _enrich_report_from_structured_evidence(report: Dict[str, Any], point_result
     return report
 
 
-def _apply_assessment_completion_adjustments(
-    report: Dict[str, Any],
-    point_results: List[dict],
-    action_results: List[dict],
-) -> Dict[str, Any]:
-    # After switching to "label + content" checklist, we treat all points as required by default.
-    required_points = [p for p in point_results if str(p.get("label") or "").strip()]
-    required_hit = [p for p in required_points if p.get("status") == "hit"]
-    all_points = [p for p in point_results if str(p.get("label") or "").strip()]
-    all_hit = [p for p in all_points if p.get("status") == "hit"]
-
-    required_rate = (len(required_hit) / len(required_points)) if required_points else 1.0
-    overall_rate = (len(all_hit) / len(all_points)) if all_points else 1.0
-
-    # Strongly tie total score to completion: low completion -> cap, high completion -> small bonus.
-    total = int(report.get("total_score") or 0)
-    cap = 100
-    bonus = 0
-    if required_rate < 0.35:
-        cap = 58
-    elif required_rate < 0.55:
-        cap = 70
-    elif required_rate < 0.75:
-        cap = 82
-
-    if required_rate >= 0.85 and overall_rate >= 0.75 and len(action_results) > 0:
-        bonus = 3
-    if required_rate >= 0.95 and overall_rate >= 0.85:
-        bonus = 5
-
-    total = min(total, cap)
-    total = max(0, min(100, total + bonus))
-    report["total_score"] = total
-
-    # Also nudge "流程完整性/信息获取效率" reasons to reference completion explicitly.
-    for item in report.get("scores") or []:
-        if item.get("dimension") in {"执法流程完整性", "信息获取效率"}:
-            item["reason"] = f"{item.get('reason', '')} 考察点完成率：必考={required_rate:.0%}，总体={overall_rate:.0%}。"
-
-    if "evaluation_meta" not in report:
-        report["evaluation_meta"] = {}
-    report["evaluation_meta"]["assessment_completion"] = {
-        "required_total": len(required_points),
-        "required_hit": len(required_hit),
-        "required_rate": required_rate,
-        "overall_total": len(all_points),
-        "overall_hit": len(all_hit),
-        "overall_rate": overall_rate,
-        "score_cap": cap,
-        "score_bonus": bonus,
-    }
-    return report
-
-
 def evaluate_session(db: Session, session_id: int, user_id: int | None = None, force_recompute: bool = False):
     session = db.query(models.TrainingSession).filter(models.TrainingSession.id == session_id).first()
     if not session:
@@ -731,8 +951,8 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
     rule_check_summary = render_rule_summary(rule_checks)
     structured_assessment = _collect_structured_assessment(session, scene, case, msgs)
     requirement_rows = structured_assessment.get("assessment_requirements") or []
-    point_results = []
-    action_results = structured_assessment["action_results"]
+    runtime_point_results = structured_assessment.get("point_results") or []
+    action_results = structured_assessment.get("action_results") or []
     knowledge = build_knowledge_hits(
         case,
         scene,
@@ -778,9 +998,12 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
         report = apply_rule_adjustments(report, rule_checks)
         report = calibrate_report(report, student_lines, scene_type)
         check_results = report.get("assessment_check_results") if isinstance(report.get("assessment_check_results"), list) else []
-        report["assessment_point_results"] = check_results
-        report = _enrich_report_from_structured_evidence(report, check_results, action_results)
-        report = _apply_assessment_completion_adjustments(report, check_results, action_results)
+        knowledge_docs = _knowledge_index(structured_assessment["knowledge_ref_ids"])
+        merged_points = merge_assessment_point_results(runtime_point_results, check_results, requirement_rows)
+        merged_points = _attach_knowledge_titles(merged_points, knowledge_docs)
+        report["assessment_point_results"] = merged_points
+        report = _enrich_report_from_structured_evidence(report, merged_points, action_results)
+        report = apply_assessment_driven_scoring(report, merged_points, action_results)
         report["action_results"] = action_results
         report["closure_summary"] = structured_assessment["closure_summary"]
 
@@ -788,9 +1011,8 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
             report["evaluation_meta"] = {}
         report["evaluation_meta"]["scene_type"] = scene_type
         report["evaluation_meta"]["knowledge_hits"] = knowledge
-        report["evaluation_meta"]["prompt_version"] = "assessment_points_v2"
-        report["evaluation_meta"]["scene_template_version"] = "assessment_points_v2"
         report["evaluation_meta"]["stage_gap_summary"] = structured_assessment["stage_gap_summary"] or build_stage_gap_summary(scene, student_lines)
+        report = finalize_evaluation_report(report, session, scene, case, student_lines)
 
         report_json = json.dumps(report, ensure_ascii=False)
         session.status = "finished"

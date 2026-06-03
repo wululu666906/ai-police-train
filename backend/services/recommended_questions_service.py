@@ -256,6 +256,91 @@ def _case_type_questions(case_type: str, addressee: str) -> list[dict[str, Any]]
     return []
 
 
+def _missing_label_keywords(label: str) -> list[str]:
+    label = _text(label)
+    keyword_map = {
+        "时间": ("几点", "什么时候", "何时", "多久", "时间", "开始", "结束", "上午", "下午", "晚上"),
+        "地点": ("哪里", "位置", "地点", "在哪", "何处", "哪个位置"),
+        "身份": ("身份", "姓名", "你是谁", "叫什么", "关系", "什么关系"),
+        "人物": ("人物", "在场", "还有谁", "谁在场", "当事人"),
+        "证人": ("证人", "目击", "在场", "谁看到"),
+        "风险": ("危险", "安全", "风险", "失控", "受伤", "伤情"),
+        "经过": ("经过", "过程", "怎么回事", "顺序", "先后", "怎么发生"),
+        "证据": ("监控", "视频", "照片", "物证", "痕迹", "录像"),
+    }
+    for key, keywords in keyword_map.items():
+        if key in label:
+            return list(keywords)
+    return [label] if label else []
+
+
+def _question_covers_missing_label(text: str, label: str) -> bool:
+    keywords = _missing_label_keywords(label)
+    if not keywords:
+        return False
+    lowered = _text(text)
+    return any(keyword in lowered for keyword in keywords)
+
+
+def _prioritize_missing_items(
+    items: list[dict[str, Any]],
+    missing_requirements: list[str] | None,
+    addressee: str = "",
+) -> list[dict[str, Any]]:
+    if not missing_requirements:
+        return items
+    gap_items: list[dict[str, Any]] = []
+    for label in missing_requirements[:3]:
+        converted = _missing_to_dialogue(label, addressee)
+        if converted:
+            gap_items.append(converted)
+    hits: list[dict[str, Any]] = []
+    others: list[dict[str, Any]] = []
+    for item in items:
+        if any(_question_covers_missing_label(item.get("text", ""), label) for label in missing_requirements):
+            hits.append(item)
+        else:
+            others.append(item)
+    return _dedupe_items(gap_items + hits + others)
+
+
+def _apply_missing_first_correction(
+    items: list[dict[str, Any]],
+    missing_requirements: list[str] | None,
+    addressee: str = "",
+) -> list[dict[str, Any]]:
+    if not items or not missing_requirements:
+        return items
+    if any(_question_covers_missing_label(items[0].get("text", ""), missing_requirements[0])):
+        return items
+    replacement = _missing_to_dialogue(missing_requirements[0], addressee)
+    if replacement:
+        return [replacement, *items[1:]]
+    return items
+
+
+STAGE_HIT_RATE_THRESHOLD = 0.34
+
+
+def apply_stage_hit_rate_correction(
+    items: list[dict[str, Any]],
+    *,
+    satisfied: list[str] | None = None,
+    missing: list[str] | None = None,
+    addressee: str = "",
+) -> list[dict[str, Any]]:
+    missing = list(missing or [])
+    if not missing:
+        return items
+    satisfied = list(satisfied or [])
+    total = len(satisfied) + len(missing)
+    hit_rate = (len(satisfied) / total) if total else 1.0
+    if hit_rate >= STAGE_HIT_RATE_THRESHOLD and items:
+        if _question_covers_missing_label(items[0].get("text", ""), missing[0]):
+            return items
+    return _apply_missing_first_correction(items, missing, addressee)
+
+
 def _stage_questions(current_stage: str, addressee: str) -> list[dict[str, Any]]:
     stage = _text(current_stage)
     if "接警" in stage:
@@ -339,6 +424,7 @@ def _try_llm_question_items(
 4. 要承接对方上一句回复，不要像第一次到场。
 5. category 只能是：安抚、核实、追问、程序、调解
 6. 若需指定对象，填 target_role_name（从 {role_hint} 中选），否则 null
+7. 若「本阶段还缺」不为“无”，前 2 条必须直接追问缺口项，且问题正文须含对应关键词（如时间/地点/身份/证人/风险/经过）。
 
 案件：{case_title or case_type}
 场景：{scene_name}
@@ -453,6 +539,7 @@ def build_recommended_question_items(
         items.append(_item(_prefix_addressee("现在双方情绪怎么样？能坐下来谈吗？", addressee), "调解", addressee))
 
     items.extend(_truth_stage_questions(truth_stage, emotion, addressee))
+    items = _prioritize_missing_items(items, missing_requirements, addressee)
 
     if not has_dialogue:
         items.insert(0, _item(_prefix_addressee("你好，我是到场民警，先说说发生了什么？", addressee), "核实", addressee))
@@ -480,8 +567,7 @@ def build_recommended_question_items(
     if custom_items:
         custom_texts = {item["text"] for item in custom_items}
         cleaned = [item for item in custom_items] + [item for item in cleaned if item["text"] not in custom_texts]
-        cleaned = cleaned[:_MAX_ITEMS]
-
+    cleaned = _apply_missing_first_correction(cleaned, missing_requirements, addressee)
     if not cleaned:
         cleaned = [
             _item(_prefix_addressee("你把知道的情况按顺序说一下。", addressee), "追问", addressee),

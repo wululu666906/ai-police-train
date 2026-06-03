@@ -53,6 +53,7 @@ ai_police*.zip
 frontend_dist_sync.tar.gz
 
 # Local-only / scratch
+backups/
 duiyou/
 scripts/_*
 scripts/native_deploy_remote.py

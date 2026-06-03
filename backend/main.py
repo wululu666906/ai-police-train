@@ -8,7 +8,7 @@ from sqlalchemy import inspect, text
 
 import database
 import models
-from routers import auth, cases, dashboard, knowledge, speech, student, training
+from routers import auth, cases, dashboard, knowledge, speech, state_influence_admin, student, training
 
 # 不在启动时强制初始化数据库，因为项目已经提供 init_db.py。
 # models.Base.metadata.create_all(bind=database.engine)
@@ -115,6 +115,7 @@ app.include_router(dashboard.router)
 app.include_router(knowledge.router)
 app.include_router(student.router)
 app.include_router(speech.router)
+app.include_router(state_influence_admin.router)
 
 # 兼容 Docker 静态前端的 /api 前缀调用（frontend/.env.production 默认 VITE_API_URL=/api）
 app.include_router(auth.router, prefix="/api")
@@ -124,6 +125,7 @@ app.include_router(dashboard.router, prefix="/api")
 app.include_router(knowledge.router, prefix="/api")
 app.include_router(student.router, prefix="/api")
 app.include_router(speech.router, prefix="/api")
+app.include_router(state_influence_admin.router, prefix="/api")
 
 
 @app.get("/healthz")

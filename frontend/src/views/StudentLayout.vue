@@ -81,6 +81,7 @@ const logout = () => {
     radial-gradient(circle at top left, rgba(22, 93, 255, 0.08), transparent 22%),
     linear-gradient(180deg, #f4f7fb 0%, #eef3f9 100%);
   font-family: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+  overflow-x: hidden;
 }
 
 .top-nav {

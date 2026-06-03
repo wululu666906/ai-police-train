@@ -11,6 +11,17 @@
   --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
+html,
+body {
+  width: 100%;
+  overflow-x: hidden;
+}
+
+#app {
+  width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   padding: 0;

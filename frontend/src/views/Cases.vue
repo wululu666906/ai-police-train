@@ -60,8 +60,7 @@
       >
         <div class="flex items-start justify-between gap-4">
           <div class="min-w-0">
-            <div class="text-xs font-black uppercase tracking-[0.18em] text-slate-300">Case #{{ caseItem.id }}</div>
-            <h3 class="mt-2 break-all text-lg font-black text-slate-800">{{ caseItem.title || '未命名案件' }}</h3>
+            <h3 class="break-all text-lg font-black text-slate-800">{{ caseItem.title || '未命名案件' }}</h3>
           </div>
           <van-tag round :type="getTagType(caseItem.case_type)" class="shrink-0 px-3 py-1 font-bold">
             {{ caseItem.case_type || '未分类' }}
@@ -663,7 +662,6 @@
             <div class="flex items-center justify-between gap-4">
               <div class="flex items-center gap-3">
                 <van-tag type="primary" round>{{ editableCase.case_type || '未分类' }}</van-tag>
-                <span class="text-xs font-bold uppercase tracking-widest text-slate-400">ID: #{{ editableCase.id }}</span>
               </div>
             </div>
 
@@ -953,6 +951,53 @@
               <van-tag plain type="success">{{ (editableCase.scenes || []).length }} 个场景</van-tag>
             </div>
             <div class="workspace-panel__body">
+            <div class="assessment-import-card assessment-import-card--case">
+              <div class="assessment-import-card__head">
+                <span class="text-sm font-semibold text-slate-700">考察点一键分场景</span>
+                <span class="text-xs text-slate-400">
+                  岗位：考察点编排专员 · 自动写入接警 / 现场 / 询问场景（只需操作一次）
+                </span>
+              </div>
+              <p class="assessment-import-card__rule text-xs text-slate-500">
+                场景命名须含关键词：<strong>接警</strong>、<strong>现场</strong>、<strong>询问</strong>（如：接警研判、现场处置、重点询问）。
+                系统按名称自动分组，无需在每个场景重复导入。
+              </p>
+              <textarea
+                v-model="assessmentImport.pasteText"
+                rows="2"
+                class="form-textarea"
+                placeholder="可选：粘贴考察清单；支持【接警】【现场】【询问】分段标题"
+              ></textarea>
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <van-button
+                  type="primary"
+                  size="small"
+                  class="!bg-[#1D3557] !border-none"
+                  :loading="assessmentImport.generating"
+                  :disabled="!(editableCase?.scenes || []).length"
+                  @click="distributeAssessmentPointsForCase"
+                >
+                  AI 分场景生成并写入
+                </van-button>
+                <input
+                  ref="assessmentFileInputRef"
+                  type="file"
+                  accept=".txt,.json,.md,.pdf,.docx"
+                  class="sr-only"
+                  tabindex="-1"
+                  @change="onAssessmentFileForCase"
+                />
+                <van-button
+                  size="small"
+                  plain
+                  :loading="assessmentImport.uploading"
+                  @click.stop.prevent="openAssessmentFilePicker"
+                >
+                  上传文件
+                </van-button>
+              </div>
+              <p v-if="assessmentImport.lastMessage" class="mt-2 text-xs text-emerald-700">{{ assessmentImport.lastMessage }}</p>
+            </div>
             <section class="scene-studio rounded-2xl border border-slate-100 bg-white p-4">
             <div v-if="!(editableCase.scenes || []).length" class="scene-studio__empty py-8 text-center text-sm text-slate-500">暂无场景</div>
             <div v-else class="scene-studio__layout">
@@ -967,6 +1012,9 @@
                 >
                   <span class="scene-studio__nav-index">场景 {{ Number(idx) + 1 }}</span>
                   <span class="scene-studio__nav-name">{{ scene.name || '未命名' }}</span>
+                  <span v-if="(scene.assessmentPointsModel || []).length" class="scene-studio__nav-meta">
+                    {{ (scene.assessmentPointsModel || []).length }} 考察点
+                  </span>
                 </button>
               </aside>
               <div class="scene-studio__main">
@@ -995,7 +1043,15 @@
                 <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
                     <label class="form-label">场景名称</label>
-                    <input v-model="scene.name" type="text" class="form-input" />
+                    <input
+                      v-model="scene.name"
+                      type="text"
+                      class="form-input"
+                      :placeholder="SCENE_NAME_PLACEHOLDERS[idx] || '须含：接警 / 现场 / 询问 关键词'"
+                    />
+                    <p class="mt-1 text-xs text-slate-400">
+                      类型：{{ sceneBucketLabel(scene.name, Number(idx), (editableCase.scenes || []).length) }} · 用于自动分派考察点
+                    </p>
                   </div>
                   <div>
                     <label class="form-label">难度</label>
@@ -1069,7 +1125,10 @@
 
                 <div class="scene-flow-panel">
                   <div class="scene-flow-panel__toolbar">
-                    <span class="scene-flow-panel__badge">{{ (scene.assessmentPointsModel || []).length }} 个考察点</span>
+                    <span class="scene-flow-panel__badge scene-flow-panel__badge--bucket">
+                      {{ sceneBucketLabel(scene.name, Number(idx), (editableCase.scenes || []).length) }}
+                      · {{ (scene.assessmentPointsModel || []).length }} 个考察点
+                    </span>
                     <div class="scene-flow-panel__actions">
                       <van-button
                         v-if="(scene.assessmentPointsModel || []).length"
@@ -1079,14 +1138,14 @@
                         type="primary"
                         @click="toggleAllSceneAssessmentPoints(scene)"
                       >
-                        {{ areAllSceneAssessmentPointsExpanded(scene) ? '全部收起' : '全部展开' }}
+                        {{ areAllSceneAssessmentPointsExpanded(scene) ? '收起' : '展开' }}
                       </van-button>
-                      <van-button plain size="small" @click="addAssessmentPointToScene(scene)">新增考察点</van-button>
+                      <van-button plain size="small" @click="addAssessmentPointToScene(scene)">补一条</van-button>
                     </div>
                   </div>
 
                   <div v-if="!(scene.assessmentPointsModel || []).length" class="scene-flow-panel__empty">
-                    暂无考察点。请先在「基础信息」使用 AI 补全，或点击「新增考察点」。
+                    暂无考察点。请在上方使用「AI 分场景生成并写入」，或手动新增。
                   </div>
 
                   <div
@@ -1159,6 +1218,7 @@ import {
   sceneBehaviorModeOptions,
   stateLevelOptions,
 } from '../utils/personaTemplate'
+import { sceneBucketLabel, SCENE_NAME_PLACEHOLDERS } from '../utils/sceneBucket'
 import request from '../utils/request'
 
 const router = useRouter()
@@ -1226,7 +1286,7 @@ const normalizeAssessmentPointEditors = (points: any) => {
     ...createPointEditor(point, index),
     _editor_id: Number(point?._editor_id) || assessmentPointSeed++,
     _collapsed: typeof point?._collapsed === 'boolean' ? point._collapsed : true,
-    content: String(point?.content || point?.requirement || '').trim(),
+    content: resolveAssessmentPointContent(point),
   }))
 }
 
@@ -1301,7 +1361,171 @@ const serializeAssessmentPointsForSave = (pointsModel: any[]) => {
     id: String(point?.id || `ap_${index + 1}`).trim(),
     label: String(point?.label || '').trim(),
     content: String(point?.content || '').trim(),
+    category: String(point?.category || 'procedure').trim(),
+    required: point?.required !== false,
+    weight: Number(point?.weight ?? 10),
+    keywords: splitTextList(point?.keywordsText),
+    knowledge_refs: splitTextList(point?.knowledgeRefsText),
   }))
+}
+
+const assessmentImport = reactive({
+  pasteText: '',
+  lastMessage: '',
+  generating: false,
+  uploading: false,
+})
+const assessmentFileInputRef = ref<HTMLInputElement | null>(null)
+
+const getApiErrorDetail = (error: any, fallback: string) => {
+  const detail = error?.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail.trim()
+  if (Array.isArray(detail) && detail.length) {
+    return detail.map((item: any) => item?.msg || item?.message || String(item)).filter(Boolean).join('；')
+  }
+  if (typeof error?.message === 'string' && error.message.trim() && !/^Network Error$/i.test(error.message)) {
+    return error.message.trim()
+  }
+  return fallback
+}
+
+const openAssessmentFilePicker = () => {
+  const input = assessmentFileInputRef.value
+  if (!input) {
+    showToast('文件选择器未就绪，请刷新页面后重试')
+    return
+  }
+  input.value = ''
+  input.click()
+}
+
+const buildCaseInfoForAssessmentDistribute = () => {
+  const caseItem = editableCase.value
+  const narrative = String(
+    caseItem?.original_content || caseItem?.full_narrative || caseItem?.background || ''
+  ).trim()
+  return {
+    title: caseItem?.title,
+    case_type: caseItem?.case_type,
+    case_background: caseItem?.background || caseItem?.case_background,
+    full_narrative: narrative,
+    original_content: narrative,
+  }
+}
+
+const hasAssessmentSourceMaterial = () => {
+  const caseItem = editableCase.value
+  const narrative = String(
+    caseItem?.original_content || caseItem?.full_narrative || caseItem?.background || ''
+  ).trim()
+  return Boolean(narrative || assessmentImport.pasteText.trim())
+}
+
+const mapApiPointsToEditors = (points: any[]) =>
+  normalizeAssessmentPointEditors(points).map((point: any) => ({
+    ...point,
+    _collapsed: true,
+  }))
+
+const buildScenesPayloadForDistribute = () =>
+  (editableCase.value?.scenes || []).map((scene: any) => ({
+    id: scene.id,
+    name: scene.name,
+    description: scene.description,
+    dispatch_brief: scene.dispatch_brief,
+    first_impression: scene.first_impression,
+  }))
+
+const applyDistributeAssignments = (assignments: any[]) => {
+  if (!editableCase.value?.scenes?.length || !Array.isArray(assignments)) return
+  const byId = new Map(assignments.map((row: any) => [String(row.scene_id), row]))
+  editableCase.value.scenes.forEach((scene: any, index: number) => {
+    const row = byId.get(String(scene.id)) || assignments[index]
+    if (!row) return
+    ensureSceneAssessmentPointsModel(scene)
+    if (row.suggested_name) {
+      scene.name = row.suggested_name
+    } else if (row.scene_name) {
+      scene.name = row.scene_name
+    }
+    const rawPoints = row.points
+    const points = Array.isArray(rawPoints) ? rawPoints : []
+    scene.assessmentPointsModel = mapApiPointsToEditors(points)
+  })
+}
+
+const distributeAssessmentPointsForCase = async () => {
+  if (!editableCase.value?.scenes?.length) {
+    showToast('请先添加训练场景')
+    return
+  }
+  if (!hasAssessmentSourceMaterial()) {
+    showToast('请先在「案情原文」填写案件材料，或粘贴/上传考察清单')
+    return
+  }
+  assessmentImport.generating = true
+  assessmentImport.lastMessage = ''
+  try {
+    const narrative = String(
+      editableCase.value.original_content || editableCase.value.full_narrative || editableCase.value.background || ''
+    ).trim()
+    const data: any = await request.post(
+      '/cases/assessment-points/distribute',
+      {
+        case_info: buildCaseInfoForAssessmentDistribute(),
+        scenes: buildScenesPayloadForDistribute(),
+        source_text: assessmentImport.pasteText.trim(),
+        reference_text: narrative,
+        rename_scenes: true,
+        use_llm: true,
+      },
+      { _skipErrorToast: true } as any
+    )
+    applyDistributeAssignments(data?.assignments || [])
+    const totalPoints = Number(data?.total_points ?? 0)
+    const summary = (data?.assignments || [])
+      .filter((row: any) => row.point_count > 0)
+      .map((row: any) => `${row.bucket_label || row.bucket} ${row.point_count}条`)
+      .join(' · ')
+    assessmentImport.lastMessage = data?.message ? `${data.message}${summary ? `（${summary}）` : ''}` : ''
+    if (!totalPoints) {
+      showToast(getApiErrorDetail(null, '未生成考察点，请检查案情原文或稍后重试'))
+      return
+    }
+    if (data?.warnings?.length) {
+      showToast({ type: 'text', message: data.warnings[0] })
+    } else {
+      showToast(data?.message || '已写入各场景，请保存案件')
+    }
+  } catch (error: any) {
+    showToast(getApiErrorDetail(error, '分场景生成失败'))
+  } finally {
+    assessmentImport.generating = false
+  }
+}
+
+const onAssessmentFileForCase = async (event: Event) => {
+  const input = event.target as HTMLInputElement | null
+  const file = input?.files?.[0]
+  if (!file) return
+  assessmentImport.uploading = true
+  try {
+    const form = new FormData()
+    form.append('file', file)
+    const data: any = await request.post('/cases/assessment-points/parse-file', form, { _skipErrorToast: true } as any)
+    assessmentImport.pasteText = String(data?.extracted_text || '').trim()
+    if (!assessmentImport.pasteText) {
+      showToast('文件未解析出文本，请换 TXT/MD 或检查内容')
+      return
+    }
+    assessmentImport.lastMessage = '文件已载入，请点击「AI 分场景生成并写入」'
+    showToast('文件已载入')
+  } catch (error: any) {
+    showToast(getApiErrorDetail(error, '文件解析失败'))
+  } finally {
+    assessmentImport.uploading = false
+    if (input) input.value = ''
+  }
 }
 
 const resetReviewWorkspace = () => {
@@ -1856,9 +2080,34 @@ const splitTextList = (value: any) =>
     .map((item) => item.trim())
     .filter(Boolean)
 
+const inferAssessmentPointContent = (label: string, category = 'procedure') => {
+  const text = String(label || '').trim()
+  if (!text) return ''
+  if (text.length >= 28 && /[。；?？]/.test(text)) return text
+  if (/^学员|^在对话|^在训练/.test(text)) return text
+  if (category === 'risk') {
+    return `学员应识别并处置与本项相关的风险：${text}；在对话或现场处置中可被观察到。`
+  }
+  if (category === 'evidence') {
+    return `学员应完成证据固定相关工作：${text}；在对话或现场动作中可被核查。`
+  }
+  if (/^(核实|确认|追问|明确|告知|规范|识别|要求|提示|分离|检查|实施|启动|制作|带离|控制|拒测)/.test(text)) {
+    return `学员在训练对话或现场处置中应做到：${text}，结果可被对话关键词或执法动作核查。`
+  }
+  return `学员应完成：${text}。`
+}
+
+const resolveAssessmentPointContent = (point: any) => {
+  const direct = String(point?.content || point?.requirement || point?.description || '').trim()
+  if (direct) return direct
+  const label = String(point?.label || '').trim()
+  return inferAssessmentPointContent(label, String(point?.category || 'procedure'))
+}
+
 const createPointEditor = (point: any = {}, index = 0) => ({
   id: String(point?.id || `ap_${index + 1}`),
   label: String(point?.label || ''),
+  content: resolveAssessmentPointContent(point),
   category: String(point?.category || 'procedure'),
   required: point?.required !== false,
   weight: Number(point?.weight ?? 10),
@@ -3024,6 +3273,13 @@ onMounted(refreshCasesPage)
   color: #0f172a;
 }
 
+.scene-studio__nav-meta {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  color: #64748b;
+}
+
 .scene-studio__tabs {
   display: flex;
   gap: 8px;
@@ -3054,6 +3310,34 @@ onMounted(refreshCasesPage)
   padding: 0;
 }
 
+.assessment-import-card {
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px dashed #cbd5e1;
+  background: #f8fafc;
+}
+
+.assessment-import-card--case {
+  margin-bottom: 16px;
+}
+
+.assessment-import-card__rule {
+  margin: 8px 0 10px;
+  line-height: 1.5;
+}
+
+.assessment-import-card__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+
+.assessment-import-file {
+  cursor: pointer;
+}
+
 .scene-flow-panel {
   padding: 4px 0;
 }
@@ -3064,6 +3348,11 @@ onMounted(refreshCasesPage)
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+.scene-flow-panel__badge--bucket {
+  color: #1d3557;
+  font-weight: 700;
 }
 
 .scene-flow-panel__badge {

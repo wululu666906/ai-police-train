@@ -99,7 +99,6 @@
             <div class="resume-title">{{ scene.case_title }}</div>
             <div class="resume-meta">
               <span>{{ scene.name }}</span>
-              <span>会话 #{{ scene.active_session_id }}</span>
               <span>{{ normalizeDifficulty(scene.difficulty || '中等') }}</span>
               <span :class="scene.active_session_is_empty ? 'meta-empty' : 'meta-active'">
                 {{ scene.active_session_is_empty ? '仅创建未开聊' : '已有进行中对话' }}
@@ -422,7 +421,7 @@ const filterCases = () => {
 const startTraining = async (scene: SceneItem) => {
   const sceneId = Number(scene?.id)
   if (!sceneId) {
-    showToast('无效的场景编号')
+    showToast('场景无效，请刷新后重试')
     return
   }
   if (loadingSceneId.value !== null) return
@@ -431,7 +430,7 @@ const startTraining = async (scene: SceneItem) => {
   try {
     const res: any = await request.post(`/training/start/${sceneId}`, null, { _skipErrorToast: true } as any)
     if (!res?.id) {
-      throw new Error('服务端未返回训练会话编号')
+      throw new Error('训练初始化失败，请稍后重试')
     }
 
     if (scene?.has_active_session && scene?.active_session_id === res.id) {
@@ -453,7 +452,7 @@ const deleteActiveSession = async (scene: SceneItem & { case_title?: string }) =
   try {
     await showConfirmDialog({
       title: '删除历史对话',
-      message: `删除后，会话 #${sessionId} 的历史对话将无法恢复。删除后可从“${scene.name || '当前场景'}”重新开始训练。`,
+      message: `删除后，该场景下的历史对话将无法恢复。删除后可从「${scene.name || '当前场景'}」重新开始训练。`,
       confirmButtonColor: '#dc2626',
     })
   } catch {

@@ -1,8 +1,10 @@
+import { speechConfig } from '../../config/speech'
 import type {
   SpeechRecognitionCallbacks,
   SpeechRecognitionProvider,
   SpeechRecognitionStartOptions,
   SpeechRecognitionStatus,
+  SpeechSessionMode,
 } from './types'
 
 const getRecognitionCtor = () => window.SpeechRecognition || window.webkitSpeechRecognition
@@ -12,6 +14,9 @@ export class WebSpeechProvider implements SpeechRecognitionProvider {
 
   private recognition: SpeechRecognition | null = null
   private callbacks: SpeechRecognitionCallbacks | null = null
+  private sessionMode: SpeechSessionMode = 'dictation'
+  private utteranceBuffer = ''
+  private utteranceMergeTimer: ReturnType<typeof setTimeout> | null = null
 
   isSupported() {
     return typeof getRecognitionCtor() === 'function'
@@ -19,6 +24,26 @@ export class WebSpeechProvider implements SpeechRecognitionProvider {
 
   private setStatus(status: SpeechRecognitionStatus) {
     this.callbacks?.onStatusChange?.(status)
+  }
+
+  private clearUtteranceMergeTimer() {
+    if (this.utteranceMergeTimer) {
+      clearTimeout(this.utteranceMergeTimer)
+      this.utteranceMergeTimer = null
+    }
+  }
+
+  private scheduleVoiceCallUtteranceEnd() {
+    this.clearUtteranceMergeTimer()
+    this.utteranceMergeTimer = setTimeout(() => {
+      this.utteranceMergeTimer = null
+      const utterance = this.utteranceBuffer.trim()
+      this.utteranceBuffer = ''
+      if (utterance) {
+        this.callbacks?.onUtteranceEnd?.(utterance)
+        this.callbacks?.onInterim?.('')
+      }
+    }, speechConfig.webSpeechUtteranceMergeMs)
   }
 
   start(options: SpeechRecognitionStartOptions, callbacks: SpeechRecognitionCallbacks) {
@@ -30,6 +55,9 @@ export class WebSpeechProvider implements SpeechRecognitionProvider {
 
     this.abort()
     this.callbacks = callbacks
+    this.sessionMode = options.sessionMode || 'dictation'
+    this.utteranceBuffer = ''
+    this.clearUtteranceMergeTimer()
 
     const recognition = new Ctor()
     recognition.continuous = options.continuous ?? true
@@ -56,7 +84,16 @@ export class WebSpeechProvider implements SpeechRecognitionProvider {
         callbacks.onInterim?.(interim.trim())
       }
       if (finalChunk.trim()) {
-        callbacks.onFinal?.(finalChunk.trim())
+        const piece = finalChunk.trim()
+        callbacks.onFinal?.(piece)
+        if (this.sessionMode === 'voice_call') {
+          this.utteranceBuffer = this.utteranceBuffer ? `${this.utteranceBuffer}${piece}` : piece
+          const sessionDisplay = `${this.utteranceBuffer}${interim}`.trim()
+          if (sessionDisplay) {
+            callbacks.onInterim?.(sessionDisplay)
+          }
+          this.scheduleVoiceCallUtteranceEnd()
+        }
       }
     }
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
@@ -68,7 +105,18 @@ export class WebSpeechProvider implements SpeechRecognitionProvider {
       this.setStatus('error')
       callbacks.onError?.(`语音识别失败：${event.error}`)
     }
-    recognition.onend = () => this.setStatus('idle')
+    recognition.onend = () => {
+      if (this.sessionMode === 'voice_call' && this.recognition) {
+        try {
+          this.recognition.start()
+          this.setStatus('listening')
+        } catch {
+          this.setStatus('idle')
+        }
+        return
+      }
+      this.setStatus('idle')
+    }
 
     this.recognition = recognition
     try {
@@ -78,11 +126,20 @@ export class WebSpeechProvider implements SpeechRecognitionProvider {
     }
   }
 
+  peekPendingUtterance(): string {
+    this.clearUtteranceMergeTimer()
+    const pending = this.utteranceBuffer.trim()
+    this.utteranceBuffer = ''
+    return pending
+  }
+
   stop() {
     this.recognition?.stop()
   }
 
   abort() {
+    this.clearUtteranceMergeTimer()
+    this.utteranceBuffer = ''
     if (!this.recognition) return
     try {
       this.recognition.abort()

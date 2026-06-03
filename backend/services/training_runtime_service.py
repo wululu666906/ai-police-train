@@ -31,7 +31,15 @@ DEFAULT_RUNTIME_STATE = {
     "role_state_snapshots": {},
     "last_active_role_ids": [],
     "last_target_role_name": "",
+    "state_influence_turn_log": [],
 }
+
+_RUNTIME_PASSTHROUGH_KEYS = (
+    "state_contract",
+    "role_contracts",
+    "last_postcheck",
+    "state_influence_turn_log",
+)
 
 
 def _safe_json_loads(value: Any, default: Any):
@@ -135,6 +143,11 @@ def load_runtime_state(raw_value: Any) -> dict[str, Any]:
     progress = parsed.get("assessment_progress")
     if isinstance(progress, dict):
         state["assessment_progress"] = progress
+    for key in _RUNTIME_PASSTHROUGH_KEYS:
+        if key in parsed:
+            state[key] = parsed[key]
+    if not isinstance(state.get("state_influence_turn_log"), list):
+        state["state_influence_turn_log"] = []
     return state
 
 
@@ -151,6 +164,9 @@ def dump_runtime_state(state: dict[str, Any]) -> str:
         "last_active_role_ids": _normalize_role_id_list((state or {}).get("last_active_role_ids")),
         "last_target_role_name": str((state or {}).get("last_target_role_name") or "").strip(),
     }
+    for key in _RUNTIME_PASSTHROUGH_KEYS:
+        if key in (state or {}):
+            payload[key] = state[key]
     return json.dumps(payload, ensure_ascii=False)
 
 

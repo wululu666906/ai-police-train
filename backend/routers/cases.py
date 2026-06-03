@@ -21,6 +21,15 @@ from services.scene_role_service import audit_scene_roles, normalize_scene_roles
 from services.stage_config_service import infer_scene_behavior_mode, normalize_stages
 from services.case_completion_service import complete_case_information, list_field_catalog
 from services.workflow_service import workflow_service
+from services.assessment_point_import_service import (
+    apply_template_to_points,
+    distribute_assessment_points_to_scenes,
+    generate_assessment_points,
+    list_builtin_templates,
+    parse_text_to_assessment_points,
+)
+from services.ai_roles import get_assessment_point_officer_prompts, list_ai_roles
+from services.scene_bucket_service import BUCKET_LABELS, STANDARD_SCENE_NAMES
 
 router = APIRouter(prefix="/cases", tags=["Cases"], dependencies=[Depends(require_admin_user)])
 
@@ -685,6 +694,128 @@ async def parse_case_file(
 @router.get("/completion-catalog")
 def get_completion_catalog():
     return list_field_catalog()
+
+
+@router.get("/assessment-point-templates")
+def get_assessment_point_templates():
+    return {"templates": list_builtin_templates()}
+
+
+@router.post("/assessment-points/parse-text")
+def parse_assessment_points_text(payload: dict = Body(...)):
+    text = str(payload.get("text") or payload.get("source_text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    case_type = str(payload.get("case_type") or "").strip()
+    scene_name = str(payload.get("scene_name") or "").strip()
+    points = parse_text_to_assessment_points(text)
+    if case_type or scene_name:
+        points = apply_template_to_points(points, case_type=case_type, scene_name=scene_name)
+    return {"points": points, "count": len(points), "message": f"已解析 {len(points)} 条考察点"}
+
+
+@router.post("/assessment-points/parse-file")
+async def parse_assessment_points_file(
+    file: UploadFile = File(...),
+    case_type: str = Form(""),
+    scene_name: str = Form(""),
+):
+    filename = file.filename or ""
+    extension = os.path.splitext(filename)[1].lower()
+    if extension not in document_extract_service.ALLOWED_EXTENSIONS and extension not in {".txt", ".json"}:
+        raise HTTPException(status_code=400, detail="支持 TXT、JSON、MD、PDF、DOCX")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    if len(file_bytes) > document_extract_service.MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="文件不能超过 20MB")
+
+    if extension in {".txt", ".json"}:
+        try:
+            extracted_text = file_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            extracted_text = file_bytes.decode("gbk", errors="ignore")
+    else:
+        try:
+            extracted_text = document_extract_service.extract_text(filename, file_bytes)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    points = parse_text_to_assessment_points(extracted_text)
+    if case_type.strip() or scene_name.strip():
+        points = apply_template_to_points(points, case_type=case_type.strip(), scene_name=scene_name.strip())
+    return {
+        "points": points,
+        "count": len(points),
+        "extracted_chars": len(extracted_text),
+        "extracted_text": extracted_text[:8000],
+        "filename": filename,
+        "message": f"已从「{filename}」解析 {len(points)} 条考察点",
+    }
+
+
+@router.get("/ai-roles")
+def get_ai_roles_catalog():
+    return {"roles": list_ai_roles()}
+
+
+@router.get("/ai-roles/assessment-point-officer")
+def get_assessment_point_officer_role(_user=Depends(require_admin_user)):
+    """Return dedicated officer prompts for admin review (read-only)."""
+    return get_assessment_point_officer_prompts()
+
+
+@router.get("/assessment-points/scene-naming-rules")
+def get_assessment_scene_naming_rules():
+    return {
+        "standard_names": STANDARD_SCENE_NAMES,
+        "bucket_labels": BUCKET_LABELS,
+        "naming_hint": "场景名须含关键词：接警/现场/询问（或接处警、初查、讯问等），系统才能自动分派考察点。",
+    }
+
+
+@router.post("/assessment-points/distribute")
+def distribute_assessment_points_api(payload: dict = Body(...)):
+    case_info = payload.get("case_info") if isinstance(payload.get("case_info"), dict) else {}
+    scenes = payload.get("scenes") if isinstance(payload.get("scenes"), list) else []
+    if not scenes:
+        raise HTTPException(status_code=400, detail="scenes 不能为空")
+
+    try:
+        result = distribute_assessment_points_to_scenes(
+            case_info,
+            scenes,
+            source_text=str(payload.get("source_text") or "").strip(),
+            extra_hint=str(payload.get("extra_hint") or "").strip(),
+            use_llm=bool(payload.get("use_llm", True)),
+            rename_scenes=bool(payload.get("rename_scenes", True)),
+            reference_text=str(payload.get("reference_text") or "").strip(),
+        )
+        result["officer_role"] = "考察点编排专员"
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"分场景考察点生成失败: {exc}") from exc
+
+
+@router.post("/assessment-points/generate")
+def generate_assessment_points_api(payload: dict = Body(...)):
+    case_info = payload.get("case_info") if isinstance(payload.get("case_info"), dict) else {}
+    scene_info = payload.get("scene_info") if isinstance(payload.get("scene_info"), dict) else {}
+    if not case_info and not scene_info:
+        raise HTTPException(status_code=400, detail="case_info 或 scene_info 至少提供一项")
+
+    try:
+        return generate_assessment_points(
+            case_info,
+            scene_info,
+            source_text=str(payload.get("source_text") or "").strip(),
+            template_key=str(payload.get("template_key") or "").strip(),
+            extra_hint=str(payload.get("extra_hint") or "").strip(),
+            use_llm=bool(payload.get("use_llm", True)),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"考察点生成失败: {exc}") from exc
 
 
 @router.post("/ai-complete")

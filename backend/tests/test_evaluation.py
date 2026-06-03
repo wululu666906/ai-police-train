@@ -5,14 +5,18 @@ import pytest
 from services.evaluation_service import (
     DIMENSIONS,
     SCENE_RUBRICS,
+    apply_assessment_driven_scoring,
     apply_rule_adjustments,
     build_fallback_report,
     build_knowledge_hits,
     build_rule_checks,
     calibrate_report,
+    compute_grade_level,
     format_dialogue,
     infer_scene_type,
+    merge_assessment_point_results,
     normalize_llm_report,
+    reconcile_dimension_scores,
     render_rule_summary,
 )
 
@@ -344,3 +348,53 @@ class TestDimensions:
         assert "法律依据正确性" in names
         assert "情绪控制能力" in names
         assert "信息获取效率" in names
+
+
+class TestFormalScoringHelpers:
+    def test_compute_grade_level(self):
+        assert compute_grade_level(92) == "卓越"
+        assert compute_grade_level(75) == "良好"
+        assert compute_grade_level(40) == "需改进"
+
+    def test_merge_assessment_point_results_prefers_runtime_hit(self):
+        runtime = [{"id": "ap_1", "label": "核实身份", "status": "hit", "weight": 10, "score": 10, "evidence": ["学员: 请出示证件"]}]
+        llm = [{"id": "ap_1", "label": "核实身份", "status": "missed", "reason": "模型误判"}]
+        rows = [{"id": "ap_1", "label": "核实身份", "content": "确认身份", "stage_name": "现场控制"}]
+        merged = merge_assessment_point_results(runtime, llm, rows)
+        assert merged[0]["status"] == "hit"
+        assert merged[0]["score"] == 10
+        assert "模型误判" in merged[0]["feedback"]
+
+    def test_reconcile_dimension_scores(self):
+        report = {
+            "total_score": 60,
+            "scores": [
+                {"dimension": "执法语言规范性", "score": 20, "full_score": 25, "reason": "a"},
+                {"dimension": "执法流程完整性", "score": 20, "full_score": 25, "reason": "b"},
+                {"dimension": "法律依据正确性", "score": 20, "full_score": 20, "reason": "c"},
+                {"dimension": "情绪控制能力", "score": 10, "full_score": 15, "reason": "d"},
+                {"dimension": "信息获取效率", "score": 10, "full_score": 15, "reason": "e"},
+            ],
+        }
+        result = reconcile_dimension_scores(report)
+        assert result["total_score"] == sum(item["score"] for item in result["scores"])
+
+    def test_apply_assessment_driven_scoring_caps_low_completion(self):
+        report = normalize_llm_report(
+            {
+                "scores": [
+                    {"dimension": "执法语言规范性", "score": 22, "full_score": 25, "reason": "较好"},
+                    {"dimension": "执法流程完整性", "score": 22, "full_score": 25, "reason": "较好"},
+                    {"dimension": "法律依据正确性", "score": 18, "full_score": 20, "reason": "较好"},
+                    {"dimension": "情绪控制能力", "score": 13, "full_score": 15, "reason": "较好"},
+                    {"dimension": "信息获取效率", "score": 13, "full_score": 15, "reason": "较好"},
+                ]
+            }
+        )
+        points = [
+            {"label": "必考1", "status": "missed", "required": True, "weight": 10, "score": 0},
+            {"label": "必考2", "status": "missed", "required": True, "weight": 10, "score": 0},
+            {"label": "选考", "status": "missed", "required": False, "weight": 10, "score": 0},
+        ]
+        result = apply_assessment_driven_scoring(report, points, [])
+        assert result["total_score"] <= 58

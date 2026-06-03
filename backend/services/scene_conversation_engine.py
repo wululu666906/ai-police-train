@@ -39,6 +39,7 @@ def consolidate_scene_conversation(
     active_role_ids: list[int] = []
     new_facts: list[str] = []
     inner_thoughts: list[str] = []
+    role_contracts: dict[str, Any] = {}
 
     for actor in actor_outputs:
         role = actor.get("role")
@@ -49,6 +50,9 @@ def consolidate_scene_conversation(
         snap_key = str(role_id) if role_id is not None else ""
         if snap_key:
             role_snapshots[snap_key] = actor.get("updated_snapshot") or role_snapshots.get(snap_key) or {}
+            contract = actor.get("state_contract")
+            if isinstance(contract, dict):
+                role_contracts[snap_key] = contract
 
         thought = _text(actor.get("inner_thought"))
         if thought:
@@ -126,4 +130,10 @@ def consolidate_scene_conversation(
             for item in reply_turns
             if item.get("speaker_name")
         ],
+        "role_contracts": role_contracts,
+        "state_contract": (
+            role_contracts.get(str(getattr(primary_role, "id", "") or ""))
+            if primary_role
+            else None
+        ),
     }

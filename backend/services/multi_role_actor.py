@@ -14,6 +14,12 @@ from .persona_engine import (
     build_role_script,
     format_persona_block,
 )
+from .state_influence_engine import (
+    apply_delivery_from_contract,
+    build_state_contract,
+    enrich_momentum_with_axis_deltas,
+    format_state_contract_block,
+)
 from .multi_role_service import _build_history_block, _role_display_name
 
 ROLE_ACTOR_PROMPT = """
@@ -31,6 +37,9 @@ ROLE_ACTOR_PROMPT = """
 
 【你的人设与状态】
 {persona_block}
+
+【本轮表现契约（必须严格遵守）】
+{state_contract_block}
 
 【你掌握的事实边界】
 已知：{knows_facts}
@@ -168,7 +177,10 @@ def generate_role_dialogue(
         role_snapshot.get("cooperation", 30),
         role_snapshot.get("emotion", 50),
     )
+    momentum = enrich_momentum_with_axis_deltas(momentum, user_text, [])
+    state_contract = build_state_contract(role_snapshot, momentum)
     persona_block = format_persona_block(profile, script, {}, momentum)
+    state_contract_block = format_state_contract_block(state_contract)
     perspective_hint = _build_perspective_hint(
         role,
         user_text,
@@ -189,6 +201,7 @@ def generate_role_dialogue(
             current_stage=current_stage or "训练中",
             user_text=user_text or "（学员沉默）",
             persona_block=persona_block,
+            state_contract_block=state_contract_block,
             perspective_hint=perspective_hint,
             knows_facts=_format_facts(getattr(role, "knows_facts", [])),
             hidden_truths=_format_facts(getattr(role, "hidden_truths", [])),
@@ -213,6 +226,7 @@ def generate_role_dialogue(
                 elif isinstance(item, str) and _text(item):
                     cleaned.append({"content": _text(item), "delivery": "normal"})
             if cleaned:
+                cleaned = apply_delivery_from_contract(cleaned, state_contract)
                 delta = payload.get("state_delta") if isinstance(payload.get("state_delta"), dict) else {}
                 output = {
                     "utterances": cleaned,
@@ -241,6 +255,7 @@ def generate_role_dialogue(
         "state_delta": output.get("state_delta") or {},
         "new_fact_revealed": output.get("new_fact_revealed"),
         "updated_snapshot": _apply_snapshot_delta(role_snapshot, output.get("state_delta") or {}),
+        "state_contract": state_contract,
     }
 
 

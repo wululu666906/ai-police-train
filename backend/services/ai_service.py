@@ -7,7 +7,6 @@ import models
 from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
 from .persona_engine import (
     analyze_dialogue_momentum,
-    blend_state_updates,
     build_persona_profile,
     build_personalized_questions,
     build_recent_memory,
@@ -25,6 +24,15 @@ from .multi_role_service import (
 )
 from .role_resolver import is_role_speakable, resolve_scene_role, resolve_scene_roles
 from .stage_config_service import find_stage_config, normalize_stages
+from .prompts.training_voice_layers import TRAINING_VOICE_LAYER_PROMPT
+from .state_contract_postcheck import apply_contract_postcheck, postcheck_reply_turns, validate_response_against_contract
+from .state_influence_metrics import build_session_metrics, record_turn_metrics
+from .state_influence_engine import (
+    blend_four_axis_state,
+    build_state_contract,
+    enrich_momentum_with_axis_deltas,
+    format_state_contract_block,
+)
 from .training_runtime_service import (
     build_closure_message,
     build_follow_up_reply,
@@ -115,6 +123,9 @@ SYSTEM_PROMPT_TEMPLATE = """
 近期记忆：
 {memory_block}
 
+本轮表现契约（必须严格遵守，优先级高于自由发挥）：
+{state_contract_block}
+
 输出要求：
 1. response 只写角色本轮主要回答。
 2. follow_up_response 只有在以下情况才允许出现，否则必须为 null：
@@ -138,7 +149,7 @@ SYSTEM_PROMPT_TEMPLATE = """
   "new_fact_revealed": null,
   "is_stage_completed": false
 }}
-"""
+""" + TRAINING_VOICE_LAYER_PROMPT
 
 
 def _parse_json_list(raw_value: Any) -> list[str]:
@@ -1075,6 +1086,16 @@ def _run_training_turn(
         ts.current_trust,
         ts.current_emotion,
     )
+    momentum = enrich_momentum_with_axis_deltas(momentum, prompt_text, recognized_actions)
+    current_axis_scores = {
+        "emotion": ts.current_emotion,
+        "cooperation": current_state_snapshot["cooperation"],
+        "risk": current_state_snapshot["risk"],
+        "clarity": current_state_snapshot["clarity"],
+    }
+    state_contract = build_state_contract(current_axis_scores, momentum)
+    runtime_state["state_contract"] = state_contract
+    state_contract_block = format_state_contract_block(state_contract)
     truth_state = evaluate_truth_stage(
         persona_profile,
         momentum,
@@ -1121,6 +1142,10 @@ def _run_training_turn(
         runtime_state["role_state_snapshots"] = multi_turn_payload.get("role_state_snapshots") or runtime_state.get(
             "role_state_snapshots", {}
         )
+        runtime_state["role_contracts"] = multi_turn_payload.get("role_contracts") or {}
+        if multi_turn_payload.get("state_contract"):
+            state_contract = multi_turn_payload.get("state_contract")
+            runtime_state["state_contract"] = state_contract
         runtime_state["last_active_role_ids"] = multi_turn_payload.get("active_role_ids") or []
         scene_snapshot = multi_turn_payload.get("scene_state_snapshot") or {}
         current_state_snapshot = {
@@ -1186,6 +1211,7 @@ def _run_training_turn(
         clarity=current_state_snapshot["clarity"],
         scene_behavior_mode=persona_profile.get("scene_behavior_mode") or "核查取证型",
         scene_boundary_block=_format_scene_boundary_block(persona_profile),
+        state_contract_block=state_contract_block,
     )
 
     if result is None:
@@ -1210,22 +1236,32 @@ def _run_training_turn(
         result = _parse_result_payload(raw_content, ts, current_stage_goal, role, current_state_snapshot)
         planned_reply_turns = []
 
-    blended_state = blend_state_updates(
-        ts.current_emotion,
-        ts.current_trust,
-        result.get("updated_emotion"),
-        result.get("updated_cooperation", result.get("updated_trust")),
-        momentum,
-    )
-    ts.current_emotion = _clamp_score(blended_state["emotion"], ts.current_emotion)
-    ts.current_trust = _clamp_score(blended_state["trust"], ts.current_trust)
+    blended_state = blend_four_axis_state(current_axis_scores, result, momentum)
+    ts.current_emotion = blended_state["emotion"]
+    ts.current_trust = blended_state["cooperation"]
     current_state_snapshot = {
-        "cooperation": ts.current_trust,
-        "risk": _pick_result_score(result, current_state_snapshot["risk"], "updated_risk"),
-        "clarity": _pick_result_score(result, current_state_snapshot["clarity"], "updated_clarity"),
+        "cooperation": blended_state["cooperation"],
+        "risk": blended_state["risk"],
+        "clarity": blended_state["clarity"],
     }
+    runtime_state["state_snapshot"] = current_state_snapshot
 
     ai_reply = str(result.get("response") or "……").strip() or "……"
+    if not planned_reply_turns:
+        postcheck = apply_contract_postcheck(
+            ai_reply,
+            state_contract,
+            role_name=getattr(role, "name", "") or "",
+            user_text=prompt_text,
+            use_llm=True,
+        )
+        ai_reply = postcheck.get("text") or ai_reply
+        if postcheck.get("follow_up") and not str(result.get("follow_up_response") or "").strip():
+            result["follow_up_response"] = postcheck["follow_up"]
+        runtime_state["last_postcheck"] = {
+            "adjusted": postcheck.get("adjusted"),
+            "validation": postcheck.get("validation"),
+        }
     ai_thought = str(result.get("inner_thought") or "保持谨慎，继续观察警方问法。").strip()
     new_fact = result.get("new_fact_revealed")
     if _is_meaningful_fact(new_fact):
@@ -1272,7 +1308,7 @@ def _run_training_turn(
     auto_finished = bool(end_result.get("ready"))
 
     if planned_reply_turns:
-        reply_turns = [
+        normalized_turns = [
             {
                 "speaker_name": item.get("speaker_name") or getattr(role, "name", ""),
                 "speaker_role_id": item.get("speaker_role_id") or getattr(role, "id", None),
@@ -1282,6 +1318,14 @@ def _run_training_turn(
             for item in planned_reply_turns
             if isinstance(item, dict) and str(item.get("content") or "").strip()
         ]
+        normalized_turns = postcheck_reply_turns(
+            normalized_turns,
+            runtime_state.get("role_contracts") or {},
+            fallback_contract=state_contract,
+            user_text=prompt_text,
+            use_llm=False,
+        )
+        reply_turns = normalized_turns
         reply_sequence = [item["content"] for item in reply_turns]
     else:
         reply_turns = []
@@ -1328,6 +1372,19 @@ def _run_training_turn(
     runtime_state["auto_finish_ready"] = auto_finished
     runtime_state["closure_summary"] = _build_runtime_summary(end_result, current_stage)
     runtime_state["state_snapshot"] = current_state_snapshot
+    if planned_reply_turns and not runtime_state.get("last_postcheck"):
+        runtime_state["last_postcheck"] = {
+            "adjusted": False,
+            "validation": validate_response_against_contract(ai_reply, state_contract or {}),
+        }
+    record_turn_metrics(
+        runtime_state,
+        contract=state_contract,
+        ai_reply=ai_reply,
+        postcheck=runtime_state.get("last_postcheck") if isinstance(runtime_state.get("last_postcheck"), dict) else None,
+        stage_missing=stage_coverage.get("missing"),
+        stage_satisfied=stage_coverage.get("satisfied"),
+    )
     ts.revealed_info = dump_runtime_state(runtime_state)
 
     active_stage_config = _get_stage_config(scene, ts.current_stage or current_stage, case_type=case_type)
@@ -1346,7 +1403,11 @@ def _run_training_turn(
         )
 
     truth_stage = _infer_truth_stage(current_state_snapshot["cooperation"], ts.current_emotion)
-    from .recommended_questions_service import build_recommended_question_items, serialize_message_history
+    from .recommended_questions_service import (
+        apply_stage_hit_rate_correction,
+        build_recommended_question_items,
+        serialize_message_history,
+    )
 
     recent_messages = serialize_message_history(history[-10:])
     custom_prompts = list(active_stage_config.get("recommended_prompts") or []) if active_stage_config else []
@@ -1374,6 +1435,12 @@ def _run_training_turn(
         recent_messages=recent_messages,
         custom_prompts=custom_prompts,
         use_llm=True,
+    )
+    recommended_question_items = apply_stage_hit_rate_correction(
+        recommended_question_items,
+        satisfied=active_coverage.get("satisfied") or [],
+        missing=active_coverage.get("missing") or [],
+        addressee=getattr(role, "name", "") or target_role_name or "",
     )
     recommended_questions = [item["text"] for item in recommended_question_items]
 
@@ -1475,6 +1542,9 @@ def _run_training_turn(
             current_state_snapshot["clarity"],
         ),
         "truth_stage": truth_stage,
+        "state_contract": state_contract,
+        "state_influence_metrics": build_session_metrics(runtime_state),
+        "last_postcheck": runtime_state.get("last_postcheck"),
     }
 
 

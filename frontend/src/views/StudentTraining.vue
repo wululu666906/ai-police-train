@@ -54,26 +54,55 @@
             v-for="role in sceneRoles"
             :key="role.id"
             type="button"
-            class="scene-role-chip"
+            class="scene-role-card"
             :class="{
-              active: targetRoleName === role.name,
-              primary: role.is_primary,
-              'scene-role-chip--active': role.is_active,
-              'scene-role-chip--risk': (role.risk ?? 0) >= 70,
+              'scene-role-card--selected': targetRoleName === role.name,
+              'scene-role-card--speaking': isRoleAvatarSpeaking(role.name),
+              'scene-role-card--thinking': isRoleAvatarThinking(role.name),
             }"
-            :disabled="!role.speakable || isLoading"
+            :disabled="!role.speakable || isLoading || isPlayingReplies"
             @click="toggleTargetRole(role)"
           >
-            <span class="scene-role-chip__name">{{ role.name }}</span>
-            <span class="scene-role-chip__meta">
+            <RoleSpeakingAvatar
+              :name="role.name"
+              :speaking="isRoleAvatarSpeaking(role.name)"
+              :thinking="isRoleAvatarThinking(role.name)"
+              :primary="role.is_primary"
+              :risk="(role.risk ?? 0) >= 70"
+              :size="48"
+            />
+            <span class="scene-role-card__name">{{ role.name }}</span>
+            <span class="scene-role-card__meta">
               {{ role.state_label || role.role_type || '角色' }}
               <template v-if="role.emotion != null"> · 情绪{{ role.emotion }}</template>
             </span>
-            <span v-if="role.cooperation != null" class="scene-role-chip__bar">
-              <span class="scene-role-chip__bar-fill" :style="{ width: `${role.cooperation}%` }"></span>
+            <span v-if="isRoleAvatarSpeaking(role.name)" class="scene-role-card__badge">正在说话</span>
+            <span v-else-if="isRoleAvatarThinking(role.name)" class="scene-role-card__badge scene-role-card__badge--think">
+              准备发言
             </span>
           </button>
         </div>
+      </div>
+
+      <div v-if="showStateDebug && stateDebug.contract" class="panel-section state-debug-panel">
+        <h3 class="panel-title">
+          <van-icon name="setting-o" />
+          状态契约（管理员）
+        </h3>
+        <div class="state-debug-tags">
+          <span class="state-debug-tag">{{ stateDebug.contract?.primary_affect || '—' }}</span>
+          <span v-if="stateInfluenceMetrics.consistency_rate != null" class="state-debug-tag">
+            一致率 {{ Math.round((stateInfluenceMetrics.consistency_rate || 0) * 100) }}%
+          </span>
+          <span v-if="stateInfluenceMetrics.stage_requirement_hit_rate != null" class="state-debug-tag">
+            阶段命中 {{ Math.round((stateInfluenceMetrics.stage_requirement_hit_rate || 0) * 100) }}%
+          </span>
+        </div>
+        <p class="state-debug-hint">{{ stateDebug.contract?.tone_hint || '' }}</p>
+        <p v-if="stateDebug.postcheck?.validation" class="state-debug-meta">
+          后验：{{ stateDebug.postcheck.validation.ok ? '通过' : '未通过' }}
+          （{{ stateDebug.postcheck.validation.score }}）
+        </p>
       </div>
 
       <div class="panel-section">
@@ -156,8 +185,8 @@
           </div>
 
           <div v-else-if="msg.role === 'assistant'" class="msg-row msg-ai">
-            <div class="avatar avatar-ai">
-              <van-icon name="contact" size="20" />
+            <div class="avatar avatar-ai" :title="msg.speakerName || roleInfo.name">
+              <span class="avatar-initial">{{ (msg.speakerName || roleInfo.name).slice(0, 1) }}</span>
             </div>
             <div class="msg-body">
               <span class="msg-sender">{{ msg.speakerName || roleInfo.name }}</span>
@@ -167,7 +196,10 @@
 
           <div v-else class="msg-row msg-human">
             <div class="msg-body">
-              <span class="msg-sender">执法民警</span>
+              <span class="msg-sender">
+                执法民警
+                <span v-if="msg.inputSource === 'voice'" class="msg-source-tag">语音</span>
+              </span>
               <div class="msg-bubble bubble-human">{{ msg.content }}</div>
             </div>
             <div class="avatar avatar-human">
@@ -176,7 +208,7 @@
           </div>
         </div>
 
-        <div v-if="isLoading" class="msg-row msg-ai">
+        <div v-if="isLoading && !isPlayingReplies" class="msg-row msg-ai">
           <div class="avatar avatar-ai">
             <van-icon name="contact" size="20" />
           </div>
@@ -218,64 +250,77 @@
           v-model="inputMessage"
           :loading="isLoading"
           :disabled="isLoading"
-          @send="sendMessage"
+          @send="sendMessage()"
+          @voice-send="sendVoiceMessage"
         />
       </div>
     </div>
 
     <van-popup
       v-model:show="showCaseBrief"
-      position="right"
+      position="center"
       class="case-brief-popup"
-      :style="{ width: '100%', height: '100%' }"
+      :style="{ width: '936px', maxWidth: '94vw' }"
+      :overlay="true"
+      :close-on-click-overlay="false"
+      :duration="0"
     >
-      <div class="popup-header">
-        <van-nav-bar title="接警简报与现场信息" left-text="返回训练" left-arrow @click-left="showCaseBrief = false" />
-      </div>
-      <div class="popup-content">
-        <div class="brief-container">
-          <div class="brief-header">
-            <div class="brief-meta">
-              <van-tag type="primary" size="large" round>{{ caseInfo.caseType || '其他' }}</van-tag>
-              <span class="brief-id">会话 #{{ sessionId }}</span>
-            </div>
-            <h2 class="brief-main-title">{{ caseInfo.title }}</h2>
+      <div class="brief-dialog">
+        <div class="brief-dialog__header">
+          <div class="brief-dialog__title">接警简报与现场信息</div>
+          <button type="button" class="brief-dialog__close" aria-label="关闭" @click="showCaseBrief = false">×</button>
+        </div>
+
+        <div class="brief-dialog__body">
+          <div class="brief-dialog__intro">
+            <span class="brief-dialog__case-title">{{ caseInfo.title }}</span>
           </div>
 
-          <div class="brief-section">
-            <h4 class="brief-label">
-              <span class="label-line"></span> 110 接警简报
-            </h4>
-            <div class="abstract-box dispatch-box">
-              {{ caseInfo.dispatchBrief || '指挥中心暂未下发更详细的接警简报。' }}
-            </div>
-          </div>
-
-          <div class="brief-section">
-            <h4 class="brief-label">
-              <span class="label-line grey"></span> 现场第一印象
-            </h4>
-            <div class="original-source-box">
-              {{ caseInfo.firstImpression || '你已到达现场，暂未发现特别明显的异常情况。' }}
-            </div>
-          </div>
-
-          <div class="brief-section">
-            <van-divider dashed />
-            <h4 class="brief-label">
-              <span class="label-line blue"></span> 执法提示
-            </h4>
-            <div class="structured-grid">
-              <div class="sub-section">
-                <span class="sub-title">当前阶段建议</span>
-                <div class="sop-text">
-                  1. 先核实对话对象身份与所处位置。<br />
-                  2. 结合场景目标围绕时间、地点、人物、经过展开询问。<br />
-                  3. 注意控制现场情绪，避免冲突升级。<br />
-                  4. 留意对方表述中的矛盾点、隐瞒点和风险点。
-                </div>
+          <div class="brief-dialog__scroll">
+            <div class="brief-dialog__section">
+              <div class="brief-dialog__section-title">110 接警简报</div>
+              <div class="brief-dialog__paragraph brief-dialog__paragraph--quote">
+                {{ caseInfo.dispatchBrief || '指挥中心暂未下发更详细的接警简报。' }}
               </div>
             </div>
+
+            <div class="brief-dialog__section">
+              <div class="brief-dialog__section-title">现场第一印象</div>
+              <div class="brief-dialog__paragraph">
+                {{ caseInfo.firstImpression || '你已到达现场，暂未发现特别明显的异常情况。' }}
+              </div>
+            </div>
+
+            <div class="brief-dialog__section">
+              <div class="brief-dialog__section-title">执法提示</div>
+              <ol class="brief-dialog__list">
+                <li>先核实对话对象身份与所处位置。</li>
+                <li>结合场景目标围绕时间、地点、人物、经过展开询问。</li>
+                <li>注意控制现场情绪，避免冲突升级。</li>
+                <li>留意对方表述中的矛盾点、隐瞒点和风险点。</li>
+              </ol>
+            </div>
+          </div>
+        </div>
+
+        <div class="brief-dialog__footer">
+          <label class="brief-dialog__suppress">
+            <input
+              class="brief-dialog__checkbox"
+              type="checkbox"
+              :checked="suppressedBriefThisSession"
+              @change="onSuppressCheckboxChange"
+            />
+            <span class="brief-dialog__suppress-text">今日不再提示</span>
+          </label>
+
+          <div class="brief-dialog__actions">
+            <button type="button" class="brief-dialog__btn brief-dialog__btn--ghost" @click="showCaseBrief = false">
+              取消
+            </button>
+            <button type="button" class="brief-dialog__btn brief-dialog__btn--primary" @click="handleBriefStartTraining">
+              开始训练
+            </button>
           </div>
         </div>
       </div>
@@ -284,11 +329,12 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showLoadingToast, showToast } from 'vant'
 import request from '../utils/request'
 import TrainingInputBar from '../components/TrainingInputBar.vue'
+import RoleSpeakingAvatar from '../components/RoleSpeakingAvatar.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -296,7 +342,10 @@ const router = useRouter()
 const sessionId = ref(route.params.id)
 const inputMessage = ref('')
 const isLoading = ref(false)
+const isPlayingReplies = ref(false)
+const speakingRoleName = ref('')
 const showCaseBrief = ref(false)
+const suppressedBriefThisSession = ref(false)
 
 const caseInfo = reactive({
   title: '加载中...',
@@ -325,10 +374,19 @@ interface SceneRoleBrief {
   risk?: number
   clarity?: number
   state_label?: string
+  affect_label?: string
   is_active?: boolean
   is_targeted?: boolean
 }
 const sceneRoles = ref<SceneRoleBrief[]>([])
+const isAdminUser = computed(() => localStorage.getItem('role') === 'admin')
+const showStateDebug = computed(() => isAdminUser.value)
+const stateDebug = ref<{ contract?: Record<string, unknown>; postcheck?: { validation?: { ok?: boolean; score?: number } } }>({})
+const stateInfluenceMetrics = ref<{
+  consistency_rate?: number
+  stage_requirement_hit_rate?: number
+  turn_count?: number
+}>({})
 const routingSummary = ref('')
 const addressingWarning = ref('')
 const targetRoleName = ref('')
@@ -343,7 +401,9 @@ const stageMissing = ref<string[]>([])
 
 const revealedInfo = ref<string[]>([])
 const currentState = ref({ emotion: 50, trust: 30, risk: 50, clarity: 50 })
-const chatHistory = ref<Array<{ id: number; role: string; content: string; speakerName?: string }>>([])
+const chatHistory = ref<
+  Array<{ id: number; role: string; content: string; speakerName?: string; inputSource?: 'voice' | 'text' }>
+>([])
 
 
 
@@ -421,35 +481,87 @@ const syncTargetFromMessage = (msg: string) => {
   }
 }
 
-const appendAssistantReplies = (res: any, baseId: number) => {
+const SPEAK_MS_PER_CHAR = 42
+const SPEAK_MIN_MS = 850
+const SPEAK_MAX_MS = 4500
+const REPLY_GAP_MS = 260
+
+const sleep = (ms: number) => new Promise<void>((resolve) => {
+  window.setTimeout(resolve, ms)
+})
+
+const estimateSpeakDuration = (text: string) => {
+  const len = String(text || '').trim().length
+  return Math.min(SPEAK_MAX_MS, Math.max(SPEAK_MIN_MS, len * SPEAK_MS_PER_CHAR))
+}
+
+const guessThinkingRoleName = () => {
+  if (targetRoleName.value) return targetRoleName.value
+  const primary = sceneRoles.value.find((role) => role.is_primary)
+  if (primary?.name) return primary.name
+  const first = sceneRoles.value.find((role) => role.speakable !== false && role.name)
+  return first?.name || roleInfo.name
+}
+
+const thinkingRoleLabel = computed(() => guessThinkingRoleName())
+
+const isRoleAvatarSpeaking = (roleName: string) => speakingRoleName.value === roleName
+
+const isRoleAvatarThinking = (roleName: string) => {
+  if (speakingRoleName.value) return false
+  if (!isLoading.value || isPlayingReplies.value) return false
+  return roleName === thinkingRoleLabel.value
+}
+
+const collectAssistantReplyTurns = (res: any) => {
   const turns = Array.isArray(res?.reply_turns) ? res.reply_turns : []
   if (turns.length) {
-    turns
+    return turns
       .filter((item: any) => String(item?.content || '').trim())
-      .forEach((item: any, index: number) => {
-        chatHistory.value.push({
-          id: baseId + index,
-          role: 'assistant',
-          content: String(item.content),
-          speakerName: item.speaker_name || item.speakerName || roleInfo.name,
-        })
-      })
-    return
+      .map((item: any) => ({
+        content: String(item.content),
+        speakerName: String(item.speaker_name || item.speakerName || roleInfo.name).trim() || roleInfo.name,
+      }))
   }
   const sequence =
     Array.isArray(res?.reply_sequence) && res.reply_sequence.length
       ? res.reply_sequence
       : [res?.response].filter(Boolean)
-  sequence
+  return sequence
     .filter((item: string) => String(item || '').trim())
-    .forEach((content: string, index: number) => {
+    .map((content: string) => ({
+      content: String(content),
+      speakerName: roleInfo.name,
+    }))
+}
+
+const playAssistantReplies = async (res: any, baseId: number) => {
+  const items = collectAssistantReplyTurns(res)
+  if (!items.length) return false
+
+  isPlayingReplies.value = true
+  try {
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index]
+      speakingRoleName.value = item.speakerName
       chatHistory.value.push({
         id: baseId + index,
         role: 'assistant',
-        content,
-        speakerName: roleInfo.name,
+        content: item.content,
+        speakerName: item.speakerName,
       })
-    })
+      await nextTick()
+      scrollToBottom()
+      await sleep(estimateSpeakDuration(item.content))
+      if (index < items.length - 1) {
+        await sleep(REPLY_GAP_MS)
+      }
+    }
+  } finally {
+    speakingRoleName.value = ''
+    isPlayingReplies.value = false
+  }
+  return true
 }
 
 const buildSystemIntro = (sceneName: string, roleName: string, roles: SceneRoleBrief[] = []) => {
@@ -478,9 +590,26 @@ const normalizeDifficulty = (value: string) => {
   return text || '中等'
 }
 
+const resolveRequestErrorMessage = (error: any, fallback: string) => {
+  const detail = error?.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail.trim()
+  if (Array.isArray(detail) && detail.length) {
+    return detail.map((item: any) => item?.msg || item?.message || String(item)).filter(Boolean).join('；')
+  }
+  if (!error?.response) {
+    return '无法连接后端，请确认已运行 backend\\start.ps1（http://127.0.0.1:8000）'
+  }
+  return fallback
+}
+
 const fetchSessionData = async () => {
+  if (!sessionId.value) {
+    showToast('训练会话无效，请从训练大厅重新进入')
+    router.replace('/student/hall')
+    return
+  }
   try {
-    const res: any = await request.get(`/training/session/${sessionId.value}`)
+    const res: any = await request.get(`/training/session/${sessionId.value}`, { _skipErrorToast: true } as any)
     caseInfo.title = res.case_title
     caseInfo.sceneName = res.scene_name
     caseInfo.difficulty = normalizeDifficulty(res.difficulty || '中等')
@@ -516,19 +645,72 @@ const fetchSessionData = async () => {
       }))
     ]
     scrollToBottom()
-  } catch (error) {
-    showToast('获取训练数据失败')
+
+    // 进入对话即展示案件信息（学员若选择“本次不再提示”则本会话内不再自动弹出）
+    suppressedBriefThisSession.value = isBriefSuppressedInSession()
+    if (!suppressedBriefThisSession.value) {
+      showCaseBrief.value = true
+    }
+  } catch (error: any) {
+    showToast(resolveRequestErrorMessage(error, '获取训练数据失败'))
+    if (error?.response?.status === 404) {
+      setTimeout(() => router.replace('/student/hall'), 1500)
+    }
   }
 }
 
-const sendMessage = async () => {
-  if (!inputMessage.value.trim() || isLoading.value) return
+const getBriefSuppressKey = () => `student_training_brief_suppressed_${String(sessionId.value || '')}`
 
-  const msg = inputMessage.value.trim()
+const isBriefSuppressedInSession = () => {
+  try {
+    return sessionStorage.getItem(getBriefSuppressKey()) === '1'
+  } catch {
+    return false
+  }
+}
+
+const suppressBriefInSession = () => {
+  suppressedBriefThisSession.value = true
+  try {
+    sessionStorage.setItem(getBriefSuppressKey(), '1')
+  } catch {
+    // ignore
+  }
+}
+
+const clearBriefSuppressedInSession = () => {
+  suppressedBriefThisSession.value = false
+  try {
+    sessionStorage.removeItem(getBriefSuppressKey())
+  } catch {
+    // ignore
+  }
+}
+
+const onSuppressCheckboxChange = (event: Event) => {
+  const checked = Boolean((event.target as HTMLInputElement | null)?.checked)
+  if (checked) suppressBriefInSession()
+  else clearBriefSuppressedInSession()
+}
+
+const handleBriefStartTraining = () => {
+  showCaseBrief.value = false
+}
+
+const sendVoiceMessage = (transcript: string) => {
+  void sendMessage(transcript, 'voice')
+}
+
+const sendMessage = async (content?: string, inputSource: 'voice' | 'text' = 'text') => {
+  const msg = String(content ?? inputMessage.value).trim()
+  if (!msg || isLoading.value) return
+
   syncTargetFromMessage(msg)
   const pendingId = Date.now()
-  chatHistory.value.push({ id: pendingId, role: 'human', content: msg })
-  inputMessage.value = ''
+  chatHistory.value.push({ id: pendingId, role: 'human', content: msg, inputSource })
+  if (inputSource === 'text') {
+    inputMessage.value = ''
+  }
   isLoading.value = true
   scrollToBottom()
 
@@ -539,9 +721,7 @@ const sendMessage = async () => {
       target_role_name: targetRoleName.value || undefined,
     })
 
-    const beforeReplyCount = chatHistory.value.length
-    appendAssistantReplies(res, Date.now() + 1)
-    const hasAssistantReply = chatHistory.value.length > beforeReplyCount
+    const hasAssistantReply = await playAssistantReplies(res, Date.now() + 1)
 
     if (Array.isArray(res.scene_roles) && res.scene_roles.length) {
       sceneRoles.value = res.scene_roles
@@ -549,6 +729,13 @@ const sendMessage = async () => {
     routingSummary.value = String(res.routing_summary || '').trim()
     addressingWarning.value = String(res.addressing_warning || '').trim()
     applyGuidancePayload(res)
+    if (isAdminUser.value) {
+      stateDebug.value = {
+        contract: res.state_contract,
+        postcheck: res.last_postcheck,
+      }
+      stateInfluenceMetrics.value = res.state_influence_metrics || {}
+    }
     currentState.value.emotion = res.updated_emotion
     currentState.value.trust = res.updated_trust
     currentState.value.risk = res.updated_risk ?? currentState.value.risk
@@ -585,7 +772,9 @@ const sendMessage = async () => {
     }
   } catch (error) {
     chatHistory.value = chatHistory.value.filter((item) => item.id !== pendingId)
-    inputMessage.value = msg
+    if (inputSource === 'text') {
+      inputMessage.value = msg
+    }
     showToast('AI 响应异常，请稍后重试')
   } finally {
     isLoading.value = false
@@ -625,6 +814,12 @@ onMounted(fetchSessionData)
 </script>
 
 <style scoped>
+:global(html),
+:global(body) {
+  height: 100%;
+  background: #f7f8fa;
+}
+
 .scene-role-hint {
   margin: 0 0 10px;
   font-size: 12px;
@@ -635,69 +830,114 @@ onMounted(fetchSessionData)
 .scene-role-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
 }
 
-.scene-role-chip {
+.scene-role-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
   border: 1px solid #e5e6eb;
-  background: #f7f8fa;
-  border-radius: 10px;
-  padding: 8px 10px;
+  background: #fff;
+  border-radius: 12px;
+  padding: 10px 10px;
   cursor: pointer;
-  text-align: left;
-  min-width: 88px;
+  text-align: center;
+  min-width: 96px;
+  max-width: 108px;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
 }
 
-.scene-role-chip.primary {
-  border-color: #bedaff;
-}
-
-.scene-role-chip.active {
+.scene-role-card--selected {
   border-color: #165dff;
-  background: #e8f3ff;
+  background: #f7fbff;
+  box-shadow: 0 2px 10px rgba(22, 93, 255, 0.12);
 }
 
-.scene-role-chip:disabled {
+.scene-role-card--speaking {
+  border-color: #8aa3c4;
+  background: #f6f8fb;
+  box-shadow: 0 2px 10px rgba(90, 127, 168, 0.15);
+}
+
+.scene-role-card--thinking {
+  border-color: #b8c9de;
+  background: #f8fafc;
+}
+
+.scene-role-card:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
-.scene-role-chip__name {
+.scene-role-card__name {
   display: block;
   font-size: 13px;
   font-weight: 600;
   color: #1d2129;
+  line-height: 1.2;
 }
 
-.scene-role-chip__meta {
+.scene-role-card__meta {
   display: block;
-  margin-top: 2px;
-  font-size: 11px;
+  font-size: 10px;
   color: #86909c;
+  line-height: 1.35;
+  min-height: 26px;
 }
 
-.scene-role-chip--active {
-  box-shadow: 0 0 0 1px #ff7d00 inset;
+.scene-role-card__badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #3d5268;
+  background: #e2e8f0;
+  letter-spacing: 0.04em;
 }
 
-.scene-role-chip--risk {
-  border-color: #f53f3f;
+.scene-role-card__badge--think {
+  color: #5a6f86;
+  background: #edf1f5;
 }
 
-.scene-role-chip__bar {
-  display: block;
-  margin-top: 6px;
-  height: 3px;
-  background: #e5e6eb;
-  border-radius: 2px;
-  overflow: hidden;
+.state-debug-panel {
+  border: 1px dashed #c9d4e3;
+  background: #f8fafc;
 }
 
-.scene-role-chip__bar-fill {
-  display: block;
-  height: 100%;
-  background: linear-gradient(90deg, #165dff, #4080ff);
-  border-radius: 2px;
+.state-debug-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.state-debug-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #e8f0fe;
+  color: #1d3557;
+  font-weight: 600;
+}
+
+.state-debug-hint {
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.state-debug-meta {
+  font-size: 10px;
+  color: #94a3b8;
+  margin: 6px 0 0;
 }
 
 .scene-session-bar {
@@ -734,9 +974,11 @@ onMounted(fetchSessionData)
 
 .training-page {
   display: flex;
-  height: calc(100vh - 56px);
+  height: 100vh;
   overflow: hidden;
+  overflow-x: hidden;
   font-family: 'PingFang SC', 'Microsoft YaHei', 'Inter', sans-serif;
+  background: #f7f8fa;
 }
 
 .info-panel {
@@ -746,6 +988,7 @@ onMounted(fetchSessionData)
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  overflow-x: hidden;
   flex-shrink: 0;
 }
 
@@ -910,12 +1153,14 @@ onMounted(fetchSessionData)
   display: flex;
   flex-direction: column;
   background: #f7f8fa;
+  overflow-x: hidden;
 }
 
 .chat-messages {
   flex: 1;
   overflow-y: auto;
   padding: 24px;
+  overflow-x: hidden;
 }
 
 .msg-wrapper + .msg-wrapper {
@@ -953,6 +1198,13 @@ onMounted(fetchSessionData)
   color: #165dff;
 }
 
+.avatar-initial {
+  font-size: 15px;
+  font-weight: 700;
+  color: #165dff;
+  line-height: 1;
+}
+
 .avatar-human {
   background: #1d3557;
   color: white;
@@ -968,6 +1220,18 @@ onMounted(fetchSessionData)
 .msg-sender {
   font-size: 12px;
   color: #86909c;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.msg-source-tag {
+  font-size: 10px;
+  font-weight: 700;
+  color: #165dff;
+  background: rgba(22, 93, 255, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
 }
 
 .msg-bubble {
@@ -1099,6 +1363,7 @@ onMounted(fetchSessionData)
   padding: 12px 16px;
   background: #f2f3f5;
   border-top: 1px solid #e5e6eb;
+  overflow-x: hidden;
 }
 
 .typing-indicator {
@@ -1123,22 +1388,168 @@ onMounted(fetchSessionData)
   animation-delay: 0.3s;
 }
 
-.brief-container {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 24px;
+.case-brief-popup {
+  background: transparent;
+  border-radius: 10px;
+}
+
+.brief-dialog {
+  background: #fff;
+  border-radius: 13px;
+  border: 1px solid #e5e6eb;
+  box-shadow: 0 20px 52px rgba(15, 23, 42, 0.16);
+  overflow: hidden;
+}
+
+.brief-dialog__header {
+  height: 73px;
+  padding: 0 23px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #eef0f4;
+}
+
+.brief-dialog__title {
+  font-size: 24px;
+  font-weight: 800;
+  color: #0f1419;
+}
+
+.brief-dialog__close {
+  width: 43px;
+  height: 43px;
+  border: none;
+  background: transparent;
+  color: #86909c;
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.brief-dialog__body {
+  padding: 18px 23px 0;
+}
+
+.brief-dialog__intro {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 13px;
+}
+
+.brief-dialog__case-title {
+  font-size: 19px;
+  font-weight: 800;
+  color: #0f1419;
+}
+
+.brief-dialog__scroll {
+  border: 1px solid #e5e6eb;
+  border-radius: 8px;
+  padding: 16px 17px;
+  height: 390px;
+  overflow: auto;
+  background: #fff;
+}
+
+.brief-dialog__section + .brief-dialog__section {
+  margin-top: 16px;
+}
+
+.brief-dialog__section-title {
+  font-size: 16px;
+  font-weight: 800;
+  color: #0f1419;
+  margin-bottom: 10px;
+}
+
+.brief-dialog__paragraph {
+  font-size: 16px;
+  line-height: 1.8;
+  font-weight: 500;
+  color: #1a1f26;
+}
+
+.brief-dialog__paragraph--quote {
+  background: #f0f2f5;
+  border-left: 5px solid #165dff;
+  border-radius: 8px;
+  padding: 13px 14px;
+  color: #14181f;
+  font-weight: 600;
+}
+
+.brief-dialog__list {
+  margin: 0;
+  padding-left: 22px;
+  font-size: 16px;
+  line-height: 1.8;
+  font-weight: 500;
+  color: #1a1f26;
+}
+
+.brief-dialog__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 23px;
+  border-top: 1px solid #eef0f4;
+  margin-top: 18px;
+}
+
+.brief-dialog__suppress {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  user-select: none;
+  cursor: pointer;
+}
+
+.brief-dialog__checkbox {
+  width: 19px;
+  height: 19px;
+}
+
+.brief-dialog__suppress-text {
+  font-size: 17px;
+  font-weight: 700;
+  color: #2b2f36;
+}
+
+.brief-dialog__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.brief-dialog__btn {
+  min-width: 114px;
+  height: 44px;
+  padding: 0 17px;
+  border-radius: 8px;
+  font-size: 17px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.brief-dialog__btn--ghost {
+  background: #f6f7f9;
+  border-color: #e5e6eb;
+  color: #1d2129;
+}
+
+.brief-dialog__btn--primary {
+  background: #4f8ef7;
+  border-color: #4f8ef7;
+  color: #fff;
 }
 
 .brief-meta {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-
-.brief-id {
-  font-size: 12px;
-  color: #86909c;
-  font-weight: 700;
 }
 
 .brief-main-title {
@@ -1186,10 +1597,31 @@ onMounted(fetchSessionData)
 }
 
 .dispatch-box {
-  background: #f2f3f5;
+  background: #f6f7f9;
   border-left: 4px solid #165dff;
 }
 
+.brief-paragraph--plain {
+  border: none;
+  padding: 6px 0 0;
+  background: transparent;
+}
+
+.brief-paragraph--highlight {
+  border-radius: 14px;
+}
+
+.brief-tip-block {
+  padding: 14px 16px;
+}
+
+.brief-tip-list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: #4e5969;
+  font-size: 13px;
+  line-height: 1.85;
+}
 .sub-title {
   font-weight: 700;
   color: #1d3557;

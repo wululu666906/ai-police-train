@@ -117,19 +117,59 @@ def infer_scene_behavior_mode(scene_name: str, case_type: str = "", stages: Any 
     return "核查取证型"
 
 
+def infer_assessment_point_content(label: str, *, category: str = "procedure") -> str:
+    """Expand short checkpoint labels into actionable requirements for scoring."""
+    text = str(label or "").strip()
+    if not text:
+        return ""
+    if len(text) >= 28 and any(marker in text for marker in ("。", "；", "?", "？")):
+        return text
+    if text.startswith(("学员", "在对话", "在训练")):
+        return text
+    if category == "risk":
+        return f"学员应识别并处置与本项相关的风险：{text}；在对话或现场处置中可被观察到。"
+    if category == "evidence":
+        return f"学员应完成证据固定相关工作：{text}；在对话或现场动作中可被核查。"
+    action_starters = (
+        "核实",
+        "确认",
+        "追问",
+        "明确",
+        "告知",
+        "规范",
+        "识别",
+        "要求",
+        "提示",
+        "分离",
+        "检查",
+        "实施",
+        "启动",
+        "制作",
+        "带离",
+        "控制",
+        "拒测",
+    )
+    if text.startswith(action_starters):
+        return f"学员在训练对话或现场处置中应做到：{text}，结果可被对话关键词或执法动作核查。"
+    return f"学员应完成：{text}。"
+
+
 def _point(
     point_id: str,
     label: str,
     *,
+    content: str = "",
     category: str = "procedure",
     required: bool = True,
     weight: int = 10,
     keywords: list[str] | None = None,
     knowledge_refs: list[str] | None = None,
 ) -> dict[str, Any]:
+    resolved_content = str(content or "").strip() or infer_assessment_point_content(label, category=category)
     return {
         "id": point_id,
         "label": label,
+        "content": resolved_content,
         "category": category,
         "required": required,
         "weight": weight,
@@ -388,7 +428,12 @@ def _build_stage_template(case_type: str, scene_name: str, stage_name: str, stag
 def _normalize_assessment_point(point: dict[str, Any], stage_key: str, index: int) -> dict[str, Any]:
     label = str(point.get("label") or f"考察点{index}").strip()
     point_id = str(point.get("id") or _slugify(label, "ap", f"{stage_key}_{index}")).strip()
-    content = str(point.get("content") or point.get("requirement") or "").strip()
+    category = str(point.get("category") or "procedure").strip() or "procedure"
+    content = str(
+        point.get("content") or point.get("requirement") or point.get("description") or ""
+    ).strip()
+    if not content:
+        content = infer_assessment_point_content(label, category=category)
     keywords = _dedupe_strings(point.get("keywords") or [label])
     if not keywords:
         keywords = [label]
@@ -396,7 +441,7 @@ def _normalize_assessment_point(point: dict[str, Any], stage_key: str, index: in
         "id": point_id,
         "label": label,
         "content": content,
-        "category": str(point.get("category") or "procedure").strip() or "procedure",
+        "category": category,
         "required": bool(point.get("required", True)),
         "weight": max(1, int(point.get("weight", 10) or 10)),
         "keywords": keywords,

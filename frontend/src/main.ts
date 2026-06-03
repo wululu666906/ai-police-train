@@ -20,6 +20,7 @@ const routes = [
       { path: 'dashboard', component: () => import('./views/Dashboard.vue') },
       { path: 'cases', component: () => import('./views/Cases.vue') },
       { path: 'data-quality', component: () => import('./views/DataQuality.vue') },
+      { path: 'state-influence', component: () => import('./views/StateInfluence.vue') },
       { path: 'knowledge', component: () => import('./views/Knowledge.vue') },
       { path: 'roles', component: () => import('./views/Roles.vue') },
       { path: 'students', component: () => import('./views/Students.vue') },

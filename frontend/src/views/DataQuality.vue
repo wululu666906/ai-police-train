@@ -80,7 +80,7 @@
             <div class="text-lg font-bold text-gray-800">{{ issue.message }}</div>
             <div class="text-sm text-gray-500">建议处理：{{ issue.recommendation }}</div>
             <div class="flex flex-wrap gap-4 text-sm text-gray-500">
-              <span v-if="issue.case_title">案件：{{ issue.case_title }} (#{{ issue.case_id }})</span>
+              <span v-if="issue.case_title">案件：{{ issue.case_title }}</span>
               <span v-if="issue.scene_name">场景：{{ issue.scene_name }}</span>
               <span v-if="issue.role_name">角色：{{ issue.role_name }}</span>
             </div>

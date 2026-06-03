@@ -54,6 +54,14 @@ def _clamp_score(value, fallback):
     return max(0, min(100, numeric))
 
 
+def _session_emotion(session: models.TrainingSession, *, fallback: int = 50) -> int:
+    return _clamp_score(session.current_emotion, fallback)
+
+
+def _session_trust(session: models.TrainingSession, *, fallback: int = 30) -> int:
+    return _clamp_score(session.current_trust, fallback)
+
+
 def _default_state_snapshot(role: models.Role | None, case: models.Case | None, scene: models.Scene | None):
     snapshot = {
         "cooperation": _clamp_score(getattr(role, "init_trust", 30), 30),
@@ -110,7 +118,7 @@ def _serialize_session_response(
         scene_id=session.scene_id,
         user_id=session.user_id,
         current_stage=session.current_stage or "",
-        current_emotion=session.current_emotion,
+        current_emotion=_session_emotion(session),
         current_trust=state_snapshot["cooperation"],
         current_cooperation=state_snapshot["cooperation"],
         current_risk=state_snapshot["risk"],
@@ -152,6 +160,7 @@ def _build_session_guidance(
         scene,
         current_trust=session.current_trust,
     )
+    session_emotion = _session_emotion(session)
     revealed_info = [repair_text(str(item)) for item in runtime_state.get("revealed_info", []) if str(item).strip()]
     case_type = _get_case_type(case)
     stage_goal = current_stage_goal or ""
@@ -165,7 +174,7 @@ def _build_session_guidance(
         scene,
         case_type=case_type,
     )
-    truth_stage = _infer_truth_stage(state_snapshot["cooperation"], session.current_emotion)
+    truth_stage = _infer_truth_stage(state_snapshot["cooperation"], session_emotion)
     last_user_message = next(
         (repair_text(message.content) for message in reversed(messages) if message.role == "user"),
         "",
@@ -189,7 +198,7 @@ def _build_session_guidance(
         revealed_info=revealed_info,
         missing_requirements=stage_coverage.get("missing") or [],
         truth_stage=truth_stage,
-        emotion=session.current_emotion,
+        emotion=session_emotion,
         cooperation=state_snapshot["cooperation"],
         last_user_message=last_user_message,
         recent_messages=serialize_message_history(messages),
@@ -200,7 +209,7 @@ def _build_session_guidance(
     communication_feedback = _build_feedback(
         last_user_message,
         state_snapshot["cooperation"],
-        session.current_emotion,
+        session_emotion,
         truth_stage,
         risk=state_snapshot["risk"],
         clarity=state_snapshot["clarity"],
@@ -240,7 +249,7 @@ def _build_session_guidance(
         "persona_hint": _build_persona_hint(role),
         "role_state_label": _role_state_label(
             state_snapshot["cooperation"],
-            session.current_emotion,
+            session_emotion,
             state_snapshot["risk"],
             state_snapshot["clarity"],
         ),
@@ -347,6 +356,10 @@ def training_chat(
         detail = result.get("communication_feedback", {}).get("message") or "训练环境暂时无法响应，请稍后重试"
         raise HTTPException(status_code=502, detail=detail)
 
+    if current_user.role != "admin":
+        result.pop("state_contract", None)
+        result.pop("last_postcheck", None)
+
     return _trigger_auto_evaluation_if_needed(db, session_id, current_user.id, result)
 
 
@@ -452,12 +465,12 @@ def get_session(
         user_id=session.user_id,
         current_stage=session.current_stage or "训练中",
         current_stage_goal=current_goal,
-        current_emotion=session.current_emotion,
+        current_emotion=_session_emotion(session),
         current_trust=state_snapshot["cooperation"],
         current_cooperation=state_snapshot["cooperation"],
         current_risk=state_snapshot["risk"],
         current_clarity=state_snapshot["clarity"],
-        revealed_info=repaired_revealed_info,
+        revealed_info=repaired_revealed_info or dump_runtime_state(runtime_state),
         evaluation_result=repaired_evaluation_result,
         status=session.status,
         case_title=repair_text(case.title) if case else "未知案例",

@@ -8,6 +8,8 @@ import models
 from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
 from .persona_engine import build_persona_profile, build_role_script, format_persona_block
 from .role_resolver import is_role_speakable, resolve_scene_roles
+from .state_contract_postcheck import affect_display_label
+from .state_influence_engine import build_state_contract
 
 MULTI_ROLE_DIRECTOR_PROMPT = """
 你是警情训练场景的“对话导演”，负责根据学员（执法民警）输入，决定现场哪些角色开口、各自说什么。
@@ -312,6 +314,9 @@ def serialize_scene_roles(
     snapshots = (runtime_state or {}).get("role_state_snapshots") if isinstance(runtime_state, dict) else {}
     if not isinstance(snapshots, dict):
         snapshots = {}
+    role_contracts = (runtime_state or {}).get("role_contracts") if isinstance(runtime_state, dict) else {}
+    if not isinstance(role_contracts, dict):
+        role_contracts = {}
     active_ids = set(active_role_ids or (runtime_state or {}).get("last_active_role_ids") or [])
     target_clean = _text(target_role_name)
 
@@ -327,6 +332,10 @@ def serialize_scene_roles(
         cooperation = int(snap.get("cooperation", 30))
         risk = int(snap.get("risk", 50))
         clarity = int(snap.get("clarity", 50))
+        contract = role_contracts.get(str(role.id)) or build_state_contract(snap, {})
+        affect_label = affect_display_label(contract)
+        base_label = _state_label(emotion, cooperation, risk)
+        display_label = f"{affect_label} · {base_label}" if affect_label and base_label else (affect_label or base_label)
         payload.append(
             {
                 "id": role.id,
@@ -339,7 +348,10 @@ def serialize_scene_roles(
                 "cooperation": cooperation,
                 "risk": risk,
                 "clarity": clarity,
-                "state_label": _state_label(emotion, cooperation, risk),
+                "state_label": display_label,
+                "affect_label": affect_label,
+                "primary_affect": contract.get("primary_affect"),
+                "delivery": contract.get("delivery"),
                 "is_active": role.id in active_ids,
                 "is_targeted": target_clean == _role_display_name(role),
             }
