@@ -23,6 +23,9 @@ function Invoke-PythonExe {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
+    if ($psi.EnvironmentVariables.ContainsKey("Path") -and $psi.EnvironmentVariables.ContainsKey("PATH")) {
+        $psi.EnvironmentVariables.Remove("PATH")
+    }
     foreach ($key in @("PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE")) {
         if ($psi.EnvironmentVariables.ContainsKey($key)) { $psi.EnvironmentVariables.Remove($key) }
     }
@@ -53,6 +56,7 @@ function Get-BasePythonCandidates {
         "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
         "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
         "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+        "D:\APP\load\Miniconda3\python.exe",
         "$env:USERPROFILE\anaconda3\envs\yolo8_vision\python.exe",
         "C:\Users\Auraa\anaconda3\envs\yolo8_vision\python.exe"
     )

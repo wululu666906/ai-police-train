@@ -39,6 +39,8 @@ _RUNTIME_PASSTHROUGH_KEYS = (
     "role_contracts",
     "last_postcheck",
     "state_influence_turn_log",
+    "opening_delivered",
+    "dialogue_mode",
 )
 
 
@@ -146,6 +148,10 @@ def load_runtime_state(raw_value: Any) -> dict[str, Any]:
     for key in _RUNTIME_PASSTHROUGH_KEYS:
         if key in parsed:
             state[key] = parsed[key]
+    if "opening_delivered" in parsed:
+        state["opening_delivered"] = bool(parsed.get("opening_delivered"))
+    if parsed.get("dialogue_mode"):
+        state["dialogue_mode"] = str(parsed.get("dialogue_mode"))
     if not isinstance(state.get("state_influence_turn_log"), list):
         state["state_influence_turn_log"] = []
     return state

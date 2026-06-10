@@ -181,6 +181,8 @@ class SessionDetail(BaseModel):
     role_status: Optional[str] = None
     scene_roles: List["SceneRoleBrief"] = []
     scene_name: Optional[str] = None
+    scene_kind: Optional[str] = "generic"
+    dialogue_mode: Optional[str] = "officer_led"
     difficulty: Optional[str] = None
     dispatch_brief: Optional[str] = None
     first_impression: Optional[str] = None

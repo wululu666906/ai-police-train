@@ -1,4 +1,5 @@
 from collections import defaultdict
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -36,9 +37,9 @@ def safe_json_loads(value, default):
     if value in (None, ""):
         return default
     if isinstance(value, (dict, list)):
-        return value
-    try:
         return repair_payload(value)
+    try:
+        return repair_payload(json.loads(value))
     except Exception:
         return default
 

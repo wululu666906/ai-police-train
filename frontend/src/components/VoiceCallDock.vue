@@ -71,47 +71,49 @@ const emit = defineEmits<{
 .voice-call-dock {
   flex: 1;
   display: flex;
-  flex-direction: column;
-  min-height: 236px;
-  padding: 16px 24px 20px;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  align-items: center;
+  gap: 14px;
+  min-height: 72px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #f8fafc;
   border: 1px solid #e2e8f0;
 }
 
 .voice-call-dock__caption {
-  flex: 0 0 62%;
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 0 12px;
+  justify-content: flex-start;
+  text-align: left;
+  padding: 0;
 }
 
 .voice-call-dock__hint {
-  font-size: 15px;
+  font-size: 13px;
   color: #64748b;
   font-weight: 600;
 }
 
 .voice-call-dock__live {
-  font-size: 16px;
-  line-height: 1.68;
+  font-size: 13px;
+  line-height: 1.5;
   color: #0f172a;
   font-weight: 600;
-  max-height: 116px;
+  max-height: 44px;
   overflow-y: auto;
   word-break: break-word;
 }
 
 .voice-call-dock__controls {
-  flex: 0 0 38%;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  width: min(368px, 100%);
-  margin: 0 auto;
-  gap: 27px;
+  justify-content: flex-end;
+  width: auto;
+  margin: 0;
+  gap: 10px;
 }
 
 .voice-call-dock__btn {
@@ -134,11 +136,11 @@ const emit = defineEmits<{
 }
 
 .voice-call-dock__btn--mic {
-  width: 72px;
-  height: 72px;
+  width: 48px;
+  height: 48px;
   background: #334155;
   color: #fff;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.2);
+  box-shadow: 0 5px 12px rgba(15, 23, 42, 0.16);
 }
 
 .voice-call-dock__btn--mic.is-active {
@@ -150,41 +152,41 @@ const emit = defineEmits<{
 }
 
 .voice-call-dock__icon {
-  width: 30px;
-  height: 30px;
+  width: 22px;
+  height: 22px;
 }
 
 .voice-call-dock__btn--close {
-  width: 72px;
-  height: 72px;
+  width: 48px;
+  height: 48px;
   background: #ef4444;
-  box-shadow: 0 8px 16px rgba(239, 68, 68, 0.26);
+  box-shadow: 0 5px 12px rgba(239, 68, 68, 0.2);
 }
 
 @media (max-width: 768px) {
   .voice-call-dock {
-    min-height: 196px;
-    padding: 14px 16px 16px;
+    min-height: 68px;
+    padding: 8px 10px;
   }
 
   .voice-call-dock__caption {
-    flex-basis: 60%;
+    flex-basis: auto;
   }
 
   .voice-call-dock__controls {
-    flex-basis: 40%;
-    width: min(300px, 100%);
-    gap: 18px;
+    flex-basis: auto;
+    width: auto;
+    gap: 8px;
   }
 
   .voice-call-dock__btn--mic {
-    width: 64px;
-    height: 64px;
+    width: 44px;
+    height: 44px;
   }
 
   .voice-call-dock__btn--close {
-    width: 64px;
-    height: 64px;
+    width: 44px;
+    height: 44px;
   }
 }
 </style>

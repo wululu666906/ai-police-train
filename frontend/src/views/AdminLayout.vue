@@ -1,5 +1,5 @@
 <template>
-  <div class="admin-shell h-screen overflow-hidden bg-[#F4F7FB] lg:flex" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+  <div class="admin-shell h-screen overflow-hidden bg-[var(--police-bg)] lg:flex" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <div v-if="menuOpen" class="fixed inset-0 z-30 bg-slate-900/40 lg:hidden" @click="menuOpen = false"></div>
 
     <aside
@@ -11,15 +11,13 @@
       <div class="border-b border-white/10">
         <div
           :class="[
-            'pt-7 transition-[padding] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)]',
-            sidebarCollapsed ? 'pl-6 pr-0 pb-5' : 'px-6 pb-5',
+            'pt-5 transition-[padding] duration-[260ms] ease-out',
+            sidebarCollapsed ? 'px-0 pb-4' : 'px-4 pb-4',
           ]"
         >
-          <div class="flex items-center gap-3 overflow-hidden">
-            <div
-              class="flex h-14 w-14 items-center justify-center rounded-[20px] border border-white/10 bg-gradient-to-br from-[#2E6BFF] via-[#3D7BFF] to-[#1C4FCB] text-white shadow-[0_18px_34px_rgba(14,54,130,0.35)]"
-            >
-              <van-icon name="shield-o" size="26" />
+          <div :class="['flex items-center overflow-hidden', sidebarCollapsed ? 'justify-center gap-0' : 'gap-3']">
+            <div class="flex h-9 w-9 items-center justify-center rounded-[8px] bg-[var(--police-primary)] text-white shadow-[0_4px_12px_rgba(0,48,135,0.35)]">
+              <van-icon name="shield-o" size="20" />
             </div>
 
             <div
@@ -28,17 +26,17 @@
                 sidebarCollapsed ? 'max-w-0 -translate-x-1 opacity-0 delay-0' : 'max-w-[160px] translate-x-0 opacity-100 delay-75',
               ]"
             >
-              <h1 class="truncate text-lg font-bold tracking-[0.08em] text-white">警情模拟平台</h1>
-              <p class="mt-1 text-[11px] uppercase tracking-[0.28em] text-blue-100/55">Admin Console</p>
+              <h1 class="truncate text-[13px] font-semibold leading-tight text-white">警情模拟平台</h1>
+              <p class="mt-0.5 text-[10px] uppercase tracking-[0.16em] text-blue-100/55">Admin Console</p>
             </div>
           </div>
         </div>
       </div>
 
       <nav
-        :class="[
-          'flex-1 overflow-y-auto transition-[padding] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)]',
-          sidebarCollapsed ? 'px-2 py-4 space-y-2' : 'px-3 py-5 space-y-2',
+          :class="[
+            'flex-1 overflow-y-auto transition-[padding] duration-[260ms] ease-out',
+          sidebarCollapsed ? 'px-0 py-3 space-y-1' : 'px-2 py-3 space-y-1',
         ]"
       >
         <button
@@ -48,28 +46,18 @@
           :title="sidebarCollapsed ? item.label : ''"
           @click="onChange(item.name)"
           :class="[
-            'group relative isolate grid w-full grid-cols-[48px_minmax(0,1fr)] items-center overflow-hidden rounded-[24px] px-3.5 py-3 text-left transition-[padding,gap,background-color,color,border-radius,box-shadow] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)]',
-            sidebarCollapsed ? 'gap-x-0' : 'gap-x-3',
-            active === item.name ? 'text-[#16324F]' : 'text-blue-100/90 hover:bg-white/6',
+            'admin-nav-item group relative isolate grid w-full grid-cols-[32px_minmax(0,1fr)] items-center overflow-hidden rounded-[8px] px-3 py-2.5 text-left transition-[padding,gap,background-color,color,box-shadow] duration-200',
+            sidebarCollapsed ? 'admin-nav-item--collapsed mx-auto h-10 w-10 grid-cols-[1fr] justify-items-center px-0 py-0 gap-x-0' : 'gap-x-2.5',
+            active === item.name ? 'bg-[var(--police-primary)] text-white shadow-[0_2px_8px_rgba(0,48,135,0.4)]' : 'text-white/65 hover:bg-[#002d6e] hover:text-white',
           ]"
         >
-          <span
-            v-if="active === item.name"
-            class="pointer-events-none absolute inset-[4px] rounded-[20px] bg-white shadow-[0_18px_38px_rgba(8,35,74,0.18)]"
-          ></span>
-
-          <span
-            v-if="active === item.name"
-            class="pointer-events-none absolute inset-y-2 right-2 w-14 rounded-full bg-[#2E6BFF]/20 blur-2xl"
-          ></span>
-
             <span
               :class="[
-                'relative z-[1] flex items-center justify-center rounded-2xl transition-[background-color,color,box-shadow,transform] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)]',
-                'h-12 w-12 shrink-0',
+                'relative z-[1] flex items-center justify-center rounded-[6px] transition-[background-color,color,transform] duration-200',
+                'h-8 w-8 shrink-0',
                 active === item.name
-                  ? 'bg-gradient-to-br from-[#2E6BFF] via-[#3D7BFF] to-[#1D54D5] text-white shadow-[0_12px_26px_rgba(46,107,255,0.36)]'
-                  : 'bg-white/10 text-blue-100/90 group-hover:bg-white/14 group-hover:text-white group-hover:shadow-[0_10px_20px_rgba(10,34,64,0.18)]',
+                  ? 'bg-white/10 text-white'
+                  : 'bg-transparent text-white/70 group-hover:text-white',
               ]"
             >
               <van-icon :name="item.icon" size="20" />
@@ -77,24 +65,19 @@
 
           <div
             :class="[
-              'relative z-[1] min-w-0 overflow-hidden whitespace-nowrap transition-[max-width,opacity,transform] duration-[320ms] ease-[cubic-bezier(0.22,1,0.36,1)]',
+              'relative z-[1] min-w-0 overflow-hidden whitespace-nowrap transition-[max-width,opacity,transform] duration-200',
               sidebarCollapsed ? 'max-w-0 -translate-x-1 opacity-0 delay-0' : 'max-w-[132px] translate-x-0 opacity-100 delay-75',
             ]"
           >
-            <span class="block truncate font-medium">{{ item.label }}</span>
+            <span class="block truncate text-[14px] font-medium">{{ item.label }}</span>
           </div>
-
-          <span
-            v-if="active === item.name"
-            class="pointer-events-none absolute right-4 top-1/2 z-[1] h-9 w-1.5 -translate-y-1/2 rounded-full bg-gradient-to-b from-[#4B87FF] to-[#1F56D6] shadow-[0_0_18px_rgba(46,107,255,0.48)]"
-          ></span>
         </button>
       </nav>
 
       <div
         :class="[
           'hidden transition-[padding] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)] lg:block',
-          sidebarCollapsed ? 'px-2 py-4' : 'px-3 py-4',
+          sidebarCollapsed ? 'px-0 py-4' : 'px-3 py-4',
         ]"
       >
         <button
@@ -102,12 +85,12 @@
           :title="sidebarCollapsed ? '展开导航' : '收起导航'"
           @click="toggleSidebar"
           :class="[
-            'group grid w-full grid-cols-[48px_minmax(0,1fr)] items-center overflow-hidden rounded-[22px] px-3.5 py-3 text-left text-blue-100/72 transition-[padding,gap,background-color,color,border-radius,box-shadow] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-white/6 hover:text-white',
-            sidebarCollapsed ? 'gap-x-0' : 'gap-x-3',
+            'group grid w-full grid-cols-[32px_minmax(0,1fr)] items-center overflow-hidden rounded-[8px] px-3 py-2.5 text-left text-white/65 transition-[padding,gap,background-color,color] duration-200 hover:bg-[#002d6e] hover:text-white',
+            sidebarCollapsed ? 'mx-auto h-10 w-10 grid-cols-[1fr] justify-items-center px-0 py-0 gap-x-0' : 'gap-x-2.5',
           ]"
         >
           <span
-            class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/10 text-blue-50 transition-[background-color,color,box-shadow,transform] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:bg-white/14 group-hover:text-white group-hover:shadow-[0_10px_20px_rgba(10,34,64,0.18)]"
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] bg-transparent text-blue-50 transition-[background-color,color,transform] duration-200 group-hover:text-white"
           >
             <van-icon :name="sidebarCollapsed ? 'arrow' : 'arrow-left'" size="18" />
           </span>
@@ -126,7 +109,7 @@
 
     <main class="admin-main flex h-screen min-w-0 flex-1 flex-col overflow-hidden">
       <header
-        class="sticky top-0 z-20 flex h-16 flex-shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 lg:px-8"
+        class="sticky top-0 z-20 flex h-14 flex-shrink-0 items-center justify-between border-b border-[var(--police-border)] bg-white px-4 lg:px-6"
       >
         <div class="flex min-w-0 items-center gap-4">
           <button
@@ -138,8 +121,8 @@
           </button>
 
           <div class="min-w-0">
-            <h2 class="truncate text-lg font-bold text-slate-800">{{ currentItem?.label || '管理后台' }}</h2>
-            <p class="truncate text-xs text-slate-400">管理端负责配置、审核与发布，训练统一走学员链路</p>
+            <h2 class="truncate text-base font-semibold text-[var(--police-text-primary)]">{{ currentItem?.label || '管理后台' }}</h2>
+            <p class="truncate text-[13px] text-[var(--police-text-muted)]">管理端负责配置、审核与发布，训练统一走学员链路</p>
           </div>
         </div>
 
@@ -150,7 +133,7 @@
             type="primary"
             icon="exchange"
             @click="router.push('/student/hall')"
-            class="!rounded-full !border-sky-100 !bg-sky-50 !px-4 !text-sky-700 lg:!px-6"
+            class="!rounded-[6px] !border-[var(--police-border)] !bg-white !px-4 !text-[var(--police-primary)] lg:!px-4"
           >
             切换到学员端
           </van-button>
@@ -160,13 +143,13 @@
             <p class="text-xs text-slate-400">{{ roleLabel }}</p>
           </div>
 
-          <div class="flex h-10 w-10 items-center justify-center rounded-full bg-[#16324F] text-white font-bold">
+          <div class="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--police-primary)] text-[13px] font-semibold text-white">
             {{ avatarText }}
           </div>
         </div>
       </header>
 
-      <div class="flex-1 overflow-y-auto p-4 lg:p-8">
+      <div class="flex-1 overflow-y-auto p-4 lg:p-6">
         <router-view :key="route.path" v-slot="{ Component }">
           <transition name="fade-slide" mode="out-in">
             <component :is="Component" />
@@ -242,19 +225,36 @@ const toggleSidebar = () => {
 
 <style scoped>
 .admin-shell {
-  --sidebar-width: 248px;
+  --sidebar-width: 160px;
 }
 
 .admin-shell.sidebar-collapsed {
-  --sidebar-width: 92px;
+  --sidebar-width: 56px;
 }
 
 .admin-sidebar {
-  width: 248px;
-  background:
-    radial-gradient(circle at top center, rgba(76, 131, 255, 0.16), transparent 30%),
-    linear-gradient(180deg, #16324f 0%, #17395b 48%, #132f49 100%);
+  width: 160px;
+  background: var(--police-sidebar-bg);
   will-change: width, transform;
+}
+
+.admin-nav-item:hover {
+  padding-left: 16px;
+}
+
+.sidebar-collapsed .admin-nav-item,
+.sidebar-collapsed .admin-nav-item:hover {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.sidebar-collapsed .admin-nav-item span {
+  grid-column: 1;
+}
+
+.sidebar-collapsed .admin-nav-item--collapsed {
+  display: grid;
+  place-items: center;
 }
 
 .admin-main {

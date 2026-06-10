@@ -552,29 +552,35 @@ export const normalizeBehaviorTemplate = (source: any) => {
     }
   }
 
+  const surfaceStance = String(
+    source?.surface_stance || source?.public_mask || buildSurfaceStance(policeAttitude, archetypeMeta, currentGoal)
+  ).trim()
+  const pressureResponse = String(
+    source?.pressure_response || source?.stress_response || archetypeMeta.pressure_response || ''
+  ).trim()
+  const resolvedTriggerPoints = triggerPoints.length ? triggerPoints : [...archetypeMeta.trigger_points]
+
   return {
     behavior_archetype: archetype,
     scene_behavior_mode: sceneBehaviorMode,
     police_attitude: policeAttitude,
     current_goal: currentGoal,
     core_concern: coreConcern,
-    trigger_points: triggerPoints.length ? triggerPoints : [...archetypeMeta.trigger_points],
+    trigger_points: resolvedTriggerPoints,
     calming_points: calmingPoints.length ? calmingPoints : [...archetypeMeta.calming_points],
     relationship_pressure: deriveRelationshipPressure(source),
-    surface_stance: String(
-      source?.surface_stance || source?.public_mask || buildSurfaceStance(policeAttitude, archetypeMeta, currentGoal)
-    ).trim(),
-    pressure_response: String(source?.pressure_response || source?.stress_response || archetypeMeta.pressure_response || '').trim(),
+    surface_stance: surfaceStance,
+    pressure_response: pressureResponse,
     interaction_style: String(source?.interaction_style || archetypeMeta.interaction_style || '配合型').trim(),
     personality: String(source?.personality || archetypeMeta.personality || '').trim(),
     speaking_style: String(source?.speaking_style || archetypeMeta.speaking_style || '').trim(),
     authority_attitude: policeAttitude,
-    stress_response: String(source?.stress_response || source?.pressure_response || archetypeMeta.pressure_response || '').trim(),
-    public_mask: String(
-      source?.public_mask || source?.surface_stance || buildSurfaceStance(policeAttitude, archetypeMeta, currentGoal)
-    ).trim(),
-    private_drive: String(source?.private_drive || currentGoal).trim(),
-    current_need: String(source?.current_need || currentGoal).trim(),
+    stress_response: pressureResponse,
+    public_mask: surfaceStance,
+    weakness: coreConcern,
+    trigger_topics: resolvedTriggerPoints,
+    private_drive: currentGoal,
+    current_need: currentGoal,
     emotion_level: emotionLevel,
     cooperation_level: cooperationLevel,
     risk_level: riskLevel,
@@ -587,6 +593,8 @@ export const normalizeBehaviorTemplate = (source: any) => {
       source?.init_expression_clarity ?? archetypeMeta.init_expression_clarity ?? 52
     ),
     impairment_state: impairmentState,
+    knows_facts: boundaryLists.known_key_points,
+    hidden_truths: boundaryLists.withheld_key_points,
     ...boundaryLists,
   }
 }

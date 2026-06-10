@@ -3,10 +3,29 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-SCHEMA_VERSION = "2026.05.canonical-v1"
+from .role_compact_service import expand_role_compact_to_person, person_to_role_compact_view
+
+SCHEMA_VERSION = "2026.06.compact-v1"
+
+PERSON_COMPACT_V1_FIELDS: tuple[str, ...] = (
+    "name",
+    "role_type",
+    "status",
+    "behavior_archetype",
+    "opening_preset",
+    "current_goal",
+    "core_concern",
+    "trigger_points",
+    "calming_points",
+    "cannot_answer",
+    "boundary_primary",
+    "boundary_secondary",
+    "impairment_state",
+)
 
 PERSON_CANONICAL_FIELDS: tuple[str, ...] = (
     "behavior_archetype",
+    "opening_preset",
     "police_attitude",
     "scene_behavior_mode",
     "current_goal",
@@ -31,6 +50,7 @@ PERSON_CANONICAL_FIELDS: tuple[str, ...] = (
     "escalation_actions",
     "deescalation_conditions",
     "impairment_state",
+    "cannot_answer",
 )
 
 PERSON_ALIAS_TO_CANONICAL: dict[str, str] = {
@@ -43,6 +63,7 @@ PERSON_ALIAS_TO_CANONICAL: dict[str, str] = {
     "trigger_topics": "trigger_points",
     "knows_facts": "known_key_points",
     "hidden_truths": "withheld_key_points",
+    "does_not_know": "cannot_answer",
 }
 
 
@@ -79,11 +100,35 @@ def _first_non_empty(*values: Any) -> str:
     return ""
 
 
-def canonicalize_person_payload(person: dict[str, Any] | None) -> tuple[dict[str, Any], list[str]]:
+_ALIAS_LIST_FIELDS = frozenset({"trigger_topics", "knows_facts", "hidden_truths", "does_not_know"})
+
+
+def sync_person_alias_fields(person: dict[str, Any]) -> dict[str, Any]:
+    """Mirror canonical fields onto legacy alias keys so persisted JSON stays consistent."""
+    synced = copy.deepcopy(person or {})
+    for alias, target in PERSON_ALIAS_TO_CANONICAL.items():
+        if alias in _ALIAS_LIST_FIELDS:
+            canonical_list = _as_text_list(synced.get(target))
+            if canonical_list:
+                synced[alias] = copy.deepcopy(canonical_list)
+            continue
+        canonical_text = _as_text(synced.get(target))
+        if canonical_text:
+            synced[alias] = canonical_text
+    return synced
+
+
+def canonicalize_person_payload(
+    person: dict[str, Any] | None,
+    *,
+    scene_behavior_mode: str = "",
+) -> tuple[dict[str, Any], list[str]]:
     source = dict(person or {})
     warnings: list[str] = []
 
-    canonical = copy.deepcopy(source)
+    mode = _as_text(scene_behavior_mode) or _as_text(source.get("scene_behavior_mode")) or "核查取证型"
+    expanded = expand_role_compact_to_person(source, scene_behavior_mode=mode)
+    canonical = copy.deepcopy(expanded)
     for alias, target in PERSON_ALIAS_TO_CANONICAL.items():
         if target in canonical and canonical.get(target) not in (None, "", []):
             continue
@@ -126,20 +171,38 @@ def canonicalize_person_payload(person: dict[str, Any] | None) -> tuple[dict[str
     ):
         canonical[key] = _as_text_list(canonical.get(key))
 
-    # Legacy compatibility fields are read-compatible but canonical wins on write.
-    canonical["current_need"] = _first_non_empty(source.get("current_need"), canonical.get("current_goal"))
-    canonical["private_drive"] = _first_non_empty(source.get("private_drive"), canonical.get("current_goal"))
-    canonical["weakness"] = _first_non_empty(source.get("weakness"), canonical.get("core_concern"))
-    canonical["authority_attitude"] = _first_non_empty(source.get("authority_attitude"), canonical.get("police_attitude"))
-    canonical["stress_response"] = _first_non_empty(source.get("stress_response"), canonical.get("pressure_response"))
-    canonical["public_mask"] = _first_non_empty(source.get("public_mask"), canonical.get("surface_stance"))
-    canonical["trigger_topics"] = _as_text_list(source.get("trigger_topics") or canonical.get("trigger_points"))
+    # Fill missing canonical values from legacy aliases before mirroring back.
+    if not _as_text(canonical.get("current_goal")):
+        canonical["current_goal"] = _first_non_empty(source.get("current_need"), source.get("private_drive"))
+    if not _as_text(canonical.get("core_concern")):
+        canonical["core_concern"] = _first_non_empty(source.get("weakness"))
+    if not _as_text(canonical.get("police_attitude")):
+        canonical["police_attitude"] = _first_non_empty(source.get("authority_attitude"))
+    if not _as_text(canonical.get("pressure_response")):
+        canonical["pressure_response"] = _first_non_empty(source.get("stress_response"))
+    if not _as_text(canonical.get("surface_stance")):
+        canonical["surface_stance"] = _first_non_empty(source.get("public_mask"))
+    if not _as_text_list(canonical.get("trigger_points")):
+        canonical["trigger_points"] = _as_text_list(source.get("trigger_topics"))
+    if not _as_text_list(canonical.get("known_key_points")):
+        canonical["known_key_points"] = _as_text_list(source.get("knows_facts"))
+    if not _as_text_list(canonical.get("withheld_key_points")):
+        canonical["withheld_key_points"] = _as_text_list(source.get("hidden_truths"))
+    if not _as_text_list(canonical.get("cannot_answer")):
+        canonical["cannot_answer"] = _as_text_list(source.get("does_not_know"))
 
-    # Boundary compatibility mirrors.
-    canonical["knows_facts"] = _as_text_list(source.get("knows_facts") or canonical.get("known_key_points"))
-    canonical["hidden_truths"] = _as_text_list(source.get("hidden_truths") or canonical.get("withheld_key_points"))
-
+    canonical = sync_person_alias_fields(canonical)
+    canonical["compact_v1"] = True
     return canonical, warnings
+
+
+def person_compact_view(
+    person: dict[str, Any] | None,
+    *,
+    scene_behavior_mode: str = "",
+) -> dict[str, Any]:
+    mode = _as_text(scene_behavior_mode) or _as_text((person or {}).get("scene_behavior_mode")) or "核查取证型"
+    return person_to_role_compact_view(person, scene_behavior_mode=mode)
 
 
 def migrate_structured_data_payload(structured_data: dict[str, Any] | None) -> tuple[dict[str, Any], list[str]]:
@@ -157,6 +220,7 @@ def migrate_structured_data_payload(structured_data: dict[str, Any] | None) -> t
 
     payload["schema_version"] = SCHEMA_VERSION
     payload["canonical_person_fields"] = list(PERSON_CANONICAL_FIELDS)
+    payload["compact_person_fields"] = list(PERSON_COMPACT_V1_FIELDS)
     payload["canonical_alias_map"] = dict(PERSON_ALIAS_TO_CANONICAL)
 
     if warnings:

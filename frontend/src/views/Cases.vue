@@ -1,41 +1,66 @@
 <template>
-  <div class="space-y-6">
-    <section class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+  <div class="space-y-5">
+    <section class="admin-list-header">
       <div>
-        <h1 class="text-2xl font-black text-slate-800">案件管理</h1>
-        <p class="mt-1 text-sm text-slate-500">管理训练案件、校验场景人物关系，并支持普通文本或笔录文件导入。</p>
+        <h1>案件脚本库</h1>
+        <p>管理训练案件、校验场景人物关系，并支持普通文本或笔录文件导入。</p>
       </div>
-      <van-button type="primary" icon="plus" class="!bg-[#1D3557] !border-none px-6" @click="openAddModal">
+      <van-button type="primary" icon="plus" class="!bg-[#003087] !border-none !rounded-[6px] px-5" @click="openAddModal">
         录入新案件
       </van-button>
     </section>
 
-    <section class="rounded-[2rem] border border-slate-100 bg-white p-6 shadow-sm">
+    <section class="admin-list-panel">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h2 class="text-lg font-bold text-slate-800">场景人物校验</h2>
+          <h2 class="admin-list-section-title">场景人物校验</h2>
           <p class="mt-1 text-sm text-slate-500">检查场景主对话人是否缺失，以及是否存在不适合进入训练场景的角色分配。</p>
         </div>
         <div class="flex gap-3">
-          <van-button plain type="primary" :loading="auditLoading" @click="fetchSceneRoleAudit">重新校验</van-button>
-          <van-button type="warning" :loading="repairing" @click="repairSceneRoles">一键修复</van-button>
+          <van-button plain type="primary" class="!rounded-[6px]" :loading="auditLoading" @click="fetchSceneRoleAudit">重新校验</van-button>
+          <van-button type="warning" class="!rounded-[6px]" :loading="repairing" @click="repairSceneRoles">一键修复</van-button>
         </div>
       </div>
 
-      <div class="mt-5 grid grid-cols-1 gap-4 md:grid-cols-3">
-        <div class="rounded-2xl border border-slate-100 bg-slate-50 px-5 py-4">
+      <div class="admin-stat-row mt-5">
+        <div class="admin-stat-card">
           <div class="stat-label">案件数</div>
           <div class="stat-value text-slate-700">{{ auditSummary.caseCount }}</div>
         </div>
-        <div class="rounded-2xl border border-amber-100 bg-amber-50 px-5 py-4">
+        <div class="admin-stat-card">
           <div class="stat-label text-amber-500">问题场景</div>
           <div class="stat-value text-amber-700">{{ auditSummary.issueSceneCount }}</div>
         </div>
-        <div class="rounded-2xl border border-emerald-100 bg-emerald-50 px-5 py-4">
+        <div class="admin-stat-card">
           <div class="stat-label text-emerald-500">最近修复数</div>
           <div class="stat-value text-emerald-700">{{ auditSummary.lastRepairCount }}</div>
         </div>
       </div>
+    </section>
+
+    <section class="admin-filter-panel">
+      <div class="admin-filter-bar">
+        <label class="admin-filter-item">
+          <span>案件类型</span>
+          <select v-model="caseTypeFilter">
+            <option value="">全部</option>
+            <option v-for="type in caseTypeFilterOptions" :key="type" :value="type">{{ type }}</option>
+          </select>
+        </label>
+        <label class="admin-filter-item">
+          <span>校验状态</span>
+          <select v-model="caseIssueFilter">
+            <option value="">全部</option>
+            <option value="issue">有问题</option>
+            <option value="ok">正常</option>
+          </select>
+        </label>
+        <label class="admin-search-box">
+          <van-icon name="search" />
+          <input v-model.trim="caseSearchText" type="text" placeholder="搜索案件标题、类型或背景" />
+        </label>
+      </div>
+      <div class="admin-filter-summary">当前筛选 {{ filteredCases.length }} / {{ cases.length }} 个案件</div>
     </section>
 
     <section v-if="casesLoading" class="rounded-[2rem] border border-slate-100 bg-white py-24 shadow-sm">
@@ -51,40 +76,46 @@
       <van-button plain type="primary" class="mt-5" @click="refreshCasesPage">重新加载</van-button>
     </section>
 
-    <section v-else-if="cases.length" class="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
-      <article
-        v-for="caseItem in cases"
-        :key="caseItem.id"
-        class="flex h-full cursor-pointer flex-col rounded-[2rem] border border-slate-100 bg-white p-6 shadow-sm transition hover:shadow-lg"
-        @click="editCase(caseItem)"
-      >
-        <div class="flex items-start justify-between gap-4">
-          <div class="min-w-0">
-            <h3 class="break-all text-lg font-black text-slate-800">{{ caseItem.title || '未命名案件' }}</h3>
-          </div>
-          <van-tag round :type="getTagType(caseItem.case_type)" class="shrink-0 px-3 py-1 font-bold">
-            {{ caseItem.case_type || '未分类' }}
-          </van-tag>
-        </div>
-
-        <p class="line-clamp-3 mt-4 text-sm leading-7 text-slate-500">
-          {{ caseItem.background || '暂无案件背景描述。' }}
-        </p>
-
-        <div class="mt-5 flex items-center justify-between text-sm text-slate-500">
-          <span>场景 {{ caseItem.scenes?.length || 0 }}</span>
-          <span v-if="getCaseIssueCount(caseItem.id)" class="font-bold text-amber-600">问题 {{ getCaseIssueCount(caseItem.id) }}</span>
-        </div>
-
-        <div class="mt-auto pt-5 flex justify-end">
-          <van-button size="small" plain round class="!border-red-200 !text-red-500" @click.stop="deleteCase(caseItem)">
-            删除
-          </van-button>
-        </div>
-      </article>
+    <section v-else-if="filteredCases.length" class="case-table-wrap">
+      <table class="case-table">
+        <thead>
+          <tr>
+            <th>案件标题</th>
+            <th>类型</th>
+            <th>背景摘要</th>
+            <th>场景</th>
+            <th>校验问题</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="caseItem in filteredCases" :key="caseItem.id" @click="editCase(caseItem)">
+            <td class="case-title-cell">
+              <div class="case-row-title">{{ caseItem.title || '未命名案件' }}</div>
+              <div class="case-row-id">ID {{ caseItem.id }}</div>
+            </td>
+            <td>
+              <van-tag :type="getTagType(caseItem.case_type)" plain>
+                {{ caseItem.case_type || '未分类' }}
+              </van-tag>
+            </td>
+            <td class="case-summary-cell">{{ caseItem.background || '暂无案件背景描述。' }}</td>
+            <td class="case-metric-cell">{{ caseItem.scenes?.length || 0 }}</td>
+            <td>
+              <span v-if="getCaseIssueCount(caseItem.id)" class="case-issue">{{ getCaseIssueCount(caseItem.id) }} 项</span>
+              <span v-else class="case-ok">正常</span>
+            </td>
+            <td>
+              <van-button size="small" plain danger class="!rounded-[6px]" @click.stop="deleteCase(caseItem)">
+                删除
+              </van-button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </section>
 
-    <section v-else class="rounded-[2rem] border border-dashed border-slate-200 bg-white py-24 text-center">
+    <section v-else class="rounded-[8px] border border-dashed border-slate-200 bg-white py-20 text-center">
       <van-icon name="notes-o" size="32" class="text-slate-300" />
       <h3 class="mt-4 text-lg font-bold text-slate-500">暂无案件数据</h3>
       <p class="mt-2 text-sm text-slate-400">点击右上角“录入新案件”开始创建案件。</p>
@@ -361,151 +392,15 @@
                           <span v-for="item in getCompactPersonaSummary(person)" :key="item">{{ item }}</span>
                         </div>
                         <div v-else class="persona-stack-expanded" @click.stop>
-                          <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                            <div>
-                              <label class="form-label form-label--muted">角色姓名</label>
-                              <input :value="person.name" type="text" class="form-input" @input="renameParsedPerson(person, ($event.target as HTMLInputElement).value)" />
-                            </div>
-                            <div>
-                              <label class="form-label form-label--muted">人物身份</label>
-                              <input v-model="person.role" type="text" class="form-input" placeholder="如报警人、家属、围观者" />
-                            </div>
-                            <div>
-                              <label class="form-label form-label--muted">角色类型</label>
-                              <select v-model="person.role_type" class="form-input">
-                                <option v-for="option in roleTypeOptions" :key="option" :value="option">{{ option }}</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label class="form-label form-label--muted">当前状态</label>
-                              <select v-model="person.status" class="form-input">
-                                <option v-for="option in statusOptions" :key="option" :value="option">{{ option }}</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label class="form-label form-label--muted">行为原型</label>
-                              <select v-model="person.behavior_archetype" class="form-input">
-                                <option v-for="option in behaviorArchetypeOptions" :key="option.value" :value="option.value">{{ option.value }}</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label class="form-label form-label--muted">对警方态度</label>
-                              <select v-model="person.police_attitude" class="form-input">
-                                <option v-for="option in policeAttitudeOptions" :key="option.value" :value="option.value">{{ option.value }}</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label class="form-label form-label--muted">场景行为模式</label>
-                              <select v-model="person.scene_behavior_mode" class="form-input">
-                                <option v-for="option in sceneBehaviorModeOptions" :key="option.value" :value="option.value">{{ option.value }}</option>
-                              </select>
-                            </div>
+                          <div class="mt-3">
+                            <label class="form-label form-label--muted">人物身份</label>
+                            <input v-model="person.role" type="text" class="form-input" placeholder="如报警人、家属、围观者" />
                           </div>
-                          <div class="persona-role-summary mt-3">
-                            <div class="font-bold text-slate-700">{{ getBehaviorArchetypeSummary(person.behavior_archetype) }}</div>
-                            <div class="mt-1 text-xs text-slate-500">{{ getPoliceAttitudeSummary(person.police_attitude) }}</div>
-                          </div>
-                          <div class="persona-compact-grid mt-3">
-                            <section class="persona-compact-panel">
-                              <div class="persona-compact-panel__title">诉求与顾虑</div>
-                              <div class="mt-3 space-y-3">
-                                <div>
-                                  <label class="form-label form-label--muted">当前诉求</label>
-                                  <textarea v-model="person.current_goal" rows="2" class="form-textarea form-textarea--compact" placeholder="例如：先把人稳下来，不想把事情继续闹大"></textarea>
-                                </div>
-                                <div>
-                                  <label class="form-label form-label--muted">最怕后果</label>
-                                  <textarea v-model="person.core_concern" rows="2" class="form-textarea form-textarea--compact" placeholder="例如：最怕被认定先动手，最怕家里和单位知道"></textarea>
-                                </div>
-                              </div>
-                            </section>
-                            <section class="persona-compact-panel">
-                              <div class="persona-compact-panel__title">触发与安抚</div>
-                              <div class="mt-3 space-y-3">
-                                <div>
-                                  <label class="form-label form-label--muted">触发点</label>
-                                  <textarea
-                                    rows="2"
-                                    class="form-textarea form-textarea--compact"
-                                    :value="getPersonListText(person.trigger_points)"
-                                    @input="updatePersonListField(person, 'trigger_points', ($event.target as HTMLTextAreaElement).value)"
-                                    placeholder="每行一条，例如：被质疑在撒谎&#10;提到赔偿金额&#10;被连续打断"
-                                  ></textarea>
-                                </div>
-                                <div>
-                                  <label class="form-label form-label--muted">安抚点</label>
-                                  <textarea
-                                    rows="2"
-                                    class="form-textarea form-textarea--compact"
-                                    :value="getPersonListText(person.calming_points)"
-                                    @input="updatePersonListField(person, 'calming_points', ($event.target as HTMLTextAreaElement).value)"
-                                    placeholder="每行一条，例如：先让他说完整&#10;明确下一步怎么处理&#10;减少围观刺激"
-                                  ></textarea>
-                                </div>
-                              </div>
-                            </section>
-                            <section class="persona-compact-panel">
-                              <div class="persona-compact-panel__title">开场状态</div>
-                              <div class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-                                <div>
-                                  <label class="form-label form-label--muted">情绪强度</label>
-                                  <select v-model="person.emotion_level" class="form-input">
-                                    <option v-for="option in stateLevelOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                                  </select>
-                                </div>
-                                <div>
-                                  <label class="form-label form-label--muted">配合程度</label>
-                                  <select v-model="person.cooperation_level" class="form-input">
-                                    <option v-for="option in stateLevelOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                                  </select>
-                                </div>
-                                <div>
-                                  <label class="form-label form-label--muted">失控风险</label>
-                                  <select v-model="person.risk_level" class="form-input">
-                                    <option v-for="option in stateLevelOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                                  </select>
-                                </div>
-                                <div>
-                                  <label class="form-label form-label--muted">表达清晰度</label>
-                                  <select v-model="person.clarity_level" class="form-input">
-                                    <option v-for="option in stateLevelOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                                  </select>
-                                </div>
-                              </div>
-                            </section>
-                            <section class="persona-compact-panel">
-                              <div class="persona-compact-panel__title">场景边界</div>
-                              <div class="mt-3 space-y-3">
-                                <div class="rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-500">
-                                  {{ sceneBehaviorModeOptions.find((option) => option.value === person.scene_behavior_mode)?.summary || '先选场景行为模式，再补对应的信息边界。' }}
-                                </div>
-                                <div v-for="field in getPersonBoundaryFields(person)" :key="field.key">
-                                  <label class="form-label form-label--muted">{{ field.label }}</label>
-                                  <textarea
-                                    rows="2"
-                                    class="form-textarea form-textarea--compact"
-                                    :value="getPersonBoundaryFieldText(person, field.key)"
-                                    @input="updatePersonListField(person, field.key, ($event.target as HTMLTextAreaElement).value)"
-                                    :placeholder="field.placeholder"
-                                  ></textarea>
-                                </div>
-                                <div>
-                                  <label class="form-label form-label--muted">当前确实不知道的点</label>
-                                  <textarea
-                                    rows="2"
-                                    class="form-textarea form-textarea--compact"
-                                    :value="getPersonListText(person.does_not_know)"
-                                    @input="updatePersonListField(person, 'does_not_know', ($event.target as HTMLTextAreaElement).value)"
-                                    placeholder="每行一条，补充当前角色确实无法回答的问题。"
-                                  ></textarea>
-                                </div>
-                                <div v-if="person.scene_behavior_mode === '管控型'">
-                                  <label class="form-label form-label--muted">酒精 / 药物 / 精神状态说明</label>
-                                  <textarea v-model="person.impairment_state" rows="2" class="form-textarea form-textarea--compact" placeholder="例如：饮酒明显，语无伦次，步态不稳。"></textarea>
-                                </div>
-                              </div>
-                            </section>
-                          </div>
+                          <RoleCompactForm
+                            :model-value="person"
+                            :scene-behavior-mode="resolvePersonSceneBehaviorMode(person, aiParsedData)"
+                            @update:model-value="(next) => applyPersonCompactUpdate(aiParsedData, person, next)"
+                          />
                         </div>
                       </div>
                     </div>
@@ -785,151 +680,15 @@
                           <span v-for="item in getCompactPersonaSummary(person)" :key="item">{{ item }}</span>
                         </div>
                         <div v-else class="persona-stack-expanded" @click.stop>
-                          <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                            <div>
-                              <label class="form-label form-label--muted">角色姓名</label>
-                              <input :value="person.name" type="text" class="form-input" @input="renameEditablePerson(person, ($event.target as HTMLInputElement).value)" />
-                            </div>
-                            <div>
-                              <label class="form-label form-label--muted">人物身份</label>
-                              <input v-model="person.role" type="text" class="form-input" placeholder="如报警人、家属、同事" />
-                            </div>
-                            <div>
-                              <label class="form-label form-label--muted">角色类型</label>
-                              <select v-model="person.role_type" class="form-input">
-                                <option v-for="option in roleTypeOptions" :key="option" :value="option">{{ option }}</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label class="form-label form-label--muted">当前状态</label>
-                              <select v-model="person.status" class="form-input">
-                                <option v-for="option in statusOptions" :key="option" :value="option">{{ option }}</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label class="form-label form-label--muted">行为原型</label>
-                              <select v-model="person.behavior_archetype" class="form-input">
-                                <option v-for="option in behaviorArchetypeOptions" :key="option.value" :value="option.value">{{ option.value }}</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label class="form-label form-label--muted">对警方态度</label>
-                              <select v-model="person.police_attitude" class="form-input">
-                                <option v-for="option in policeAttitudeOptions" :key="option.value" :value="option.value">{{ option.value }}</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label class="form-label form-label--muted">场景行为模式</label>
-                              <select v-model="person.scene_behavior_mode" class="form-input">
-                                <option v-for="option in sceneBehaviorModeOptions" :key="option.value" :value="option.value">{{ option.value }}</option>
-                              </select>
-                            </div>
+                          <div class="mt-3">
+                            <label class="form-label form-label--muted">人物身份</label>
+                            <input v-model="person.role" type="text" class="form-input" placeholder="如报警人、家属、同事" />
                           </div>
-                          <div class="persona-role-summary mt-3">
-                            <div class="font-bold text-slate-700">{{ getBehaviorArchetypeSummary(person.behavior_archetype) }}</div>
-                            <div class="mt-1 text-xs text-slate-500">{{ getPoliceAttitudeSummary(person.police_attitude) }}</div>
-                          </div>
-                          <div class="persona-compact-grid mt-3">
-                            <section class="persona-compact-panel">
-                              <div class="persona-compact-panel__title">诉求与顾虑</div>
-                              <div class="mt-3 space-y-3">
-                                <div>
-                                  <label class="form-label form-label--muted">当前诉求</label>
-                                  <textarea v-model="person.current_goal" rows="2" class="form-textarea form-textarea--compact" placeholder="例如：先稳住现场，不想让责任全落到自己头上"></textarea>
-                                </div>
-                                <div>
-                                  <label class="form-label form-label--muted">最怕后果</label>
-                                  <textarea v-model="person.core_concern" rows="2" class="form-textarea form-textarea--compact" placeholder="例如：最怕被认定先动手，最怕继续刺激后失控"></textarea>
-                                </div>
-                              </div>
-                            </section>
-                            <section class="persona-compact-panel">
-                              <div class="persona-compact-panel__title">触发与安抚</div>
-                              <div class="mt-3 space-y-3">
-                                <div>
-                                  <label class="form-label form-label--muted">触发点</label>
-                                  <textarea
-                                    rows="2"
-                                    class="form-textarea form-textarea--compact"
-                                    :value="getPersonListText(person.trigger_points)"
-                                    @input="updatePersonListField(person, 'trigger_points', ($event.target as HTMLTextAreaElement).value)"
-                                    placeholder="每行一条，例如：被质疑在撒谎&#10;提到赔偿金额&#10;被连续打断"
-                                  ></textarea>
-                                </div>
-                                <div>
-                                  <label class="form-label form-label--muted">安抚点</label>
-                                  <textarea
-                                    rows="2"
-                                    class="form-textarea form-textarea--compact"
-                                    :value="getPersonListText(person.calming_points)"
-                                    @input="updatePersonListField(person, 'calming_points', ($event.target as HTMLTextAreaElement).value)"
-                                    placeholder="每行一条，例如：先让他说完整&#10;明确下一步怎么处理&#10;减少围观刺激"
-                                  ></textarea>
-                                </div>
-                              </div>
-                            </section>
-                            <section class="persona-compact-panel">
-                              <div class="persona-compact-panel__title">开场状态</div>
-                              <div class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-                                <div>
-                                  <label class="form-label form-label--muted">情绪强度</label>
-                                  <select v-model="person.emotion_level" class="form-input">
-                                    <option v-for="option in stateLevelOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                                  </select>
-                                </div>
-                                <div>
-                                  <label class="form-label form-label--muted">配合程度</label>
-                                  <select v-model="person.cooperation_level" class="form-input">
-                                    <option v-for="option in stateLevelOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                                  </select>
-                                </div>
-                                <div>
-                                  <label class="form-label form-label--muted">失控风险</label>
-                                  <select v-model="person.risk_level" class="form-input">
-                                    <option v-for="option in stateLevelOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                                  </select>
-                                </div>
-                                <div>
-                                  <label class="form-label form-label--muted">表达清晰度</label>
-                                  <select v-model="person.clarity_level" class="form-input">
-                                    <option v-for="option in stateLevelOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                                  </select>
-                                </div>
-                              </div>
-                            </section>
-                            <section class="persona-compact-panel">
-                              <div class="persona-compact-panel__title">场景边界</div>
-                              <div class="mt-3 space-y-3">
-                                <div class="rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-500">
-                                  {{ sceneBehaviorModeOptions.find((option) => option.value === person.scene_behavior_mode)?.summary || '先选场景行为模式，再补对应的信息边界。' }}
-                                </div>
-                                <div v-for="field in getPersonBoundaryFields(person)" :key="field.key">
-                                  <label class="form-label form-label--muted">{{ field.label }}</label>
-                                  <textarea
-                                    rows="2"
-                                    class="form-textarea form-textarea--compact"
-                                    :value="getPersonBoundaryFieldText(person, field.key)"
-                                    @input="updatePersonListField(person, field.key, ($event.target as HTMLTextAreaElement).value)"
-                                    :placeholder="field.placeholder"
-                                  ></textarea>
-                                </div>
-                                <div>
-                                  <label class="form-label form-label--muted">当前确实不知道的点</label>
-                                  <textarea
-                                    rows="2"
-                                    class="form-textarea form-textarea--compact"
-                                    :value="getPersonListText(person.does_not_know)"
-                                    @input="updatePersonListField(person, 'does_not_know', ($event.target as HTMLTextAreaElement).value)"
-                                    placeholder="每行一条，补充当前角色确实无法回答的问题。"
-                                  ></textarea>
-                                </div>
-                                <div v-if="person.scene_behavior_mode === '管控型'">
-                                  <label class="form-label form-label--muted">酒精 / 药物 / 精神状态说明</label>
-                                  <textarea v-model="person.impairment_state" rows="2" class="form-textarea form-textarea--compact" placeholder="例如：饮酒明显，语无伦次，步态不稳。"></textarea>
-                                </div>
-                              </div>
-                            </section>
-                          </div>
+                          <RoleCompactForm
+                            :model-value="person"
+                            :scene-behavior-mode="resolvePersonSceneBehaviorMode(person, editableCase)"
+                            @update:model-value="(next) => applyPersonCompactUpdate(editableCase, person, next)"
+                          />
                         </div>
                       </div>
                     </div>
@@ -951,53 +710,6 @@
               <van-tag plain type="success">{{ (editableCase.scenes || []).length }} 个场景</van-tag>
             </div>
             <div class="workspace-panel__body">
-            <div class="assessment-import-card assessment-import-card--case">
-              <div class="assessment-import-card__head">
-                <span class="text-sm font-semibold text-slate-700">考察点一键分场景</span>
-                <span class="text-xs text-slate-400">
-                  岗位：考察点编排专员 · 自动写入接警 / 现场 / 询问场景（只需操作一次）
-                </span>
-              </div>
-              <p class="assessment-import-card__rule text-xs text-slate-500">
-                场景命名须含关键词：<strong>接警</strong>、<strong>现场</strong>、<strong>询问</strong>（如：接警研判、现场处置、重点询问）。
-                系统按名称自动分组，无需在每个场景重复导入。
-              </p>
-              <textarea
-                v-model="assessmentImport.pasteText"
-                rows="2"
-                class="form-textarea"
-                placeholder="可选：粘贴考察清单；支持【接警】【现场】【询问】分段标题"
-              ></textarea>
-              <div class="mt-3 flex flex-wrap items-center gap-2">
-                <van-button
-                  type="primary"
-                  size="small"
-                  class="!bg-[#1D3557] !border-none"
-                  :loading="assessmentImport.generating"
-                  :disabled="!(editableCase?.scenes || []).length"
-                  @click="distributeAssessmentPointsForCase"
-                >
-                  AI 分场景生成并写入
-                </van-button>
-                <input
-                  ref="assessmentFileInputRef"
-                  type="file"
-                  accept=".txt,.json,.md,.pdf,.docx"
-                  class="sr-only"
-                  tabindex="-1"
-                  @change="onAssessmentFileForCase"
-                />
-                <van-button
-                  size="small"
-                  plain
-                  :loading="assessmentImport.uploading"
-                  @click.stop.prevent="openAssessmentFilePicker"
-                >
-                  上传文件
-                </van-button>
-              </div>
-              <p v-if="assessmentImport.lastMessage" class="mt-2 text-xs text-emerald-700">{{ assessmentImport.lastMessage }}</p>
-            </div>
             <section class="scene-studio rounded-2xl border border-slate-100 bg-white p-4">
             <div v-if="!(editableCase.scenes || []).length" class="scene-studio__empty py-8 text-center text-sm text-slate-500">暂无场景</div>
             <div v-else class="scene-studio__layout">
@@ -1025,7 +737,7 @@
                     type="button"
                     class="scene-studio__tab"
                     :class="{ 'is-active': activeSceneTab === tab.id }"
-                    @click="activeSceneTab = tab.id"
+                    @click="onSceneTabClick(tab.id)"
                   >{{ tab.label }}</button>
                 </div>
             <div
@@ -1047,7 +759,7 @@
                       v-model="scene.name"
                       type="text"
                       class="form-input"
-                      :placeholder="SCENE_NAME_PLACEHOLDERS[idx] || '须含：接警 / 现场 / 询问 关键词'"
+                      :placeholder="SCENE_NAME_PLACEHOLDERS[Number(idx)] || '须含：接警 / 现场 / 询问 关键词'"
                     />
                     <p class="mt-1 text-xs text-slate-400">
                       类型：{{ sceneBucketLabel(scene.name, Number(idx), (editableCase.scenes || []).length) }} · 用于自动分派考察点
@@ -1127,9 +839,26 @@
                   <div class="scene-flow-panel__toolbar">
                     <span class="scene-flow-panel__badge scene-flow-panel__badge--bucket">
                       {{ sceneBucketLabel(scene.name, Number(idx), (editableCase.scenes || []).length) }}
-                      · {{ (scene.assessmentPointsModel || []).length }} 个考察点
+                      · 已配置 {{ assessmentPointCountLabel(scene) }}
                     </span>
                     <div class="scene-flow-panel__actions">
+                      <van-button
+                        type="primary"
+                        size="small"
+                        class="!bg-[#1D3557] !border-none"
+                        :loading="isSceneAssessmentLoading(scene)"
+                        @click="generateAssessmentPointsForScene(scene, Number(idx))"
+                      >
+                        {{ (scene.assessmentPointsModel || []).length ? 'AI 刷新考察点' : 'AI 生成考察点' }}
+                      </van-button>
+                      <van-button
+                        size="small"
+                        plain
+                        :loading="isSceneAssessmentUploading(scene)"
+                        @click.stop.prevent="openSceneAssessmentFilePicker(scene)"
+                      >
+                        上传文件
+                      </van-button>
                       <van-button
                         v-if="(scene.assessmentPointsModel || []).length"
                         size="small"
@@ -1144,8 +873,35 @@
                     </div>
                   </div>
 
+                  <div class="mt-3 flex flex-wrap items-end gap-2">
+                    <textarea
+                      v-model="scene._assessmentPaste"
+                      rows="2"
+                      class="form-textarea flex-1 min-w-[240px]"
+                      placeholder="可选：粘贴本场景考察清单后点「导入粘贴」"
+                    ></textarea>
+                    <van-button
+                      size="small"
+                      plain
+                      :loading="isSceneAssessmentLoading(scene)"
+                      @click="importAssessmentPasteForScene(scene, Number(idx))"
+                    >
+                      导入粘贴
+                    </van-button>
+                  </div>
+                  <p v-if="scene._assessmentMessage" class="mt-2 text-xs text-emerald-700">{{ scene._assessmentMessage }}</p>
+
+                  <input
+                    ref="sceneAssessmentFileInputRef"
+                    type="file"
+                    accept=".txt,.json,.md,.pdf,.docx"
+                    class="sr-only"
+                    tabindex="-1"
+                    @change="onSceneAssessmentFileChange"
+                  />
+
                   <div v-if="!(scene.assessmentPointsModel || []).length" class="scene-flow-panel__empty">
-                    暂无考察点。请在上方使用「AI 分场景生成并写入」，或手动新增。
+                    暂无考察点。请使用「AI 生成考察点」、上传文件或手动新增（每场景最多 {{ MAX_ASSESSMENT_POINTS_PER_SCENE }} 条）。
                   </div>
 
                   <div
@@ -1163,16 +919,16 @@
                     <div v-if="!point._collapsed" class="scene-flow-stage__core">
                       <div class="scene-flow-stage__row">
                         <div class="scene-flow-stage__col">
-                          <label class="form-label form-label--muted">考察点名称</label>
-                          <input v-model="point.label" type="text" class="form-input" placeholder="如：建立关系与基本信息核实" />
+                          <label class="form-label form-label--muted">考察点名称（核心能力要求）</label>
+                          <input v-model="point.label" type="text" class="form-input" placeholder="如：压实双方陈述矛盾" />
                         </div>
                         <div class="scene-flow-stage__col">
-                          <label class="form-label form-label--muted">考察内容</label>
+                          <label class="form-label form-label--muted">考察内容（具体训练题目）</label>
                           <textarea
                             v-model="point.content"
-                            rows="1"
+                            rows="4"
                             class="form-textarea"
-                            placeholder="写清楚学员需要做到什么，评估时会据此核查对话内容是否满足。"
+                            placeholder="建议三段：①学员应做到什么；②具体要求（怎么问/怎么做）；③怎样算完成（回放记录时能听出什么算达标）。不要只重复上面的名称。"
                           ></textarea>
                         </div>
                       </div>
@@ -1205,18 +961,28 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
+import RoleCompactForm from '../components/RoleCompactForm.vue'
 import {
-  behaviorArchetypeOptions,
-  buildBehaviorSummary,
-  buildLegacyInfoBoundary,
+  buildRoleCompactSummary,
+  expandRoleCompactToPerson,
+  inferTrainingFocus,
+  personToRoleCompact,
+  trainingFocusToBehaviorMode,
+} from '../utils/roleCompact'
+import {
+  MAX_ASSESSMENT_POINTS_PER_SCENE,
+  assessmentPointCountLabel,
+  buildCaseInfoForAssessment,
+  buildSceneInfoForAssessment,
+  canAddAssessmentPoint,
+  capAssessmentPoints,
+  dedupeAssessmentPointsByLabel,
+} from '../utils/assessmentPoints'
+import {
   dedupeStringList,
-  getSceneBoundaryFields,
   normalizeBehaviorTemplate,
   PERSON_ALIAS_TO_CANONICAL,
   PERSON_CANONICAL_FIELDS,
-  policeAttitudeOptions,
-  sceneBehaviorModeOptions,
-  stateLevelOptions,
 } from '../utils/personaTemplate'
 import { sceneBucketLabel, SCENE_NAME_PLACEHOLDERS } from '../utils/sceneBucket'
 import request from '../utils/request'
@@ -1229,6 +995,9 @@ const showDetail = ref(false)
 const currentStep = ref(0)
 const importMode = ref<'plain_case' | 'transcript_file'>('plain_case')
 const cases = ref<any[]>([])
+const caseSearchText = ref('')
+const caseTypeFilter = ref('')
+const caseIssueFilter = ref('')
 const casesLoading = ref(false)
 const casesError = ref('')
 const parsing = ref(false)
@@ -1265,11 +1034,52 @@ const setActiveSceneIndex = (index: number) => {
   activeSceneTab.value = 'overview'
 }
 
+const resolvePersonSceneBehaviorMode = (person: any, caseItem: any = editableCase.value) => {
+  const scenes = caseItem?.scenes || []
+  const matched = scenes.find((scene: any) => Array.isArray(scene?.role_names) && scene.role_names.includes(person?.name))
+  const scene = matched || scenes[activeSceneIndex.value] || scenes[0]
+  if (!scene) return '核查取证型'
+  return resolveSceneCompactMeta(scene).behavior_mode
+}
+
+const resolveSceneCompactMeta = (scene: any) => {
+  const focus = inferTrainingFocus(String(scene?.name || ''), '')
+  return {
+    training_focus: focus,
+    behavior_mode: trainingFocusToBehaviorMode(focus),
+  }
+}
+
+const onSceneTabClick = (tabId: SceneEditTab) => {
+  activeSceneTab.value = tabId
+  if (tabId === 'flow') {
+    const scene = editableCase.value?.scenes?.[activeSceneIndex.value]
+    if (scene) ensureSceneAssessmentPointsModel(scene)
+  }
+}
+
 const activeEditableScene = computed(() => {
   const scenes = editableCase.value?.scenes || []
   if (!scenes.length) return null
   const safeIndex = Math.min(Math.max(activeSceneIndex.value, 0), scenes.length - 1)
   return scenes[safeIndex] || null
+})
+
+const caseTypeFilterOptions = computed(() =>
+  Array.from(new Set(cases.value.map((item) => String(item?.case_type || '').trim()).filter(Boolean))).sort()
+)
+
+const filteredCases = computed(() => {
+  const keyword = caseSearchText.value.trim()
+  return cases.value.filter((caseItem) => {
+    if (caseTypeFilter.value && caseItem.case_type !== caseTypeFilter.value) return false
+    const issueCount = getCaseIssueCount(caseItem.id)
+    if (caseIssueFilter.value === 'issue' && issueCount <= 0) return false
+    if (caseIssueFilter.value === 'ok' && issueCount > 0) return false
+    if (!keyword) return true
+    const haystack = [caseItem.title, caseItem.case_type, caseItem.background].join(' ')
+    return haystack.includes(keyword)
+  })
 })
 
 const getStageFlowStats = (stage: any) => {
@@ -1291,24 +1101,47 @@ const normalizeAssessmentPointEditors = (points: any) => {
 }
 
 const normalizeAssessmentPointsFromStages = (stagesModel: any[]) => {
-  const points: any[] = []
-  for (const stage of stagesModel || []) {
-    const stagePoints = Array.isArray(stage?.assessment_points) ? stage.assessment_points : []
-    points.push(...stagePoints)
+  const stages = stagesModel || []
+  const primaryStage = stages[0]
+  let points: any[] = Array.isArray(primaryStage?.assessment_points) ? [...primaryStage.assessment_points] : []
+  if (!points.length && stages.length > 1) {
+    for (const stage of stages.slice(1)) {
+      if (Array.isArray(stage?.assessment_points)) {
+        points.push(...stage.assessment_points)
+      }
+    }
   }
+  points = capAssessmentPoints(dedupeAssessmentPointsByLabel(points))
   return normalizeAssessmentPointEditors(points)
+}
+
+const upgradeAssessmentPointEditorContent = (point: any) => {
+  if (!point) return ''
+  const next = resolveAssessmentPointContent(point)
+  if (String(point.content || '').trim() !== next) {
+    point.content = next
+  }
+  return next
 }
 
 const ensureSceneAssessmentPointsModel = (scene: any) => {
   if (!scene) return
   if (!Array.isArray(scene.assessmentPointsModel)) {
     scene.assessmentPointsModel = normalizeAssessmentPointsFromStages(scene.stagesModel || [])
+    return
+  }
+  for (const point of scene.assessmentPointsModel) {
+    upgradeAssessmentPointEditorContent(point)
   }
 }
 
 const addAssessmentPointToScene = (scene: any) => {
   if (!scene) return
   ensureSceneAssessmentPointsModel(scene)
+  if (!canAddAssessmentPoint(scene)) {
+    showToast(`每场景最多 ${MAX_ASSESSMENT_POINTS_PER_SCENE} 条考察点`)
+    return
+  }
   const nextIndex = (scene.assessmentPointsModel || []).length
   scene.assessmentPointsModel.push({
     ...createPointEditor({ label: `考察点 ${nextIndex + 1}` }, nextIndex),
@@ -1360,7 +1193,7 @@ const serializeAssessmentPointsForSave = (pointsModel: any[]) => {
   return (Array.isArray(pointsModel) ? pointsModel : []).map((point: any, index: number) => ({
     id: String(point?.id || `ap_${index + 1}`).trim(),
     label: String(point?.label || '').trim(),
-    content: String(point?.content || '').trim(),
+    content: resolveAssessmentPointContent(point),
     category: String(point?.category || 'procedure').trim(),
     required: point?.required !== false,
     weight: Number(point?.weight ?? 10),
@@ -1368,14 +1201,6 @@ const serializeAssessmentPointsForSave = (pointsModel: any[]) => {
     knowledge_refs: splitTextList(point?.knowledgeRefsText),
   }))
 }
-
-const assessmentImport = reactive({
-  pasteText: '',
-  lastMessage: '',
-  generating: false,
-  uploading: false,
-})
-const assessmentFileInputRef = ref<HTMLInputElement | null>(null)
 
 const getApiErrorDetail = (error: any, fallback: string) => {
   const detail = error?.response?.data?.detail
@@ -1389,8 +1214,113 @@ const getApiErrorDetail = (error: any, fallback: string) => {
   return fallback
 }
 
-const openAssessmentFilePicker = () => {
-  const input = assessmentFileInputRef.value
+const mapApiPointsToEditors = (points: any[]) =>
+  normalizeAssessmentPointEditors(points).map((point: any) => ({
+    ...point,
+    _collapsed: true,
+  }))
+
+const replaceSceneAssessmentPoints = (scene: any, points: any[]) => {
+  ensureSceneAssessmentPointsModel(scene)
+  scene.assessmentPointsModel = mapApiPointsToEditors(
+    capAssessmentPoints(dedupeAssessmentPointsByLabel(Array.isArray(points) ? points : []))
+  )
+}
+
+const sceneAssessmentFileInputRef = ref<HTMLInputElement | null>(null)
+const pendingSceneForFileImport = ref<any>(null)
+const sceneAssessmentLoadingKey = ref('')
+const sceneAssessmentUploadingKey = ref('')
+
+const sceneAssessmentKey = (scene: any, sceneIndex = -1) => String(scene?.id || sceneIndex)
+
+const isSceneAssessmentLoading = (scene: any) => sceneAssessmentLoadingKey.value === sceneAssessmentKey(scene)
+const isSceneAssessmentUploading = (scene: any) => sceneAssessmentUploadingKey.value === sceneAssessmentKey(scene)
+
+const showAssessmentWarnings = (warnings: any) => {
+  if (Array.isArray(warnings) && warnings.length) {
+    showToast({ type: 'text', message: String(warnings[0]) })
+  }
+}
+
+const generateAssessmentPointsForScene = async (scene: any, sceneIndex: number) => {
+  if (!scene || !editableCase.value) return
+  const narrative = String(
+    editableCase.value.original_content || editableCase.value.full_narrative || editableCase.value.background || ''
+  ).trim()
+  if (!narrative) {
+    showToast('请先在「案情原文」填写案件材料，再为本场景生成考察点')
+    return
+  }
+  const key = sceneAssessmentKey(scene, sceneIndex)
+  sceneAssessmentLoadingKey.value = key
+  scene._assessmentMessage = ''
+  try {
+    const data: any = await request.post(
+      '/cases/assessment-points/generate',
+      {
+        case_info: buildCaseInfoForAssessment(editableCase.value),
+        scene_info: buildSceneInfoForAssessment(scene, editableCase.value),
+        source_text: narrative,
+        use_llm: true,
+      },
+      { _skipErrorToast: true } as any
+    )
+    replaceSceneAssessmentPoints(scene, data?.points || [])
+    scene._assessmentMessage = data?.message || `已替换本场景考察点（${(scene.assessmentPointsModel || []).length} 条）`
+    showAssessmentWarnings(data?.warnings)
+    if (!data?.points?.length) {
+      showToast(getApiErrorDetail(null, '未生成考察点，请检查案情原文或稍后重试'))
+      return
+    }
+    showToast(scene._assessmentMessage)
+  } catch (error: any) {
+    showToast(getApiErrorDetail(error, '考察点生成失败'))
+  } finally {
+    if (sceneAssessmentLoadingKey.value === key) {
+      sceneAssessmentLoadingKey.value = ''
+    }
+  }
+}
+
+const importAssessmentPasteForScene = async (scene: any, sceneIndex: number) => {
+  if (!scene || !editableCase.value) return
+  const text = String(scene._assessmentPaste || '').trim()
+  if (!text) {
+    showToast('请先粘贴考察点内容')
+    return
+  }
+  const key = sceneAssessmentKey(scene, sceneIndex)
+  sceneAssessmentLoadingKey.value = key
+  scene._assessmentMessage = ''
+  try {
+    const data: any = await request.post(
+      '/cases/assessment-points/parse-text',
+      {
+        text,
+        case_type: editableCase.value.case_type,
+        scene_name: scene.name,
+        scene_index: sceneIndex,
+        scene_count: (editableCase.value.scenes || []).length,
+      },
+      { _skipErrorToast: true } as any
+    )
+    replaceSceneAssessmentPoints(scene, data?.points || [])
+    scene._assessmentMessage = data?.message || `已从粘贴内容替换本场景考察点（${(scene.assessmentPointsModel || []).length} 条）`
+    showAssessmentWarnings(data?.warnings)
+    showToast(scene._assessmentMessage)
+  } catch (error: any) {
+    showToast(getApiErrorDetail(error, '考察点解析失败'))
+  } finally {
+    if (sceneAssessmentLoadingKey.value === key) {
+      sceneAssessmentLoadingKey.value = ''
+    }
+  }
+}
+
+const openSceneAssessmentFilePicker = (scene: any) => {
+  pendingSceneForFileImport.value = scene
+  const input = sceneAssessmentFileInputRef.value
   if (!input) {
     showToast('文件选择器未就绪，请刷新页面后重试')
     return
@@ -1399,132 +1329,34 @@ const openAssessmentFilePicker = () => {
   input.click()
 }
 
-const buildCaseInfoForAssessmentDistribute = () => {
-  const caseItem = editableCase.value
-  const narrative = String(
-    caseItem?.original_content || caseItem?.full_narrative || caseItem?.background || ''
-  ).trim()
-  return {
-    title: caseItem?.title,
-    case_type: caseItem?.case_type,
-    case_background: caseItem?.background || caseItem?.case_background,
-    full_narrative: narrative,
-    original_content: narrative,
-  }
-}
-
-const hasAssessmentSourceMaterial = () => {
-  const caseItem = editableCase.value
-  const narrative = String(
-    caseItem?.original_content || caseItem?.full_narrative || caseItem?.background || ''
-  ).trim()
-  return Boolean(narrative || assessmentImport.pasteText.trim())
-}
-
-const mapApiPointsToEditors = (points: any[]) =>
-  normalizeAssessmentPointEditors(points).map((point: any) => ({
-    ...point,
-    _collapsed: true,
-  }))
-
-const buildScenesPayloadForDistribute = () =>
-  (editableCase.value?.scenes || []).map((scene: any) => ({
-    id: scene.id,
-    name: scene.name,
-    description: scene.description,
-    dispatch_brief: scene.dispatch_brief,
-    first_impression: scene.first_impression,
-  }))
-
-const applyDistributeAssignments = (assignments: any[]) => {
-  if (!editableCase.value?.scenes?.length || !Array.isArray(assignments)) return
-  const byId = new Map(assignments.map((row: any) => [String(row.scene_id), row]))
-  editableCase.value.scenes.forEach((scene: any, index: number) => {
-    const row = byId.get(String(scene.id)) || assignments[index]
-    if (!row) return
-    ensureSceneAssessmentPointsModel(scene)
-    if (row.suggested_name) {
-      scene.name = row.suggested_name
-    } else if (row.scene_name) {
-      scene.name = row.scene_name
-    }
-    const rawPoints = row.points
-    const points = Array.isArray(rawPoints) ? rawPoints : []
-    scene.assessmentPointsModel = mapApiPointsToEditors(points)
-  })
-}
-
-const distributeAssessmentPointsForCase = async () => {
-  if (!editableCase.value?.scenes?.length) {
-    showToast('请先添加训练场景')
-    return
-  }
-  if (!hasAssessmentSourceMaterial()) {
-    showToast('请先在「案情原文」填写案件材料，或粘贴/上传考察清单')
-    return
-  }
-  assessmentImport.generating = true
-  assessmentImport.lastMessage = ''
+const onSceneAssessmentFileChange = async (event: Event) => {
+  const scene = pendingSceneForFileImport.value
+  const file = (event.target as HTMLInputElement)?.files?.[0]
+  pendingSceneForFileImport.value = null
+  if (!scene || !file || !editableCase.value) return
+  const sceneIndex = (editableCase.value.scenes || []).indexOf(scene)
+  const key = sceneAssessmentKey(scene, sceneIndex)
+  sceneAssessmentUploadingKey.value = key
+  scene._assessmentMessage = ''
   try {
-    const narrative = String(
-      editableCase.value.original_content || editableCase.value.full_narrative || editableCase.value.background || ''
-    ).trim()
-    const data: any = await request.post(
-      '/cases/assessment-points/distribute',
-      {
-        case_info: buildCaseInfoForAssessmentDistribute(),
-        scenes: buildScenesPayloadForDistribute(),
-        source_text: assessmentImport.pasteText.trim(),
-        reference_text: narrative,
-        rename_scenes: true,
-        use_llm: true,
-      },
-      { _skipErrorToast: true } as any
-    )
-    applyDistributeAssignments(data?.assignments || [])
-    const totalPoints = Number(data?.total_points ?? 0)
-    const summary = (data?.assignments || [])
-      .filter((row: any) => row.point_count > 0)
-      .map((row: any) => `${row.bucket_label || row.bucket} ${row.point_count}条`)
-      .join(' · ')
-    assessmentImport.lastMessage = data?.message ? `${data.message}${summary ? `（${summary}）` : ''}` : ''
-    if (!totalPoints) {
-      showToast(getApiErrorDetail(null, '未生成考察点，请检查案情原文或稍后重试'))
-      return
-    }
-    if (data?.warnings?.length) {
-      showToast({ type: 'text', message: data.warnings[0] })
-    } else {
-      showToast(data?.message || '已写入各场景，请保存案件')
-    }
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('case_type', String(editableCase.value.case_type || ''))
+    formData.append('scene_name', String(scene.name || ''))
+    formData.append('scene_index', String(Math.max(sceneIndex, 0)))
+    formData.append('scene_count', String((editableCase.value.scenes || []).length))
+    const data: any = await request.post('/cases/assessment-points/parse-file', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      _skipErrorToast: true,
+    } as any)
+    replaceSceneAssessmentPoints(scene, data?.points || [])
+    scene._assessmentMessage = data?.message || `已从文件替换本场景考察点（${(scene.assessmentPointsModel || []).length} 条）`
+    showAssessmentWarnings(data?.warnings)
+    showToast(scene._assessmentMessage)
   } catch (error: any) {
-    showToast(getApiErrorDetail(error, '分场景生成失败'))
+    showToast(getApiErrorDetail(error, '考察点文件解析失败'))
   } finally {
-    assessmentImport.generating = false
-  }
-}
-
-const onAssessmentFileForCase = async (event: Event) => {
-  const input = event.target as HTMLInputElement | null
-  const file = input?.files?.[0]
-  if (!file) return
-  assessmentImport.uploading = true
-  try {
-    const form = new FormData()
-    form.append('file', file)
-    const data: any = await request.post('/cases/assessment-points/parse-file', form, { _skipErrorToast: true } as any)
-    assessmentImport.pasteText = String(data?.extracted_text || '').trim()
-    if (!assessmentImport.pasteText) {
-      showToast('文件未解析出文本，请换 TXT/MD 或检查内容')
-      return
-    }
-    assessmentImport.lastMessage = '文件已载入，请点击「AI 分场景生成并写入」'
-    showToast('文件已载入')
-  } catch (error: any) {
-    showToast(getApiErrorDetail(error, '文件解析失败'))
-  } finally {
-    assessmentImport.uploading = false
-    if (input) input.value = ''
+    sceneAssessmentUploadingKey.value = ''
   }
 }
 
@@ -1653,28 +1485,7 @@ const sceneGenerationIsFallback = (payload: any) => String(payload?.scene_genera
 const parseWarnings = (payload: any) => Array.isArray(payload?.parse_warnings) ? payload.parse_warnings : []
 const sceneGenerationWarning = (payload: any) => String(payload?.scene_generation_warning || '').trim()
 
-const roleTypeOptions = ['相关人员', '证人', '嫌疑人', '被害人', '民警']
-const statusOptions = ['正常', '受伤可交流', '昏迷', '重伤无法交流', '死亡']
-const personBoundaryFieldKeys = [
-  'known_key_points',
-  'withheld_key_points',
-  'conflict_core',
-  'acceptable_outcomes',
-  'no_go_topics',
-  'trigger_sources',
-  'concerned_targets',
-  'taboo_actions',
-  'escalation_actions',
-  'deescalation_conditions',
-] as const
-
-const getPersonBoundaryFields = (person: any) => getSceneBoundaryFields(person?.scene_behavior_mode || '核查取证型')
-const getPersonBoundaryFieldText = (person: any, fieldKey: string) => getPersonListText(person?.[fieldKey])
 let personEditorSeed = 1
-const getBehaviorArchetypeSummary = (value: string) =>
-  behaviorArchetypeOptions.find((item) => item.value === value)?.summary || '用这一类行为原型快速决定角色开场姿态和变化路径。'
-const getPoliceAttitudeSummary = (value: string) =>
-  policeAttitudeOptions.find((item) => item.value === value)?.summary || '用于决定角色面对警方时是求助、试探还是抵触。'
 
 watch(
   () => form.caseType,
@@ -1700,51 +1511,25 @@ const CASE_SCHEMA_VERSION = '2026.05.canonical-v1'
 const normalizePersonEditors = (persons: any, options: { collapsed?: boolean } = {}) => {
   if (!Array.isArray(persons)) return []
   return persons.map((person: any) => {
-    const compactFields = normalizeBehaviorTemplate(person)
+    const sceneMode = resolvePersonSceneBehaviorMode(person, editableCase.value)
+    const compactFields = expandRoleCompactToPerson(person, sceneMode)
     return {
-      ...person,
       ...compactFields,
-      name: String(person?.name || '').trim(),
+      name: String(compactFields?.name || person?.name || '').trim(),
       role: String(person?.role || '').trim(),
-      role_type: String(person?.role_type || person?.role || '相关人员').trim() || '相关人员',
-      status: String(person?.status || '正常').trim() || '正常',
-      interaction_style: String(compactFields.interaction_style || person?.interaction_style || '配合型').trim() || '配合型',
-      weakness: String(person?.weakness || compactFields.core_concern || '').trim(),
-      current_need: String(person?.current_need || compactFields.current_goal || '').trim(),
-      authority_attitude: String(person?.authority_attitude || compactFields.police_attitude || '').trim(),
-      stress_response: String(person?.stress_response || compactFields.pressure_response || '').trim(),
-      public_mask: String(person?.public_mask || compactFields.surface_stance || '').trim(),
-      private_drive: String(person?.private_drive || compactFields.current_goal || '').trim(),
-      knows_facts: dedupeStringList(person?.knows_facts),
-      does_not_know: dedupeStringList(person?.does_not_know),
-      hidden_truths: dedupeStringList(person?.hidden_truths),
-      known_key_points: dedupeStringList(compactFields.known_key_points),
-      withheld_key_points: dedupeStringList(compactFields.withheld_key_points),
-      conflict_core: dedupeStringList(compactFields.conflict_core),
-      acceptable_outcomes: dedupeStringList(compactFields.acceptable_outcomes),
-      no_go_topics: dedupeStringList(compactFields.no_go_topics),
-      trigger_sources: dedupeStringList(compactFields.trigger_sources),
-      concerned_targets: dedupeStringList(compactFields.concerned_targets),
-      taboo_actions: dedupeStringList(compactFields.taboo_actions),
-      escalation_actions: dedupeStringList(compactFields.escalation_actions),
-      deescalation_conditions: dedupeStringList(compactFields.deescalation_conditions),
-      protected_targets: dedupeStringList(person?.protected_targets),
-      feared_people: dedupeStringList(person?.feared_people),
-      conflict_targets: dedupeStringList(person?.conflict_targets),
-      feared_consequences: dedupeStringList(person?.feared_consequences),
-      trigger_topics: compactFields.trigger_points,
-      coping_patterns: dedupeStringList(person?.coping_patterns),
-      calming_points: dedupeStringList(compactFields.calming_points),
-      behavior_archetype: compactFields.behavior_archetype,
-      police_attitude: compactFields.police_attitude,
-      scene_behavior_mode: compactFields.scene_behavior_mode,
-      emotion_level: compactFields.emotion_level,
-      cooperation_level: compactFields.cooperation_level,
-      risk_level: compactFields.risk_level,
-      clarity_level: compactFields.clarity_level,
-      init_risk: Number(compactFields.init_risk ?? 50),
-      init_expression_clarity: Number(compactFields.init_expression_clarity ?? 52),
-      impairment_state: String(compactFields.impairment_state || '').trim(),
+      role_type: String(compactFields.role_type || '相关人员').trim() || '相关人员',
+      status: String(compactFields.status || '正常').trim() || '正常',
+      weakness: String(compactFields.core_concern || '').trim(),
+      current_need: String(compactFields.current_goal || '').trim(),
+      authority_attitude: String(compactFields.police_attitude || '').trim(),
+      stress_response: String(compactFields.pressure_response || '').trim(),
+      public_mask: String(compactFields.surface_stance || '').trim(),
+      private_drive: String(compactFields.current_goal || '').trim(),
+      trigger_topics: dedupeStringList(compactFields.trigger_points),
+      knows_facts: dedupeStringList(compactFields.knows_facts),
+      does_not_know: dedupeStringList(compactFields.does_not_know || compactFields.cannot_answer),
+      hidden_truths: dedupeStringList(compactFields.hidden_truths),
+      cannot_answer: dedupeStringList(compactFields.cannot_answer || compactFields.does_not_know),
       _original_name: String(person?.name || '').trim(),
       _editor_id: Number(person?._editor_id) || personEditorSeed++,
       _collapsed: typeof person?._collapsed === 'boolean' ? person._collapsed : Boolean(options.collapsed),
@@ -1818,12 +1603,6 @@ const parsedPersons = (payload: any) => {
   return payload.persons
 }
 const getPersonListText = (value: any) => (Array.isArray(value) ? value : []).join('\n')
-const updatePersonListField = (person: any, field: string, rawValue: string) => {
-  person[field] = dedupeStringList(String(rawValue || '')
-    .split('\n')
-    .map((item) => item.trim())
-    .filter(Boolean))
-}
 
 const toComparableList = (value: any) => {
   if (Array.isArray(value)) return dedupeStringList(value)
@@ -1861,7 +1640,8 @@ const getPersonDedupInsights = (person: any) => {
   return { issues, mergedPreview }
 }
 
-const getCompactPersonaSummary = (person: any) => buildBehaviorSummary(person)
+const getCompactPersonaSummary = (person: any) =>
+  buildRoleCompactSummary(personToRoleCompact(person, resolvePersonSceneBehaviorMode(person)))
 
 const togglePersonCollapsed = (target: any) => {
   const persons = aiParsedData.value?.persons || []
@@ -1924,16 +1704,6 @@ const updateSceneNamesForPersonRename = (scenes: any[], oldName: string, nextNam
   }
 }
 
-const updatePersonName = (container: any, person: any, rawValue: string) => {
-  const nextName = String(rawValue || '').trim()
-  const oldName = String(person?._original_name || person?.name || '').trim()
-  person.name = nextName
-  person._original_name = nextName
-  if (oldName && nextName && oldName !== nextName) {
-    updateSceneNamesForPersonRename(container?.scenes || [], oldName, nextName)
-  }
-}
-
 const removePersonFromContainer = (container: any, index: number) => {
   const persons = Array.isArray(container?.persons) ? container.persons : []
   const removed = persons[index]
@@ -1951,8 +1721,15 @@ const removePersonFromContainer = (container: any, index: number) => {
   }
 }
 
-const renameParsedPerson = (person: any, rawValue: string) => updatePersonName(aiParsedData.value, person, rawValue)
-const renameEditablePerson = (person: any, rawValue: string) => updatePersonName(editableCase.value, person, rawValue)
+const applyPersonCompactUpdate = (container: any, person: any, next: Record<string, any>) => {
+  const oldName = String(person?._original_name || person?.name || '').trim()
+  Object.assign(person, next)
+  const nextName = String(person?.name || '').trim()
+  if (oldName && nextName && oldName !== nextName) {
+    updateSceneNamesForPersonRename(container?.scenes || [], oldName, nextName)
+  }
+  if (nextName) person._original_name = nextName
+}
 
 const removeParsedPerson = async (index: number) => {
   const target = parsedPersons(aiParsedData.value)?.[index]
@@ -1994,76 +1771,35 @@ const addPersonToContainer = (container: any) => {
 const addParsedPerson = () => addPersonToContainer(aiParsedData.value)
 const addEditablePerson = () => addPersonToContainer(editableCase.value)
 
-const validatePersonsBeforeSave = (persons: any[]) => {
+const validatePersonsBeforeSave = (persons: any[], caseItem: any = editableCase.value) => {
   const seenNames = new Set<string>()
   for (const person of persons || []) {
-    for (const fieldKey of personBoundaryFieldKeys) {
-      person[fieldKey] = dedupeStringList(person?.[fieldKey])
-    }
-    const normalizedTemplate = normalizeBehaviorTemplate(person)
-    const legacyBoundary = buildLegacyInfoBoundary(person)
-    person.name = String(person?.name || '').trim()
-    person.role = String(person?.role || '').trim() || '相关人员'
-    person.role_type = String(person?.role_type || person?.role || '相关人员').trim() || '相关人员'
-    person.status = String(person?.status || '正常').trim() || '正常'
-    person.behavior_archetype = normalizedTemplate.behavior_archetype
-    person.police_attitude = normalizedTemplate.police_attitude
-    person.scene_behavior_mode = normalizedTemplate.scene_behavior_mode
-    person.interaction_style = String(normalizedTemplate.interaction_style || person?.interaction_style || '配合型').trim() || '配合型'
-    person.current_goal = String(normalizedTemplate.current_goal || '').trim()
-    person.core_concern = String(normalizedTemplate.core_concern || '').trim()
-    person.surface_stance = String(normalizedTemplate.surface_stance || '').trim()
-    person.pressure_response = String(normalizedTemplate.pressure_response || '').trim()
-    person.relationship_pressure = dedupeStringList(normalizedTemplate.relationship_pressure)
-    person.trigger_points = dedupeStringList(normalizedTemplate.trigger_points)
-    person.calming_points = dedupeStringList(normalizedTemplate.calming_points)
-    person.emotion_level = normalizedTemplate.emotion_level
-    person.cooperation_level = normalizedTemplate.cooperation_level
-    person.risk_level = normalizedTemplate.risk_level
-    person.clarity_level = normalizedTemplate.clarity_level
-    person.init_emotion = normalizedTemplate.init_emotion
-    person.init_trust = normalizedTemplate.init_trust
-    person.init_risk = normalizedTemplate.init_risk
-    person.init_expression_clarity = normalizedTemplate.init_expression_clarity
-    person.impairment_state = String(normalizedTemplate.impairment_state || '').trim()
-    person.known_key_points = dedupeStringList(normalizedTemplate.known_key_points)
-    person.withheld_key_points = dedupeStringList(normalizedTemplate.withheld_key_points)
-    person.conflict_core = dedupeStringList(normalizedTemplate.conflict_core)
-    person.acceptable_outcomes = dedupeStringList(normalizedTemplate.acceptable_outcomes)
-    person.no_go_topics = dedupeStringList(normalizedTemplate.no_go_topics)
-    person.trigger_sources = dedupeStringList(normalizedTemplate.trigger_sources)
-    person.concerned_targets = dedupeStringList(normalizedTemplate.concerned_targets)
-    person.taboo_actions = dedupeStringList(normalizedTemplate.taboo_actions)
-    person.escalation_actions = dedupeStringList(normalizedTemplate.escalation_actions)
-    person.deescalation_conditions = dedupeStringList(normalizedTemplate.deescalation_conditions)
-    person.knows_facts = legacyBoundary.knows_facts
-    person.hidden_truths = legacyBoundary.hidden_truths
-    person.does_not_know = dedupeStringList(person?.does_not_know)
-    person.current_need = person.current_goal || String(person?.current_need || '').trim()
-    person.weakness = person.core_concern || String(person?.weakness || '').trim()
-    person.public_mask = person.surface_stance || String(person?.public_mask || '').trim()
-    person.stress_response = person.pressure_response || String(person?.stress_response || '').trim()
-    person.authority_attitude = String(person?.authority_attitude || person.police_attitude || '').trim()
-    person.private_drive = String(person?.private_drive || person.current_goal || '').trim()
-    person.trigger_topics = [...person.trigger_points]
-    person._original_name = person.name
+    const sceneMode = resolvePersonSceneBehaviorMode(person, caseItem)
+    const normalized = expandRoleCompactToPerson(person, sceneMode)
+    Object.assign(person, normalized, {
+      role: String(person?.role || '').trim(),
+      _original_name: String(normalized.name || person?.name || '').trim(),
+    })
 
-    if (!person.name) {
+    const name = String(person.name || '').trim()
+    if (!name) {
       showToast('角色姓名不能为空，请先完成人工审核')
       return false
     }
-    if (seenNames.has(person.name)) {
-      showToast(`角色姓名“${person.name}”重复，请先修正后再保存`)
+    if (seenNames.has(name)) {
+      showToast(`角色姓名“${name}”重复，请先修正后再保存`)
       return false
     }
-    seenNames.add(person.name)
+    seenNames.add(name)
   }
   return true
 }
 
 const serializePersonsForSave = (persons: any[]) => {
   return (persons || []).map((person: any) => {
-    const cloned = { ...person }
+    const sceneMode = resolvePersonSceneBehaviorMode(person)
+    const normalized = expandRoleCompactToPerson(person, sceneMode) as Record<string, any>
+    const cloned: Record<string, any> = { ...normalized, role: String(person?.role || '').trim() }
     for (const [alias, canonical] of Object.entries(PERSON_ALIAS_TO_CANONICAL)) {
       if (!cloned[canonical] && cloned[alias]) cloned[canonical] = cloned[alias]
     }
@@ -2083,25 +1819,53 @@ const splitTextList = (value: any) =>
 const inferAssessmentPointContent = (label: string, category = 'procedure') => {
   const text = String(label || '').trim()
   if (!text) return ''
-  if (text.length >= 28 && /[。；?？]/.test(text)) return text
-  if (/^学员|^在对话|^在训练/.test(text)) return text
-  if (category === 'risk') {
-    return `学员应识别并处置与本项相关的风险：${text}；在对话或现场处置中可被观察到。`
+  if (text.includes('结果可被对话关键词或执法动作核查')) {
+    const head = text.split('，结果可被')[0].replace(/。$/, '').trim()
+    const core = head.replace(/^学员在训练对话或现场处置中应做到：/, '').trim()
+    return inferAssessmentPointContent(core || text, category)
   }
-  if (category === 'evidence') {
-    return `学员应完成证据固定相关工作：${text}；在对话或现场动作中可被核查。`
+  if (text.includes('怎样算完成')) return text
+  if (text.length >= 48 && /[。；?？]/.test(text)) return text
+  const passTail =
+    category === 'risk'
+      ? `怎样算完成：回放训练记录时，能听出你已就「${text}」追问或说明了风险情况，并给出下一步处置思路，而不是只问一句「有没有事」就结束。`
+      : category === 'evidence'
+        ? `怎样算完成：回放训练记录时，能听出或看出你已就「${text}」提出取证/记录要求，并有相应话术或现场动作说明，而不是口头带过。`
+        : `怎样算完成：回放训练记录时，能听出你已就「${text}」向当事人追问或说明了具体内容，对方也有相应回答；若只问一句、对方没展开、你也不追问，则视为未完成。`
+  const detail =
+    category === 'risk'
+      ? '须结合本案判断风险是否仍在发生，追问受伤、持械、人员数量、是否需要增援等，并说明处置或上报倾向。'
+      : category === 'evidence'
+        ? '须告知取证/记录安排，说明将采取何种固定措施，并简要说明依据或目的。'
+        : '须围绕本案追问与该项相关的具体细节，避免只核实姓名、电话等表层信息。'
+  return `学员在训练对话或现场处置中应做到：${text}。\n具体要求：${detail}\n${passTail}`
+}
+
+const isShallowAssessmentContent = (label: string, content: string) => {
+  const cleanLabel = String(label || '').trim()
+  const cleanContent = String(content || '').trim()
+  if (!cleanContent) return true
+  if (cleanContent.length < 36) return true
+  if (cleanContent.includes('结果可被对话关键词或执法动作核查')) return true
+  if (cleanContent.includes('可被对话或现场动作中可被核查') || cleanContent.includes('在对话或现场处置中可被观察到')) return true
+  if (
+    cleanLabel &&
+    (cleanContent === `学员应完成：${cleanLabel}。` ||
+      cleanContent === `学员在训练对话或现场处置中应做到：${cleanLabel}，结果可被对话关键词或执法动作核查。`)
+  ) {
+    return true
   }
-  if (/^(核实|确认|追问|明确|告知|规范|识别|要求|提示|分离|检查|实施|启动|制作|带离|控制|拒测)/.test(text)) {
-    return `学员在训练对话或现场处置中应做到：${text}，结果可被对话关键词或执法动作核查。`
-  }
-  return `学员应完成：${text}。`
+  return Boolean(cleanLabel && cleanContent.includes(cleanLabel) && cleanContent.length <= cleanLabel.length + 18)
 }
 
 const resolveAssessmentPointContent = (point: any) => {
-  const direct = String(point?.content || point?.requirement || point?.description || '').trim()
-  if (direct) return direct
   const label = String(point?.label || '').trim()
-  return inferAssessmentPointContent(label, String(point?.category || 'procedure'))
+  const category = String(point?.category || 'procedure')
+  const direct = String(point?.content || point?.requirement || point?.description || '').trim()
+  if (!direct || isShallowAssessmentContent(label, direct)) {
+    return inferAssessmentPointContent(label, category)
+  }
+  return direct
 }
 
 const createPointEditor = (point: any = {}, index = 0) => ({
@@ -2205,6 +1969,12 @@ const removeStageFromScene = (scene: any, stageIndex: number) => {
   syncSceneStagesText(scene)
 }
 
+void activeEditableScene
+void getStageFlowStats
+void getPersonDedupInsights
+void addStageToScene
+void removeStageFromScene
+
 const normalizeSceneEditors = (scenes: any, structuredData: any, persons: any[]) => {
   const sceneRoleMap = structuredData?.scene_role_map || {}
   return (scenes || []).map((scene: any) => {
@@ -2218,6 +1988,8 @@ const normalizeSceneEditors = (scenes: any, structuredData: any, persons: any[])
     const stagesModel = normalizeStageEditors(scene.stages)
     return {
       ...scene,
+      _assessmentPaste: String(scene?._assessmentPaste || ''),
+      _assessmentMessage: String(scene?._assessmentMessage || ''),
       stagesText: stringifyStages(scene.stages),
       stagesModel,
       stagesAdvanced: false,
@@ -2593,11 +2365,11 @@ const startGenerating = async () => {
 }
 
 const submitFinal = async () => {
-  if (!validatePersonsBeforeSave(aiParsedData.value?.persons || [])) return
+  if (!validatePersonsBeforeSave(aiParsedData.value?.persons || [], aiParsedData.value)) return
   savingCreate.value = true
   try {
     const personsPayload = serializePersonsForSave(aiParsedData.value.persons || [])
-    await request.post('/cases/full-create', {
+    const createdCase: any = await request.post('/cases/full-create', {
       case: {
         ...aiParsedData.value,
         persons: personsPayload,
@@ -2618,10 +2390,46 @@ const submitFinal = async () => {
     showToast({ type: 'success', message: '案件发布成功' })
     showAdd.value = false
     await refreshCasesPage()
+    await handlePublishedCaseNextStep(createdCase)
   } catch {
     showToast('案件发布失败')
   } finally {
     savingCreate.value = false
+  }
+}
+
+const handlePublishedCaseNextStep = async (createdCase: any) => {
+  const caseId = Number(createdCase?.id)
+  const firstSceneId = Number((createdCase?.scenes || [])[0]?.id)
+  if (!caseId) return
+
+  try {
+    await showConfirmDialog({
+      title: '案件发布成功',
+      message: firstSceneId
+        ? '是否立即进入学员端试训？取消则留在管理端继续检查案件配置。'
+        : '该案件暂无可试训场景，是否打开案件详情继续配置？',
+      confirmButtonText: firstSceneId ? '立即试训' : '打开详情',
+      cancelButtonText: '继续编辑',
+    })
+    if (firstSceneId) {
+      const session: any = await request.post(`/training/start/${firstSceneId}`, null, { _skipErrorToast: true } as any)
+      if (session?.id) {
+        router.push(`/student/training/${session.id}`)
+        return
+      }
+      router.push('/student/hall')
+      return
+    }
+  } catch {
+    // 用户选择继续编辑，下面会打开案件详情。
+  }
+
+  const target = cases.value.find((item: any) => Number(item?.id) === caseId)
+  if (target) {
+    editCase(target)
+  } else {
+    router.replace(`/admin/cases?case_id=${caseId}`)
   }
 }
 
@@ -2913,6 +2721,7 @@ const saveCaseDetail = async () => {
     ]
     scene.stagesText = JSON.stringify(parsedStages, null, 2)
 
+    const sceneMeta = resolveSceneCompactMeta(scene)
     scenesPayload.push({
       id: scene.id,
       name: scene.name,
@@ -2920,6 +2729,9 @@ const saveCaseDetail = async () => {
       difficulty: scene.difficulty,
       dispatch_brief: scene.dispatch_brief,
       first_impression: scene.first_impression,
+      training_focus: sceneMeta.training_focus,
+      behavior_mode: sceneMeta.behavior_mode,
+      assessment_points: serializeAssessmentPointsForSave(scene.assessmentPointsModel || []),
       stages: parsedStages,
       role_names: Array.isArray(scene.role_names) ? scene.role_names : [],
       primary_role_name: scene.primary_role_name || '',
@@ -2995,6 +2807,213 @@ onMounted(refreshCasesPage)
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.case-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius-lg);
+  background: #fff;
+  box-shadow: var(--police-shadow-sm);
+}
+
+.admin-list-header,
+.admin-list-panel,
+.admin-filter-panel {
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius-lg);
+  background: #fff;
+}
+
+.admin-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+}
+
+.admin-list-header h1 {
+  margin: 0;
+  color: var(--police-text-primary);
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.admin-list-header p {
+  margin: 4px 0 0;
+  color: var(--police-text-muted);
+  font-size: 13px;
+}
+
+.admin-list-panel,
+.admin-filter-panel {
+  padding: 16px 20px;
+}
+
+.admin-list-section-title {
+  margin: 0;
+  color: var(--police-text-primary);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.admin-stat-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.admin-stat-card {
+  border: 1px solid var(--police-border-light);
+  border-radius: var(--police-radius);
+  background: #f8fafc;
+  padding: 16px 18px;
+}
+
+.admin-filter-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.admin-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.admin-filter-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--police-text-secondary);
+  font-size: 13px;
+}
+
+.admin-filter-item select {
+  min-width: 112px;
+  height: 34px;
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius);
+  background: #fff;
+  padding: 0 10px;
+  color: var(--police-text-primary);
+}
+
+.admin-search-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: min(340px, 100%);
+  height: 34px;
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius);
+  background: #fff;
+  padding: 0 12px;
+  color: var(--police-text-muted);
+}
+
+.admin-search-box input {
+  min-width: 0;
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--police-text-primary);
+  font-size: 13px;
+  outline: none;
+}
+
+.admin-filter-summary {
+  color: var(--police-text-muted);
+  font-size: 13px;
+}
+
+.case-table {
+  width: 100%;
+  min-width: 960px;
+  border-collapse: collapse;
+}
+
+.case-table th {
+  background: #f8fafc;
+  border-bottom: 1px solid var(--police-border);
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--police-text-secondary);
+  white-space: nowrap;
+}
+
+.case-table td {
+  border-bottom: 1px solid var(--police-border-light);
+  padding: 13px 14px;
+  vertical-align: middle;
+  font-size: 13px;
+  color: var(--police-text-primary);
+}
+
+.case-table tr:last-child td {
+  border-bottom: none;
+}
+
+.case-table tbody tr {
+  cursor: pointer;
+}
+
+.case-table tbody tr:hover td {
+  background: #f8fafc;
+}
+
+.case-title-cell {
+  width: 220px;
+}
+
+.case-row-title {
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.case-row-id {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--police-text-muted);
+}
+
+.case-summary-cell {
+  display: -webkit-box;
+  max-width: 520px;
+  overflow: hidden;
+  line-height: 1.6;
+  color: #475569;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.case-metric-cell {
+  font-size: 16px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.case-issue {
+  display: inline-flex;
+  border-radius: 20px;
+  background: #fff7ed;
+  color: #c2410c;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.case-ok {
+  color: var(--police-success);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .stat-label {

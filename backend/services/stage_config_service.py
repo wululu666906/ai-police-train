@@ -117,41 +117,103 @@ def infer_scene_behavior_mode(scene_name: str, case_type: str = "", stages: Any 
     return "核查取证型"
 
 
+def is_shallow_assessment_content(label: str, content: str) -> bool:
+    """Detect label-echo or one-line placeholders that are not trainable rubrics."""
+    clean_label = str(label or "").strip()
+    clean_content = str(content or "").strip()
+    if not clean_content:
+        return True
+    if len(clean_content) < 36:
+        return True
+    echo_patterns = (
+        f"学员应完成：{clean_label}。",
+        f"学员应完成：{clean_label}",
+        f"学员在训练对话或现场处置中应做到：{clean_label}，结果可被对话关键词或执法动作核查。",
+        clean_label,
+    )
+    if clean_content in echo_patterns:
+        return True
+    if "结果可被对话关键词或执法动作核查" in clean_content:
+        return True
+    if "可被对话或现场动作中可被核查" in clean_content or "在对话或现场处置中可被观察到" in clean_content:
+        return True
+    if clean_label and clean_label in clean_content and len(clean_content) <= len(clean_label) + 18:
+        return True
+    return False
+
+
+def _assessment_pass_criteria_tail(label: str, *, category: str = "procedure") -> str:
+    """Plain-language completion criteria for instructors and students."""
+    text = str(label or "").strip()
+    if category == "risk":
+        return (
+            f"怎样算完成：回放训练记录时，能听出你已就「{text}」追问或说明了风险情况，"
+            f"并给出下一步处置思路（如是否增援、是否隔离），而不是只问一句「有没有事」就结束。"
+        )
+    if category == "evidence":
+        return (
+            f"怎样算完成：回放训练记录时，能听出或看出你已就「{text}」提出取证/记录要求，"
+            f"并有相应话术或现场动作说明（如开启执法记录、拍照、登记、扣押等），而不是口头带过。"
+        )
+    return (
+        f"怎样算完成：回放训练记录时，能听出你已就「{text}」向当事人追问或说明了具体内容，"
+        f"对方也有相应回答；若只问一句、对方没展开、你也不追问，则视为未完成。"
+    )
+
+
 def infer_assessment_point_content(label: str, *, category: str = "procedure") -> str:
-    """Expand short checkpoint labels into actionable requirements for scoring."""
+    """Expand short checkpoint labels into actionable training rubrics for scoring."""
     text = str(label or "").strip()
     if not text:
         return ""
-    if len(text) >= 28 and any(marker in text for marker in ("。", "；", "?", "？")):
+    if "结果可被对话关键词或执法动作核查" in text:
+        head = text.split("，结果可被")[0].rstrip("。，")
+        if "应做到：" in head:
+            head = head.split("应做到：", 1)[-1].strip()
+        elif "应完成：" in head:
+            head = head.split("应完成：", 1)[-1].strip()
+        return infer_assessment_point_content(head, category=category)
+    if len(text) >= 48 and any(marker in text for marker in ("。", "；", "?", "？")):
         return text
-    if text.startswith(("学员", "在对话", "在训练")):
+    if text.startswith(("学员", "在对话", "在训练")) and "怎样算完成" in text:
         return text
+    if text.startswith(("【训练要求】", "【学员应完成】")) and "怎样算完成" in text:
+        return text
+
     if category == "risk":
-        return f"学员应识别并处置与本项相关的风险：{text}；在对话或现场处置中可被观察到。"
-    if category == "evidence":
-        return f"学员应完成证据固定相关工作：{text}；在对话或现场动作中可被核查。"
-    action_starters = (
-        "核实",
-        "确认",
-        "追问",
-        "明确",
-        "告知",
-        "规范",
-        "识别",
-        "要求",
-        "提示",
-        "分离",
-        "检查",
-        "实施",
-        "启动",
-        "制作",
-        "带离",
-        "控制",
-        "拒测",
+        detail = (
+            "须结合本案判断风险是否仍在发生，追问受伤、持械、人员数量、是否需要增援等关键信息，"
+            "并说明你的处置或上报倾向。"
+        )
+    elif category == "evidence":
+        detail = (
+            "须告知当事人取证/记录安排，说明将采取何种固定措施（如执法记录、拍照、登记、扣押等），"
+            "并简要说明依据或目的。"
+        )
+    else:
+        detail = (
+            "须围绕本案追问与该项相关的具体细节（如时间先后、人物关系、经过环节、矛盾点等），"
+            "避免只核实姓名、电话等表层信息。"
+        )
+
+    return (
+        f"学员在训练对话或现场处置中应做到：{text}。\n"
+        f"具体要求：{detail}\n"
+        f"{_assessment_pass_criteria_tail(text, category=category)}"
     )
-    if text.startswith(action_starters):
-        return f"学员在训练对话或现场处置中应做到：{text}，结果可被对话关键词或执法动作核查。"
-    return f"学员应完成：{text}。"
+
+
+def resolve_assessment_point_content(
+    label: str,
+    content: str = "",
+    *,
+    category: str = "procedure",
+) -> str:
+    clean_label = str(label or "").strip()
+    clean_content = str(content or "").strip()
+    if not clean_content or is_shallow_assessment_content(clean_label, clean_content):
+        return infer_assessment_point_content(clean_label, category=category)
+    return clean_content
 
 
 def _point(
@@ -165,7 +227,7 @@ def _point(
     keywords: list[str] | None = None,
     knowledge_refs: list[str] | None = None,
 ) -> dict[str, Any]:
-    resolved_content = str(content or "").strip() or infer_assessment_point_content(label, category=category)
+    resolved_content = resolve_assessment_point_content(label, content, category=category)
     return {
         "id": point_id,
         "label": label,
@@ -370,14 +432,15 @@ def _build_stage_template(case_type: str, scene_name: str, stage_name: str, stag
 
     if scene_kind == "intake":
         points = [
-            _point("ap_identity", "确认身份或报警人关系", keywords=["姓名", "身份", "关系"]),
+            _point("ap_incident_nature", "确认警情性质与事件经过", keywords=["什么事", "怎么回事", "发生什么", "什么情况", "经过"]),
+            _point("ap_safety_help", "确认是否需要救助与现场安全", category="risk", keywords=["安全", "受伤", "需要帮助", "要不要紧", "危险"]),
             _point("ap_location", "确认地点", keywords=["地点", "位置", "哪里"]),
-            _point("ap_time_risk", "确认时间和现场风险", category="risk", keywords=["几点", "时间", "危险", "受伤"]),
+            _point("ap_time_identity", "确认时间与报警人身份", keywords=["几点", "时间", "姓名", "身份", "关系"]),
         ]
         return {
             "assessment_points": points,
             "action_catalog": [],
-            "completion_rules": {"min_user_turns": 2, "required_point_ids": ["ap_identity", "ap_location"], "required_action_ids": []},
+            "completion_rules": {"min_user_turns": 2, "required_point_ids": ["ap_incident_nature", "ap_safety_help"], "required_action_ids": []},
             "end_conditions": {"must_complete_current_stage": False, "required_point_ids": [], "required_action_ids": [], "closure_actions": [], "closing_script": ""},
         }
 
@@ -429,11 +492,11 @@ def _normalize_assessment_point(point: dict[str, Any], stage_key: str, index: in
     label = str(point.get("label") or f"考察点{index}").strip()
     point_id = str(point.get("id") or _slugify(label, "ap", f"{stage_key}_{index}")).strip()
     category = str(point.get("category") or "procedure").strip() or "procedure"
-    content = str(
-        point.get("content") or point.get("requirement") or point.get("description") or ""
-    ).strip()
-    if not content:
-        content = infer_assessment_point_content(label, category=category)
+    content = resolve_assessment_point_content(
+        label,
+        str(point.get("content") or point.get("requirement") or point.get("description") or "").strip(),
+        category=category,
+    )
     keywords = _dedupe_strings(point.get("keywords") or [label])
     if not keywords:
         keywords = [label]

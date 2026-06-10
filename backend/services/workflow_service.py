@@ -180,21 +180,21 @@ persons 字段要求：
 - 如果是笔录，不要把询问人口吻误写成案件事实。
 - 如果是混合材料，优先保留可验证事实，把主观评价放进 parse_warnings 或 transcript_summary 的“待核实”语气中。"""
 
-SCENE_GEN_PROMPT = """你是公安警情训练场景设计专家。你的结果将直接进入管理员的“场景生成”预览页，管理员会人工复核后发布。
+SCENE_GEN_PROMPT = """你是公安警情训练场景设计专家。你的结果将直接进入管理员的"场景生成"预览页，管理员会人工复核后发布。
 
-任务：严格基于输入案件 JSON，生成 2 到 3 个适合警务训练的平台场景。
+任务：严格基于输入案件 JSON，生成 2 到 3 个适合警务训练的平台场景，最多不超过 3 个。
 
 硬性要求：
 1. 只能使用输入案件中的事实、人物、地点、关系和风险点，不得虚构新人物、新地点、新案件类型、新证据。
-2. 已死亡、昏迷、重伤无法交流的人物绝不能出现在 roles 中作为主对话对象。
-3. 场景必须符合处警流程，优先组织成“接警研判/现场处置/重点问询或时间线压实”等渐进路径。
+2. 已死亡、昏迷、重伤无法交流的人物绝不能出现在 roles 中作为主对话对象。roles 只能用案件 persons 表中已有的 name（纯人名），不得编造新名字。
+3. 场景必须符合处警流程，优先组织成"接警研判/现场处置/重点问询或时间线压实"等渐进路径。
 4. 每个场景都必须有清晰的 stage 列表，stage_name 和 stage_goal 要能支撑多轮问答，不能空泛重复。
-5. 场景目标要鼓励“先核实、再追问、再压实矛盾”，不要让角色一两轮就把全部核心事实说完。
-6. dispatch_brief 只能写该场景开始前警方已知内容；first_impression 只能写该场景一进入时可观察内容。
-7. difficulty 要和信息复杂度、人物对抗性、情绪强度匹配，优先使用“低 / 中等 / 高”。
+5. 场景目标要鼓励"先核实、再追问、再压实矛盾"，不要让角色一两轮就把全部核心事实说完。
+6. dispatch_brief 只能写该场景开始前警方已知内容；first_impression 只能写该场景一进入时可观察内容。不得把案件完整事实全写在同一个场景的 dispatch_brief 中。
+7. difficulty 要和信息复杂度、人物对抗性、情绪强度匹配，优先使用"低 / 中等 / 高"。
 8. 如果输入材料本身信息不足，也要尽量在现有事实上组织可训练场景，但不能靠脑补补齐。
 9. 每个 stage 除了 stage_name / stage_goal，还应尽量补 assessment_points、action_catalog、completion_rules、end_conditions。
-10. assessment_points 要体现真正能训练能力提升的检查点，不要只复述 stage_goal。
+10. assessment_points 要体现真正能训练能力提升的检查点，不要只复述 stage_goal。每条 assessment_point 包含 label（核心能力）、content（80-200字具体题目+达标标准）、category（procedure/risk/evidence）、required（布尔）、weight（必考12-15/选考8-10）、keywords（2-5个）。
 11. action_catalog 要优先覆盖执法动作、取证动作、收尾动作，不要只写说话动作。
 12. end_conditions 要体现这个场景在真实流程下何时应结束，并给出 closing_script。
 13. 只输出一个包含 scenes 的合法 JSON 对象，不要附加解释。
@@ -202,7 +202,42 @@ SCENE_GEN_PROMPT = """你是公安警情训练场景设计专家。你的结果�
 场景设计偏好：
 - 每个场景都应有明确主任务。
 - 角色要有可问询空间、可压实的矛盾点或风险点。
-- 多个场景之间要形成递进，而不是简单改写同一段话。"""
+- 多个场景之间要形成递进，而不是简单改写同一段话。
+
+输出 JSON 结构参考：
+{
+  "scenes": [
+    {
+      "scene_name": "接警研判",
+      "scene_description": "学员接到报案电话，需快速核实时间、地点、人员身份和现场风险。",
+      "difficulty": "低",
+      "dispatch_brief": "接警台接到一男子来电，称在某小区发生冲突，具体情况不明。",
+      "first_impression": "",
+      "roles": ["报警人姓名"],
+      "stages": [
+        {
+          "stage_name": "信息初核",
+          "stage_goal": "核实报警人身份和事发地点，判断是否需要立即出警。",
+          "assessment_points": [
+            {
+              "label": "初判警情等级",
+              "content": "学员应判断是否存在人身危险，追问至少2项风险要素并给出处置倾向。怎样算完成：回放时能听出你给出了明确的派警判断。",
+              "category": "risk",
+              "required": true,
+              "weight": 14,
+              "keywords": ["风险判断", "派警"]
+            }
+          ],
+          "action_catalog": [
+            {"label": "接警登记", "type": "physical", "aliases": ["记录警情", "填写接警单"], "counts_for": []}
+          ],
+          "completion_rules": {"min_user_turns": 2, "required_point_ids": [], "required_action_ids": []},
+          "end_conditions": {"must_complete_current_stage": false, "closure_actions": [], "closing_script": ""}
+        }
+      ]
+    }
+  ]
+}"""
 
 
 class WorkflowService:

@@ -16,12 +16,13 @@ from .scene_bucket_service import (
     resolve_scene_bucket,
     suggest_standard_scene_name,
 )
+from .assessment_point_policy import ASSESSMENT_POINTS_MAX_PER_SCENE, finalize_assessment_points
 from .stage_config_service import (
-    infer_assessment_point_content,
     infer_scene_behavior_mode,
     infer_scene_kind,
     normalize_case_template_key,
     normalize_stage,
+    resolve_assessment_point_content,
 )
 
 _LINE_SPLIT_RE = re.compile(
@@ -64,8 +65,7 @@ def _normalize_raw_point(raw: dict[str, Any], index: int) -> dict[str, Any]:
     if not label:
         label = f"考察点{index}"
     category = str(raw.get("category") or "procedure").strip() or "procedure"
-    if not content:
-        content = infer_assessment_point_content(label, category=category)
+    content = resolve_assessment_point_content(label, content, category=category)
     keywords = raw.get("keywords")
     if isinstance(keywords, str):
         keywords = [item.strip() for item in re.split(r"[,，\n]", keywords) if item.strip()]
@@ -186,15 +186,36 @@ def _build_case_context(case_info: dict[str, Any], scene_info: dict[str, Any]) -
     return "\n".join(part for part in parts if str(part).split("：", 1)[-1].strip())
 
 
-ASSESSMENT_GEN_PROMPT = """你是警务训练「考察点设计」专家。根据案件与场景信息，输出可操作的考察点列表（用于对话训练与评分）。
+ASSESSMENT_GEN_PROMPT = """你是公安教官，负责为本场景设计「考察点」——用于衡量学员在模拟对话/现场处置中是否具备相应警务能力。
 
-要求：
-1. 每条考察点必须可核查：学员在对话或动作中能否被观察到完成。
-2. 输出 4-8 条，覆盖：身份/关系、时间地点、风险、证据、处置路径等（按场景取舍）。
-3. 不要复述空泛口号；label 简短（≤20字），content 写清「学员应做到什么」。
-4. keywords 提取 2-5 个对话中可能出现的核查词。
-5. required：关键项 true，辅助项 false；weight：必考 12-15，选考 8-10。
-6. 只输出 JSON：{{"assessment_points":[{{"label":"","content":"","category":"procedure|risk|evidence","required":true,"weight":10,"keywords":[]}}]}}"""
+## 字段含义（严禁混写）
+- label（考察点名称）：≤20字的**核心能力要求**，如「压实矛盾点时间线」「识别并处置持续风险」。
+- content（考察内容）：80–200字的**具体题目与操作说明**，写清学员在训练中必须完成什么、怎么问/怎么做、达到什么标准。禁止把 label 原样复读成「学员应完成：XXX」。
+
+## 出题原则（教官视角）
+1. 紧扣本案案情与当前场景环节，从材料中提取可训练的能力缺口，不要出与本案无关的通用题。
+2. 禁止只考「问姓名、问电话、问地址」等无难度表层信息；若涉及身份地点，须结合本案争议点（关系、经过、风险、证据）设问。
+3. 每个场景 4–6 条（不得超过 6 条），覆盖本环节最关键的能力：风险识别、程序规范、取证固定、矛盾压实、处置路径等（按场景取舍，不要六条同质化）。
+4. 每条必须可观察、可评分：content 末尾用「怎样算完成：」写通俗说明（回放训练记录时能听/看到学员做了什么），不要用「对话关键词或执法动作核查」等技术用语。
+5. keywords 2–5 个；required 对关键项 true；weight 必考 12–15、选考 8–10；category 仅用 procedure|risk|evidence，并根据场景类型侧重：接警场景偏 risk（风险筛查与派警判断），现场场景偏 evidence + procedure（现场控制与取证），询问场景偏 procedure（矛盾压实与时间线核查）。
+6. 如有法律法规依据可绑定考察点，在 knowledge_refs 数组中填入参考内容标题或编号（可选，不编造）。
+
+## content 写作结构（每条须包含）
+- 学员应发起的具体问询/指令/动作（可多条，用分号或序号）；
+- 须追问的细节维度（时间线、矛盾点、动机、证据、风险等，结合本案）；
+- 怎样算完成（用大白话写：回放训练记录时能听出什么、看到什么算达标，什么算没做到）。
+
+## 反例（禁止）
+- label=问清现场经过，content=学员应完成：问清现场经过。
+- 六条全是「核实某某信息」且无本案针对性。
+- category 全部相同（如六条全用 procedure 或全用 risk），应混合 risk/evidence/procedure。
+- label 全部以「确认」「核实」开头，内容同质。
+
+## 正例（风格参考，勿照抄）
+- label：压实双方陈述矛盾
+  content：学员在训练对话或现场处置中应做到：压实双方陈述矛盾。具体要求：分别听取双方对「谁先动手、有无持械、受伤情况」的陈述，针对不一致处当场追问至少 2 处。怎样算完成：回放记录时能听出你在对比双方说法并追问矛盾，而不是只听一方说完就结束。
+
+只输出 JSON：{{"assessment_points":[{{"label":"","content":"","category":"procedure","required":true,"weight":12,"keywords":[],"knowledge_refs":[]}}]}}"""
 
 
 def generate_assessment_points_with_llm(
@@ -215,7 +236,7 @@ def generate_assessment_points_with_llm(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.35,
         model=get_chat_model(),
-        max_tokens=1800,
+        max_tokens=2800,
     )
     payload = extract_json_payload(response) or {}
     raw_points = payload.get("assessment_points") if isinstance(payload, dict) else payload
@@ -224,7 +245,13 @@ def generate_assessment_points_with_llm(
     points = [_normalize_raw_point(item, idx) for idx, item in enumerate(raw_points, 1) if isinstance(item, dict)]
     case_type = str(case_info.get("case_type") or "").strip()
     scene_name = str(scene_info.get("name") or scene_info.get("scene_name") or "").strip()
-    return apply_template_to_points(points, case_type=case_type, scene_name=scene_name)
+    finalized, _ = finalize_assessment_points(
+        points,
+        case_type=case_type,
+        scene_name=scene_name,
+        stage_goal=str(scene_info.get("stage_goal") or scene_info.get("description") or "").strip(),
+    )
+    return finalized
 
 
 def generate_assessment_points(
@@ -240,26 +267,35 @@ def generate_assessment_points(
     scene_name = str(scene_info.get("name") or scene_info.get("scene_name") or "训练场景").strip()
     stage_goal = str(scene_info.get("stage_goal") or scene_info.get("description") or "").strip()
 
+    def _pack(points: list[dict[str, Any]], source: str, message: str, **extra: Any) -> dict[str, Any]:
+        finalized, policy_warnings = finalize_assessment_points(
+            points,
+            case_type=case_type,
+            scene_name=scene_name,
+            stage_goal=stage_goal,
+        )
+        payload: dict[str, Any] = {
+            "points": finalized,
+            "source": source,
+            "message": message.format(count=len(finalized)) if "{count}" in message else message,
+            "max_per_scene": ASSESSMENT_POINTS_MAX_PER_SCENE,
+            "mode": "replace",
+        }
+        if policy_warnings:
+            payload["warnings"] = policy_warnings
+        payload.update(extra)
+        return payload
+
     if template_key:
         for item in list_builtin_templates():
             if item.get("template_key") == template_key:
                 points = [dict(point) for point in item.get("assessment_points") or []]
-                return {
-                    "points": points,
-                    "source": "template",
-                    "template_key": template_key,
-                    "message": f"已应用内置模板（{len(points)} 条）",
-                }
+                return _pack(points, "template", "已应用内置模板（{count} 条）", template_key=template_key)
 
     if source_text.strip():
         parsed = parse_text_to_assessment_points(source_text)
         if parsed:
-            enriched = apply_template_to_points(parsed, case_type=case_type, scene_name=scene_name, stage_goal=stage_goal)
-            return {
-                "points": enriched,
-                "source": "text_parse",
-                "message": f"已从文本解析 {len(enriched)} 条考察点",
-            }
+            return _pack(parsed, "text_parse", "已从文本解析 {count} 条考察点")
 
     warning = ""
     if use_llm:
@@ -271,11 +307,7 @@ def generate_assessment_points(
                 extra_hint=extra_hint,
             )
             if llm_points:
-                return {
-                    "points": llm_points,
-                    "source": "llm",
-                    "message": f"已根据案件生成 {len(llm_points)} 条考察点",
-                }
+                return _pack(llm_points, "llm", "已根据案件生成 {count} 条考察点")
         except Exception as exc:
             warning = str(exc)
 
@@ -286,11 +318,7 @@ def generate_assessment_points(
         scene_name=scene_name,
     )
     points = stage.get("assessment_points") or []
-    result: dict[str, Any] = {
-        "points": points,
-        "source": "builtin_template",
-        "message": f"已使用「{case_type}」类内置模板（{len(points)} 条）",
-    }
+    result = _pack(points, "builtin_template", f"已使用「{case_type}」类内置模板（{{count}} 条）")
     if warning:
         result["warning"] = warning
     return result
@@ -560,6 +588,13 @@ def distribute_assessment_points_to_scenes(
         else:
             assigned_buckets.add(bucket)
 
+        finalized, policy_warnings = finalize_assessment_points(
+            points,
+            case_type=case_type,
+            scene_name=suggested_name or scene_name,
+        )
+        if policy_warnings:
+            warnings.extend(policy_warnings)
         assignments.append(
             {
                 "scene_id": scene_id,
@@ -567,8 +602,8 @@ def distribute_assessment_points_to_scenes(
                 "suggested_name": suggested_name,
                 "bucket": bucket,
                 "bucket_label": BUCKET_LABELS.get(bucket, bucket),
-                "points": points,
-                "point_count": len(points),
+                "points": finalized,
+                "point_count": len(finalized),
                 "renamed_from": scene.get("_renamed_from"),
             }
         )

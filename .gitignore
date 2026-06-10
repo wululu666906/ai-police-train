@@ -63,6 +63,7 @@ fileio.json
 ~$*
 *.bak
 *.db.bak*
+上传的存放文件/
 
 # Word docs (design drafts)
 *.docx

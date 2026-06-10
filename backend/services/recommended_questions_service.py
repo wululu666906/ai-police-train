@@ -311,7 +311,7 @@ def _apply_missing_first_correction(
 ) -> list[dict[str, Any]]:
     if not items or not missing_requirements:
         return items
-    if any(_question_covers_missing_label(items[0].get("text", ""), missing_requirements[0])):
+    if _question_covers_missing_label(items[0].get("text", ""), missing_requirements[0]):
         return items
     replacement = _missing_to_dialogue(missing_requirements[0], addressee)
     if replacement:
@@ -341,13 +341,24 @@ def apply_stage_hit_rate_correction(
     return _apply_missing_first_correction(items, missing, addressee)
 
 
-def _stage_questions(current_stage: str, addressee: str) -> list[dict[str, Any]]:
-    stage = _text(current_stage)
-    if "接警" in stage:
+def _intake_questions(addressee: str, *, has_dialogue: bool, has_assistant_opening: bool) -> list[dict[str, Any]]:
+    if has_assistant_opening and not has_dialogue:
         return [
-            _item(_prefix_addressee("报警人，你现在人在哪里？安全吗？", addressee), "核实", addressee),
-            _item(_prefix_addressee("事情大概什么时候发生的？", addressee), "核实", addressee),
+            _item(_prefix_addressee("你先别慌，你现在人安全吗？有没有人受伤？", addressee), "安抚", addressee),
+            _item(_prefix_addressee("你慢慢说，具体出了什么事？", addressee), "核实", addressee),
         ]
+    if not has_dialogue:
+        return [_item("110，请讲。", "接警", addressee)]
+    return [
+        _item(_prefix_addressee("你先别慌，你现在安全吗？有没有人受伤？", addressee), "安抚", addressee),
+        _item(_prefix_addressee("你再把事情经过简单说一下。", addressee), "核实", addressee),
+    ]
+
+
+def _stage_questions(current_stage: str, addressee: str, scene_kind: str = "") -> list[dict[str, Any]]:
+    stage = _text(current_stage)
+    if scene_kind == "intake" or "接警" in stage:
+        return []
     if any(token in stage for token in ("现场", "初查", "勘查", "处置")):
         return [
             _item(_prefix_addressee("你到现场后最先看到的是什么？", addressee), "追问", addressee),
@@ -478,6 +489,7 @@ def build_recommended_question_items(
     case_type: str = "",
     case_title: str = "",
     scene_name: str = "",
+    scene_kind: str = "",
     role_name: str = "",
     role_type: str = "",
     target_role_name: str = "",
@@ -499,6 +511,8 @@ def build_recommended_question_items(
     covered_topics = _detect_topics(corpus)
     last_assistant = _last_assistant_text(recent_messages)
     has_dialogue = bool(recent_messages) or bool(last_user_message) or bool(last_assistant)
+    has_assistant_opening = bool(last_assistant)
+    resolved_scene_kind = _text(scene_kind) or ("intake" if "接警" in _text(scene_name) or "接警" in _text(current_stage) else "")
 
     items: list[dict[str, Any]] = []
     custom_items = _custom_prompt_items(custom_prompts, scene_roles)
@@ -531,7 +545,16 @@ def build_recommended_question_items(
             items.append(converted)
 
     items.extend(_case_type_questions(case_type, addressee))
-    items.extend(_stage_questions(current_stage, addressee))
+    if resolved_scene_kind == "intake":
+        items.extend(
+            _intake_questions(
+                addressee,
+                has_dialogue=bool(last_user_message),
+                has_assistant_opening=has_assistant_opening,
+            )
+        )
+    else:
+        items.extend(_stage_questions(current_stage, addressee, resolved_scene_kind))
 
     if "纠纷" in _text(scene_name):
         items.append(_item(_prefix_addressee("你们双方矛盾焦点是什么？", addressee), "调解", addressee))
@@ -541,7 +564,7 @@ def build_recommended_question_items(
     items.extend(_truth_stage_questions(truth_stage, emotion, addressee))
     items = _prioritize_missing_items(items, missing_requirements, addressee)
 
-    if not has_dialogue:
+    if not has_dialogue and resolved_scene_kind != "intake":
         items.insert(0, _item(_prefix_addressee("你好，我是到场民警，先说说发生了什么？", addressee), "核实", addressee))
     elif revealed_info and last_assistant:
         items.append(_item(_prefix_addressee("刚才那点还有细节能补充吗？", addressee), "追问", addressee))

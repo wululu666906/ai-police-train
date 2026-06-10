@@ -4,6 +4,9 @@ import request from '../utils/request'
 import { showConfirmDialog, showFailToast, showSuccessToast } from 'vant'
 
 const knowledgeList = ref<any[]>([])
+const knowledgeSearchText = ref('')
+const knowledgeCategoryFilter = ref('')
+const knowledgeSourceFilter = ref('')
 const loading = ref(false)
 const showUpload = ref(false)
 const form = ref({
@@ -15,6 +18,29 @@ const form = ref({
 })
 
 const totalRefs = computed(() => knowledgeList.value.reduce((sum, item) => sum + Number(item.referenced_by_count || 0), 0))
+const categoryFilterOptions = computed(() =>
+  Array.from(new Set(knowledgeList.value.map((item) => String(item?.category || '').trim()).filter(Boolean))).sort()
+)
+const sourceFilterOptions = computed(() =>
+  Array.from(new Set(knowledgeList.value.map((item) => String(item?.source || '').trim()).filter(Boolean))).sort()
+)
+const filteredKnowledgeList = computed(() => {
+  const keyword = knowledgeSearchText.value.trim()
+  return knowledgeList.value.filter((item) => {
+    if (knowledgeCategoryFilter.value && item.category !== knowledgeCategoryFilter.value) return false
+    if (knowledgeSourceFilter.value && item.source !== knowledgeSourceFilter.value) return false
+    if (!keyword) return true
+    const haystack = [
+      item.title,
+      item.content,
+      item.category,
+      item.source,
+      ...(Array.isArray(item.tags) ? item.tags : []),
+      ...(Array.isArray(item.referenced_by) ? item.referenced_by : []),
+    ].join(' ')
+    return haystack.includes(keyword)
+  })
+})
 
 const fetchKnowledge = async () => {
   loading.value = true
@@ -87,7 +113,7 @@ onMounted(fetchKnowledge)
         <h1>知识库管理</h1>
         <p>为考察点配置可引用的法规、流程与执法提示，让评估和训练都更有依据。</p>
       </div>
-      <van-button type="primary" round icon="plus" class="hero-btn" @click="showUpload = true">
+      <van-button type="primary" icon="plus" class="hero-btn" @click="showUpload = true">
         新增知识条目
       </van-button>
     </section>
@@ -116,36 +142,74 @@ onMounted(fetchKnowledge)
         <van-button icon="replay" size="small" plain round @click="fetchKnowledge" />
       </div>
 
+      <div class="filter-panel">
+        <div class="filter-bar">
+          <label class="filter-item">
+            <span>分类</span>
+            <select v-model="knowledgeCategoryFilter">
+              <option value="">全部</option>
+              <option v-for="item in categoryFilterOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label class="filter-item">
+            <span>来源</span>
+            <select v-model="knowledgeSourceFilter">
+              <option value="">全部</option>
+              <option v-for="item in sourceFilterOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label class="search-box">
+            <van-icon name="search" />
+            <input v-model.trim="knowledgeSearchText" type="text" placeholder="搜索标题、内容、标签或引用" />
+          </label>
+        </div>
+        <div class="filter-summary">当前筛选 {{ filteredKnowledgeList.length }} / {{ knowledgeList.length }} 条</div>
+      </div>
+
       <div v-if="loading" class="loading-box">
         <van-loading type="spinner" color="#1D3557" />
       </div>
 
-      <div v-else-if="knowledgeList.length" class="knowledge-list">
-        <article v-for="item in knowledgeList" :key="item.id" class="knowledge-item">
-          <div class="knowledge-main">
-            <div class="knowledge-meta">
-              <span class="source-chip">{{ item.source || 'manual' }}</span>
-              <span class="category-chip">{{ item.category || '通用' }}</span>
-              <span class="id-text">{{ item.id }}</span>
-            </div>
-            <h4>{{ item.title || '未命名知识' }}</h4>
-            <p>{{ item.content }}</p>
-
-            <div v-if="item.tags?.length" class="tag-list">
-              <span v-for="tag in item.tags" :key="tag" class="tag-chip">{{ tag }}</span>
-            </div>
-
-            <div class="reference-box">
-              <strong>被考察点引用 {{ item.referenced_by_count || 0 }} 次</strong>
-              <div v-if="item.referenced_by?.length" class="reference-list">
-                <span v-for="ref in item.referenced_by" :key="ref" class="reference-chip">{{ ref }}</span>
-              </div>
-              <div v-else class="reference-empty">当前还没有考察点引用这条知识。</div>
-            </div>
-          </div>
-
-          <van-button icon="delete-o" size="small" danger round class="delete-btn" @click="handleDelete(item.id)" />
-        </article>
+      <div v-else-if="filteredKnowledgeList.length" class="knowledge-table-wrap">
+        <table class="knowledge-table">
+          <thead>
+            <tr>
+              <th>标题 / 内容</th>
+              <th>分类</th>
+              <th>来源</th>
+              <th>标签</th>
+              <th>引用</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in filteredKnowledgeList" :key="item.id">
+              <td class="knowledge-title-cell">
+                <div class="knowledge-row-title">{{ item.title || '未命名知识' }}</div>
+                <div class="knowledge-row-content">{{ item.content }}</div>
+                <div class="id-text">{{ item.id }}</div>
+              </td>
+              <td><span class="category-chip">{{ item.category || '通用' }}</span></td>
+              <td><span class="source-chip">{{ item.source || 'manual' }}</span></td>
+              <td>
+                <div v-if="item.tags?.length" class="tag-list tag-list--compact">
+                  <span v-for="tag in item.tags" :key="tag" class="tag-chip">{{ tag }}</span>
+                </div>
+                <span v-else class="reference-empty">-</span>
+              </td>
+              <td class="reference-cell">
+                <strong>{{ item.referenced_by_count || 0 }} 次</strong>
+                <div v-if="item.referenced_by?.length" class="reference-list reference-list--compact">
+                  <span v-for="ref in item.referenced_by.slice(0, 3)" :key="ref" class="reference-chip">{{ ref }}</span>
+                  <span v-if="item.referenced_by.length > 3" class="reference-empty">+{{ item.referenced_by.length - 3 }}</span>
+                </div>
+              </td>
+              <td>
+                <van-button icon="delete-o" size="small" danger plain class="delete-btn" @click="handleDelete(item.id)" />
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
       <div v-else class="empty-box">
@@ -202,33 +266,36 @@ onMounted(fetchKnowledge)
 .hero,
 .list-card,
 .stat-card {
-  border-radius: 26px;
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.05);
+  border-radius: var(--police-radius-lg);
+  background: #fff;
+  border: 1px solid var(--police-border);
 }
 
 .hero {
   display: flex;
   justify-content: space-between;
   gap: 18px;
-  padding: 24px;
+  padding: 18px 20px;
 }
 
 .hero h1 {
   margin: 0;
-  color: #0f172a;
+  color: var(--police-text-primary);
+  font-size: 22px;
+  font-weight: 800;
 }
 
 .hero p {
-  margin: 8px 0 0;
-  color: #64748b;
+  margin: 4px 0 0;
+  color: var(--police-text-muted);
+  font-size: 13px;
 }
 
 .hero-btn {
   align-self: center;
+  border-radius: var(--police-radius) !important;
   border: none !important;
-  background: linear-gradient(135deg, #1d3557 0%, #3b5f93 100%) !important;
+  background: var(--police-primary) !important;
 }
 
 .stats {
@@ -238,7 +305,7 @@ onMounted(fetchKnowledge)
 }
 
 .stat-card {
-  padding: 20px;
+  padding: 16px 18px;
 }
 
 .stat-card span {
@@ -255,7 +322,7 @@ onMounted(fetchKnowledge)
 }
 
 .list-card {
-  padding: 22px;
+  padding: 16px 20px;
 }
 
 .list-head {
@@ -264,6 +331,72 @@ onMounted(fetchKnowledge)
   gap: 16px;
   align-items: center;
   margin-bottom: 18px;
+}
+
+.filter-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius-lg);
+  background: #fff;
+  padding: 14px 16px;
+}
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.filter-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--police-text-secondary);
+  font-size: 13px;
+}
+
+.filter-item select {
+  min-width: 112px;
+  height: 34px;
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius);
+  background: #fff;
+  padding: 0 10px;
+  color: var(--police-text-primary);
+}
+
+.search-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: min(360px, 100%);
+  height: 34px;
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius);
+  background: #fff;
+  padding: 0 12px;
+  color: var(--police-text-muted);
+}
+
+.search-box input {
+  min-width: 0;
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--police-text-primary);
+  font-size: 13px;
+  outline: none;
+}
+
+.filter-summary {
+  color: var(--police-text-muted);
+  font-size: 13px;
 }
 
 .list-head h3 {
@@ -292,6 +425,70 @@ onMounted(fetchKnowledge)
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.knowledge-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius-lg);
+  background: #fff;
+}
+
+.knowledge-table {
+  width: 100%;
+  min-width: 960px;
+  border-collapse: collapse;
+}
+
+.knowledge-table th {
+  background: #f8fafc;
+  border-bottom: 1px solid var(--police-border);
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--police-text-secondary);
+  white-space: nowrap;
+}
+
+.knowledge-table td {
+  border-bottom: 1px solid var(--police-border-light);
+  padding: 13px 14px;
+  vertical-align: top;
+  font-size: 13px;
+  color: var(--police-text-primary);
+}
+
+.knowledge-table tr:last-child td {
+  border-bottom: none;
+}
+
+.knowledge-table tbody tr:hover td {
+  background: #f8fafc;
+}
+
+.knowledge-title-cell {
+  width: 42%;
+}
+
+.knowledge-row-title {
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.knowledge-row-content {
+  display: -webkit-box;
+  margin-top: 6px;
+  max-width: 560px;
+  overflow: hidden;
+  color: #475569;
+  line-height: 1.65;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.reference-cell {
+  min-width: 120px;
 }
 
 .knowledge-item {
@@ -359,6 +556,12 @@ onMounted(fetchKnowledge)
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
+}
+
+.tag-list--compact,
+.reference-list--compact {
+  margin-top: 0;
+  gap: 5px;
 }
 
 .tag-chip {

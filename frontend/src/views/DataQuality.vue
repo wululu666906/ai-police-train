@@ -5,9 +5,17 @@
         <h1 class="text-2xl font-bold text-gray-800">数据质检</h1>
         <p class="mt-1 text-sm text-gray-500">扫描案件、场景和角色配置问题，避免错误数据直接进入学员训练。</p>
       </div>
-      <div class="flex gap-3">
+      <div class="flex flex-wrap gap-3">
         <van-button plain type="primary" :loading="loading" @click="fetchReport">
           重新扫描
+        </van-button>
+        <van-button
+          v-if="hasAliasConflicts"
+          type="warning"
+          :loading="repairing"
+          @click="repairAliasDrift"
+        >
+          修复别名漂移
         </van-button>
         <van-button type="primary" class="!bg-[#1D3557] !border-none" @click="router.push('/admin/cases')">
           前往案件库
@@ -102,6 +110,7 @@ import { showToast } from 'vant'
 
 const router = useRouter()
 const loading = ref(false)
+const repairing = ref(false)
 const selectedSeverity = ref('all')
 const issues = ref<any[]>([])
 const summary = reactive({
@@ -113,7 +122,14 @@ const summary = reactive({
   high_count: 0,
   medium_count: 0,
   low_count: 0,
+  alias_conflict_count: 0,
 })
+
+const hasAliasConflicts = computed(
+  () =>
+    Number(summary.alias_conflict_count) > 0 ||
+    issues.value.some((item: any) => item.type === 'person_alias_conflict')
+)
 
 const severityFilters = [
   { value: 'all', label: '全部问题' },
@@ -127,16 +143,38 @@ const filteredIssues = computed(() => {
   return issues.value.filter((item: any) => item.severity === selectedSeverity.value)
 })
 
+const applyReport = (res: any) => {
+  issues.value = res?.issues || res?.report?.issues || []
+  Object.assign(summary, res?.summary || res?.report?.summary || {})
+}
+
 const fetchReport = async () => {
   loading.value = true
   try {
     const res: any = await request.get('/cases/data-quality-report', { _skipErrorToast: true } as any)
-    issues.value = res.issues || []
-    Object.assign(summary, res.summary || {})
+    applyReport(res)
   } catch {
     showToast('数据质检扫描失败')
   } finally {
     loading.value = false
+  }
+}
+
+const repairAliasDrift = async () => {
+  repairing.value = true
+  try {
+    const res: any = await request.post('/cases/data-quality-repair', {}, { _skipErrorToast: true } as any)
+    applyReport(res)
+    const personCount = Number(res?.repaired_person_count ?? 0)
+    const caseCount = Number(res?.repaired_case_count ?? 0)
+    showToast({
+      type: 'success',
+      message: `已修复 ${personCount} 个人物字段（${caseCount} 个案件）`,
+    })
+  } catch {
+    showToast('别名漂移修复失败')
+  } finally {
+    repairing.value = false
   }
 }
 

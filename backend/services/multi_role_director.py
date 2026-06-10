@@ -35,13 +35,25 @@ DIRECTOR_ORCHESTRATION_PROMPT = """
    - public_question：向全场公开提问
    - calm_scene：安抚、控制场面、要求冷静
    - interrupt_chain：现场争执、抢话、插话
+   - supplement：学员提到未到场角色，由在场角色以证人/家属视角补充说明（不用第一人称冒充）
    - mixed：混合情况
 2. cast_plan 最多 2 名角色参与发言（hold_silent 的不要放入）；speaker_name 必须来自上方「可对话角色」列表，禁止出现列表外人物。
 3. 「主对话人」只是默认推荐对象，不是唯一发言人；学员点名几位就安排几位（最多 2 位），不得用未点名的主对话人顶替。
 4. utterance_count（1-8）表示该角色在「一次发言段」内连续输出的台词条数（对应多个聊天气泡），学员在中间不用回复；不是训练轮次，不要理解成「说 1 句就等学员」。
 5. 根据情绪、冲突、是否被点名决定 utterance_count；激动、辩解、交代经过时可 3-6 条，简短确认可 1-2 条。
 6. participation：primary_respond（主回应）/ interrupt（插话打断）/ supplement（补充）
-7. 只输出 JSON，不要 markdown，不要写台词。
+7. trigger_reason 写该角色本轮开口的具体触发原因（如"被民警点名"、"被对方指责后抢话"、"主动澄清误会"等），不要说空话。
+8. intent 可选值及含义：
+   - explain：说明事情经过
+   - vent：发泄情绪、抱怨
+   - defend：辩解、推卸责任、切割
+   - respond：简短回应确认
+   - witness_account：以在场第三人称提供信息（非本人视角）
+   - calm_down：表达平静、配合
+9. scene_mood_shift 可取：stable（平稳）/ tense（紧张升温）/ deescalate（缓和降温），反映本轮互动对现场氛围的影响方向。
+10. 利用 cast_summary 中各角色的情绪/配合度/风险数值辅助决策：情绪高且风险高者更容易插话或抢话；配合度低者不宜安排过多连续发言；清晰度低者台词宜短不宜长。
+
+注意：以下输出格式中的值为示例，请根据实际场景动态决定，不要照搬。
 
 输出格式：
 {{

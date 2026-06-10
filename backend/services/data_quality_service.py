@@ -6,7 +6,11 @@ from sqlalchemy.orm import Session
 import models
 from services.role_resolver import is_role_speakable, resolve_scene_role
 from services.scene_role_service import audit_scene_roles
-from services.case_schema_service import PERSON_ALIAS_TO_CANONICAL, SCHEMA_VERSION
+from services.case_schema_service import (
+    PERSON_ALIAS_TO_CANONICAL,
+    SCHEMA_VERSION,
+    migrate_structured_data_payload,
+)
 from services.text_repair import repair_text
 
 
@@ -44,6 +48,65 @@ def _push_issue(
             "role_name": repair_text(role.name) if role else None,
         }
     )
+
+
+def _person_has_alias_conflict(person: dict[str, Any]) -> bool:
+    for alias, target in PERSON_ALIAS_TO_CANONICAL.items():
+        alias_value = person.get(alias)
+        target_value = person.get(target)
+        if alias_value in (None, "", []):
+            continue
+        if target_value in (None, "", []):
+            continue
+        if alias_value != target_value:
+            return True
+    return False
+
+
+def repair_person_alias_conflicts(db: Session, case_id: Optional[int] = None) -> Dict[str, Any]:
+    cases_query = db.query(models.Case).order_by(models.Case.id.asc())
+    if case_id is not None:
+        cases_query = cases_query.filter(models.Case.id == case_id)
+    cases = cases_query.all()
+
+    repaired_person_count = 0
+    repaired_case_count = 0
+
+    for case in cases:
+        if not case.structured_data:
+            continue
+        try:
+            structured = json.loads(case.structured_data)
+        except Exception:
+            continue
+        if not isinstance(structured, dict):
+            continue
+
+        persons = structured.get("persons") or []
+        if not isinstance(persons, list):
+            continue
+
+        case_changed = False
+        for person in persons:
+            if not isinstance(person, dict):
+                continue
+            if not _person_has_alias_conflict(person):
+                continue
+            case_changed = True
+            repaired_person_count += 1
+
+        if not case_changed:
+            continue
+
+        migrated, _ = migrate_structured_data_payload(structured)
+        case.structured_data = json.dumps(migrated, ensure_ascii=False)
+        repaired_case_count += 1
+
+    db.commit()
+    return {
+        "repaired_person_count": repaired_person_count,
+        "repaired_case_count": repaired_case_count,
+    }
 
 
 def build_data_quality_report(db: Session) -> Dict[str, Any]:

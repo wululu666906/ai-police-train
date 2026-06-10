@@ -193,8 +193,10 @@ def main() -> int:
     safe_print(f"Package size: {len(payload) / 1024 / 1024:.2f} MB")
 
     env_b64 = base64.b64encode(build_env_content().encode()).decode()
-    nginx_conf = (ROOT / "deploy" / "nginx" / "ai-police-sim.conf").read_text(encoding="utf-8")
-    nginx_b64 = base64.b64encode(nginx_conf.encode()).decode()
+    le_conf = (ROOT / "deploy" / "nginx" / "ai-police-sim-letsencrypt.conf").read_text(encoding="utf-8")
+    le_b64 = base64.b64encode(le_conf.encode()).decode()
+    fallback_conf = (ROOT / "deploy" / "nginx" / "ai-police-sim.conf").read_text(encoding="utf-8")
+    fallback_b64 = base64.b64encode(fallback_conf.encode()).decode()
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -242,7 +244,13 @@ if [ ! -f /etc/ssl/certs/ai-police-selfsigned.crt ]; then
     -subj "/CN={HOST}" \
     -addext "subjectAltName=IP:{HOST}"
 fi
-echo '{nginx_b64}' | base64 -d | sudo tee /etc/nginx/conf.d/ai-police-sim.conf
+if [ -f /etc/letsencrypt/live/ai-police-ip/fullchain.pem ]; then
+  echo '{le_b64}' | base64 -d | sudo tee /etc/nginx/conf.d/ai-police-sim.conf
+else
+  echo '{fallback_b64}' | base64 -d | sudo tee /etc/nginx/conf.d/ai-police-sim.conf
+fi
+sudo mkdir -p /var/www/certbot
+sudo chown -R www-data:www-data /var/www/certbot
 for port in 80 443; do
   if sudo ss -tlnp | grep -q ":${{port}} "; then
     sudo fuser -k ${{port}}/tcp 2>/dev/null || true
@@ -267,14 +275,74 @@ sleep 4
         client.close()
         return 1
 
+    apply_letsencrypt_nginx(client)
     passed = acceptance_checks(client)
     client.close()
 
     safe_print(f"\n访问地址: https://{HOST}/")
-    safe_print("（自签名证书，浏览器首次访问需点「高级」→「继续访问」）")
     safe_print("默认账号: admin / 123456")
-    safe_print("语音听写：登录后优先使用科大讯飞 API（需 backend/.env 配置 IFLYTEK_*）")
+    safe_print("语音听写：登录后使用科大讯飞 API（/api/speech/iflytek/*）")
     return 0 if passed else 1
+
+
+def apply_letsencrypt_nginx(client: paramiko.SSHClient) -> bool:
+    """Ensure LE IP cert exists and nginx uses trusted HTTPS config."""
+    le_conf = (ROOT / "deploy" / "nginx" / "ai-police-sim-letsencrypt.conf").read_text(encoding="utf-8")
+    le_b64 = base64.b64encode(le_conf.encode()).decode()
+    bootstrap_b64 = base64.b64encode(
+        f"""
+server {{
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    location ^~ /.well-known/acme-challenge/ {{
+        root /var/www/certbot;
+        default_type "text/plain";
+        allow all;
+    }}
+    location / {{ return 301 https://$host$request_uri; }}
+}}
+""".encode()
+    ).decode()
+
+    script = f"""
+set -euo pipefail
+sudo mkdir -p /var/www/certbot /etc/letsencrypt/renewal-hooks/deploy
+sudo chown -R www-data:www-data /var/www/certbot
+
+if ! command -v certbot >/dev/null 2>&1 || ! certbot --version 2>&1 | grep -qE 'certbot ([5-9]|[1-9][0-9])'; then
+  sudo snap install core 2>/dev/null || true
+  sudo snap refresh core 2>/dev/null || true
+  sudo snap install --classic certbot
+  sudo ln -sf /snap/bin/certbot /usr/bin/certbot
+fi
+
+if [ ! -f /etc/letsencrypt/live/ai-police-ip/fullchain.pem ]; then
+  echo '{bootstrap_b64}' | base64 -d | sudo tee /etc/nginx/conf.d/ai-police-sim.conf
+  sudo nginx -t && sudo systemctl restart nginx
+  sudo systemctl stop nginx
+  sudo certbot certonly --standalone --non-interactive --agree-tos \\
+    --register-unsafely-without-email \\
+    --cert-name ai-police-ip \\
+    --preferred-profile shortlived \\
+    --ip-address {HOST}
+fi
+
+echo '{le_b64}' | base64 -d | sudo tee /etc/nginx/conf.d/ai-police-sim.conf
+sudo bash -c 'printf "%s\\n" "#!/bin/sh" "systemctl reload nginx" > /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh'
+sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+if [ -f /etc/letsencrypt/renewal/ai-police-ip.conf ] && grep -q 'authenticator = standalone' /etc/letsencrypt/renewal/ai-police-ip.conf; then
+  sudo sed -i 's/^authenticator = standalone/authenticator = webroot/' /etc/letsencrypt/renewal/ai-police-ip.conf
+  if ! grep -q '^webroot_path' /etc/letsencrypt/renewal/ai-police-ip.conf; then
+    sudo sed -i '/^authenticator = webroot/a webroot_path = /var/www/certbot,' /etc/letsencrypt/renewal/ai-police-ip.conf
+  fi
+fi
+sudo nginx -t
+sudo systemctl restart nginx
+sudo test -f /etc/letsencrypt/live/ai-police-ip/fullchain.pem && echo OK_le_nginx
+"""
+    _, out = run_remote(client, script, timeout=600)
+    return "OK_le_nginx" in out
 
 
 def issue_letsencrypt_ip_cert() -> int:
@@ -339,12 +407,14 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 sudo systemctl restart nginx
 
-sudo systemctl stop nginx
-sudo certbot certonly --standalone --non-interactive --agree-tos \\
-  --register-unsafely-without-email \\
-  --cert-name ai-police-ip \\
-  --preferred-profile shortlived \\
-  --ip-address {HOST}
+if [ ! -f /etc/letsencrypt/live/ai-police-ip/fullchain.pem ]; then
+  sudo systemctl stop nginx
+  sudo certbot certonly --standalone --non-interactive --agree-tos \\
+    --register-unsafely-without-email \\
+    --cert-name ai-police-ip \\
+    --preferred-profile shortlived \\
+    --ip-address {HOST}
+fi
 sudo test -f /etc/letsencrypt/live/ai-police-ip/fullchain.pem
 
 echo '{le_b64}' | base64 -d | sudo tee /etc/nginx/conf.d/ai-police-sim.conf
@@ -369,8 +439,8 @@ echo OK_letsencrypt_issued
 sudo openssl x509 -in /etc/letsencrypt/live/ai-police-ip/fullchain.pem -noout -issuer -dates
 """
     code, out = run_remote(client, issue, timeout=600)
-    if "OK_letsencrypt_issued" not in out or "Successfully received certificate" not in out:
-        safe_print("Let's Encrypt issuance failed — see output above")
+    if "OK_letsencrypt_issued" not in out:
+        safe_print("Let's Encrypt setup failed — see output above")
         client.close()
         return 1
 

@@ -45,23 +45,17 @@ FIELD_CATALOG = {
         "label": "人物与训练人设",
         "fields": [
             "persons[].name",
-            "persons[].role",
             "persons[].role_type",
             "persons[].status",
             "persons[].behavior_archetype",
-            "persons[].police_attitude",
+            "persons[].opening_preset",
             "persons[].current_goal",
             "persons[].core_concern",
             "persons[].trigger_points",
             "persons[].calming_points",
-            "persons[].init_emotion",
-            "persons[].init_trust",
-            "persons[].knows_facts",
-            "persons[].does_not_know",
-            "persons[].hidden_truths",
-            "persons[].interaction_style",
-            "persons[].personality",
-            "persons[].speaking_style",
+            "persons[].cannot_answer",
+            "persons[].boundary_primary",
+            "persons[].boundary_secondary",
         ],
     },
     "scenes": {
@@ -73,10 +67,7 @@ FIELD_CATALOG = {
             "scenes[].dispatch_brief",
             "scenes[].first_impression",
             "scenes[].roles",
-            "scenes[].stages[].stage_name",
-            "scenes[].stages[].stage_goal",
-            "scenes[].stages[].assessment_points",
-            "scenes[].stages[].action_catalog",
+            "scenes[].assessment_points",
         ],
     },
 }
@@ -91,10 +82,21 @@ CASE_COMPLETION_PROMPT = f"""你是公安警情训练平台的「{CASE_OFFICER_R
 3. 不得编造新人物、新地点、新证据、新动机；不得把推测写成事实。
 4. 案件类型只能从以下列表选择最接近的一项：{json.dumps(CASE_TYPE_OPTIONS, ensure_ascii=False)}
 5. person status 只能是：正常、受伤可交流、昏迷、重伤无法交流、死亡。
-6. dispatch_brief_suggestion / dispatch_brief 只写接警时可知信息；first_impression 只写到场第一眼可观察信息。
-7. persons 中 name 只能是纯人名，不要带“称、表示、供述”等后缀。
-8. 若【当前表单已有内容】某字段已有有效值且 mode=fill_gaps，不要覆盖，只在 field_evidence 标注 skipped。
-9. parse_engine 固定为 "ai"；completion_engine 固定为 "deepseek-case-officer"。
+6. dispatch_brief_suggestion 只写接警时可知信息；first_impression_suggestion 只写到场第一眼可观察信息。
+7. persons 中 name 只能是纯人名，不要带”称、表示、供述”等后缀。
+8. 若【当前表单已有内容】某字段已有有效值且 mode=fill_gaps，不要覆盖，只在 field_evidence 标注 skipped；若 mode=full 则全部重新填写。
+9. parse_engine 固定为 “ai”；completion_engine 固定为 “deepseek-case-officer”。
+10. 各类要点（conflict_points / key_facts / hidden_info / evidence_points / inconsistencies）的区别：
+    - conflict_points：当事人之间在核心事实上相互矛盾的陈述或版本分歧。
+    - key_facts：办案决策最关键的客观事实，优先摘录时间、地点、人物、行为、结果五要素。
+    - hidden_info：原文暗示但未明确交代、需要后续询问才能确认的信息缺口。
+    - evidence_points：原文中出现的物证、书证、视听资料、目击线索等客观证据。
+    - inconsistencies：同一人在不同时间或不同人之间在细节上的前后不一致，区别于 conflict_points 的”核心矛盾”。
+11. fact_sheet 子字段：case_time（案发时间）、case_location（案发地点）、report_time（报案时间）、timeline（时间线列表）、relationships（人物关系说明列表）。
+12. persons 中每个对象应包含 name、role_type（当事人/报警人/目击者/嫌疑人等）、status、behavior_archetype（行为原型）、opening_preset（开场白模板）、current_goal（当前诉求）、core_concern（核心顾虑）、trigger_points（情绪触发点列表）、calming_points（可安抚点列表）、cannot_answer（角色不能回答的问题列表）、boundary_primary（不可配合的行为底线）、boundary_secondary（次要边界）。
+13. source_classification 一般写”普通案件文本”，如果是庭审记录则写”庭审记录”，如果是报警记录则写”报警记录”。
+14. full_narrative 是完整叙事重述（按时间顺序）；criminal_process 是重点摘取违法/犯罪过程段落；transcript_summary 用”谁、何时、何地、发生了什么、当前争议点/风险点”格式概括。
+15. mode=fill_gaps 时仅补缺、不覆盖已有值；mode=full 时全部重新生成。
 
 输出 JSON 结构（与案件解析一致，并增加补全追踪字段）：
 {{
@@ -108,16 +110,41 @@ CASE_COMPLETION_PROMPT = f"""你是公安警情训练平台的「{CASE_OFFICER_R
   "case_name": "",
   "case_type": "",
   "case_background": "",
-  "fact_sheet": {{}},
-  "persons": [],
+  "full_narrative": "",
+  "criminal_process": "",
+  "main_culprit": "",
+  "source_classification": "普通案件文本",
+  "dispatch_brief_suggestion": "",
+  "first_impression_suggestion": "",
+  "transcript_summary": "",
+  "fact_sheet": {{
+    "case_time": "",
+    "case_location": "",
+    "report_time": "",
+    "timeline": [],
+    "relationships": []
+  }},
+  "persons": [
+    {{
+      "name": "张某",
+      "role_type": "当事人/报警人/目击者/嫌疑人",
+      "status": "正常",
+      "behavior_archetype": "行为原型名称",
+      "opening_preset": "开场白模板文字",
+      "current_goal": "当前核心诉求",
+      "core_concern": "核心顾虑/不愿说的事",
+      "trigger_points": ["可能刺激情绪的话"],
+      "calming_points": ["能缓和情绪的方式"],
+      "cannot_answer": ["此角色不会回答的问题"],
+      "boundary_primary": "不可配合的行为底线",
+      "boundary_secondary": "次要边界/可突破条件"
+    }}
+  ],
   "conflict_points": [],
   "key_facts": [],
   "hidden_info": [],
   "evidence_points": [],
   "inconsistencies": [],
-  "dispatch_brief_suggestion": "",
-  "first_impression_suggestion": "",
-  "transcript_summary": "",
   "parse_warnings": []
 }}
 

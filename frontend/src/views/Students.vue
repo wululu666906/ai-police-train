@@ -1,17 +1,17 @@
 <template>
-  <div class="space-y-6 pb-20">
-    <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+  <div class="students-page space-y-5 pb-20">
+    <div class="admin-list-header">
       <div>
-        <h1 class="text-2xl font-bold text-gray-800">学员账号管理</h1>
-        <p class="text-sm text-gray-500 mt-1">支持按学号模板批量开通、名单导入开户、号段删除，以及导出本次账号清单。</p>
+        <h1>学员账号</h1>
+        <p>支持按学号模板批量开通、名单导入开户、号段删除，以及导出本次账号清单。</p>
       </div>
-      <div class="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+      <div class="template-tip">
         模板示例：`251040702xx`，起始号 `1`，结束号 `50`
       </div>
     </div>
 
     <div class="grid grid-cols-1 xl:grid-cols-[1.05fr_0.95fr] gap-6">
-      <section class="bg-white rounded-[28px] shadow-sm border border-gray-100 p-7">
+      <section class="admin-form-panel">
         <div class="flex items-center justify-between gap-4">
           <div>
             <h2 class="text-lg font-bold text-gray-800">模板批量开通</h2>
@@ -71,7 +71,7 @@
         </div>
       </section>
 
-      <section class="bg-white rounded-[28px] shadow-sm border border-gray-100 p-7">
+      <section class="admin-form-panel">
         <div class="flex items-center justify-between gap-4">
           <div>
             <h2 class="text-lg font-bold text-gray-800">名单导入开户</h2>
@@ -138,7 +138,7 @@
       </section>
     </div>
 
-    <section class="bg-white rounded-[28px] shadow-sm border border-gray-100 p-7">
+    <section class="admin-form-panel">
       <div class="flex items-center justify-between gap-4">
         <div>
           <h2 class="text-lg font-bold text-gray-800">本次结果</h2>
@@ -188,13 +188,13 @@
       </div>
     </section>
 
-    <section class="bg-white rounded-[28px] shadow-sm border border-gray-100 p-7">
+    <section class="admin-form-panel">
       <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h2 class="text-lg font-bold text-gray-800">已开通学员账号</h2>
           <p class="text-sm text-gray-500 mt-1">这里只展示学生账号，训练记录仍然各自独立。</p>
         </div>
-        <div class="flex flex-col gap-3 md:items-end">
+        <div class="student-filter-controls">
           <input v-model.trim="searchText" type="text" class="search-input" placeholder="搜索学号" />
           <select v-model="sortMode" class="search-input">
             <option value="risk">按风险优先排序</option>
@@ -202,7 +202,7 @@
             <option value="sessions_desc">按训练次数从高到低</option>
             <option value="latest">按创建时间从新到旧</option>
           </select>
-          <label class="flex items-center gap-2 text-xs font-medium text-slate-500">
+          <label class="student-checkbox-filter">
             <input v-model="onlyLowScore" type="checkbox" class="h-4 w-4 rounded border-slate-300 text-[#1D3557]" />
             仅看均分低于 60 的学员
           </label>
@@ -247,39 +247,39 @@
         <p class="mt-4 text-sm font-bold text-amber-800">{{ pageError }}</p>
         <van-button plain type="primary" class="mt-5" @click="fetchStudents">重新加载</van-button>
       </div>
-      <div v-else-if="filteredStudents.length" class="mt-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        <div v-for="student in filteredStudents" :key="student.id" class="rounded-2xl border border-slate-100 bg-slate-50 px-5 py-4">
-          <div class="flex items-center justify-between gap-3">
-            <div class="font-bold text-slate-800">{{ student.username }}</div>
-            <van-tag type="primary" plain>学员</van-tag>
-          </div>
-          <div class="mt-2 text-xs text-slate-400">创建时间 {{ formatTime(student.created_at) }}</div>
-          <div class="mt-4 grid grid-cols-3 gap-2">
-            <div class="rounded-xl bg-white border border-slate-100 px-3 py-3">
-              <div class="text-[11px] text-slate-400">训练次数</div>
-              <div class="mt-1 text-base font-bold text-slate-800">{{ student.total_sessions ?? 0 }}</div>
-            </div>
-            <div class="rounded-xl bg-white border border-slate-100 px-3 py-3">
-              <div class="text-[11px] text-slate-400">已完成</div>
-              <div class="mt-1 text-base font-bold text-[#165dff]">{{ student.finished_sessions ?? 0 }}</div>
-            </div>
-            <div class="rounded-xl bg-white border border-slate-100 px-3 py-3">
-              <div class="text-[11px] text-slate-400">均分</div>
-              <div class="mt-1 text-base font-bold" :class="getScoreTextClass(student.avg_score)">
+      <div v-else-if="filteredStudents.length" class="student-table-wrap mt-6">
+        <table class="student-table">
+          <thead>
+            <tr>
+              <th>学员账号</th>
+              <th>创建时间</th>
+              <th>训练次数</th>
+              <th>已完成</th>
+              <th>均分</th>
+              <th>高频薄弱项</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="student in filteredStudents" :key="student.id">
+              <td>
+                <div class="student-name">{{ student.username }}</div>
+                <van-tag type="primary" plain>学员</van-tag>
+              </td>
+              <td>{{ formatTime(student.created_at) }}</td>
+              <td class="metric-cell">{{ student.total_sessions ?? 0 }}</td>
+              <td class="metric-cell text-[#165dff]">{{ student.finished_sessions ?? 0 }}</td>
+              <td class="metric-cell" :class="getScoreTextClass(student.avg_score)">
                 {{ formatAvgScore(student.avg_score) }}
-              </div>
-            </div>
-          </div>
-          <div class="mt-4">
-            <div class="text-[11px] font-bold text-slate-500">高频薄弱项</div>
-            <div v-if="student.top_gap_missing?.length" class="mt-2 flex flex-wrap gap-2">
-              <span v-for="item in student.top_gap_missing" :key="item" class="inline-flex items-center rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700">
-                {{ item }}
-              </span>
-            </div>
-            <div v-else class="mt-2 text-xs text-emerald-600">当前暂无明显重复缺口</div>
-          </div>
-        </div>
+              </td>
+              <td>
+                <div v-if="student.top_gap_missing?.length" class="student-gap-list">
+                  <span v-for="item in student.top_gap_missing" :key="item" class="student-gap-chip">{{ item }}</span>
+                </div>
+                <span v-else class="student-ok">暂无明显重复缺口</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
       <div v-else class="mt-6 rounded-2xl border border-dashed border-slate-200 py-16 text-center text-slate-400">
         暂无符合条件的学员账号
@@ -739,6 +739,64 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.admin-list-header,
+.admin-form-panel {
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius-lg);
+  background: #fff;
+}
+
+.admin-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+}
+
+.admin-list-header h1 {
+  margin: 0;
+  color: var(--police-text-primary);
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.admin-list-header p {
+  margin: 4px 0 0;
+  color: var(--police-text-muted);
+  font-size: 13px;
+}
+
+.template-tip {
+  border: 1px solid #bfdbfe;
+  border-radius: var(--police-radius);
+  background: #eff6ff;
+  padding: 10px 12px;
+  color: #1d4ed8;
+  font-size: 13px;
+}
+
+.admin-form-panel {
+  padding: 20px;
+}
+
+.student-filter-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.student-checkbox-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--police-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .field-block {
   display: grid;
   gap: 10px;
@@ -753,12 +811,12 @@ onMounted(() => {
 .field-input,
 .search-input {
   width: 100%;
-  min-height: 46px;
-  border-radius: 16px;
+  min-height: 34px;
+  border-radius: var(--police-radius);
   border: 1px solid #dbe3ee;
   background: #fff;
-  padding: 0 16px;
-  font-size: 14px;
+  padding: 0 12px;
+  font-size: 13px;
   color: #0f172a;
   outline: none;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
@@ -767,7 +825,7 @@ onMounted(() => {
 .field-input:focus,
 .search-input:focus {
   border-color: #93b4d6;
-  box-shadow: 0 0 0 4px rgba(69, 123, 157, 0.12);
+  box-shadow: 0 0 0 3px rgba(69, 123, 157, 0.1);
 }
 
 .preview-chip {
@@ -808,5 +866,80 @@ onMounted(() => {
   margin-top: 10px;
   font-size: 28px;
   font-weight: 800;
+}
+
+.student-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius-lg);
+  background: #fff;
+}
+
+.student-table {
+  width: 100%;
+  min-width: 860px;
+  border-collapse: collapse;
+}
+
+.student-table th {
+  background: #f8fafc;
+  border-bottom: 1px solid var(--police-border);
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--police-text-secondary);
+  white-space: nowrap;
+}
+
+.student-table td {
+  border-bottom: 1px solid var(--police-border-light);
+  padding: 13px 14px;
+  vertical-align: middle;
+  font-size: 13px;
+  color: var(--police-text-primary);
+}
+
+.student-table tr:last-child td {
+  border-bottom: none;
+}
+
+.student-table tbody tr:hover td {
+  background: #f8fafc;
+}
+
+.student-name {
+  margin-bottom: 5px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.metric-cell {
+  font-size: 16px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.student-gap-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.student-gap-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 20px;
+  background: #fff7ed;
+  color: #c2410c;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.student-ok {
+  color: var(--police-success);
+  font-size: 12px;
+  font-weight: 700;
 }
 </style>

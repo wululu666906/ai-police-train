@@ -3,6 +3,7 @@ import re
 from typing import Any
 
 from .stage_config_service import infer_scene_behavior_mode
+from .opening_preset import apply_opening_preset, infer_opening_preset
 
 
 def _clean_text(value: Any) -> str:
@@ -370,11 +371,17 @@ def normalize_scene_specific_fields(
     }
 
 
-def normalize_compact_persona_fields(person: dict[str, Any] | None) -> dict[str, Any]:
+def normalize_compact_persona_fields(
+    person: dict[str, Any] | None,
+    *,
+    scene_behavior_mode: str = "",
+) -> dict[str, Any]:
     person = person or {}
     behavior_archetype = _infer_behavior_archetype(person)
     archetype_defaults = get_behavior_archetype_defaults(behavior_archetype)
-    scene_specific = normalize_scene_specific_fields(person)
+    explicit_mode = _clean_text(scene_behavior_mode) or _clean_text(person.get("scene_behavior_mode"))
+    scene_specific = normalize_scene_specific_fields(person, explicit_mode=explicit_mode)
+    preset_scores = apply_opening_preset(person)
 
     protected_targets = _to_list(person.get("protected_targets"))
     feared_people = _to_list(person.get("feared_people"))
@@ -461,25 +468,26 @@ def normalize_compact_persona_fields(person: dict[str, Any] | None) -> dict[str,
 
     emotion_level = _pick_first_non_empty(
         person.get("emotion_level"),
-        _infer_level_from_score(person.get("init_emotion", archetype_defaults.get("init_emotion", 50))),
+        _infer_level_from_score(preset_scores.get("init_emotion", person.get("init_emotion", archetype_defaults.get("init_emotion", 50)))),
     )
     cooperation_level = _pick_first_non_empty(
         person.get("cooperation_level"),
-        _infer_level_from_score(person.get("init_trust", archetype_defaults.get("init_trust", 30))),
+        _infer_level_from_score(preset_scores.get("init_trust", person.get("init_trust", archetype_defaults.get("init_trust", 30)))),
     )
     risk_level = _pick_first_non_empty(
         person.get("risk_level"),
-        _infer_level_from_score(person.get("init_risk", archetype_defaults.get("init_risk", 50))),
+        _infer_level_from_score(preset_scores.get("init_risk", person.get("init_risk", archetype_defaults.get("init_risk", 50)))),
     )
     clarity_level = _pick_first_non_empty(
         person.get("clarity_level"),
         _infer_level_from_score(
-            person.get("init_expression_clarity", archetype_defaults.get("init_expression_clarity", 52))
+            preset_scores.get("init_expression_clarity", person.get("init_expression_clarity", archetype_defaults.get("init_expression_clarity", 52)))
         ),
     )
 
     return {
         "behavior_archetype": behavior_archetype,
+        "opening_preset": infer_opening_preset(person),
         "police_attitude": police_attitude,
         "current_goal": current_goal,
         "core_concern": core_concern,
@@ -493,12 +501,24 @@ def normalize_compact_persona_fields(person: dict[str, Any] | None) -> dict[str,
         "cooperation_level": cooperation_level,
         "risk_level": risk_level,
         "clarity_level": clarity_level,
-        "init_emotion": _score_from_level(emotion_level, person.get("init_emotion") or archetype_defaults.get("init_emotion", 50)),
-        "init_trust": _score_from_level(cooperation_level, person.get("init_trust") or archetype_defaults.get("init_trust", 30)),
-        "init_risk": _score_from_level(risk_level, person.get("init_risk") or archetype_defaults.get("init_risk", 50)),
+        "init_emotion": _score_from_level(
+            emotion_level,
+            preset_scores.get("init_emotion", person.get("init_emotion") or archetype_defaults.get("init_emotion", 50)),
+        ),
+        "init_trust": _score_from_level(
+            cooperation_level,
+            preset_scores.get("init_trust", person.get("init_trust") or archetype_defaults.get("init_trust", 30)),
+        ),
+        "init_risk": _score_from_level(
+            risk_level,
+            preset_scores.get("init_risk", person.get("init_risk") or archetype_defaults.get("init_risk", 50)),
+        ),
         "init_expression_clarity": _score_from_level(
             clarity_level,
-            person.get("init_expression_clarity") or archetype_defaults.get("init_expression_clarity", 52),
+            preset_scores.get(
+                "init_expression_clarity",
+                person.get("init_expression_clarity") or archetype_defaults.get("init_expression_clarity", 52),
+            ),
         ),
         **scene_specific,
     }
@@ -572,7 +592,6 @@ def infer_persona_template(person: dict[str, Any]) -> dict[str, Any]:
     )
     stress_response = _pick_first_non_empty(person.get("stress_response"), compact_fields.get("pressure_response"))
     public_mask = _pick_first_non_empty(person.get("public_mask"), compact_fields.get("surface_stance"))
-    private_drive = _pick_first_non_empty(person.get("private_drive"), compact_fields.get("current_goal"))
 
     if not self_image:
         if role_type == "嫌疑人":
@@ -648,20 +667,12 @@ def infer_persona_template(person: dict[str, Any]) -> dict[str, Any]:
         else:
             public_mask = "我先把我自己确定的部分讲出来，不确定的我不乱说"
 
-    if not private_drive:
-        if protected_targets:
-            private_drive = f"先把{protected_targets[0]}或和对方有关的麻烦挡在自己这里，别继续扩大"
-        elif feared_consequences:
-            private_drive = f"尽量别让事情走到“{feared_consequences[0]}”那一步"
-        elif hidden_truths:
-            private_drive = "尽量把最伤自己的那部分细节往后拖，不到必要不主动说"
-        else:
-            private_drive = "边看警方掌握了多少，边决定哪些话现在能说、哪些先保留"
+    current_goal = compact_fields.get("current_goal") or current_need
 
     return {
         "behavior_archetype": behavior_archetype,
         "police_attitude": compact_fields.get("police_attitude") or authority_attitude,
-        "current_goal": compact_fields.get("current_goal") or current_need,
+        "current_goal": current_goal,
         "core_concern": compact_fields.get("core_concern") or weakness,
         "relationship_pressure": compact_fields.get("relationship_pressure") or [],
         "surface_stance": compact_fields.get("surface_stance") or public_mask,
@@ -669,7 +680,7 @@ def infer_persona_template(person: dict[str, Any]) -> dict[str, Any]:
         "trigger_points": compact_fields.get("trigger_points") or trigger_topics,
         "calming_points": calming_points,
         "self_image": self_image,
-        "current_need": current_need,
+        "current_need": current_goal,
         "authority_attitude": authority_attitude,
         "stress_response": stress_response,
         "protected_targets": protected_targets,
@@ -679,7 +690,7 @@ def infer_persona_template(person: dict[str, Any]) -> dict[str, Any]:
         "trigger_topics": trigger_topics,
         "coping_patterns": coping_patterns,
         "public_mask": public_mask,
-        "private_drive": private_drive,
+        "private_drive": current_goal,
         "scene_behavior_mode": scene_specific.get("scene_behavior_mode") or compact_fields.get("scene_behavior_mode") or "核查取证型",
         "emotion_level": compact_fields.get("emotion_level") or _infer_level_from_score(compact_fields.get("init_emotion", 50)),
         "cooperation_level": compact_fields.get("cooperation_level") or _infer_level_from_score(compact_fields.get("init_trust", 30)),
@@ -1447,6 +1458,7 @@ def format_persona_block(
             continue
         boundary_preview.append(f"{key}={'、'.join(value[:2])}")
     sections = [
+        "【以下为人设内部参考，禁止在台词中念出字段名或配置原文】",
         f"行为原型：{persona_profile.get('behavior_archetype') or '暂无'}",
         f"场景行为模式：{persona_profile.get('scene_behavior_mode') or '核查取证型'}",
         f"角色核心动机：{'; '.join(persona_profile.get('core_motives', []) or ['暂无'])}",

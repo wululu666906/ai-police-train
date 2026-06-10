@@ -14,7 +14,7 @@ if (Test-PythonOk $venvPy) {
 } else {
     Write-Host "venv not usable. Trying fallback ..." -ForegroundColor Yellow
     foreach ($candidate in (Get-BasePythonCandidates)) {
-        if (Test-PythonOk $candidate) {
+        if (Test-Path -LiteralPath $candidate) {
             $python = (Resolve-Path -LiteralPath $candidate).Path
             Write-Host "Using fallback: $python" -ForegroundColor Yellow
             Write-Host "Run .\fix-venv.ps1 to rebuild venv." -ForegroundColor Yellow
@@ -33,7 +33,7 @@ Write-Host "Press Ctrl+C to stop." -ForegroundColor DarkGray
 Write-Host ""
 
 Clear-PythonEnv
-$uvicornArgs = @("-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000")
+$uvicornArgs = @("-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000")
 if ($args.Count -gt 0) { $uvicornArgs += $args }
 
 & $python @uvicornArgs

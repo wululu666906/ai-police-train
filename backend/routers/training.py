@@ -30,6 +30,14 @@ from services.recommended_questions_service import (
 from services.multi_role_service import serialize_scene_roles
 from services.role_resolver import resolve_scene_role
 from services.text_repair import repair_payload, repair_text
+from services.dialogue_sequence_service import build_intake_sequence_feedback, merge_sequence_feedback
+from services.opening_turn_service import (
+    ensure_opening_turn,
+    infer_session_scene_kind,
+    redact_dispatch_brief_for_student,
+    redact_first_impression_for_student,
+    resolve_dialogue_mode,
+)
 from services.training_runtime_service import dump_runtime_state, load_runtime_state
 
 router = APIRouter(prefix="/training", tags=["Training"])
@@ -181,12 +189,14 @@ def _build_session_guidance(
     )
     stage_config = _get_stage_config(scene, session.current_stage or "", case_type=case_type)
     custom_prompts = list(stage_config.get("recommended_prompts") or []) if stage_config else []
+    scene_kind = infer_session_scene_kind(scene, session)
     recommended_question_items = build_recommended_question_items(
         current_stage=session.current_stage or "",
         current_stage_goal=stage_goal,
         case_type=case_type,
         case_title=case.title if case else "",
         scene_name=scene.name if scene else "",
+        scene_kind=scene_kind,
         role_name=role.name if role else "",
         role_type=role.role_type if role else "",
         scene_roles=[
@@ -225,13 +235,22 @@ def _build_session_guidance(
         )
         communication_feedback["tags"] = list(dict.fromkeys(["stage_gap", *communication_feedback.get("tags", [])]))
     elif not last_user_message.strip():
-        bootstrap_message = "训练已恢复，建议先从时间、地点、人物或风险情况打开第一轮问询。"
+        if scene_kind == "intake" and any(message.role == "assistant" for message in messages):
+            bootstrap_message = "报警人已说明情况，建议先确认其安全与事件性质，再核实地点、时间和身份。"
+        elif scene_kind == "intake":
+            bootstrap_message = "110 已接通，等待报警人先说明情况；随后再按顺序核实安全、地点、时间和身份。"
+        else:
+            bootstrap_message = "训练已恢复，建议先从时间、地点、人物或风险情况打开第一轮问询。"
         communication_feedback = {
             "level": "info",
             "tags": ["session_resume"],
             "message": bootstrap_message,
             "all_messages": [bootstrap_message],
         }
+
+    if scene_kind == "intake":
+        sequence_feedback = build_intake_sequence_feedback(messages, last_user_message, revealed_info)
+        communication_feedback = merge_sequence_feedback(communication_feedback, sequence_feedback)
 
     stage_config = _get_stage_config(scene, session.current_stage or "", case_type=case_type)
     available_actions = _build_available_actions(
@@ -302,6 +321,8 @@ def start_training(
         case = db.query(models.Case).filter(models.Case.id == scene.case_id).first()
         role = resolve_scene_role(db, scene, case)
         if latest_session and latest_session.status == "active":
+            ensure_opening_turn(db, latest_session, scene, case, role)
+            db.commit()
             return _serialize_session_response(latest_session, role, case, scene)
         stage_config = _get_stage_config(scene, "", case_type=_get_case_type(case))
         initial_runtime_state = load_runtime_state([])
@@ -318,6 +339,9 @@ def start_training(
             revealed_info=dump_runtime_state(initial_runtime_state),
         )
         db.add(new_session)
+        db.commit()
+        db.refresh(new_session)
+        ensure_opening_turn(db, new_session, scene, case, role)
         db.commit()
         db.refresh(new_session)
         return _serialize_session_response(new_session, role, case, scene)
@@ -359,6 +383,7 @@ def training_chat(
     if current_user.role != "admin":
         result.pop("state_contract", None)
         result.pop("last_postcheck", None)
+        result.pop("state_influence_metrics", None)
 
     return _trigger_auto_evaluation_if_needed(db, session_id, current_user.id, result)
 
@@ -408,6 +433,9 @@ def get_session(
     scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
     case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
     role = resolve_scene_role(db, scene, case)
+
+    ensure_opening_turn(db, session, scene, case, role)
+    db.commit()
 
     messages = (
         db.query(models.Message)
@@ -484,9 +512,11 @@ def get_session(
             for item in serialize_scene_roles(db, scene, case, runtime_state=runtime_state)
         ],
         scene_name=repair_text(scene.name) if scene else "训练场景",
+        scene_kind=infer_session_scene_kind(scene, session),
+        dialogue_mode=resolve_dialogue_mode(scene, session),
         difficulty=repair_text(scene.difficulty) if scene else "中等",
-        dispatch_brief=repair_text(scene.dispatch_brief) if scene else None,
-        first_impression=repair_text(scene.first_impression) if scene else None,
+        dispatch_brief=redact_dispatch_brief_for_student(scene, session),
+        first_impression=redact_first_impression_for_student(scene, session),
         structured_data=(
             json.dumps(repair_payload(safe_json_loads(case.structured_data, {})), ensure_ascii=False)
             if case and case.structured_data

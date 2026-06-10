@@ -3,12 +3,45 @@
 @tailwind utilities;
 
 :root {
-  --primary-color: #1d3557; /* Deep Blue - Police themed */
-  --primary-hover: #457b9d;
-  --secondary-color: #f1faee;
-  --accent-color: #e63946;
-  --background-color: #f2f3f5;
-  --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --primary-color: #003087;
+  --primary-hover: #00409a;
+  --secondary-color: #e6eeff;
+  --accent-color: #cf1322;
+  --background-color: #f0f4f8;
+  --card-shadow: 0 2px 8px rgba(0, 48, 135, 0.12);
+  --police-primary: #003087;
+  --police-primary-hover: #00409a;
+  --police-primary-light: #e6eeff;
+  --police-secondary: #1a4fa0;
+  --police-gold: #c8a84b;
+  --police-success: #1a7a3e;
+  --police-warning: #d48806;
+  --police-danger: #cf1322;
+  --police-bg: #f0f4f8;
+  --police-bg-card: #ffffff;
+  --police-sidebar-bg: #0f1e3c;
+  --police-sidebar-active: #003087;
+  --police-text-primary: #1a1a2e;
+  --police-text-secondary: #4a5568;
+  --police-text-muted: #8a9bb0;
+  --police-border: #d9e3f0;
+  --police-border-light: #eef2f7;
+  --police-radius: 6px;
+  --police-radius-lg: 8px;
+  --police-shadow-sm: 0 1px 4px rgba(0, 48, 135, 0.08);
+  --police-shadow: 0 2px 8px rgba(0, 48, 135, 0.12);
+  --police-shadow-lg: 0 4px 20px rgba(0, 48, 135, 0.16);
+
+  --van-primary-color: var(--police-primary);
+  --van-success-color: var(--police-success);
+  --van-warning-color: var(--police-warning);
+  --van-danger-color: var(--police-danger);
+  --van-border-radius-md: var(--police-radius);
+  --van-border-radius-lg: var(--police-radius-lg);
+  --van-button-primary-background: var(--police-primary);
+  --van-button-primary-border-color: var(--police-primary);
+  --van-button-radius: var(--police-radius);
+  --van-popup-round-radius: var(--police-radius-lg);
 }
 
 html,
@@ -27,6 +60,114 @@ body {
   padding: 0;
   font-family: "PingFang SC", "Microsoft YaHei", "Inter", -apple-system, sans-serif;
   background-color: var(--background-color);
-  color: #2c3e50;
+  color: var(--police-text-primary);
   -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--police-border-light);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--police-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--police-text-muted);
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+.van-button {
+  box-shadow: none;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+
+.van-button:not(.van-button--disabled):hover {
+  box-shadow: var(--police-shadow-sm);
+  transform: translateY(-1px);
+}
+
+.van-button:not(.van-button--disabled):active {
+  transform: scale(0.98);
+}
+
+.van-button--primary:not(.van-button--plain) {
+  background: var(--police-primary);
+  border-color: var(--police-primary);
+}
+
+.van-button--primary:not(.van-button--plain):hover {
+  background: var(--police-primary-hover);
+  border-color: var(--police-primary-hover);
+  box-shadow: 0 4px 12px rgba(0, 48, 135, 0.28);
+}
+
+.van-button--plain.van-button--primary {
+  color: var(--police-primary);
+  border-color: var(--police-border);
+  background: #fff;
+}
+
+.van-button--plain.van-button--primary:hover {
+  border-color: var(--police-primary);
+  background: var(--police-primary-light);
+}
+
+.van-tag {
+  border-radius: 4px;
+}
+
+.van-field,
+.van-cell,
+.van-popup,
+.van-dialog,
+.van-cell-group {
+  font-family: inherit;
+}
+
+.van-field,
+.van-cell {
+  color: var(--police-text-primary);
+}
+
+.van-popup,
+.van-dialog {
+  border: 1px solid var(--police-border);
+  box-shadow: var(--police-shadow-lg);
+}
+
+.police-card,
+.card {
+  background: var(--police-bg-card);
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius-lg);
+  box-shadow: var(--police-shadow-sm);
+  transition:
+    border-color 0.22s ease,
+    box-shadow 0.22s ease,
+    transform 0.22s ease;
+}
+
+.police-card:hover,
+.card:hover {
+  border-color: #c2d0e8;
+  box-shadow: var(--police-shadow);
+  transform: translateY(-1px);
 }

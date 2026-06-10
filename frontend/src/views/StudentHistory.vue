@@ -262,15 +262,18 @@ const fetchHistory = async () => {
     finishedCount.value = Number(res.finished_count || 0)
     hiddenEmptyCount.value = res.hidden_empty_count || 0
     totalPages.value = Math.max(1, Math.ceil(total.value / pageSize))
-  } catch {
+  } catch (error: any) {
     records.value = []
     total.value = 0
     hiddenEmptyCount.value = 0
     activeCount.value = 0
     finishedCount.value = 0
     totalPages.value = 1
-    loadError.value = '训练历史加载失败'
-    showToast('获取历史记录失败')
+    const isBackendUnavailable = !error?.response
+    loadError.value = isBackendUnavailable
+      ? '后端服务未启动，请先运行 backend\\start.ps1'
+      : error?.response?.data?.detail || '训练历史加载失败'
+    showToast(isBackendUnavailable ? '无法连接后端服务' : '获取历史记录失败')
   } finally {
     loading.value = false
   }
@@ -361,23 +364,27 @@ onMounted(fetchHistory)
 <style scoped>
 .history-page {
   padding: 24px 24px 36px;
-  max-width: 1160px;
+  max-width: 1240px;
   margin: 0 auto;
   font-family: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
 }
 
 .page-header {
-  margin-bottom: 20px;
+  margin-bottom: 14px;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
+  padding: 18px 20px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
 }
 
 .page-title {
-  font-size: 28px;
-  font-weight: 800;
-  color: #1d2129;
+  font-size: 22px;
+  font-weight: 700;
+  color: #0f172a;
   margin: 0;
 }
 
@@ -394,7 +401,7 @@ onMounted(fetchHistory)
   padding: 10px 12px;
   background: #fff;
   border: 1px solid #e5e6eb;
-  border-radius: 12px;
+  border-radius: 8px;
 }
 
 .tool-label {
@@ -405,33 +412,45 @@ onMounted(fetchHistory)
 .summary-bar {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 20px;
+  gap: 12px;
+  margin-bottom: 14px;
   padding: 14px 16px;
-  background: #f7f8fa;
-  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
   flex-wrap: wrap;
 }
 
 .summary-item {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
+  min-width: 150px;
+  padding-right: 14px;
+  border-right: 1px solid #e2e8f0;
+}
+
+.summary-item:last-of-type {
+  border-right: none;
 }
 
 .status-filter-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 18px;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
 }
 
 .status-chip {
-  border: 1px solid #d9e1ec;
+  border: 1px solid #cbd5e1;
   background: #fff;
   color: #4e5969;
-  border-radius: 999px;
-  padding: 8px 14px;
+  border-radius: 6px;
+  padding: 7px 12px;
   font-size: 13px;
   font-weight: 700;
   transition: all 0.2s ease;
@@ -496,15 +515,15 @@ onMounted(fetchHistory)
 
 .history-list {
   display: grid;
-  gap: 16px;
+  gap: 10px;
 }
 
 .history-card {
-  background: rgba(255, 255, 255, 0.96);
-  border-radius: 18px;
-  border: 1px solid #e5e6eb;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
-  padding: 18px;
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  box-shadow: none;
+  padding: 14px 16px;
 }
 
 .card-top {
@@ -516,8 +535,9 @@ onMounted(fetchHistory)
 
 .record-title {
   margin: 0;
-  color: #1d2129;
-  font-size: 18px;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .record-substatus {
@@ -537,16 +557,23 @@ onMounted(fetchHistory)
 }
 
 .record-grid {
-  margin-top: 16px;
+  margin-top: 12px;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 .record-item {
-  padding: 12px 14px;
-  background: #f8fbff;
-  border-radius: 14px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-right: 1px solid #e2e8f0;
+}
+
+.record-item:last-child {
+  border-right: none;
 }
 
 .item-label {
@@ -564,17 +591,25 @@ onMounted(fetchHistory)
 }
 
 .metric-row {
-  margin-top: 14px;
+  margin-top: 10px;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 .metric-card {
-  padding: 14px;
-  border-radius: 14px;
+  padding: 10px 12px;
+  border-radius: 0;
   background: #fff;
-  border: 1px solid #eef2f6;
+  border: none;
+  border-right: 1px solid #e2e8f0;
+}
+
+.metric-card:last-child {
+  border-right: none;
 }
 
 .metric-label {
@@ -585,10 +620,10 @@ onMounted(fetchHistory)
 
 .metric-value {
   display: block;
-  margin-top: 8px;
+  margin-top: 4px;
   color: #1d2129;
-  font-size: 24px;
-  font-weight: 800;
+  font-size: 18px;
+  font-weight: 700;
 }
 
 .metric-value.trust {
@@ -611,17 +646,18 @@ onMounted(fetchHistory)
 }
 
 .action-cell {
-  margin-top: 16px;
+  margin-top: 12px;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  justify-content: flex-end;
 }
 
 .result-strip {
-  margin-top: 14px;
-  padding: 14px;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #f8fbff 0%, #f5f9ff 100%);
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #eff6ff;
   border: 1px solid #dbe8ff;
   display: flex;
   gap: 16px;
@@ -644,9 +680,9 @@ onMounted(fetchHistory)
 
 .result-strip-score {
   display: block;
-  margin-top: 8px;
-  font-size: 24px;
-  font-weight: 800;
+  margin-top: 4px;
+  font-size: 20px;
+  font-weight: 700;
   color: #165dff;
 }
 
@@ -693,6 +729,12 @@ onMounted(fetchHistory)
   .record-grid,
   .metric-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .record-item,
+  .metric-card {
+    border-right: none;
+    border-bottom: 1px solid #e2e8f0;
   }
 }
 

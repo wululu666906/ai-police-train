@@ -77,66 +77,72 @@ const logout = () => {
 <style scoped>
 .student-app {
   min-height: 100vh;
-  background:
-    radial-gradient(circle at top left, rgba(22, 93, 255, 0.08), transparent 22%),
-    linear-gradient(180deg, #f4f7fb 0%, #eef3f9 100%);
+  background: #fff;
   font-family: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
   overflow-x: hidden;
 }
 
 .top-nav {
   height: 56px;
-  background: #0e2f56;
+  background: linear-gradient(90deg, #05204a 0%, #082a63 55%, #05204a 100%);
+  border-bottom: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 24px;
-  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 2px 10px rgba(15, 30, 60, 0.12);
   position: sticky;
   top: 0;
   z-index: 100;
-  gap: 16px;
+  gap: 14px;
 }
 
 .logo {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   color: #fff;
 }
 
 .logo-text {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 700;
-  letter-spacing: 0.5px;
+  color: #fff;
+  letter-spacing: 0;
+  white-space: nowrap;
 }
 
 .nav-links {
   display: flex;
-  gap: 6px;
+  justify-content: center;
+  gap: 8px;
   min-width: 0;
+  flex: 1;
 }
 
 .nav-link {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
+  height: 38px;
+  padding: 0 18px;
   border-radius: 999px;
-  color: rgba(255, 255, 255, 0.72);
+  color: rgba(255, 255, 255, 0.68);
   font-size: 14px;
+  font-weight: 700;
   text-decoration: none;
   transition: all 0.2s ease;
 }
 
 .nav-link:hover {
   color: #fff;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .nav-link.active {
   color: #fff;
-  background: #165dff;
+  background: #1677ff;
+  box-shadow: 0 8px 20px rgba(22, 119, 255, 0.28);
 }
 
 .nav-right {
@@ -149,20 +155,23 @@ const logout = () => {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: rgba(255, 255, 255, 0.76);
+  color: rgba(255, 255, 255, 0.78);
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .logout-btn,
 .back-admin-btn {
+  height: 32px !important;
   border-radius: 999px !important;
-  border-color: rgba(255, 255, 255, 0.18) !important;
-  color: #fff !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  color: rgba(255, 255, 255, 0.88) !important;
   background: rgba(255, 255, 255, 0.08) !important;
 }
 
 .main-content {
-  min-height: calc(100vh - 56px);
+  min-height: calc(100vh - 52px);
+  background: #fff;
 }
 
 .page-fade-enter-active,

@@ -104,6 +104,37 @@ class TestChat:
         assert response.json()["detail"] == "当前系统响应异常，请稍后重试。"
 
 
+class TestIntakeOpening:
+    def test_start_intake_session_generates_caller_opening(self, client, student_headers):
+        start_response = client.post("/training/start/1", headers=student_headers)
+        session_id = start_response.json()["id"]
+        detail = client.get(f"/training/session/{session_id}", headers=student_headers)
+        assert detail.status_code == 200
+        data = detail.json()
+        assert data["scene_kind"] == "intake"
+        assert data["dialogue_mode"] == "caller_first"
+        assert data["dispatch_brief"] == "110 有新报警来电，等待接听。"
+        assert data["first_impression"] in (None, "")
+        messages = data.get("messages") or []
+        assert messages
+        assert messages[0]["role"] == "assistant"
+        assert messages[0].get("speaker_name") == "张某"
+
+    def test_intake_premature_question_feedback(self, client, student_headers):
+        start_response = client.post("/training/start/1", headers=student_headers)
+        session_id = start_response.json()["id"]
+        response = client.post(
+            f"/training/chat/{session_id}",
+            json={"role": "user", "content": "你电话多少？几点发生的？"},
+            headers=student_headers,
+        )
+        assert response.status_code == 200
+        feedback = response.json().get("communication_feedback") or {}
+        tags = feedback.get("tags") or []
+        message = str(feedback.get("message") or "")
+        assert any("premature" in tag or "question_order" in tag for tag in tags) or "安全" in message or "什么事" in message
+
+
 class TestGetSession:
     def test_get_session(self, client, student_headers):
         start_response = client.post("/training/start/1", headers=student_headers)

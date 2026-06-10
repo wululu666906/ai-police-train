@@ -1,27 +1,24 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { showConfirmDialog, showToast } from 'vant'
+import RoleCompactForm from '../components/RoleCompactForm.vue'
 import {
-  behaviorArchetypeOptions,
+  buildRoleCompactSummary,
+  expandRoleCompactToPerson,
+  personToRoleCompact,
+} from '../utils/roleCompact'
+import {
   buildLegacyInfoBoundary,
   buildSceneBoundaryGroups,
-  buildBehaviorSummary,
-  clarityScoreFromLevel,
-  cooperationScoreFromLevel,
-  dedupeStringList,
-  emotionScoreFromLevel,
-  getSceneBoundaryFields,
   normalizeBehaviorTemplate,
-  policeAttitudeOptions,
-  riskScoreFromLevel,
-  sceneBehaviorModeOptions,
-  stateLevelOptions,
-  stringifyTextList,
-  parseTextList,
 } from '../utils/personaTemplate'
 import request from '../utils/request'
 
 const roles = ref<any[]>([])
+const roleSearchText = ref('')
+const roleTypeFilter = ref('')
+const roleScopeFilter = ref('')
+const roleCaseFilter = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const deleting = ref(false)
@@ -35,76 +32,44 @@ const form = reactive({
   case_id: null as number | null,
   scene_ids: [] as number[],
   primary_scene_id: null as number | null,
-  name: '',
-  role_type: '相关人员',
-  behavior_archetype: '求助配合型',
-  police_attitude: '主动求助',
-  interaction_style: '配合型',
-  personality: '',
-  speaking_style: '常规',
-  status: '正常',
-  scene_behavior_mode: '核查取证型',
-  current_goal: '',
-  core_concern: '',
-  calming_points_text: '',
-  relationship_pressure_text: '',
-  surface_stance: '',
-  pressure_response: '',
-  trigger_points_text: '',
-  emotion_level: '中',
-  cooperation_level: '中',
-  risk_level: '中',
-  clarity_level: '中',
-  init_emotion: 50,
-  init_trust: 30,
-  init_risk: 50,
-  init_expression_clarity: 52,
-  impairment_state: '',
-  iq_level: '中等',
-  eq_level: '中等',
-  lying_ability: '一般',
-  knows_facts_text: '',
-  does_not_know_text: '',
-  hidden_truths_text: '',
-  known_key_points_text: '',
-  withheld_key_points_text: '',
-  conflict_core_text: '',
-  acceptable_outcomes_text: '',
-  no_go_topics_text: '',
-  trigger_sources_text: '',
-  concerned_targets_text: '',
-  taboo_actions_text: '',
-  escalation_actions_text: '',
-  deescalation_conditions_text: '',
 })
 
-const roleIdentityOptions = ['相关人员', '证人', '嫌疑人', '被害人', '民警']
-const statusOptions = ['正常', '死亡', '重伤', '昏迷', '无法接受询问']
-const levelOptions = ['低', '中等', '高']
-const lieOptions = ['弱', '一般', '强']
-const previewList = (value: string) => parseTextList(value).slice(0, 4)
+const roleProfile = ref<Record<string, any>>({})
 
-const boundaryFieldTextMap = {
-  known_key_points: 'known_key_points_text',
-  withheld_key_points: 'withheld_key_points_text',
-  conflict_core: 'conflict_core_text',
-  acceptable_outcomes: 'acceptable_outcomes_text',
-  no_go_topics: 'no_go_topics_text',
-  trigger_sources: 'trigger_sources_text',
-  concerned_targets: 'concerned_targets_text',
-  taboo_actions: 'taboo_actions_text',
-  escalation_actions: 'escalation_actions_text',
-  deescalation_conditions: 'deescalation_conditions_text',
-} as const
+const previewList = (value: any) => (Array.isArray(value) ? value : []).slice(0, 4)
 
-const buildBoundaryListsFromForm = () =>
-  Object.fromEntries(
-    Object.entries(boundaryFieldTextMap).map(([fieldKey, textKey]) => [fieldKey, dedupeStringList(parseTextList(form[textKey as keyof typeof form] as string))])
-  )
+const roleTypeFilterOptions = computed(() =>
+  Array.from(new Set(roles.value.map((item) => String(item?.role_type || '').trim()).filter(Boolean))).sort()
+)
+
+const roleCaseFilterOptions = computed(() =>
+  Array.from(new Set(roles.value.map((item) => String(item?.case_title || '').trim()).filter(Boolean))).sort()
+)
+
+const filteredRoles = computed(() => {
+  const keyword = roleSearchText.value.trim()
+  return roles.value.filter((role) => {
+    if (roleTypeFilter.value && role.role_type !== roleTypeFilter.value) return false
+    if (roleScopeFilter.value === 'public' && !role.is_public) return false
+    if (roleScopeFilter.value === 'case' && role.is_public) return false
+    if (roleCaseFilter.value && String(role.case_title || '') !== roleCaseFilter.value) return false
+    if (!keyword) return true
+    const haystack = [
+      role.name,
+      role.role_type,
+      role.case_title,
+      role.behavior_archetype,
+      role.police_attitude,
+      role.status,
+      buildRoleOverview(role),
+    ].join(' ')
+    return haystack.includes(keyword)
+  })
+})
 
 const groupedRoles = computed(() => {
   const groups: Record<string, any[]> = {}
-  roles.value.forEach((role) => {
+  filteredRoles.value.forEach((role) => {
     const title = role.case_title || '公共角色模板'
     if (!groups[title]) groups[title] = []
     groups[title].push(role)
@@ -116,13 +81,6 @@ const currentCaseScenes = computed(() => {
   const currentCase = roleOptions.value.find((item) => item.id === form.case_id)
   return currentCase?.scenes || []
 })
-
-const currentBoundaryFields = computed(() =>
-  getSceneBoundaryFields(form.scene_behavior_mode).map((field) => ({
-    ...field,
-    modelKey: boundaryFieldTextMap[field.key],
-  }))
-)
 
 const currentPrimaryScene = computed(() => {
   const preferredId = form.primary_scene_id || form.scene_ids[0]
@@ -145,47 +103,29 @@ watch(
   { flush: 'sync' }
 )
 
-watch(
-  () => [form.scope, form.primary_scene_id, ...form.scene_ids],
-  () => {
-    if (form.scope !== 'case') return
-    const nextMode = currentPrimaryScene.value?.behavior_mode
-    if (nextMode) {
-      form.scene_behavior_mode = nextMode
-    }
-  },
-  { flush: 'sync' }
-)
+const roleSceneBehaviorMode = computed(() => {
+  if (form.scope === 'case' && form.primary_scene_id) {
+    const scene = currentCaseScenes.value.find((item: any) => item.id === form.primary_scene_id)
+    if (scene?.behavior_mode) return scene.behavior_mode
+  }
+  if (form.scope === 'case' && currentPrimaryScene.value?.behavior_mode) {
+    return currentPrimaryScene.value.behavior_mode
+  }
+  return String(roleProfile.value?.scene_behavior_mode || '核查取证型')
+})
 
 const roleDraftProfile = computed(() => {
-  const normalized = normalizeBehaviorTemplate({
-    ...form,
-    calming_points: parseTextList(form.calming_points_text),
-    relationship_pressure: parseTextList(form.relationship_pressure_text),
-    trigger_points: parseTextList(form.trigger_points_text),
-    scene_behavior_mode: form.scene_behavior_mode,
-    risk_level: form.risk_level,
-    clarity_level: form.clarity_level,
-    impairment_state: form.impairment_state,
-    ...buildBoundaryListsFromForm(),
-  })
-  const relationshipPressure = previewList(form.relationship_pressure_text)
+  const normalized = expandRoleCompactToPerson(roleProfile.value, roleSceneBehaviorMode.value)
+  const relationshipPressure = previewList(normalized.relationship_pressure)
   const triggerPoints = normalized.trigger_points.slice(0, 4)
   const calmingPoints = normalized.calming_points.slice(0, 4)
-  const legacyBoundary = buildLegacyInfoBoundary({
-    ...normalized,
-    does_not_know: dedupeStringList(parseTextList(form.does_not_know_text)),
-  })
+  const legacyBoundary = buildLegacyInfoBoundary(normalized)
   const hiddenTruths = legacyBoundary.hidden_truths.slice(0, 4)
   const knownFacts = legacyBoundary.knows_facts.slice(0, 4)
-  const boundaryGroups = buildSceneBoundaryGroups(normalized).map((field) => {
-    const textKey = boundaryFieldTextMap[field.key]
-    const manualItems = textKey ? previewList(form[textKey]) : []
-    return {
-      ...field,
-      items: manualItems.length ? manualItems : field.items.slice(0, 4),
-    }
-  })
+  const boundaryGroups = buildSceneBoundaryGroups(normalized).map((field) => ({
+    ...field,
+    items: field.items.slice(0, 4),
+  }))
 
   const contradictions: string[] = []
   if (normalized.current_goal.trim() && normalized.core_concern.trim()) {
@@ -198,16 +138,15 @@ const roleDraftProfile = computed(() => {
     contradictions.push('既受关系压力牵引，又有固定防御动作，容易先护人或先切责任。')
   }
 
-  const summaryParts = [
-    normalized.behavior_archetype ? `行为原型偏向${normalized.behavior_archetype}` : '',
+  const summaryParts = buildRoleCompactSummary(personToRoleCompact(normalized, roleSceneBehaviorMode.value))
+  const summaryText = [
+    summaryParts.join('；'),
     normalized.police_attitude ? `面对警方时更像“${normalized.police_attitude}”` : '',
-    normalized.current_goal.trim() ? `当前最想保住的是${normalized.current_goal.trim()}` : '',
-    normalized.core_concern.trim() ? `最担心的是${normalized.core_concern.trim()}` : '',
     relationshipPressure.length ? `现实和关系压力主要来自${relationshipPressure.join('、')}` : '',
     normalized.pressure_response.trim() ? `承压后常见反应是${normalized.pressure_response.trim()}` : '',
     triggerPoints.length ? `提到${triggerPoints.join('、')}时更容易情绪起伏或改口` : '',
     calmingPoints.length ? `更容易被${calmingPoints.join('、')}稳住` : '',
-  ].filter(Boolean)
+  ].filter(Boolean).join('；')
 
   return {
     normalized,
@@ -218,15 +157,16 @@ const roleDraftProfile = computed(() => {
     knownFacts,
     boundaryGroups,
     contradictions,
-    summaryText: summaryParts.join('；') || '当前还缺少足够信息，建议先补行为原型、诉求、顾虑和触发点。',
+    summaryText: summaryText || '当前还缺少足够信息，建议先补行为原型、诉求、顾虑和触发点。',
   }
 })
 
 const previewStateLabel = computed(() => {
-  if (form.risk_level === '高') return '需要优先稳控'
-  if (form.clarity_level === '低') return '表达混乱不稳'
-  if (form.cooperation_level === '高') return '开场较易配合'
-  if (form.emotion_level === '高') return '开场情绪高压'
+  const profile = roleDraftProfile.value.normalized
+  if (profile.risk_level === '高') return '需要优先稳控'
+  if (profile.clarity_level === '低') return '表达混乱不稳'
+  if (profile.cooperation_level === '高') return '开场较易配合'
+  if (profile.emotion_level === '高') return '开场情绪高压'
   return '初始谨慎试探'
 })
 
@@ -251,29 +191,20 @@ const previewBreakthroughs = computed(() => {
 })
 
 const buildRoleOverview = (role: any) => {
-  const compact = normalizeBehaviorTemplate(role)
-  const parts = [
-    compact.behavior_archetype ? `原型：${compact.behavior_archetype}` : '',
-    compact.current_goal ? `诉求：${compact.current_goal}` : '',
-    compact.core_concern ? `顾虑：${compact.core_concern}` : '',
-    compact.police_attitude ? `态度：${compact.police_attitude}` : '',
-  ].filter(Boolean)
-  return parts.join('；') || '还没有补充核心角色驱动。'
+  const mode = String(role?.scene_behavior_mode || '核查取证型')
+  const summary = buildRoleCompactSummary(personToRoleCompact(role, mode))
+  return summary.join('；') || '还没有补充核心角色驱动。'
 }
 
 const getRoleSummaryChips = (role: any) => {
-  const compact = normalizeBehaviorTemplate(role)
+  const mode = String(role?.scene_behavior_mode || '核查取证型')
+  const compact = personToRoleCompact(role, mode)
   return [
     compact.behavior_archetype ? `原型 ${compact.behavior_archetype}` : '',
     compact.current_goal ? `诉求 ${compact.current_goal}` : '',
     compact.core_concern ? `顾虑 ${compact.core_concern}` : '',
     compact.trigger_points[0] ? `触发点 ${compact.trigger_points[0]}` : '',
   ].filter(Boolean).slice(0, 3)
-}
-
-const generatePersonaSummary = () => {
-  form.personality = roleDraftProfile.value.summaryText
-  showToast({ type: 'success', message: '已根据结构化字段写入性格摘要' })
 }
 
 const getInteractionStyleClass = (type: string) => {
@@ -317,47 +248,7 @@ const resetForm = () => {
   form.case_id = null
   form.scene_ids = []
   form.primary_scene_id = null
-  form.name = ''
-  form.role_type = '相关人员'
-  form.behavior_archetype = '求助配合型'
-  form.police_attitude = '主动求助'
-  form.interaction_style = '配合型'
-  form.personality = ''
-  form.speaking_style = '常规'
-  form.status = '正常'
-  form.scene_behavior_mode = '核查取证型'
-  form.current_goal = ''
-  form.core_concern = ''
-  form.calming_points_text = ''
-  form.relationship_pressure_text = ''
-  form.surface_stance = ''
-  form.pressure_response = ''
-  form.trigger_points_text = ''
-  form.emotion_level = '中'
-  form.cooperation_level = '中'
-  form.risk_level = '中'
-  form.clarity_level = '中'
-  form.init_emotion = 50
-  form.init_trust = 30
-  form.init_risk = 50
-  form.init_expression_clarity = 52
-  form.impairment_state = ''
-  form.iq_level = '中等'
-  form.eq_level = '中等'
-  form.lying_ability = '一般'
-  form.knows_facts_text = ''
-  form.does_not_know_text = ''
-  form.hidden_truths_text = ''
-  form.known_key_points_text = ''
-  form.withheld_key_points_text = ''
-  form.conflict_core_text = ''
-  form.acceptable_outcomes_text = ''
-  form.no_go_topics_text = ''
-  form.trigger_sources_text = ''
-  form.concerned_targets_text = ''
-  form.taboo_actions_text = ''
-  form.escalation_actions_text = ''
-  form.deescalation_conditions_text = ''
+  roleProfile.value = expandRoleCompactToPerson({}, '核查取证型')
 }
 
 const closeDetail = () => {
@@ -370,131 +261,26 @@ const openCreate = () => {
 }
 
 const openDetail = (role: any) => {
-  const compact = normalizeBehaviorTemplate(role)
   syncingCaseSelection.value = true
   form.id = role.id
   form.scope = role.is_public ? 'public' : 'case'
   form.case_id = role.case_id ?? null
   form.scene_ids = Array.isArray(role.scene_ids) ? [...role.scene_ids] : []
   form.primary_scene_id = role.primary_scene_id ?? null
-  form.name = role.name || ''
-  form.role_type = role.role_type || '相关人员'
-  form.behavior_archetype = compact.behavior_archetype
-  form.police_attitude = compact.police_attitude
-  form.interaction_style = compact.interaction_style || role.interaction_style || '配合型'
-  form.personality = role.personality || ''
-  form.speaking_style = role.speaking_style || '常规'
-  form.status = role.status || '正常'
-  form.scene_behavior_mode = compact.scene_behavior_mode || currentPrimaryScene.value?.behavior_mode || '核查取证型'
-  form.current_goal = compact.current_goal
-  form.core_concern = compact.core_concern
-  form.calming_points_text = stringifyTextList(compact.calming_points)
-  form.relationship_pressure_text = stringifyTextList(compact.relationship_pressure)
-  form.surface_stance = compact.surface_stance
-  form.pressure_response = compact.pressure_response
-  form.trigger_points_text = stringifyTextList(compact.trigger_points)
-  form.emotion_level = compact.emotion_level
-  form.cooperation_level = compact.cooperation_level
-  form.risk_level = compact.risk_level || '中'
-  form.clarity_level = compact.clarity_level || '中'
-  form.init_emotion = Number(role.init_emotion ?? 50)
-  form.init_trust = Number(role.init_trust ?? 30)
-  form.init_risk = Number(compact.init_risk ?? 50)
-  form.init_expression_clarity = Number(compact.init_expression_clarity ?? 52)
-  form.impairment_state = String(compact.impairment_state || '').trim()
-  form.iq_level = role.iq_level || '中等'
-  form.eq_level = role.eq_level || '中等'
-  form.lying_ability = role.lying_ability || '一般'
-  form.knows_facts_text = stringifyTextList(role.knows_facts)
-  form.does_not_know_text = stringifyTextList(role.does_not_know)
-  form.hidden_truths_text = stringifyTextList(role.hidden_truths)
-  form.known_key_points_text = stringifyTextList(compact.known_key_points)
-  form.withheld_key_points_text = stringifyTextList(compact.withheld_key_points)
-  form.conflict_core_text = stringifyTextList(compact.conflict_core)
-  form.acceptable_outcomes_text = stringifyTextList(compact.acceptable_outcomes)
-  form.no_go_topics_text = stringifyTextList(compact.no_go_topics)
-  form.trigger_sources_text = stringifyTextList(compact.trigger_sources)
-  form.concerned_targets_text = stringifyTextList(compact.concerned_targets)
-  form.taboo_actions_text = stringifyTextList(compact.taboo_actions)
-  form.escalation_actions_text = stringifyTextList(compact.escalation_actions)
-  form.deescalation_conditions_text = stringifyTextList(compact.deescalation_conditions)
+  const mode =
+    currentPrimaryScene.value?.behavior_mode ||
+    normalizeBehaviorTemplate(role).scene_behavior_mode ||
+    '核查取证型'
+  roleProfile.value = { ...expandRoleCompactToPerson(role, mode) }
   syncingCaseSelection.value = false
   showDetail.value = true
 }
 
 const buildPayload = () => {
-  const boundaryLists = buildBoundaryListsFromForm()
-  const normalized = normalizeBehaviorTemplate({
-    ...form,
-    calming_points: dedupeStringList(parseTextList(form.calming_points_text)),
-    relationship_pressure: dedupeStringList(parseTextList(form.relationship_pressure_text)),
-    trigger_points: dedupeStringList(parseTextList(form.trigger_points_text)),
-    scene_behavior_mode: form.scene_behavior_mode,
-    risk_level: form.risk_level,
-    clarity_level: form.clarity_level,
-    impairment_state: form.impairment_state,
-    ...boundaryLists,
-    init_emotion: emotionScoreFromLevel(form.emotion_level, form.init_emotion),
-    init_trust: cooperationScoreFromLevel(form.cooperation_level, form.init_trust),
-    init_risk: riskScoreFromLevel(form.risk_level, form.init_risk),
-    init_expression_clarity: clarityScoreFromLevel(form.clarity_level, form.init_expression_clarity),
-  })
-  const legacyBoundary = buildLegacyInfoBoundary({
-    ...normalized,
-    does_not_know: dedupeStringList(parseTextList(form.does_not_know_text)),
-  })
-  const relationshipPressure = dedupeStringList(parseTextList(form.relationship_pressure_text))
-  const triggerPoints = normalized.trigger_points
-  const calmingPoints = normalized.calming_points
+  const normalized = expandRoleCompactToPerson(roleProfile.value, roleSceneBehaviorMode.value)
   return {
-    name: form.name.trim(),
-    role_type: form.role_type,
-    behavior_archetype: normalized.behavior_archetype,
-    police_attitude: normalized.police_attitude,
-    interaction_style: normalized.interaction_style,
-    personality: form.personality.trim(),
-    speaking_style: form.speaking_style.trim(),
-    status: form.status,
-    current_goal: normalized.current_goal.trim(),
-    core_concern: normalized.core_concern.trim(),
-    calming_points: calmingPoints,
-    relationship_pressure: relationshipPressure,
-    surface_stance: normalized.surface_stance.trim(),
-    pressure_response: normalized.pressure_response.trim(),
-    trigger_points: triggerPoints,
-    scene_behavior_mode: normalized.scene_behavior_mode,
-    emotion_level: normalized.emotion_level,
-    cooperation_level: normalized.cooperation_level,
-    risk_level: normalized.risk_level,
-    clarity_level: normalized.clarity_level,
-    init_emotion: normalized.init_emotion,
-    init_trust: normalized.init_trust,
-    init_risk: normalized.init_risk,
-    init_expression_clarity: normalized.init_expression_clarity,
-    impairment_state: normalized.impairment_state,
-    iq_level: form.iq_level,
-    eq_level: form.eq_level,
-    lying_ability: form.lying_ability,
-    knows_facts: legacyBoundary.knows_facts,
-    does_not_know: dedupeStringList(parseTextList(form.does_not_know_text)),
-    hidden_truths: legacyBoundary.hidden_truths,
-    known_key_points: normalized.known_key_points,
-    withheld_key_points: normalized.withheld_key_points,
-    conflict_core: normalized.conflict_core,
-    acceptable_outcomes: normalized.acceptable_outcomes,
-    no_go_topics: normalized.no_go_topics,
-    trigger_sources: normalized.trigger_sources,
-    concerned_targets: normalized.concerned_targets,
-    taboo_actions: normalized.taboo_actions,
-    escalation_actions: normalized.escalation_actions,
-    deescalation_conditions: normalized.deescalation_conditions,
-    weakness: normalized.core_concern.trim(),
-    current_need: normalized.current_goal.trim(),
-    public_mask: normalized.surface_stance.trim(),
-    authority_attitude: normalized.police_attitude.trim(),
-    stress_response: normalized.pressure_response.trim(),
-    private_drive: normalized.current_goal.trim(),
-    trigger_topics: triggerPoints,
+    ...normalized,
+    name: String(normalized.name || '').trim(),
     case_id: form.scope === 'case' ? form.case_id : null,
     scene_ids: form.scope === 'case' ? form.scene_ids : [],
     primary_scene_id: form.scope === 'case' ? form.primary_scene_id : null,
@@ -502,7 +288,7 @@ const buildPayload = () => {
 }
 
 const saveRole = async () => {
-  if (!form.name.trim()) {
+  if (!String(roleProfile.value?.name || '').trim()) {
     showToast('请输入角色名称')
     return
   }
@@ -568,15 +354,15 @@ onMounted(refreshPage)
 </script>
 
 <template>
-  <div class="space-y-8 pb-20">
-    <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+  <div class="roles-page">
+    <div class="admin-list-header">
       <div>
-        <h2 class="text-xl font-bold text-slate-900">AI 训练角色库</h2>
-        <p class="mt-2 max-w-3xl text-sm leading-7 text-slate-500">
+        <h2>AI训练角色仓库</h2>
+        <p>
           公共模板用于沉淀可复用人物；案件人物会同步进入案件并按你分配的场景出现在学员端。现在两类角色统一使用“行为原型 + 对警方态度 + 诉求 + 顾虑 + 触发点 + 安抚点”的轻量模板。
         </p>
       </div>
-      <van-button type="primary" round icon="plus" class="!bg-[#1D3557] !border-none px-6" @click="openCreate">
+      <van-button type="primary" icon="plus" class="!bg-[#003087] !border-none !rounded-[6px] px-5" @click="openCreate">
         新增角色
       </van-button>
     </div>
@@ -588,7 +374,7 @@ onMounted(refreshPage)
       </p>
     </div>
 
-    <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+    <div class="role-stat-grid">
       <div class="stat-card">
         <div class="stat-card__label">总角色数</div>
         <div class="stat-card__value">{{ roleCountSummary.total }}</div>
@@ -603,6 +389,38 @@ onMounted(refreshPage)
       </div>
     </div>
 
+    <section class="admin-filter-panel">
+      <div class="admin-filter-bar">
+        <label class="admin-filter-item">
+          <span>角色类型</span>
+          <select v-model="roleTypeFilter">
+            <option value="">全部</option>
+            <option v-for="item in roleTypeFilterOptions" :key="item" :value="item">{{ item }}</option>
+          </select>
+        </label>
+        <label class="admin-filter-item">
+          <span>角色范围</span>
+          <select v-model="roleScopeFilter">
+            <option value="">全部</option>
+            <option value="public">公共模板</option>
+            <option value="case">案件人物</option>
+          </select>
+        </label>
+        <label class="admin-filter-item">
+          <span>所属案件</span>
+          <select v-model="roleCaseFilter">
+            <option value="">全部案件</option>
+            <option v-for="item in roleCaseFilterOptions" :key="item" :value="item">{{ item }}</option>
+          </select>
+        </label>
+        <label class="admin-search-box">
+          <van-icon name="search" />
+          <input v-model.trim="roleSearchText" type="text" placeholder="搜索姓名、画像或案件" />
+        </label>
+      </div>
+      <div class="admin-filter-summary">当前筛选 {{ filteredRoles.length }} / {{ roles.length }} 个角色</div>
+    </section>
+
     <div v-if="loading" class="flex justify-center py-20">
       <van-loading type="spinner" color="#1D3557" />
     </div>
@@ -613,7 +431,7 @@ onMounted(refreshPage)
       <van-button plain type="primary" class="mt-5" @click="refreshPage">重新加载</van-button>
     </div>
 
-    <div v-else-if="roles.length === 0" class="rounded-3xl border border-dashed border-slate-200 bg-white py-20 text-center">
+    <div v-else-if="roles.length === 0" class="rounded-[8px] border border-dashed border-slate-200 bg-white py-20 text-center">
       <van-icon name="friends-o" size="60" class="mb-4 text-slate-200" />
       <p class="text-base font-bold text-slate-500">暂无角色数据</p>
       <van-button type="primary" round class="!bg-[#1D3557] !border-none mt-6" @click="openCreate">
@@ -621,17 +439,14 @@ onMounted(refreshPage)
       </van-button>
     </div>
 
-    <div v-else class="space-y-10">
-      <div v-for="(group, caseTitle) in groupedRoles" :key="caseTitle" class="space-y-5">
-        <div class="flex items-center gap-4">
-          <div class="h-px flex-1 bg-slate-100"></div>
-          <h3 class="rounded-full border border-slate-100 bg-slate-50 px-4 py-1 text-xs font-black uppercase tracking-[0.2em] text-slate-400">
-            {{ caseTitle }}
-          </h3>
-          <div class="h-px flex-1 bg-slate-100"></div>
+    <div v-else-if="filteredRoles.length" class="role-groups">
+      <div v-for="(group, caseTitle) in groupedRoles" :key="caseTitle" class="role-group">
+        <div class="role-group__head">
+          <h3>{{ caseTitle }}</h3>
+          <span>共 {{ group.length }} 个角色</span>
         </div>
 
-        <div class="grid grid-cols-1 gap-5 xl:grid-cols-3 md:grid-cols-2">
+        <div class="role-list">
           <div
             v-for="role in group"
             :key="role.id"
@@ -696,10 +511,15 @@ onMounted(refreshPage)
             <div class="role-card__footer">
               <span>{{ role.status || '正常' }}</span>
               <span v-if="!role.is_public">已分配 {{ role.scene_ids?.length || 0 }} 个场景</span>
+              <span v-else>公共模板</span>
             </div>
           </div>
         </div>
       </div>
+    </div>
+
+    <div v-else class="rounded-[8px] border border-dashed border-slate-200 bg-white py-20 text-center text-slate-400">
+      暂无符合筛选条件的角色
     </div>
 
     <van-popup v-model:show="showDetail" position="right" :style="{ width: 'min(640px, 100vw)', height: '100%' }" class="p-8">
@@ -780,159 +600,14 @@ onMounted(refreshPage)
           <section class="section-card">
             <div class="section-card__header">
               <div>
-                <div class="section-card__eyebrow">Basics</div>
-                <h4 class="section-card__title">基础信息</h4>
+                <div class="section-card__eyebrow">Profile</div>
+                <h4 class="section-card__title">轻量角色模板</h4>
               </div>
+              <p v-if="form.scope === 'case' && roleSceneBehaviorMode" class="section-card__tip">
+                场景行为模式：{{ roleSceneBehaviorMode }}（随主对话场景自动匹配）
+              </p>
             </div>
-            <div class="space-y-4">
-              <div>
-                <label class="field-label">角色名称</label>
-                <input v-model="form.name" type="text" class="form-input" placeholder="请输入角色名称" />
-              </div>
-              <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
-                <div>
-                  <label class="field-label">身份类别</label>
-                  <select v-model="form.role_type" class="form-input">
-                    <option v-for="item in roleIdentityOptions" :key="item" :value="item">{{ item }}</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="field-label">行为原型</label>
-                  <select v-model="form.behavior_archetype" class="form-input">
-                    <option v-for="item in behaviorArchetypeOptions" :key="item.value" :value="item.value">{{ item.value }}</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="field-label">状态</label>
-                  <select v-model="form.status" class="form-input">
-                    <option v-for="item in statusOptions" :key="item" :value="item">{{ item }}</option>
-                  </select>
-                </div>
-              </div>
-              <div>
-                <label class="field-label">对警方态度</label>
-                <select v-model="form.police_attitude" class="form-input">
-                  <option v-for="item in policeAttitudeOptions" :key="item.value" :value="item.value">{{ item.value }}</option>
-                </select>
-              </div>
-              <div>
-                <label class="field-label">场景行为模式</label>
-                <select v-model="form.scene_behavior_mode" class="form-input">
-                  <option v-for="item in sceneBehaviorModeOptions" :key="item.value" :value="item.value">{{ item.value }}</option>
-                </select>
-              </div>
-              <div>
-                <label class="field-label">开场原型提示</label>
-                <div class="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-600">
-                  {{ roleDraftProfile.normalized.behavior_archetype }}：{{ buildBehaviorSummary(roleDraftProfile.normalized).join('；') || '先补充关键模板字段' }}
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section class="section-card section-card--indigo">
-            <div class="section-card__header">
-              <div>
-                <div class="section-card__eyebrow">Persona</div>
-                <h4 class="section-card__title">简化角色模板</h4>
-              </div>
-            </div>
-            <div class="grid grid-cols-1 gap-4">
-              <div>
-                <label class="field-label">当前诉求</label>
-                <textarea v-model="form.current_goal" rows="3" class="form-textarea" placeholder="例如：先别把责任全落自己头上，不要影响孩子和赔偿"></textarea>
-              </div>
-              <div>
-                <label class="field-label">最担心什么后果</label>
-                <textarea v-model="form.core_concern" rows="3" class="form-textarea" placeholder="例如：最怕被认定先动手，最怕单位和家里都知道"></textarea>
-              </div>
-              <div>
-                <label class="field-label">敏感触发点</label>
-                <textarea v-model="form.trigger_points_text" rows="4" class="form-textarea" placeholder="每行一个，例如：孩子会不会被牵连&#10;赔偿金额&#10;谁先动手"></textarea>
-              </div>
-              <div>
-                <label class="field-label">安抚点</label>
-                <textarea v-model="form.calming_points_text" rows="4" class="form-textarea" placeholder="每行一个，例如：先把经过说完&#10;给明确处理步骤&#10;降低围观刺激"></textarea>
-              </div>
-            </div>
-          </section>
-
-          <section class="section-card section-card--amber">
-            <div class="section-card__header">
-              <div>
-                <div class="section-card__eyebrow">State</div>
-                <h4 class="section-card__title">开场状态与高级补充</h4>
-              </div>
-            </div>
-            <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <div>
-                <label class="field-label">情绪强度</label>
-                <select v-model="form.emotion_level" class="form-input">
-                  <option v-for="item in stateLevelOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
-                </select>
-              </div>
-              <div>
-                <label class="field-label">配合程度</label>
-                <select v-model="form.cooperation_level" class="form-input">
-                  <option v-for="item in stateLevelOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
-                </select>
-              </div>
-              <div>
-                <label class="field-label">失控风险</label>
-                <select v-model="form.risk_level" class="form-input">
-                  <option v-for="item in stateLevelOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
-                </select>
-              </div>
-              <div>
-                <label class="field-label">表达清晰度</label>
-                <select v-model="form.clarity_level" class="form-input">
-                  <option v-for="item in stateLevelOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
-                </select>
-              </div>
-            </div>
-            <details class="rounded-2xl border border-amber-200 bg-white/80 px-4 py-3">
-              <summary class="cursor-pointer text-sm font-bold text-amber-900">高级补充字段</summary>
-              <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-                <div>
-                  <label class="field-label">语言风格</label>
-                  <input v-model="form.speaking_style" type="text" class="form-input" placeholder="例如：嘴硬、碎嘴、急促、阴阳怪气、表面冷静" />
-                </div>
-                <div>
-                  <label class="field-label">性格底色</label>
-                  <textarea v-model="form.personality" rows="3" class="form-textarea" placeholder="不填则按行为原型自动生成"></textarea>
-                </div>
-                <div>
-                  <label class="field-label">关系 / 现实压力</label>
-                  <textarea v-model="form.relationship_pressure_text" rows="4" class="form-textarea" placeholder="每行一个，例如：护着儿子&#10;怕邻里继续报复&#10;担心赔钱后日子过不下去"></textarea>
-                </div>
-                <div>
-                  <label class="field-label">自定义承压反应</label>
-                  <textarea v-model="form.pressure_response" rows="4" class="form-textarea" placeholder="留空则按行为原型自动生成"></textarea>
-                </div>
-                <div v-if="form.scene_behavior_mode === '管控型'" class="md:col-span-2">
-                  <label class="field-label">酒精 / 药物 / 精神状态说明</label>
-                  <textarea v-model="form.impairment_state" rows="3" class="form-textarea" placeholder="例如：饮酒明显，说话重复，步态不稳；或疑似受药物影响，判断力下降。"></textarea>
-                </div>
-                <div>
-                  <label class="field-label">IQ 等级</label>
-                  <select v-model="form.iq_level" class="form-input">
-                    <option v-for="item in levelOptions" :key="item" :value="item">{{ item }}</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="field-label">EQ 等级</label>
-                  <select v-model="form.eq_level" class="form-input">
-                    <option v-for="item in levelOptions" :key="item" :value="item">{{ item }}</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="field-label">撒谎能力</label>
-                  <select v-model="form.lying_ability" class="form-input">
-                    <option v-for="item in lieOptions" :key="item" :value="item">{{ item }}</option>
-                  </select>
-                </div>
-              </div>
-            </details>
+            <RoleCompactForm v-model="roleProfile" :scene-behavior-mode="roleSceneBehaviorMode" />
           </section>
 
           <section class="section-card section-card--emerald">
@@ -941,20 +616,17 @@ onMounted(refreshPage)
                 <div class="section-card__eyebrow">Preview</div>
                 <h4 class="section-card__title">实时预览</h4>
               </div>
-              <van-button plain size="small" class="!border-[#1D3557] !text-[#1D3557]" @click="generatePersonaSummary">
-                一键写入摘要
-              </van-button>
             </div>
 
             <div class="preview-panel">
               <div class="preview-panel__header">
                 <div>
-                  <div class="preview-panel__name">{{ form.name || '未命名角色' }}</div>
+                  <div class="preview-panel__name">{{ roleProfile.name || '未命名角色' }}</div>
                   <div class="preview-panel__meta">
-                    <span>{{ form.role_type || '相关人员' }}</span>
+                    <span>{{ roleDraftProfile.normalized.role_type || '相关人员' }}</span>
                     <span>{{ roleDraftProfile.normalized.behavior_archetype || '求助配合型' }}</span>
                     <span>{{ roleDraftProfile.normalized.police_attitude || '试探观望' }}</span>
-                    <span>{{ roleDraftProfile.normalized.scene_behavior_mode || '核查取证型' }}</span>
+                    <span>{{ roleSceneBehaviorMode || '核查取证型' }}</span>
                     <span>{{ previewStateLabel }}</span>
                     <span>情绪 {{ roleDraftProfile.normalized.emotion_level }}</span>
                     <span>配合 {{ roleDraftProfile.normalized.cooperation_level }}</span>
@@ -1021,30 +693,6 @@ onMounted(refreshPage)
               </div>
             </div>
           </section>
-
-          <section class="section-card">
-            <div class="section-card__header">
-              <div>
-                <div class="section-card__eyebrow">Facts</div>
-                <h4 class="section-card__title">信息边界</h4>
-              </div>
-            </div>
-            <div class="space-y-4">
-              <div v-for="field in currentBoundaryFields" :key="field.key">
-                <label class="field-label">{{ field.label }}</label>
-                <textarea
-                  v-model="form[field.modelKey]"
-                  rows="4"
-                  class="form-textarea"
-                  :placeholder="field.placeholder"
-                ></textarea>
-              </div>
-              <div>
-                <label class="field-label">当前确实不知道的点</label>
-                <textarea v-model="form.does_not_know_text" rows="4" class="form-textarea" placeholder="每行一条，例如：我不知道屋里后来到底是谁先拿了东西。这个字段作为辅助补充，不参与场景模式切换。"></textarea>
-              </div>
-            </div>
-          </section>
         </div>
 
         <div class="flex gap-3 border-t border-slate-100 pt-6">
@@ -1062,6 +710,13 @@ onMounted(refreshPage)
 </template>
 
 <style scoped>
+.roles-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 32px;
+}
+
 .line-clamp-3 {
   display: -webkit-box;
   -webkit-line-clamp: 3;
@@ -1071,88 +726,226 @@ onMounted(refreshPage)
 
 .hero-note {
   border: 1px solid #dbeafe;
-  border-radius: 28px;
-  background:
-    radial-gradient(circle at top right, rgba(191, 219, 254, 0.42), transparent 35%),
-    linear-gradient(135deg, #ffffff 0%, #eff6ff 52%, #f8fafc 100%);
-  padding: 18px 20px;
+  border-radius: 8px;
+  background: #f2f8ff;
+  padding: 12px 14px;
+}
+
+.admin-list-header,
+.admin-filter-panel {
+  border: 1px solid var(--police-border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.admin-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+}
+
+.admin-list-header h2 {
+  margin: 0;
+  color: var(--police-text-primary);
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.admin-list-header p {
+  max-width: 960px;
+  margin: 4px 0 0;
+  color: var(--police-text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.admin-filter-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+}
+
+.admin-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.admin-filter-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--police-text-secondary);
+  font-size: 13px;
+}
+
+.admin-filter-item select {
+  min-width: 132px;
+  height: 36px;
+  border: 1px solid var(--police-border);
+  border-radius: 6px;
+  background: #fff;
+  padding: 0 10px;
+  color: var(--police-text-primary);
+}
+
+.admin-search-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: min(320px, 100%);
+  height: 36px;
+  border: 1px solid var(--police-border);
+  border-radius: 6px;
+  background: #fff;
+  padding: 0 12px;
+  color: var(--police-text-muted);
+}
+
+.admin-search-box input {
+  min-width: 0;
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--police-text-primary);
+  font-size: 13px;
+  outline: none;
+}
+
+.admin-filter-summary {
+  color: var(--police-text-muted);
+  font-size: 13px;
 }
 
 .hero-note__label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 900;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
   color: #2563eb;
 }
 
 .hero-note__text {
   margin-top: 8px;
   max-width: 920px;
-  font-size: 14px;
-  line-height: 1.8;
+  font-size: 13px;
+  line-height: 1.7;
   color: #475569;
+}
+
+.role-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
 }
 
 .stat-card {
   border: 1px solid #e2e8f0;
-  border-radius: 24px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  padding: 18px;
+  border-radius: 8px;
+  background: #fff;
+  padding: 18px 20px;
 }
 
 .stat-card--sky {
-  background: linear-gradient(180deg, #f8fbff 0%, #eff6ff 100%);
+  background: #f8fbff;
   border-color: #dbeafe;
 }
 
 .stat-card--emerald {
-  background: linear-gradient(180deg, #f0fdf4 0%, #ecfdf5 100%);
+  background: #f0fdf4;
   border-color: #bbf7d0;
 }
 
 .stat-card__label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 900;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
   color: #94a3b8;
 }
 
 .stat-card__value {
   margin-top: 10px;
-  font-size: 30px;
+  font-size: 28px;
   line-height: 1;
   font-weight: 900;
   color: #0f172a;
 }
 
-.role-card {
+.role-groups {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 22px;
+}
+
+.role-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.role-group__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px;
+}
+
+.role-group__head h3 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.role-group__head span {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.role-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.role-card {
+  display: flex;
+  min-height: 184px;
+  flex-direction: column;
+  gap: 10px;
   cursor: pointer;
-  border: 1px solid #e2e8f0;
-  border-radius: 28px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  padding: 22px;
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.04);
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  border: 1px solid var(--police-border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px 16px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
 .role-card:hover {
-  transform: translateY(-2px);
-  border-color: #cbd5e1;
-  box-shadow: 0 22px 48px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+  border-color: #bfdbfe;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+  background: #fff;
 }
 
 .role-card__avatar {
   display: flex;
-  width: 48px;
-  height: 48px;
+  width: 42px;
+  height: 42px;
   align-items: center;
   justify-content: center;
-  border-radius: 18px;
+  flex-shrink: 0;
+  border-radius: 999px;
   border: 1px solid #e2e8f0;
   background: #f8fafc;
 }
@@ -1161,8 +954,8 @@ onMounted(refreshPage)
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 11px;
+  padding: 3px 8px;
+  font-size: 10px;
   font-weight: 800;
 }
 
@@ -1182,10 +975,11 @@ onMounted(refreshPage)
 }
 
 .role-card__summary {
-  border-radius: 20px;
-  border: 1px solid #e2e8f0;
-  background: rgba(255, 255, 255, 0.88);
-  padding: 14px;
+  min-height: 44px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
 }
 
 .role-card__eyebrow {
@@ -1197,16 +991,17 @@ onMounted(refreshPage)
 }
 
 .role-card__summary-text {
-  margin-top: 8px;
-  font-size: 13px;
-  line-height: 1.8;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.55;
   color: #334155;
 }
 
 .role-chip-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  min-height: 28px;
+  gap: 6px;
 }
 
 .role-chip {
@@ -1215,8 +1010,8 @@ onMounted(refreshPage)
   border-radius: 999px;
   background: #eff6ff;
   color: #1d4ed8;
-  padding: 6px 10px;
-  font-size: 11px;
+  padding: 4px 8px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -1229,9 +1024,10 @@ onMounted(refreshPage)
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  border-radius: 16px;
-  background: #f8fafc;
-  padding: 12px 14px;
+  margin-top: auto;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
   font-size: 12px;
   font-weight: 700;
   color: #64748b;
@@ -1534,6 +1330,11 @@ onMounted(refreshPage)
 }
 
 @media (max-width: 960px) {
+  .role-stat-grid,
+  .role-list {
+    grid-template-columns: 1fr;
+  }
+
   .section-card__header {
     flex-direction: column;
   }

@@ -31,6 +31,120 @@ def resolve_band(score: Any) -> str:
     return "very_high"
 
 
+def _band_interval(score: Any) -> tuple[str, float, str | None]:
+    """Return (current_band, position 0-1 within band, next_band for interpolation)."""
+    numeric = clamp_score(score, 50)
+    lower = 0
+    for name, upper in _tables()["BAND_THRESHOLDS"]:
+        if numeric <= upper:
+            span = max(1, upper - lower + 1)
+            position = (numeric - lower) / span
+            idx = _BAND_RANK.get(name, 2)
+            next_band = _BAND_ORDER[idx + 1] if idx + 1 < len(_BAND_ORDER) else None
+            return name, min(1.0, max(0.0, position)), next_band
+        lower = upper + 1
+    return "very_high", 1.0, None
+
+
+def _lerp_scalar(start: float, end: float, t: float) -> float:
+    return start + (end - start) * max(0.0, min(1.0, t))
+
+
+def _interp_axis_numeric(
+    score: int,
+    axis_table: dict[str, dict[str, Any]],
+    key: str,
+    *,
+    default: float,
+    as_int: bool = False,
+) -> float | int:
+    band, position, next_band = _band_interval(score)
+    start = float(axis_table.get(band, {}).get(key, default))
+    if not next_band:
+        return int(round(start)) if as_int else start
+    end = float(axis_table.get(next_band, {}).get(key, start))
+    value = _lerp_scalar(start, end, position)
+    return int(round(value)) if as_int else value
+
+
+def _interp_emotion_config(score: int, axis_emotion: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    band, position, next_band = _band_interval(score)
+    base = dict(axis_emotion.get(band, axis_emotion.get("mid", {})))
+    if next_band:
+        nxt = axis_emotion.get(next_band, {})
+        base["max_sentences"] = int(
+            round(_lerp_scalar(float(base.get("max_sentences", 3)), float(nxt.get("max_sentences", 3)), position))
+        )
+        base["interruption_allowed"] = bool(base.get("interruption_allowed")) or (
+            bool(nxt.get("interruption_allowed")) and position >= 0.55
+        )
+        if position >= 0.72:
+            for field in ("affect", "delivery", "sentence_style"):
+                if nxt.get(field):
+                    base[field] = nxt[field]
+        if position >= 0.8:
+            base["must_include"] = _dedupe(list(base.get("must_include") or []) + list(nxt.get("must_include") or []))
+        if position >= 0.65:
+            base["must_avoid"] = _dedupe(list(base.get("must_avoid") or []) + list(nxt.get("must_avoid") or []))
+    return base
+
+
+def contract_strictness(contract: dict[str, Any] | None) -> str:
+    """loose | moderate | strict — drives generation temperature and postcheck."""
+    if not contract:
+        return "loose"
+    disclosure = float(contract.get("disclosure_level") or 0.45)
+    escalation = float(contract.get("escalation_bias") or 0.35)
+    affect = str(contract.get("primary_affect") or "")
+    if disclosure <= 0.22 or escalation >= 0.72 or affect in {"angry", "fearful"}:
+        return "strict"
+    if disclosure <= 0.32 or escalation >= 0.5 or affect in {"agitated", "cold", "guarded"}:
+        return "moderate"
+    return "loose"
+
+
+def generation_temperature_for_contract(contract: dict[str, Any] | None) -> float:
+    level = contract_strictness(contract)
+    if level == "strict":
+        return 0.66
+    if level == "moderate":
+        return 0.74
+    return 0.82
+
+
+def max_chars_for_disclosure(disclosure_level: float) -> int:
+    """Hard cap on reply length derived from disclosure tendency."""
+    level = max(0.05, min(0.95, float(disclosure_level)))
+    return int(40 + level * 120)
+
+
+def max_new_facts_for_disclosure(disclosure_level: float) -> int:
+    level = max(0.05, min(0.95, float(disclosure_level)))
+    if level < 0.2:
+        return 0
+    if level < 0.4:
+        return 1
+    if level < 0.65:
+        return 2
+    return 3
+
+
+def cap_new_fact_for_contract(fact: Any, contract: dict[str, Any] | None) -> Any:
+    if not contract:
+        return fact
+    clean = str(fact or "").strip()
+    if not clean or clean.lower() in {"null", "none", "无", "没有"}:
+        return None
+    disclosure = float(contract.get("disclosure_level") or 0.45)
+    if max_new_facts_for_disclosure(disclosure) < 1:
+        return None
+    if disclosure < 0.35 and re.search(r"(先.{1,8}再|然后|最后|时间线)", clean):
+        return None
+    if len(clean) > 72:
+        return clean[:69].rstrip() + "…"
+    return clean
+
+
 def _band_at_least(band: str, minimum: str) -> bool:
     return _BAND_RANK.get(band, 2) >= _BAND_RANK.get(minimum, 2)
 
@@ -146,10 +260,29 @@ def build_state_contract(
     axis_coop = tables["AXIS_COOPERATION"]
     axis_risk = tables["AXIS_RISK"]
     axis_clarity = tables["AXIS_CLARITY"]
-    emotion_cfg = dict(axis_emotion.get(bands["emotion"], axis_emotion["mid"]))
+    emotion_cfg = _interp_emotion_config(emotion, axis_emotion)
     coop_cfg = dict(axis_coop.get(bands["cooperation"], axis_coop["mid"]))
     risk_cfg = dict(axis_risk.get(bands["risk"], axis_risk["mid"]))
     clarity_cfg = dict(axis_clarity.get(bands["clarity"], axis_clarity["mid"]))
+    disclosure_level = _interp_axis_numeric(
+        cooperation,
+        axis_coop,
+        "disclosure_level",
+        default=0.45,
+    )
+    escalation_bias = _interp_axis_numeric(
+        risk,
+        axis_risk,
+        "escalation_bias",
+        default=0.35,
+    )
+    self_correction_min = _interp_axis_numeric(
+        clarity,
+        axis_clarity,
+        "self_correction_min",
+        default=0,
+        as_int=True,
+    )
 
     contract: dict[str, Any] = {
         "scores": {"emotion": emotion, "cooperation": cooperation, "risk": risk, "clarity": clarity},
@@ -158,8 +291,9 @@ def build_state_contract(
         "delivery": emotion_cfg.get("delivery", "normal"),
         "sentence_style": emotion_cfg.get("sentence_style", "normal"),
         "max_sentences": int(emotion_cfg.get("max_sentences", 3)),
-        "disclosure_level": float(coop_cfg.get("disclosure_level", 0.45)),
-        "escalation_bias": float(risk_cfg.get("escalation_bias", 0.35)),
+        "disclosure_level": float(disclosure_level),
+        "escalation_bias": float(escalation_bias),
+        "max_chars": max_chars_for_disclosure(float(disclosure_level)),
         "tone_hint": emotion_cfg.get("tone_hint", ""),
         "cooperation_stance": coop_cfg.get("stance", ""),
         "risk_hint": risk_cfg.get("hint", ""),
@@ -167,7 +301,7 @@ def build_state_contract(
         "must_include": list(emotion_cfg.get("must_include") or []),
         "must_avoid": list(emotion_cfg.get("must_avoid") or []),
         "interruption_allowed": bool(emotion_cfg.get("interruption_allowed", False)),
-        "self_correction_min": int(clarity_cfg.get("self_correction_min", 0)),
+        "self_correction_min": int(self_correction_min),
     }
 
     if clarity_cfg.get("style") in {"broken", "fragmented"}:
@@ -204,6 +338,8 @@ def build_state_contract(
         contract["disclosure_level"] = max(0.05, contract["disclosure_level"] - 0.1)
 
     contract["disclosure_level"] = round(max(0.05, min(0.95, contract["disclosure_level"])), 2)
+    contract["max_chars"] = max_chars_for_disclosure(contract["disclosure_level"])
+    contract["strictness"] = contract_strictness(contract)
     return contract
 
 
@@ -224,15 +360,20 @@ def format_state_contract_block(contract: dict[str, Any]) -> str:
         return "- 暂无表现契约"
     scores = contract.get("scores") or {}
     bands = contract.get("bands") or {}
+    disclosure = float(contract.get("disclosure_level") or 0.45)
+    max_chars = int(contract.get("max_chars") or max_chars_for_disclosure(disclosure))
+    fact_cap = 0 if disclosure < 0.2 else (1 if disclosure < 0.4 else (2 if disclosure < 0.65 else 3))
     lines = [
         f"- 当前分值：情绪={scores.get('emotion')} / 配合={scores.get('cooperation')} / 风险={scores.get('risk')} / 清晰度={scores.get('clarity')}",
         f"- 分档：情绪={bands.get('emotion')} / 配合={bands.get('cooperation')} / 风险={bands.get('risk')} / 清晰度={bands.get('clarity')}",
         f"- 主情绪表现：{contract.get('primary_affect')}（delivery={contract.get('delivery')}）",
-        f"- 句式：{contract.get('sentence_style')}，本轮最多 {contract.get('max_sentences')} 句",
+        f"- 句式：{contract.get('sentence_style')}，本轮最多 {contract.get('max_sentences')} 句、总字数不超过 {max_chars} 字",
         f"- 披露倾向：{contract.get('disclosure_level')}（{contract.get('cooperation_stance')}）",
+        f"- 硬性披露：本轮 new_fact_revealed 最多 {fact_cap} 条；配合度低时禁止主动交代完整时间线或自证全部细节",
         f"- 失控风险倾向：{contract.get('escalation_bias')}（{contract.get('risk_hint')}）",
         f"- 表达清晰度：{contract.get('clarity_hint')}",
         f"- 语气指引：{contract.get('tone_hint')}",
+        "- 若与案情、人设其它描述冲突，以本契约为准，宁可少说、短说、情绪化，也不要写成冷静说明书",
     ]
     if contract.get("must_include"):
         lines.append(f"- 台词中宜体现：{'、'.join(contract['must_include'])}")

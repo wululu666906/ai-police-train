@@ -23,15 +23,20 @@ from .multi_role_service import (
     should_use_scene_conversation,
 )
 from .role_resolver import is_role_speakable, resolve_scene_role, resolve_scene_roles
-from .stage_config_service import find_stage_config, normalize_stages
+from .dialogue_sequence_service import build_intake_sequence_feedback, merge_sequence_feedback
+from .dialogue_sanitize_service import sanitize_spoken_line
+from .opening_turn_service import infer_session_scene_kind
+from .stage_config_service import find_stage_config, infer_scene_kind, normalize_stages
 from .prompts.training_voice_layers import TRAINING_VOICE_LAYER_PROMPT
 from .state_contract_postcheck import apply_contract_postcheck, postcheck_reply_turns, validate_response_against_contract
 from .state_influence_metrics import build_session_metrics, record_turn_metrics
 from .state_influence_engine import (
     blend_four_axis_state,
     build_state_contract,
+    cap_new_fact_for_contract,
     enrich_momentum_with_axis_deltas,
     format_state_contract_block,
+    generation_temperature_for_contract,
 )
 from .training_runtime_service import (
     build_closure_message,
@@ -83,6 +88,7 @@ SYSTEM_PROMPT_TEMPLATE = """
 - 当前配合：{cooperation}/100
 - 当前风险：{risk}/100
 - 当前表达清晰度：{clarity}/100
+（注：信任度是角色对警方的信任水平，配合度是表面愿意配合的程度——两者数值可能接近但概念不同，需分别判断。输出的 updated_trust 和 updated_cooperation 分别对应这两个维度。）
 
 当前场景行为模式：
 - 模式：{scene_behavior_mode}
@@ -128,14 +134,17 @@ SYSTEM_PROMPT_TEMPLATE = """
 
 输出要求：
 1. response 只写角色本轮主要回答。
-2. follow_up_response 只有在以下情况才允许出现，否则必须为 null：
+2. follow_up_response 是 response 的即时追加，表现为打断自己、改口或补充，不是新的一轮对话。只有在以下情况才允许出现，否则必须为 null：
    - 情绪过高出现打断或补半句
    - 被动作触发后产生即时反应
    - 被问到关键软肋后出现改口或补充
-3. inner_thought 写角色真实心理活动，不要重复 response。
+3. inner_thought 写角色真实心理活动，不要重复 response。可以反映角色当下的判断（"他是不是已经知道了？"）、应对策略（"先岔开这个话题"）或真实的情绪波动（"被说到痛处了"），一般15字以内短句即可。
 4. new_fact_revealed 只有在本轮确实新增关键事实时填写，否则填 null。
 5. updated_risk 和 updated_clarity 要结合本轮问法、动作触发和角色状态做小幅变化；没有明显变化时可沿用原值。
 6. is_stage_completed 只有在本阶段信息与动作确实已足够时才可为 true。
+7. updated_cooperation 对应配合度变化（表面配合意愿），与 updated_trust（信任感变化）在概念上不同，需结合本轮互动独立判断。没有明显变化时可沿用原值。
+
+注意：以下JSON模板中的数字值为示例，请根据角色实际状态和本轮互动动态调整，不要照搬。
 
 严格输出 JSON：
 {{
@@ -144,6 +153,7 @@ SYSTEM_PROMPT_TEMPLATE = """
   "inner_thought": "角色真实心理活动",
   "updated_emotion": 55,
   "updated_trust": 35,
+  "updated_cooperation": 35,
   "updated_risk": 48,
   "updated_clarity": 62,
   "new_fact_revealed": null,
@@ -393,7 +403,7 @@ def _build_role_archetype_block(role: Any, scene: Any, persona_profile: dict[str
         rules.append("面对强压和先入为主的判断时更容易直接对着干，但并非每轮都要硬顶。")
 
     if current_goal and core_concern:
-        rules.append(f"眼下最在意的是“{current_goal}”，一旦碰到“{core_concern}”相关后果，反应会更明显。")
+        rules.append("内心最在意的事会影响语气和是否愿意多说，但不要在台词里直接复述配置字段或说「我最怕/最担心的是……」。")
     elif current_goal:
         rules.append(f"眼下优先想保住或达成的是“{current_goal}”。")
 
@@ -407,8 +417,9 @@ def _build_role_archetype_block(role: Any, scene: Any, persona_profile: dict[str
 def _build_scene_mode_block(scene: Any, current_stage: str, current_stage_goal: str) -> str:
     scene_name = str(getattr(scene, "name", "") or "").strip()
     rules: list[str] = []
-    if "接警" in scene_name or "接警" in current_stage:
-        rules.append("接警阶段优先围绕时间、地点、人物、伤情和现场风险。")
+    if infer_scene_kind(scene_name, current_stage) == "intake" or "接警" in scene_name or "接警" in current_stage:
+        rules.append("这是110接警电话场景：若你已主动说过出了什么事，而接警员跳过事件性质直接问时间、地点或联系方式，可以口语化提醒对方先听你说清情况。")
+        rules.append("接警阶段优先弄清事件性质与是否仍需救助，再逐步补充地点、时间和身份。")
     if "现场" in scene_name or "现场" in current_stage:
         rules.append("现场阶段更贴近目击视角和即时反应，不要把表达变成书面总结。")
     if any(token in current_stage for token in ["调查", "问询", "矛盾", "压实", "审讯", "讯问"]):
@@ -447,15 +458,17 @@ def _build_stage_requirements(current_stage: str, current_stage_goal: str, scene
         "time": {"label": "时间", "keywords": ["什么时候", "几点", "时间", "何时", "先后", "时间线"]},
         "location": {"label": "地点", "keywords": ["哪里", "地点", "位置", "几号楼", "哪个房间", "现场在哪"]},
         "people": {"label": "人物", "keywords": ["谁在场", "还有谁", "哪些人", "对方是谁", "都有哪些人"]},
-        "process": {"label": "经过", "keywords": ["经过", "怎么回事", "发生了什么", "具体怎么发生", "谁先"]},
+        "process": {"label": "什么事/经过", "keywords": ["什么事", "怎么回事", "发生了什么", "什么情况", "经过", "具体怎么发生", "谁先"]},
         "risk": {"label": "风险/伤情", "keywords": ["受伤", "危险", "安全", "120", "刀", "还在现场", "风险"]},
         "evidence": {"label": "证据/现场", "keywords": ["监控", "证据", "录像", "聊天记录", "血迹", "现场", "物证"]},
         "contradiction": {"label": "矛盾点", "keywords": ["前后不一致", "对不上", "矛盾", "为什么不一样", "改口"]},
         "motive": {"label": "动机/利益", "keywords": ["为什么", "动机", "原因", "图什么", "利益", "冲突"]},
     }
 
-    if "接警" in scene_name or any(token in stage_text for token in ["接警", "信息初核"]):
-        keys = ["identity", "location", "time", "risk"]
+    if infer_scene_kind(scene_name, stage_text) == "intake" or "接警" in scene_name or any(
+        token in stage_text for token in ["接警", "信息初核"]
+    ):
+        keys = ["process", "risk", "location", "time", "identity"]
     elif any(token in scene_name for token in ["现场", "初查", "勘查"]) or any(token in stage_text for token in ["现场", "情况摸排", "关键要素确认"]):
         keys = ["identity", "people", "process", "risk"]
     elif any(token in scene_name for token in ["重点询问", "矛盾"]) or any(token in stage_text for token in ["矛盾", "压实", "关键压实"]):
@@ -1228,7 +1241,7 @@ def _run_training_turn(
 
         response = create_json_chat_completion(
             messages=messages,
-            temperature=0.82,
+            temperature=generation_temperature_for_contract(state_contract),
             model=get_chat_model(),
             max_tokens=2200,
         )
@@ -1245,8 +1258,10 @@ def _run_training_turn(
         "clarity": blended_state["clarity"],
     }
     runtime_state["state_snapshot"] = current_state_snapshot
+    state_contract = build_state_contract(blended_state, momentum)
+    runtime_state["state_contract"] = state_contract
 
-    ai_reply = str(result.get("response") or "……").strip() or "……"
+    ai_reply = sanitize_spoken_line(str(result.get("response") or "……").strip() or "……")
     if not planned_reply_turns:
         postcheck = apply_contract_postcheck(
             ai_reply,
@@ -1263,7 +1278,8 @@ def _run_training_turn(
             "validation": postcheck.get("validation"),
         }
     ai_thought = str(result.get("inner_thought") or "保持谨慎，继续观察警方问法。").strip()
-    new_fact = result.get("new_fact_revealed")
+    new_fact = cap_new_fact_for_contract(result.get("new_fact_revealed"), state_contract)
+    result["new_fact_revealed"] = new_fact
     if _is_meaningful_fact(new_fact):
         _append_unique(revealed_info, str(new_fact).strip())
 
@@ -1323,7 +1339,7 @@ def _run_training_turn(
             runtime_state.get("role_contracts") or {},
             fallback_contract=state_contract,
             user_text=prompt_text,
-            use_llm=False,
+            use_llm=True,
         )
         reply_turns = normalized_turns
         reply_sequence = [item["content"] for item in reply_turns]
@@ -1417,6 +1433,7 @@ def _run_training_turn(
         case_type=case_type,
         case_title=getattr(case, "title", "") or "",
         scene_name=getattr(scene, "name", "") or "",
+        scene_kind=infer_session_scene_kind(scene, ts),
         role_name=getattr(role, "name", "") or "",
         role_type=getattr(role, "role_type", "") or "",
         target_role_name=target_role_name or "",
@@ -1466,6 +1483,10 @@ def _run_training_turn(
         communication_feedback["level"] = "good"
         communication_feedback["message"] = "训练满足收尾条件，系统将自动结束并进入评估。"
         communication_feedback["all_messages"] = ["训练满足收尾条件，系统将自动结束并进入评估。"]
+
+    if infer_session_scene_kind(scene, ts) == "intake" and turn_role == "user":
+        sequence_feedback = build_intake_sequence_feedback(history, user_text, revealed_info)
+        communication_feedback = merge_sequence_feedback(communication_feedback, sequence_feedback)
 
     persisted_input = user_text.strip()
     if persisted_input:

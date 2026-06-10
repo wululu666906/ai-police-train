@@ -28,6 +28,22 @@ def test_validate_fearful_contract_requires_fear_markers():
     assert validate_response_against_contract(bad_text, contract)["ok"] is False
 
 
+def test_validate_low_disclosure_flags_timeline():
+    contract = {
+        "primary_affect": "guarded",
+        "disclosure_level": 0.22,
+        "max_sentences": 2,
+        "max_chars": 55,
+        "escalation_bias": 0.2,
+        "must_include": [],
+        "must_avoid": [],
+    }
+    text = "我先在门口站着，然后再进去，最后看见他们打起来。"
+    result = validate_response_against_contract(text, contract)
+    assert result["ok"] is False
+    assert "timeline_forbidden_at_low_disclosure" in result["issues"]
+
+
 def test_apply_contract_postcheck_appends_follow_up_without_llm():
     contract = {
         "primary_affect": "fearful",

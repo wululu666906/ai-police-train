@@ -86,3 +86,15 @@ def test_contract_block_contains_must_avoid_for_very_high_emotion():
     contract = build_state_contract({"emotion": 92, "cooperation": 30, "risk": 40, "clarity": 70}, {})
     assert contract["primary_affect"] == "angry"
     assert "完整时间线" in contract.get("must_avoid", [])
+
+
+def test_in_band_disclosure_interpolates_between_tiers():
+    low_coop = build_state_contract({"emotion": 50, "cooperation": 22, "risk": 50, "clarity": 50}, {})
+    high_coop = build_state_contract({"emotion": 50, "cooperation": 58, "risk": 50, "clarity": 50}, {})
+    assert low_coop["disclosure_level"] < high_coop["disclosure_level"]
+    assert low_coop["max_chars"] < high_coop["max_chars"]
+
+
+def test_strictness_rises_when_disclosure_low():
+    contract = build_state_contract({"emotion": 90, "cooperation": 15, "risk": 80, "clarity": 40}, {})
+    assert contract.get("strictness") == "strict"

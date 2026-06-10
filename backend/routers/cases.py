@@ -10,7 +10,7 @@ import database
 import models
 import schemas
 from routers.auth import require_admin_user
-from services.data_quality_service import build_data_quality_report
+from services.data_quality_service import build_data_quality_report, repair_person_alias_conflicts
 from services.case_schema_service import (
     canonicalize_person_payload,
     migrate_structured_data_payload,
@@ -18,9 +18,15 @@ from services.case_schema_service import (
 from services.document_extract_service import document_extract_service
 from services.role_resolver import is_role_speakable
 from services.scene_role_service import audit_scene_roles, normalize_scene_roles
+from services.scene_compact_service import build_scene_stages_from_compact, infer_training_focus
 from services.stage_config_service import infer_scene_behavior_mode, normalize_stages
 from services.case_completion_service import complete_case_information, list_field_catalog
 from services.workflow_service import workflow_service
+from services.assessment_point_policy import (
+    ASSESSMENT_POINTS_MAX_PER_SCENE,
+    finalize_assessment_points,
+    parse_points_for_scene_text,
+)
 from services.assessment_point_import_service import (
     apply_template_to_points,
     distribute_assessment_points_to_scenes,
@@ -34,6 +40,25 @@ from services.scene_bucket_service import BUCKET_LABELS, STANDARD_SCENE_NAMES
 router = APIRouter(prefix="/cases", tags=["Cases"], dependencies=[Depends(require_admin_user)])
 
 
+def _resolve_scene_stages(scene_data: dict, *, case_type: str = "", scene_name: str = "") -> list[dict]:
+    name = str(scene_data.get("name") or scene_data.get("scene_name") or scene_name or "").strip()
+    if scene_data.get("training_focus") or scene_data.get("assessment_points") is not None:
+        compact = {
+            "name": name,
+            "training_focus": scene_data.get("training_focus"),
+            "behavior_mode": scene_data.get("behavior_mode"),
+            "difficulty": scene_data.get("difficulty"),
+            "assessment_points": scene_data.get("assessment_points"),
+            "stages": scene_data.get("stages"),
+        }
+        return build_scene_stages_from_compact(compact, case_type=case_type, scene_name=name)
+
+    stages = scene_data.get("stages") or []
+    if isinstance(stages, str):
+        stages = _safe_json_loads(stages, [])
+    return normalize_stages(stages, case_type=case_type, scene_name=name)
+
+
 def _safe_json_loads(value, default):
     if isinstance(value, (dict, list)):
         return value
@@ -43,6 +68,24 @@ def _safe_json_loads(value, default):
         return json.loads(value)
     except Exception:
         return default
+
+
+def _materialize_scene_stages_for_response(scene: models.Scene, *, case_type: str = "") -> None:
+    """Upgrade legacy assessment content when serving cases to the admin UI."""
+    scene.stages = json.dumps(
+        normalize_stages(
+            _safe_json_loads(scene.stages, []),
+            case_type=case_type,
+            scene_name=str(scene.name or "").strip(),
+        ),
+        ensure_ascii=False,
+    )
+
+
+def _materialize_case_scenes_for_response(case: models.Case) -> None:
+    case_type = str(case.case_type or "").strip()
+    for scene in case.scenes or []:
+        _materialize_scene_stages_for_response(scene, case_type=case_type)
 
 
 def _ensure_list(value):
@@ -428,7 +471,10 @@ def _apply_role_scene_links(
 
 @router.get("/", response_model=List[schemas.Case])
 def read_cases(skip: int = 0, limit: int = 100, db: Session = Depends(database.get_db)):
-    return db.query(models.Case).offset(skip).limit(limit).all()
+    cases = db.query(models.Case).offset(skip).limit(limit).all()
+    for case in cases:
+        _materialize_case_scenes_for_response(case)
+    return cases
 
 
 @router.get("/all/roles")
@@ -509,6 +555,11 @@ def read_role_case_options(db: Session = Depends(database.get_db)):
                     "id": scene.id,
                     "name": scene.name,
                     "behavior_mode": infer_scene_behavior_mode(scene.name, case.case_type or "", scene.stages),
+                    "training_focus": infer_training_focus(
+                        scene.name or "",
+                        behavior_mode=infer_scene_behavior_mode(scene.name, case.case_type or "", scene.stages),
+                        stages=_safe_json_loads(scene.stages, []),
+                    ),
                 }
                 for scene in sorted(case.scenes or [], key=lambda item: item.id)
             ],
@@ -708,10 +759,27 @@ def parse_assessment_points_text(payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail="text is required")
     case_type = str(payload.get("case_type") or "").strip()
     scene_name = str(payload.get("scene_name") or "").strip()
-    points = parse_text_to_assessment_points(text)
-    if case_type or scene_name:
-        points = apply_template_to_points(points, case_type=case_type, scene_name=scene_name)
-    return {"points": points, "count": len(points), "message": f"已解析 {len(points)} 条考察点"}
+    scene_index = int(payload.get("scene_index") or 0)
+    scene_count = max(1, int(payload.get("scene_count") or 1))
+    if scene_name:
+        points, warnings = parse_points_for_scene_text(
+            text,
+            scene_name=scene_name,
+            scene_index=scene_index,
+            scene_count=scene_count,
+            case_type=case_type,
+        )
+    else:
+        raw = parse_text_to_assessment_points(text)
+        points, warnings = finalize_assessment_points(raw, case_type=case_type, scene_name=scene_name)
+    return {
+        "points": points,
+        "count": len(points),
+        "mode": "replace",
+        "max_per_scene": ASSESSMENT_POINTS_MAX_PER_SCENE,
+        "warnings": warnings,
+        "message": f"已解析 {len(points)} 条考察点",
+    }
 
 
 @router.post("/assessment-points/parse-file")
@@ -719,6 +787,8 @@ async def parse_assessment_points_file(
     file: UploadFile = File(...),
     case_type: str = Form(""),
     scene_name: str = Form(""),
+    scene_index: int = Form(0),
+    scene_count: int = Form(1),
 ):
     filename = file.filename or ""
     extension = os.path.splitext(filename)[1].lower()
@@ -742,15 +812,28 @@ async def parse_assessment_points_file(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    points = parse_text_to_assessment_points(extracted_text)
-    if case_type.strip() or scene_name.strip():
-        points = apply_template_to_points(points, case_type=case_type.strip(), scene_name=scene_name.strip())
+    clean_scene_name = scene_name.strip()
+    clean_case_type = case_type.strip()
+    if clean_scene_name:
+        points, warnings = parse_points_for_scene_text(
+            extracted_text,
+            scene_name=clean_scene_name,
+            scene_index=scene_index,
+            scene_count=max(1, scene_count),
+            case_type=clean_case_type,
+        )
+    else:
+        raw = parse_text_to_assessment_points(extracted_text)
+        points, warnings = finalize_assessment_points(raw, case_type=clean_case_type, scene_name=clean_scene_name)
     return {
         "points": points,
         "count": len(points),
         "extracted_chars": len(extracted_text),
         "extracted_text": extracted_text[:8000],
         "filename": filename,
+        "mode": "replace",
+        "max_per_scene": ASSESSMENT_POINTS_MAX_PER_SCENE,
+        "warnings": warnings,
         "message": f"已从「{filename}」解析 {len(points)} 条考察点",
     }
 
@@ -818,6 +901,58 @@ def generate_assessment_points_api(payload: dict = Body(...)):
         raise HTTPException(status_code=502, detail=f"考察点生成失败: {exc}") from exc
 
 
+@router.post("/{case_id}/ai-fill")
+def ai_fill_case_by_id(case_id: int, payload: dict = Body(default={}), db: Session = Depends(database.get_db)):
+    """按案件 ID 一键补齐：读取原文与结构化数据，返回补全建议（不自动保存）。"""
+    db_case = db.query(models.Case).filter(models.Case.id == case_id).first()
+    if not db_case:
+        raise HTTPException(status_code=404, detail="案件不存在")
+
+    source_text = db_case.original_content or db_case.background or ""
+    if not str(source_text).strip():
+        raise HTTPException(
+            status_code=400,
+            detail="该案件没有原始文本内容（original_content），无法进行 AI 补全。请先在案件编辑页填写原始案情文字。",
+        )
+
+    existing_case = _safe_json_loads(db_case.structured_data, {})
+    if not existing_case.get("case_name") and db_case.title:
+        existing_case["case_name"] = db_case.title
+    if not existing_case.get("case_type") and db_case.case_type:
+        existing_case["case_type"] = db_case.case_type
+    if not existing_case.get("case_background") and db_case.background:
+        existing_case["case_background"] = db_case.background
+
+    mode = str(payload.get("mode") or "fill_gaps")
+    if mode not in {"full", "fill_gaps", "targeted"}:
+        mode = "fill_gaps"
+
+    target_groups = payload.get("target_groups")
+    if isinstance(target_groups, str):
+        target_groups = [target_groups]
+    if not isinstance(target_groups, list):
+        target_groups = None
+
+    include_scenes = bool(payload.get("include_scenes", True))
+
+    try:
+        result = complete_case_information(
+            source_text=str(source_text),
+            source_mode="plain_case",
+            existing_case=existing_case,
+            mode=mode,
+            target_groups=target_groups,
+            include_scenes=include_scenes,
+        )
+        result["case_id"] = case_id
+        result["case_title"] = db_case.title
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI 补全失败: {exc}") from exc
+
+
 @router.post("/ai-complete")
 def ai_complete_case(payload: dict = Body(...)):
     source_text = payload.get("source_text") or payload.get("text") or ""
@@ -873,6 +1008,17 @@ def get_scene_role_audit(case_id: int | None = None, db: Session = Depends(datab
 @router.get("/data-quality-report")
 def get_data_quality_report(db: Session = Depends(database.get_db)):
     return build_data_quality_report(db)
+
+
+@router.post("/data-quality-repair")
+def repair_data_quality(payload: dict = Body(default={}), db: Session = Depends(database.get_db)):
+    case_id = payload.get("case_id")
+    repair_result = repair_person_alias_conflicts(db, case_id=case_id)
+    report = build_data_quality_report(db)
+    return {
+        **repair_result,
+        "report": report,
+    }
 
 
 @router.post("/scene-role-repair")
@@ -965,8 +1111,8 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
 
         for scene_data in scenes_data:
             scene_name = scene_data.get("scene_name") or "未命名场景"
-            normalized_stages = normalize_stages(
-                scene_data.get("stages") or [],
+            normalized_stages = _resolve_scene_stages(
+                scene_data,
                 case_type=normalized_case_type or case_data.get("case_type") or "",
                 scene_name=scene_name,
             )
@@ -1091,16 +1237,13 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
                 db_scene.dispatch_brief = scene_data.get("dispatch_brief") or ""
             if "first_impression" in scene_data:
                 db_scene.first_impression = scene_data.get("first_impression") or ""
-            if "stages" in scene_data:
-                stages = scene_data.get("stages") or []
-                if isinstance(stages, str):
-                    stages = _safe_json_loads(stages, [])
-                if not isinstance(stages, list):
-                    raise HTTPException(status_code=400, detail=f"Scene {scene_id} stages must be a list")
-                db_scene.stages = json.dumps(
-                    normalize_stages(stages, case_type=db_case.case_type or "", scene_name=db_scene.name or ""),
-                    ensure_ascii=False,
+            if "stages" in scene_data or scene_data.get("training_focus") or scene_data.get("assessment_points") is not None:
+                stages = _resolve_scene_stages(
+                    scene_data,
+                    case_type=db_case.case_type or "",
+                    scene_name=db_scene.name or "",
                 )
+                db_scene.stages = json.dumps(stages, ensure_ascii=False)
 
             incoming_role_names = scene_data.get("role_names")
             primary_role_name = str(scene_data.get("primary_role_name") or "").strip()
@@ -1144,6 +1287,7 @@ def read_case(case_id: int, db: Session = Depends(database.get_db)):
     case = db.query(models.Case).filter(models.Case.id == case_id).first()
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found")
+    _materialize_case_scenes_for_response(case)
     return case
 
 

@@ -41,7 +41,14 @@ def _load_person_meta(case: Optional[models.Case]) -> Dict[str, dict]:
     except Exception:
         return {}
 
-    return {str(person.get("name", "")).strip(): person for person in persons if person.get("name")}
+    result: Dict[str, dict] = {}
+    for person in persons:
+        if not isinstance(person, dict):
+            continue
+        name = str(person.get("name", "")).strip()
+        if name:
+            result[name] = person
+    return result
 
 
 def _scene_text(scene: models.Scene) -> str:
