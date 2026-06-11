@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="space-y-5">
     <section class="admin-list-header">
       <div>
@@ -55,11 +55,11 @@
             <option value="ok">正常</option>
           </select>
         </label>
-        <label class="admin-search-box">
-          <van-icon name="search" />
-          <input v-model.trim="caseSearchText" type="text" placeholder="搜索案件标题、类型或背景" />
-        </label>
       </div>
+      <label class="admin-search-box">
+        <van-icon name="search" />
+        <input v-model.trim="caseSearchText" type="text" placeholder="搜索案件标题、类型或背景" />
+      </label>
       <div class="admin-filter-summary">当前筛选 {{ filteredCases.length }} / {{ cases.length }} 个案件</div>
     </section>
 
@@ -89,7 +89,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="caseItem in filteredCases" :key="caseItem.id" @click="editCase(caseItem)">
+          <tr v-for="caseItem in filteredCases" :key="caseItem.id" class="case-row-clickable" @click="viewCaseDetail(caseItem)">
             <td class="case-title-cell">
               <div class="case-row-title">{{ caseItem.title || '未命名案件' }}</div>
               <div class="case-row-id">ID {{ caseItem.id }}</div>
@@ -105,7 +105,10 @@
               <span v-if="getCaseIssueCount(caseItem.id)" class="case-issue">{{ getCaseIssueCount(caseItem.id) }} 项</span>
               <span v-else class="case-ok">正常</span>
             </td>
-            <td>
+            <td class="case-action-cell">
+              <van-button size="small" type="primary" class="!bg-[#1D3557] !border-none !rounded-[6px]" @click.stop="goEditCase(caseItem)">
+                编辑
+              </van-button>
               <van-button size="small" plain danger class="!rounded-[6px]" @click.stop="deleteCase(caseItem)">
                 删除
               </van-button>
@@ -121,7 +124,105 @@
       <p class="mt-2 text-sm text-slate-400">点击右上角“录入新案件”开始创建案件。</p>
     </section>
 
-    <van-popup v-model:show="showAdd" position="right" :style="{ width: 'min(96vw, 940px)', height: '100%' }" class="flex flex-col">
+    <!-- ── 案件预览弹窗（只读摘要） ───────────────────────────── -->
+    <van-popup
+      v-model:show="showPreview"
+      teleport="body"
+      :style="{ width: 'min(720px, 96vw)', maxHeight: '86vh', borderRadius: '16px', overflow: 'hidden' }"
+      class="flex flex-col"
+    >
+      <template v-if="previewCase">
+        <!-- 头部 -->
+        <div class="cpv-header">
+          <div class="cpv-header__left">
+            <div class="cpv-title">{{ previewCase.title || '未命名案件' }}</div>
+            <div class="cpv-meta">
+              <van-tag :type="getTagType(previewCase.case_type)" plain>{{ previewCase.case_type || '未分类' }}</van-tag>
+              <span class="cpv-meta-text">ID {{ previewCase.id }}</span>
+              <span class="cpv-meta-sep">·</span>
+              <span class="cpv-meta-text">{{ previewFormatDate(previewCase.created_at) }}</span>
+            </div>
+          </div>
+          <div class="cpv-header__actions">
+            <van-button
+              size="small"
+              type="primary"
+              class="!bg-[#1D3557] !border-none !rounded-[8px]"
+              @click="showPreview = false; goEditCase(previewCase)"
+            >
+              编辑案件
+            </van-button>
+            <van-icon name="cross" size="18" class="cpv-close" @click="showPreview = false" />
+          </div>
+        </div>
+
+        <!-- 内容区 -->
+        <div class="cpv-body">
+
+          <!-- 案件背景 -->
+          <div class="cpv-card">
+            <div class="cpv-card__label">案件背景</div>
+            <p class="cpv-text">{{ previewCase.background || '暂无背景描述' }}</p>
+          </div>
+
+          <!-- 统计行 -->
+          <div class="cpv-stats">
+            <div class="cpv-stat">
+              <span class="cpv-stat__num">{{ (previewCase.scenes || []).length }}</span>
+              <span class="cpv-stat__label">训练场景</span>
+            </div>
+            <div class="cpv-stat">
+              <span class="cpv-stat__num">{{ previewPersons.length }}</span>
+              <span class="cpv-stat__label">角色模板</span>
+            </div>
+            <div class="cpv-stat">
+              <span class="cpv-stat__num" :class="getCaseIssueCount(previewCase.id) ? 'text-amber-600' : 'text-emerald-600'">
+                {{ getCaseIssueCount(previewCase.id) ? `${getCaseIssueCount(previewCase.id)} 项` : '正常' }}
+              </span>
+              <span class="cpv-stat__label">校验状态</span>
+            </div>
+          </div>
+
+          <!-- 角色列表 -->
+          <div v-if="previewPersons.length" class="cpv-card">
+            <div class="cpv-card__label">角色模板</div>
+            <div class="cpv-person-list">
+              <div v-for="(person, idx) in previewPersons" :key="idx" class="cpv-person">
+                <div class="cpv-person__avatar">{{ String(person.name || '?').charAt(0) }}</div>
+                <div class="cpv-person__info">
+                  <span class="cpv-person__name">{{ person.name }}</span>
+                  <span class="cpv-person__type">{{ person.role_type || person.role || '相关人员' }}</span>
+                  <span v-if="person.behavior_archetype" class="cpv-person__arch">{{ person.behavior_archetype }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 场景列表 -->
+          <div v-if="(previewCase.scenes || []).length" class="cpv-card">
+            <div class="cpv-card__label">训练场景</div>
+            <div class="cpv-scene-list">
+              <div v-for="(scene, idx) in previewCase.scenes" :key="scene.id" class="cpv-scene">
+                <span class="cpv-scene__idx">{{ idx + 1 }}</span>
+                <div class="cpv-scene__info">
+                  <div class="cpv-scene__name">{{ scene.name || '未命名场景' }}</div>
+                  <div v-if="scene.description" class="cpv-scene__desc">{{ scene.description }}</div>
+                </div>
+                <van-tag plain size="small">{{ scene.difficulty || '中等' }}</van-tag>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </template>
+    </van-popup>
+
+    <van-popup
+      v-model:show="showAdd"
+      teleport="body"
+      :style="{ width: 'min(1180px, 96vw)', height: '92vh', borderRadius: '20px', overflow: 'hidden' }"
+      class="case-add-global-popup flex flex-col"
+    >
       <div class="flex h-16 items-center justify-between border-b border-slate-100 bg-white px-6">
         <div>
           <h3 class="font-bold text-slate-800">录入新案件</h3>
@@ -507,7 +608,12 @@
       </div>
     </van-popup>
 
-    <van-popup v-model:show="showDetail" position="right" :style="{ width: '920px', height: '100%' }" class="flex flex-col">
+    <van-popup
+      v-model:show="showDetail"
+      teleport="body"
+      :style="{ width: 'min(1380px, 96vw)', height: '92vh', borderRadius: '20px', overflow: 'hidden' }"
+      class="case-detail-global-popup flex flex-col"
+    >
       <div class="flex h-16 items-center justify-between border-b border-slate-100 bg-white px-6">
         <div>
           <h3 class="font-bold text-slate-800">案件详情与二次编辑</h3>
@@ -521,8 +627,8 @@
         </div>
       </div>
 
-      <div class="cases-compact flex-1 overflow-y-auto bg-[#F8FAFC] p-4">
-        <div v-if="editableCase" class="mx-auto max-w-4xl space-y-3 pb-12">
+      <div class="cases-compact flex-1 overflow-y-auto bg-[#F8FAFC] p-5">
+        <div v-if="editableCase" class="mx-auto w-full max-w-[1280px] space-y-4 pb-12">
           <nav class="review-module-nav" aria-label="审核模块">
             <button
               v-for="module in reviewModules"
@@ -537,205 +643,319 @@
             </button>
           </nav>
 
-          <section v-show="activeReviewModule === 'basic'" class="workspace-panel workspace-panel--indigo">
-            <div class="workspace-panel__header">
-              <div>
-                <div class="workspace-panel__eyebrow">01 基础信息</div>
-                <h4 class="workspace-panel__title">案件标题、分类与背景</h4>
+          <section v-show="activeReviewModule === 'basic'" class="wp">
+            <div class="wp__header">
+              <div class="wp__header-left">
+                <span class="wp__step">01</span>
+                <div>
+                  <div class="wp__title">案件标题、分类与背景</div>
+                  <div class="wp__sub">审核并调整案件基本信息</div>
+                </div>
               </div>
               <van-button size="small" type="primary" class="!border-none !bg-[#1D3557]" :loading="supplementingAi" :disabled="!canRunAiSupplement" @click="runAiSupplement">
                 AI 补全
               </van-button>
             </div>
-            <div class="workspace-panel__body">
-          <section class="space-y-3 rounded-2xl border border-slate-100 bg-white p-4">
-            <div class="supplement-toolbar supplement-toolbar--inline">
-              <van-button size="small" plain type="primary" :loading="supplementingAi" :disabled="!canRunAiSupplement" @click="runAiSupplement">
-                AI 补全全部
-              </van-button>
-            </div>
-            <div class="flex items-center justify-between gap-4">
-              <div class="flex items-center gap-3">
-                <van-tag type="primary" round>{{ editableCase.case_type || '未分类' }}</van-tag>
+            <div class="wp__body">
+              <div v-if="showTypeNormalizationHint(editableCase)" class="wp-alert wp-alert--blue">
+                AI 原始识别为「{{ editableCase.ai_case_type_raw || '未识别' }}」，当前标准化类型为「{{ editableCase.case_type || '其他' }}」。
               </div>
-            </div>
-
-            <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <div>
-                <label class="form-label">案件标题</label>
-                <input v-model="editableCase.title" type="text" class="form-input" />
+              <div v-if="parseWarnings(editableCase).length || sceneGenerationWarning(editableCase)" class="wp-alert wp-alert--amber">
+                <div class="wp-alert__title">AI 补全复核提醒</div>
+                <div class="wp-alert__row">解析来源：{{ parseEngineLabel(editableCase) }}</div>
+                <div v-for="warning in parseWarnings(editableCase)" :key="warning" class="wp-alert__row">{{ warning }}</div>
+                <div v-if="sceneGenerationWarning(editableCase)" class="wp-alert__row">{{ sceneGenerationWarning(editableCase) }}</div>
               </div>
-              <div>
-                <label class="form-label">案件大类</label>
-                <select v-model="editableCase.case_type_group" class="form-input">
-                  <option value="">请选择案件大类</option>
-                  <option v-for="group in caseTypeGroups" :key="group.label" :value="group.label">{{ group.label }}</option>
-                </select>
+              <div class="wp-card">
+                <div class="wp-card__header">
+                  <span class="wp-card__title">案件信息</span>
+                  <van-tag type="primary" round class="!text-[11px]">{{ editableCase.case_type || '未分类' }}</van-tag>
+                </div>
+                <div class="wp-card__body">
+                  <div class="wp-grid wp-grid--3">
+                    <div class="wp-field">
+                      <label class="wp-label">案件标题 <span class="wp-required">*</span></label>
+                      <input v-model="editableCase.title" type="text" class="wp-input" />
+                    </div>
+                    <div class="wp-field">
+                      <label class="wp-label">案件大类</label>
+                      <select v-model="editableCase.case_type_group" class="wp-input">
+                        <option value="">请选择案件大类</option>
+                        <option v-for="group in caseTypeGroups" :key="group.label" :value="group.label">{{ group.label }}</option>
+                      </select>
+                    </div>
+                    <div class="wp-field">
+                      <label class="wp-label">案件类型</label>
+                      <select v-model="editableCase.case_type" class="wp-input">
+                        <option value="">请选择案件类型</option>
+                        <option v-for="type in getTypesByGroup(editableCase.case_type_group)" :key="type" :value="type">{{ type }}</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="wp-field wp-mt">
+                    <label class="wp-label">案件背景</label>
+                    <textarea v-model="editableCase.background" rows="3" class="wp-textarea"></textarea>
+                  </div>
+                </div>
               </div>
-              <div>
-                <label class="form-label">案件类型</label>
-                <select v-model="editableCase.case_type" class="form-input">
-                  <option value="">请选择案件类型</option>
-                  <option v-for="type in getTypesByGroup(editableCase.case_type_group)" :key="type" :value="type">{{ type }}</option>
-                </select>
+              <div class="wp-card">
+                <div class="wp-card__header">
+                  <span class="wp-card__title">案件原始文本</span>
+                  <span class="wp-card__meta">{{ String(editableCase.original_content || '').trim() ? `${String(editableCase.original_content || '').trim().length} 字` : '暂无内容' }}</span>
+                  <van-button size="mini" plain type="primary" @click="showOriginalExpanded = !showOriginalExpanded">
+                    {{ showOriginalExpanded ? '收起' : '展开全文' }}
+                  </van-button>
+                </div>
+                <div class="wp-card__body">
+                  <p v-if="!showOriginalExpanded" class="wp-hint">原文已保留；需要校对或补全失败时再展开全文。</p>
+                  <textarea v-else v-model="editableCase.original_content" rows="10" class="wp-textarea wp-textarea--mono" placeholder="导入文件提取出的案件原文会保留在这里，支持继续人工整理。"></textarea>
+                </div>
               </div>
-            </div>
-
-            <div v-if="showTypeNormalizationHint(editableCase)" class="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-700">
-              AI 原始识别为“{{ editableCase.ai_case_type_raw || '未识别' }}”，当前标准化类型为“{{ editableCase.case_type || '其他' }}”。
-            </div>
-
-            <div v-if="parseWarnings(editableCase).length || sceneGenerationWarning(editableCase)" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-              <div class="font-bold">AI 补全复核提醒</div>
-              <div class="mt-1">解析来源：{{ parseEngineLabel(editableCase) }}</div>
-              <div v-for="warning in parseWarnings(editableCase)" :key="warning" class="mt-1">{{ warning }}</div>
-              <div v-if="sceneGenerationWarning(editableCase)" class="mt-1">{{ sceneGenerationWarning(editableCase) }}</div>
-            </div>
-
-            <div>
-              <label class="form-label">案件背景</label>
-              <textarea v-model="editableCase.background" rows="2" class="form-textarea"></textarea>
-            </div>
-
-            <div class="source-panel">
-              <div class="source-panel__header">
-                <label class="block text-sm font-bold text-slate-700">案件原始文本</label>
-                <span class="source-panel__meta">
-                  {{ String(editableCase.original_content || '').trim() ? `${String(editableCase.original_content || '').trim().length} 字` : '暂无内容' }}
-                </span>
-                <van-button size="mini" plain type="primary" @click="showOriginalExpanded = !showOriginalExpanded">
-                  {{ showOriginalExpanded ? '收起' : '展开全文' }}
-                </van-button>
-              </div>
-              <p v-if="!showOriginalExpanded" class="text-xs leading-5 text-slate-500">原文已保留；需要校对或补全失败时再展开全文。</p>
-              <textarea
-                v-else
-                v-model="editableCase.original_content"
-                rows="10"
-                class="form-textarea source-panel__textarea"
-                placeholder="导入文件提取出的案件原文会保留在这里，支持继续人工整理。"
-              ></textarea>
-            </div>
-            </section>
             </div>
           </section>
-
-
-            <section v-show="activeReviewModule === 'roles'" class="workspace-panel workspace-panel--cyan">
-              <div class="workspace-panel__header">
+            <section v-show="activeReviewModule === 'roles'" class="wp">
+            <div class="wp__header">
+              <div class="wp__header-left">
+                <span class="wp__step">02</span>
                 <div>
-                  <div class="workspace-panel__eyebrow">02 角色审核</div>
-                  <h4 class="workspace-panel__title">角色信息复核</h4>
-                </div>
-                <div class="workspace-panel__badge">人工复核</div>
-              </div>
-              <div class="workspace-panel__body">
-              <section class="space-y-4 rounded-2xl border border-slate-100 bg-white p-4">
-              <div class="flex items-center justify-between gap-3">
-                <div>
-                  <div class="text-sm font-bold text-slate-700">角色模板</div>
-                </div>
-                <div class="flex items-center gap-2">
-                  <van-button
-                    v-if="editableCase.persons.length"
-                    size="small"
-                    class="persona-toolbar-button"
-                    :plain="!areAllEditablePersonsExpanded"
-                    type="primary"
-                    @click="toggleAllEditablePersons"
-                  >
-                    {{ areAllEditablePersonsExpanded ? '全部收起' : '全部展开' }}
-                  </van-button>
-                  <van-button size="small" plain type="primary" @click="addEditablePerson">新增角色</van-button>
+                  <div class="wp__title">角色信息审核与调整</div>
+                  <div class="wp__sub">逐一复核角色设定与行为动机</div>
                 </div>
               </div>
-              <div v-if="editableCase.persons?.length" class="persona-stack-list">
-                  <div
-                    v-for="(person, index) in editableCase.persons"
-                    :key="person._editor_id || `role-${index}`"
-                    class="persona-stack-card"
-                    :class="{ 'is-collapsed': person._collapsed, 'is-expanded': !person._collapsed }"
-                    :style="getEditablePersonCardStyle(Number(index), person)"
-                  >
-                    <div class="persona-stack-shell">
-                      <div class="persona-stack-layer persona-stack-layer--back"></div>
-                      <div class="persona-stack-layer persona-stack-layer--mid"></div>
-                      <div
-                        class="persona-stack-surface"
-                        :class="{ 'persona-stack-surface--clickable': person._collapsed }"
-                        @click="person._collapsed && openEditablePersonCard(person)"
-                      >
-                        <div class="persona-stack-header">
-                          <div class="flex min-w-0 items-center gap-3">
-                            <div class="text-base font-bold text-slate-800">{{ person.name || '未命名角色' }}</div>
-                            <van-tag plain type="primary">{{ person.role_type || person.role || '相关人员' }}</van-tag>
-                            <van-tag plain>{{ person.behavior_archetype || '求助配合型' }}</van-tag>
+              <span class="wp__badge">人工复核</span>
+            </div>
+            <div class="wp__body">
+
+              <!-- 角色审核工作台：左侧列表 + 右侧工作区 -->
+              <div class="role-audit-workspace">
+
+                <!-- 左侧角色列表 -->
+                <aside class="role-audit-sidebar">
+                  <div class="role-audit-sidebar__header">
+                    <span class="role-audit-sidebar__title">角色列表</span>
+                    <span class="role-audit-sidebar__count">{{ (editableCase.persons || []).length }} 个角色</span>
+                  </div>
+
+                  <div class="role-audit-sidebar__list">
+                    <button
+                      v-for="(person, index) in editableCase.persons || []"
+                      :key="person._editor_id || `sidebar-role-${index}`"
+                      type="button"
+                      class="role-sidebar-item"
+                      :class="{ 'is-active': activePersonEditorId === (person._editor_id || index) }"
+                      @click="selectPersonForAudit(person)"
+                    >
+                      <div class="role-sidebar-item__avatar">{{ String(person.name || '?').charAt(0) }}</div>
+                      <div class="role-sidebar-item__info">
+                        <div class="role-sidebar-item__name">{{ person.name || '未命名角色' }}</div>
+                        <div class="role-sidebar-item__meta">
+                          <span>{{ person.role_type || person.role || '相关人员' }}</span>
+                          <span v-if="person.role && person.role !== person.role_type" class="role-sidebar-item__sub">{{ person.role }}</span>
+                        </div>
+                      </div>
+                      <div class="role-sidebar-item__status">
+                        <span
+                          class="role-review-badge"
+                          :class="getReviewStatusClass(person._review_status)"
+                        >{{ getReviewStatusLabel(person._review_status) }}</span>
+                      </div>
+                    </button>
+                  </div>
+
+                  <div class="role-audit-sidebar__footer">
+                    <button type="button" class="role-sidebar-add-btn" @click="addEditablePersonAndSelect">
+                      <span>＋ 新增角色</span>
+                    </button>
+                  </div>
+
+                  <!-- 审核说明 -->
+                  <div class="role-audit-sidebar__note">
+                    <div class="role-audit-sidebar__note-title">审核说明</div>
+                    <p class="role-audit-sidebar__note-text">请逐一审核并调整案件中的角色信息，确保角色定位准确、行为动机设置符合训练目标。</p>
+                  </div>
+                </aside>
+
+                <!-- 右侧工作区 -->
+                <main class="role-audit-main">
+                  <!-- 未选中任何角色时的空状态 -->
+                  <div v-if="!activeEditablePerson" class="role-audit-main__empty">
+                    <div class="role-audit-main__empty-icon">👤</div>
+                    <div class="role-audit-main__empty-title">
+                      {{ (editableCase.persons || []).length ? '点击左侧角色开始审核' : '当前案件还没有角色模板' }}
+                    </div>
+                    <div class="role-audit-main__empty-desc">
+                      {{ (editableCase.persons || []).length ? '从左侧角色列表中选择一个角色，在此处查看和编辑角色详情。' : '可以点击左侧「新增角色」手动创建角色，再继续做场景分配和最终审核。' }}
+                    </div>
+                  </div>
+
+                  <!-- 选中角色后的工作台 -->
+                  <template v-else>
+                    <!-- 角色详情头部 -->
+                    <div class="role-audit-header">
+                      <div class="role-audit-header__avatar">{{ String(activeEditablePerson.name || '?').charAt(0) }}</div>
+                      <div class="role-audit-header__info">
+                        <div class="role-audit-header__name-row">
+                          <span class="role-audit-header__name">{{ activeEditablePerson.name || '未命名角色' }}</span>
+                          <van-tag plain type="primary" class="ml-2">{{ activeEditablePerson.role_type || activeEditablePerson.role || '相关人员' }}</van-tag>
+                          <van-tag v-if="activeEditablePerson.role && activeEditablePerson.role !== activeEditablePerson.role_type" plain>{{ activeEditablePerson.role }}</van-tag>
+                        </div>
+                        <div class="role-audit-header__meta-row">
+                          <span>角色 ID：R{{ String(activePersonEditorId).padStart(3, '0') }}</span>
+                          <span class="role-audit-header__sep">·</span>
+                          <span>创建时间：{{ editableCase.created_at ? formatDateTime(editableCase.created_at) : '暂无' }}</span>
+                          <span class="role-audit-header__sep">·</span>
+                          <span>行为原型：{{ activeEditablePerson.behavior_archetype || '求助配合型' }}</span>
+                        </div>
+                      </div>
+                      <div class="role-audit-header__actions">
+                        <div class="flex items-center gap-2">
+                          <!-- 审核状态切换 -->
+                          <select
+                            class="role-review-status-select"
+                            :value="activeEditablePerson._review_status || 'pending'"
+                            @change="setPersonReviewStatus(activeEditablePerson, ($event.target as HTMLSelectElement).value)"
+                          >
+                            <option value="pending">待审核</option>
+                            <option value="needs_update">待补充</option>
+                            <option value="approved">通过</option>
+                          </select>
+                          <span
+                            class="role-review-badge role-review-badge--lg"
+                            :class="getReviewStatusClass(activeEditablePerson._review_status)"
+                          >{{ getReviewStatusLabel(activeEditablePerson._review_status) }}</span>
+                        </div>
+                        <van-button size="small" type="danger" plain @click="removeEditablePersonById(activePersonEditorId)">删除角色</van-button>
+                      </div>
+                    </div>
+
+                    <!-- 子标签页 -->
+                    <div class="role-audit-tabs">
+                      <button
+                        v-for="tab in roleAuditTabs"
+                        :key="tab.id"
+                        type="button"
+                        class="role-audit-tab"
+                        :class="{ 'is-active': activeRoleAuditTab === tab.id }"
+                        @click="activeRoleAuditTab = tab.id"
+                      >{{ tab.label }}</button>
+                    </div>
+
+                    <!-- 标签页内容容器（固定高度 + 内部各 tab 绝对定位独立滚动） -->
+                    <div class="role-audit-tab-content">
+                      <!-- 基础信息 tab -->
+                      <div v-show="activeRoleAuditTab === 'basic'" class="role-audit-tab-body">
+                        <!-- 人物身份独立行（在案称谓，不同于 role_type） -->
+                        <div class="rcf-identity-row">
+                          <label class="rcf-identity-label">人物身份（在本案中的称谓）</label>
+                          <input v-model="activeEditablePerson.role" type="text" class="rcf-identity-input" placeholder="如报警人、家属、同事" />
+                        </div>
+                        <RoleCompactForm
+                          :model-value="activeEditablePerson"
+                          :scene-behavior-mode="resolvePersonSceneBehaviorMode(activeEditablePerson, editableCase)"
+                          @update:model-value="(next) => applyPersonCompactUpdate(editableCase, activeEditablePerson, next)"
+                        />
+                      </div>
+
+                      <!-- AI 审核建议 tab -->
+                      <div v-show="activeRoleAuditTab === 'ai_review'" class="role-audit-tab-body">
+                        <div class="role-ai-review-card">
+                          <div class="role-ai-review-card__header">
+                            <span class="role-ai-review-card__badge">AI</span>
+                            <span class="role-ai-review-card__title">AI 审核建议</span>
+                            <van-button size="small" plain class="ml-auto" @click="runPersonAiReview(activeEditablePerson)">重新分析</van-button>
                           </div>
-                          <div class="flex items-center gap-2">
-                            <span class="persona-stack-toggle" @click.stop="toggleEditablePersonCollapsed(person)">{{ person._collapsed ? '展开详情' : '收起详情' }}</span>
-                            <van-button size="small" type="danger" plain @click.stop="removeEditablePerson(Number(index))">删除角色</van-button>
+                          <div v-if="activeEditablePerson._ai_review_loading" class="role-ai-review-card__loading">
+                            <van-loading size="18px">正在分析中...</van-loading>
+                          </div>
+                          <div v-else-if="activeEditablePerson._ai_review_text" class="role-ai-review-card__body">
+                            {{ activeEditablePerson._ai_review_text }}
+                          </div>
+                          <div v-else class="role-ai-review-card__empty">
+                            当前角色画像{{ getPersonCompletenessHint(activeEditablePerson) }}，建议先补充基础信息后再运行 AI 分析。
                           </div>
                         </div>
-                        <div v-if="person._collapsed" class="persona-stack-summary">
-                          <span v-for="item in getCompactPersonaSummary(person)" :key="item">{{ item }}</span>
-                        </div>
-                        <div v-else class="persona-stack-expanded" @click.stop>
-                          <div class="mt-3">
-                            <label class="form-label form-label--muted">人物身份</label>
-                            <input v-model="person.role" type="text" class="form-input" placeholder="如报警人、家属、同事" />
+                      </div>
+
+                      <!-- 审核记录 tab -->
+                      <div v-show="activeRoleAuditTab === 'audit_log'" class="role-audit-tab-body">
+                        <div class="role-audit-log">
+                          <div class="role-audit-log__header">
+                            <span>审核记录</span>
                           </div>
-                          <RoleCompactForm
-                            :model-value="person"
-                            :scene-behavior-mode="resolvePersonSceneBehaviorMode(person, editableCase)"
-                            @update:model-value="(next) => applyPersonCompactUpdate(editableCase, person, next)"
-                          />
+                          <div v-if="!(activeEditablePerson._audit_logs || []).length" class="role-audit-log__empty">
+                            暂无审核记录，保存后系统会自动记录状态变更。
+                          </div>
+                          <table v-else class="role-audit-log__table">
+                            <thead>
+                              <tr>
+                                <th>状态</th>
+                                <th>审核人</th>
+                                <th>时间</th>
+                                <th>说明</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr v-for="(log, li) in activeEditablePerson._audit_logs" :key="li">
+                                <td>
+                                  <span class="role-review-badge" :class="getReviewStatusClass(log.status)">
+                                    {{ getReviewStatusLabel(log.status) }}
+                                  </span>
+                                </td>
+                                <td>{{ log.reviewer || '系统' }}</td>
+                                <td>{{ log.time || '' }}</td>
+                                <td>{{ log.note || '' }}</td>
+                              </tr>
+                            </tbody>
+                          </table>
                         </div>
                       </div>
                     </div>
-                  </div>
-                </div>
-              <div v-else class="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500">
-                当前案件还没有角色模板。可以手动新增角色，再继续做场景分配和最终审核。
+                  </template>
+                </main>
+
               </div>
-            </section>
+
             </div>
             </section>
 
-          <section v-show="activeReviewModule === 'scenes'" class="workspace-panel workspace-panel--emerald">
-            <div class="workspace-panel__header">
-              <div>
-                <div class="workspace-panel__eyebrow">03 场景编辑</div>
-                <h4 class="workspace-panel__title">训练场景与流程配置</h4>
+          <section v-show="activeReviewModule === 'scenes'" class="wp">
+            <div class="wp__header">
+              <div class="wp__header-left">
+                <span class="wp__step">03</span>
+                <div>
+                  <div class="wp__title">训练场景与流程配置</div>
+                  <div class="wp__sub">配置场景角色、文案与考察流程</div>
+                </div>
               </div>
-              <van-tag plain type="success">{{ (editableCase.scenes || []).length }} 个场景</van-tag>
+              <span class="wp__badge wp__badge--count">{{ (editableCase.scenes || []).length }} 个场景</span>
             </div>
-            <div class="workspace-panel__body">
-            <section class="scene-studio rounded-2xl border border-slate-100 bg-white p-4">
+            <div class="wp__body">
+            <section class="scene-studio">
             <div v-if="!(editableCase.scenes || []).length" class="scene-studio__empty py-8 text-center text-sm text-slate-500">暂无场景</div>
             <div v-else class="scene-studio__layout">
-              <aside class="scene-studio__nav">
+              <aside class="wp__nav">
                 <button
                   v-for="(scene, idx) in editableCase.scenes || []"
                   :key="'nav-' + scene.id"
                   type="button"
-                  class="scene-studio__nav-item"
+                  class="wp__nav-item"
                   :class="{ 'is-active': activeSceneIndex === idx }"
                   @click="setActiveSceneIndex(Number(idx))"
                 >
-                  <span class="scene-studio__nav-index">场景 {{ Number(idx) + 1 }}</span>
-                  <span class="scene-studio__nav-name">{{ scene.name || '未命名' }}</span>
-                  <span v-if="(scene.assessmentPointsModel || []).length" class="scene-studio__nav-meta">
+                  <span class="wp__nav-index">场景 {{ Number(idx) + 1 }}</span>
+                  <span class="wp__nav-name">{{ scene.name || '未命名' }}</span>
+                  <span v-if="(scene.assessmentPointsModel || []).length" class="wp__nav-meta">
                     {{ (scene.assessmentPointsModel || []).length }} 考察点
                   </span>
                 </button>
               </aside>
               <div class="scene-studio__main">
-                <div class="scene-studio__tabs">
+                <div class="wp__tabs">
                   <button
                     v-for="tab in sceneEditTabs"
                     :key="tab.id"
                     type="button"
-                    class="scene-studio__tab"
+                    class="wp__tab"
                     :class="{ 'is-active': activeSceneTab === tab.id }"
                     @click="onSceneTabClick(tab.id)"
                   >{{ tab.label }}</button>
@@ -992,6 +1212,8 @@ const route = useRoute()
 
 const showAdd = ref(false)
 const showDetail = ref(false)
+const showPreview = ref(false)
+const previewCase = ref<any>(null)
 const currentStep = ref(0)
 const importMode = ref<'plain_case' | 'transcript_file'>('plain_case')
 const cases = ref<any[]>([])
@@ -1012,6 +1234,130 @@ const activeReviewModule = ref<ReviewModule>('basic')
 const activeSceneIndex = ref(0)
 const activeSceneTab = ref<SceneEditTab>('overview')
 const showOriginalExpanded = ref(false)
+
+// ── 角色审核工作台 ────────────────────────────────────────────────
+type RoleAuditTab = 'basic' | 'ai_review' | 'audit_log'
+const activePersonEditorId = ref<number | null>(null)
+const activeRoleAuditTab = ref<RoleAuditTab>('basic')
+
+const roleAuditTabs: Array<{ id: RoleAuditTab; label: string }> = [
+  { id: 'basic', label: '基础信息' },
+  { id: 'ai_review', label: 'AI 审核建议' },
+  { id: 'audit_log', label: '审核记录' },
+]
+
+const activeEditablePerson = computed(() => {
+  if (activePersonEditorId.value == null) return null
+  const persons = editableCase.value?.persons || []
+  return persons.find((p: any) => (p._editor_id || null) === activePersonEditorId.value) || null
+})
+
+const selectPersonForAudit = (person: any) => {
+  activePersonEditorId.value = person._editor_id ?? null
+  activeRoleAuditTab.value = 'basic'
+}
+
+const addEditablePersonAndSelect = () => {
+  addEditablePerson()
+  const persons = editableCase.value?.persons || []
+  if (persons.length) {
+    const last = persons[persons.length - 1]
+    activePersonEditorId.value = last._editor_id ?? null
+    activeRoleAuditTab.value = 'basic'
+  }
+}
+
+const removeEditablePersonById = async (editorId: number | null) => {
+  if (editorId == null) return
+  const persons = editableCase.value?.persons || []
+  const index = persons.findIndex((p: any) => p._editor_id === editorId)
+  if (index < 0) return
+  await removeEditablePerson(index)
+  // 删除后自动选中相邻角色
+  const remaining = editableCase.value?.persons || []
+  if (remaining.length) {
+    const nextIndex = Math.min(index, remaining.length - 1)
+    activePersonEditorId.value = remaining[nextIndex]?._editor_id ?? null
+  } else {
+    activePersonEditorId.value = null
+  }
+}
+
+// 审核状态
+type ReviewStatus = 'pending' | 'needs_update' | 'approved'
+
+const REVIEW_STATUS_LABELS: Record<string, string> = {
+  pending: '待审核',
+  needs_update: '待补充',
+  approved: '通过',
+}
+
+const REVIEW_STATUS_CLASSES: Record<string, string> = {
+  pending: 'role-review-badge--pending',
+  needs_update: 'role-review-badge--needs-update',
+  approved: 'role-review-badge--approved',
+}
+
+const getReviewStatusLabel = (status: string | undefined) =>
+  REVIEW_STATUS_LABELS[status || ''] || REVIEW_STATUS_LABELS.pending
+
+const getReviewStatusClass = (status: string | undefined) =>
+  REVIEW_STATUS_CLASSES[status || ''] || REVIEW_STATUS_CLASSES.pending
+
+const setPersonReviewStatus = (person: any, status: string) => {
+  if (!person) return
+  person._review_status = status
+  // 追加审核记录
+  if (!Array.isArray(person._audit_logs)) person._audit_logs = []
+  person._audit_logs.push({
+    status,
+    reviewer: '管理员',
+    time: new Date().toLocaleString('zh-CN', { hour12: false }),
+    note: `手动标记为「${REVIEW_STATUS_LABELS[status] || status}」`,
+  })
+}
+
+// 角色完整度提示
+const getPersonCompletenessHint = (person: any) => {
+  if (!person) return '信息不完整'
+  const missing: string[] = []
+  if (!String(person.current_goal || '').trim()) missing.push('诉求')
+  if (!String(person.core_concern || '').trim()) missing.push('顾虑')
+  if (!(person.trigger_points?.length)) missing.push('触发点')
+  if (missing.length === 0) return '信息较完整'
+  return `缺少：${missing.join('、')}`
+}
+
+// AI 审核建议（前端临时实现，调用已有 AI 补全接口）
+const runPersonAiReview = async (person: any) => {
+  if (!person) return
+  person._ai_review_loading = true
+  person._ai_review_text = ''
+  try {
+    // 用已有接口生成角色摘要，这里先做前端简单分析
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    const hints: string[] = []
+    if (!String(person.current_goal || '').trim()) hints.push('「当前诉求」为空，建议补充该角色在事件中最想达到的目标。')
+    if (!String(person.core_concern || '').trim()) hints.push('「最怕后果」为空，建议补充该角色最担忧的风险或后果。')
+    if (!(person.trigger_points?.length)) hints.push('「触发点」为空，建议补充能让该角色情绪激动的关键话题。')
+    if (!(person.calming_points?.length)) hints.push('「安抚点」为空，建议补充能让该角色情绪平复的应对方式。')
+    if (!(person.boundary_primary?.length || person.known_key_points?.length)) hints.push('「可核实事实」为空，建议补充该角色愿意主动提供的信息。')
+    if (!hints.length) hints.push('当前角色画像较完整，各核心字段均已填写，可以进入场景配置环节。')
+    person._ai_review_text = hints.join('\n\n')
+  } finally {
+    person._ai_review_loading = false
+  }
+}
+
+// 时间格式化
+const formatDateTime = (dt: string | null | undefined) => {
+  if (!dt) return '暂无'
+  try {
+    return new Date(dt).toLocaleString('zh-CN', { hour12: false })
+  } catch {
+    return String(dt)
+  }
+}
 
 const reviewModules: Array<{ id: ReviewModule; label: string; step: string }> = [
   { id: 'basic', label: '基础信息', step: '01' },
@@ -1365,6 +1711,8 @@ const resetReviewWorkspace = () => {
   activeSceneIndex.value = 0
   activeSceneTab.value = 'overview'
   showOriginalExpanded.value = false
+  activePersonEditorId.value = null
+  activeRoleAuditTab.value = 'basic'
 }
 
 const auditLoading = ref(false)
@@ -1533,6 +1881,8 @@ const normalizePersonEditors = (persons: any, options: { collapsed?: boolean } =
       _original_name: String(person?.name || '').trim(),
       _editor_id: Number(person?._editor_id) || personEditorSeed++,
       _collapsed: typeof person?._collapsed === 'boolean' ? person._collapsed : Boolean(options.collapsed),
+      _review_status: String(person?._review_status || 'pending') as 'pending' | 'needs_update' | 'approved',
+      _audit_logs: Array.isArray(person?._audit_logs) ? person._audit_logs : [],
     }
   })
 }
@@ -1806,6 +2156,10 @@ const serializePersonsForSave = (persons: any[]) => {
     delete cloned._editor_id
     delete cloned._original_name
     delete cloned._collapsed
+    delete cloned._review_status
+    delete cloned._audit_logs
+    delete cloned._ai_review_text
+    delete cloned._ai_review_loading
     return cloned
   })
 }
@@ -2483,6 +2837,15 @@ const reparse = async () => {
   await startParsing()
 }
 
+const viewCaseDetail = (caseItem: any) => {
+  previewCase.value = caseItem
+  showPreview.value = true
+}
+
+const goEditCase = (caseItem: any) => {
+  router.push(`/admin/cases/${caseItem.id}/edit`)
+}
+
 const editCase = (caseItem: any) => {
   selectedCase.value = caseItem
   editableCase.value = normalizeEditableCase(caseItem)
@@ -2798,7 +3161,36 @@ const getTagType = (type: string) => {
   return 'primary'
 }
 
-onMounted(refreshCasesPage)
+onMounted(async () => {
+  await refreshCasesPage()
+  // 处理从 /admin/cases/:id/edit 跳转回来后自动打开编辑弹窗
+  const pendingId = sessionStorage.getItem('pendingEditCaseId')
+  if (pendingId) {
+    sessionStorage.removeItem('pendingEditCaseId')
+    const caseItem = cases.value.find((c: any) => String(c.id) === pendingId)
+    if (caseItem) editCase(caseItem)
+  }
+})
+
+// ── 案件预览弹窗辅助 ────────────────────────────────────────────────
+const previewStructuredData = computed(() => {
+  if (!previewCase.value?.structured_data) return {}
+  try {
+    return typeof previewCase.value.structured_data === 'string'
+      ? JSON.parse(previewCase.value.structured_data)
+      : previewCase.value.structured_data
+  } catch { return {} }
+})
+
+const previewPersons = computed(() => {
+  const p = previewStructuredData.value?.persons
+  return Array.isArray(p) ? p : []
+})
+
+const previewFormatDate = (dt: string | null | undefined) => {
+  if (!dt) return '—'
+  try { return new Date(dt).toLocaleDateString('zh-CN') } catch { return String(dt) }
+}
 </script>
 
 <style scoped>
@@ -2876,7 +3268,6 @@ onMounted(refreshCasesPage)
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  flex-wrap: wrap;
 }
 
 .admin-filter-bar {
@@ -2963,10 +3354,18 @@ onMounted(refreshCasesPage)
 
 .case-table tbody tr {
   cursor: pointer;
+  transition: background 0.12s;
 }
 
 .case-table tbody tr:hover td {
   background: #f8fafc;
+}
+
+.case-action-cell {
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .case-title-cell {
@@ -3634,7 +4033,7 @@ onMounted(refreshCasesPage)
   border-color: #e5e7eb;
 }
 
-.workspace-panel__header {
+.wp__header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -3642,7 +4041,7 @@ onMounted(refreshCasesPage)
   margin-bottom: 10px;
 }
 
-.workspace-panel__eyebrow {
+.wp__eyebrow {
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.16em;
@@ -4268,7 +4667,7 @@ onMounted(refreshCasesPage)
 
 @media (max-width: 768px) {
   .section-block__header,
-  .workspace-panel__header,
+  .wp__header,
   .scene-workbench__header,
   .scene-editor-card__section-head {
     flex-direction: column;
@@ -4514,7 +4913,7 @@ onMounted(refreshCasesPage)
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.92) inset, 0 0 0 1px rgba(216, 224, 234, 0.28);
 }
 
-.workspace-panel__header,
+.wp__header,
 .section-block__header {
   padding-bottom: 16px;
   border-bottom: 1px solid #edf2f7;
@@ -4547,7 +4946,7 @@ onMounted(refreshCasesPage)
 .cases-compact .preview-label,
 .cases-compact .mode-card__desc,
 .cases-compact .section-block__eyebrow,
-.cases-compact .workspace-panel__eyebrow,
+.cases-compact .wp__eyebrow,
 .cases-compact .review-module-nav__step,
 .cases-compact .scene-editor-card__section-title,
 .cases-compact p.mt-1.text-xs,
@@ -4573,4 +4972,1125 @@ onMounted(refreshCasesPage)
     align-items: stretch;
   }
 }
+
+/* ── 角色审核工作台 ─────────────────────────────────────── */
+.role-audit-workspace {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 0;
+  height: calc(92vh - 280px);
+  min-height: 480px;
+  max-height: 680px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #fff;
+}
+
+/* ── 左侧角色列表 ─────────────────────────────────────── */
+.role-audit-sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #f1f5f9;
+  background: #f8fafc;
+  overflow: hidden;
+  height: 100%;
+}
+
+.role-audit-sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 14px 10px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.role-audit-sidebar__title {
+  font-size: 12px;
+  font-weight: 800;
+  color: #475569;
+  letter-spacing: 0.04em;
+}
+
+.role-audit-sidebar__count {
+  font-size: 11px;
+  color: #94a3b8;
+  background: #e2e8f0;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.role-audit-sidebar__list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.role-audit-sidebar__footer {
+  padding: 8px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.role-sidebar-add-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1.5px dashed #cbd5e1;
+  border-radius: 8px;
+  background: transparent;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.role-sidebar-add-btn:hover {
+  border-color: #1d3557;
+  color: #1d3557;
+  background: #eff6ff;
+}
+
+.role-audit-sidebar__note {
+  padding: 10px 14px 12px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.role-audit-sidebar__note-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+
+.role-audit-sidebar__note-text {
+  font-size: 11px;
+  line-height: 1.6;
+  color: #b0bfd0;
+}
+
+/* ── 角色列表单项 ─────────────────────────────────────── */
+.role-sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1.5px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.14s;
+  width: 100%;
+}
+
+.role-sidebar-item:hover:not(.is-active) {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+}
+
+.role-sidebar-item.is-active {
+  background: #1d3557;
+  border-color: #1d3557;
+}
+
+.role-sidebar-item__avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  letter-spacing: 0;
+}
+
+.role-sidebar-item.is-active .role-sidebar-item__avatar {
+  background: rgba(255,255,255,0.18);
+}
+
+.role-sidebar-item__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.role-sidebar-item__name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1e293b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.role-sidebar-item.is-active .role-sidebar-item__name {
+  color: #fff;
+}
+
+.role-sidebar-item__meta {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.2;
+}
+
+.role-sidebar-item.is-active .role-sidebar-item__meta {
+  color: rgba(255,255,255,0.6);
+}
+
+.role-sidebar-item__status {
+  flex-shrink: 0;
+}
+
+/* ── 审核状态徽章 ──────────────────────────────────────── */
+.role-review-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.role-review-badge--pending {
+  background: #fef9c3;
+  color: #a16207;
+}
+
+.role-review-badge--needs-update {
+  background: #ffedd5;
+  color: #c2410c;
+}
+
+.role-review-badge--approved {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.role-review-badge--lg {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+/* ── 审核状态下拉 ──────────────────────────────────────── */
+.role-review-status-select {
+  padding: 4px 8px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  background: #fff;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.role-review-status-select:focus {
+  border-color: #1d3557;
+}
+
+/* ── 右侧工作区 ──────────────────────────────────────── */
+.role-audit-main {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: 100%;
+  background: #fff;
+}
+
+/* 空状态 */
+.role-audit-main__empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 60px 32px;
+  color: #94a3b8;
+}
+
+.role-audit-main__empty-icon {
+  font-size: 40px;
+  opacity: 0.3;
+}
+
+.role-audit-main__empty-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.role-audit-main__empty-desc {
+  font-size: 13px;
+  text-align: center;
+  max-width: 300px;
+  line-height: 1.7;
+  color: #94a3b8;
+}
+
+/* ── 角色详情头部 ─────────────────────────────────────── */
+.role-audit-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 18px 13px;
+  border-bottom: 1px solid #f1f5f9;
+  background: #fff;
+  flex-shrink: 0;
+}
+
+.role-audit-header__avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #1d3557 60%, #3b82f6);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.role-audit-header__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.role-audit-header__name-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.role-audit-header__name {
+  font-size: 18px;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.2;
+}
+
+.role-audit-header__meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.role-audit-header__sep {
+  color: #d1d5db;
+}
+
+.role-audit-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ── 子标签页 ────────────────────────────────────────── */
+.role-audit-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid #f1f5f9;
+  padding: 0 18px;
+  background: #fff;
+  flex-shrink: 0;
+}
+
+.role-audit-tab {
+  padding: 9px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #94a3b8;
+  background: transparent;
+  border: none;
+  border-bottom: 2.5px solid transparent;
+  cursor: pointer;
+  transition: all 0.14s;
+  margin-bottom: -1px;
+  letter-spacing: 0.01em;
+}
+
+.role-audit-tab:hover {
+  color: #334155;
+}
+
+.role-audit-tab.is-active {
+  color: #1d3557;
+  border-bottom-color: #1d3557;
+}
+
+/* ── 标签页内容容器 ───────────────────────────────────── */
+.role-audit-tab-content {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: #f8fafc;
+}
+
+.role-audit-tab-body {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+
+.role-audit-field-row {
+  margin-bottom: 12px;
+}
+
+/* ── AI 审核建议卡片 ──────────────────────────────────── */
+.role-ai-review-card {
+  border: 1px solid #bfdbfe;
+  border-radius: 12px;
+  background: #eff6ff;
+  overflow: hidden;
+}
+
+.role-ai-review-card__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border-bottom: 1px solid #bfdbfe;
+  background: rgba(219, 234, 254, 0.5);
+}
+
+.role-ai-review-card__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: #3b82f6;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.role-ai-review-card__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1e40af;
+}
+
+.role-ai-review-card__body {
+  padding: 14px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: #1e293b;
+  white-space: pre-line;
+}
+
+.role-ai-review-card__loading,
+.role-ai-review-card__empty {
+  padding: 28px 14px;
+  font-size: 13px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+/* ── 审核记录表格 ─────────────────────────────────────── */
+.role-audit-log {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.role-audit-log__header {
+  padding: 11px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+  background: #f8fafc;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.role-audit-log__empty {
+  padding: 36px 14px;
+  text-align: center;
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.role-audit-log__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.role-audit-log__table th {
+  padding: 9px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  background: #f8fafc;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.role-audit-log__table td {
+  padding: 9px 14px;
+  color: #334155;
+  border-bottom: 1px solid #f8fafc;
+  font-size: 12px;
+}
+
+.role-audit-log__table tr:last-child td {
+  border-bottom: none;
+}
+
+/* ── 人物身份行（tab-body 顶部独立输入框） ───────────── */
+.rcf-identity-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.rcf-identity-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+  line-height: 1;
+}
+
+.rcf-identity-input {
+  padding: 7px 10px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  font-size: 13px;
+  font-weight: 500;
+  color: #0f172a;
+  outline: none;
+  transition: border-color 0.15s;
+  font-family: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.rcf-identity-input:focus {
+  border-color: #1d3557;
+  background: #fff;
+}
+
+/* ══════════════════════════════════════════════════════
+   wp — 统一工作台面板系统
+   三个 tab（基础信息 / 角色审核 / 场景编辑）共用
+   ══════════════════════════════════════════════════════ */
+
+/* 面板容器 */
+.wp {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #fff;
+  overflow: hidden;
+}
+
+/* 面板顶栏 */
+.wp__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 16px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  background: #fff;
+}
+
+.wp__header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.wp__step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #1d3557;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.wp__title {
+  font-size: 14px;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.3;
+}
+
+.wp__sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.wp__badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  font-size: 11px;
+  font-weight: 700;
+  color: #475569;
+  white-space: nowrap;
+}
+
+.wp__badge--count {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+
+/* 面板内容区 */
+.wp__body {
+  background: #f8fafc;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 内容卡片 */
+.wp-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.wp-card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #f1f5f9;
+  background: #f8fafc;
+}
+
+.wp-card__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.wp-card__meta {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-left: auto;
+}
+
+.wp-card__body {
+  padding: 14px;
+}
+
+/* 警告条 */
+.wp-alert {
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.wp-alert--blue {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e40af;
+}
+
+.wp-alert--amber {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+
+.wp-alert__title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.wp-alert__row {
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+/* 表单 */
+.wp-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+}
+
+.wp-grid--3 {
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 700px) {
+  .wp-grid--3 {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.wp-mt {
+  margin-top: 4px;
+}
+
+.wp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.wp-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+  line-height: 1;
+}
+
+.wp-required {
+  color: #ef4444;
+}
+
+.wp-hint {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.6;
+}
+
+.wp-input,
+.wp-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  color: #0f172a;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  font-family: inherit;
+}
+
+.wp-input:focus,
+.wp-textarea:focus {
+  border-color: #1d3557;
+  box-shadow: 0 0 0 3px rgba(29, 53, 87, 0.08);
+}
+
+.wp-input::placeholder,
+.wp-textarea::placeholder {
+  color: #cbd5e1;
+  font-weight: 400;
+}
+
+.wp-textarea {
+  resize: vertical;
+  min-height: 80px;
+  line-height: 1.6;
+}
+
+.wp-textarea--mono {
+  font-family: 'KaiTi', 'STKaiti', 'FangSong', serif;
+  font-size: 13px;
+}
+
+/* 场景导航 */
+.scene-studio {
+  display: block;
+}
+
+.scene-studio__layout {
+  display: grid;
+  grid-template-columns: 168px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.wp__nav-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1.5px solid #e2e8f0;
+  background: #fff;
+  cursor: pointer;
+  transition: all 0.14s;
+}
+
+.wp__nav-item:hover:not(.is-active) {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.wp__nav-item.is-active {
+  border-color: #1d3557;
+  background: #1d3557;
+}
+
+.wp__nav-index {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.06em;
+}
+
+.wp__nav-item.is-active .wp__nav-index {
+  color: rgba(255,255,255,0.6);
+}
+
+.wp__nav-name {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.3;
+}
+
+.wp__nav-item.is-active .wp__nav-name {
+  color: #fff;
+}
+
+.wp__nav-meta {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  color: #64748b;
+}
+
+.wp__nav-item.is-active .wp__nav-meta {
+  color: rgba(255,255,255,0.5);
+}
+
+/* 场景 tabs */
+.wp__tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 14px;
+}
+
+.wp__tab {
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #94a3b8;
+  background: transparent;
+  border: none;
+  border-bottom: 2.5px solid transparent;
+  cursor: pointer;
+  transition: all 0.14s;
+  margin-bottom: -1px;
+}
+
+.wp__tab:hover {
+  color: #334155;
+}
+
+.wp__tab.is-active {
+  color: #1d3557;
+  border-bottom-color: #1d3557;
+}
+
+/* ── 响应式 ──────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .role-audit-workspace {
+    grid-template-columns: 1fr;
+    height: auto;
+    max-height: none;
+  }
+  .role-audit-sidebar {
+    border-right: none;
+    border-bottom: 1px solid #f1f5f9;
+    max-height: 240px;
+  }
+  .role-audit-header {
+    flex-wrap: wrap;
+  }
+  .role-audit-header__actions {
+    width: 100%;
+  }
+}
+/* ── 案件预览弹窗 cpv-* ──────────────────────────────── */
+.cpv-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid #f1f5f9;
+  background: #fff;
+}
+
+.cpv-header__left {
+  flex: 1;
+  min-width: 0;
+}
+
+.cpv-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.3;
+  margin-bottom: 8px;
+}
+
+.cpv-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cpv-meta-text {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.cpv-meta-sep {
+  color: #d1d5db;
+  font-size: 11px;
+}
+
+.cpv-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.cpv-close {
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 4px;
+  transition: color 0.14s;
+}
+
+.cpv-close:hover {
+  color: #334155;
+}
+
+.cpv-body {
+  overflow-y: auto;
+  padding: 16px 20px 24px;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 卡片 */
+.cpv-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.cpv-card__label {
+  font-size: 11px;
+  font-weight: 800;
+  color: #94a3b8;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.cpv-text {
+  font-size: 13px;
+  line-height: 1.8;
+  color: #334155;
+}
+
+/* 统计行 */
+.cpv-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.cpv-stat {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.cpv-stat__num {
+  font-size: 22px;
+  font-weight: 800;
+  color: #1d3557;
+  line-height: 1;
+}
+
+.cpv-stat__label {
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 600;
+}
+
+/* 角色列表 */
+.cpv-person-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cpv-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.cpv-person__avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #1d3557, #3b82f6);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.cpv-person__info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cpv-person__name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.cpv-person__type {
+  font-size: 11px;
+  color: #64748b;
+  background: #e2e8f0;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.cpv-person__arch {
+  font-size: 11px;
+  color: #3b82f6;
+  background: #eff6ff;
+  border-radius: 4px;
+  padding: 1px 6px;
+  border: 1px solid #bfdbfe;
+}
+
+/* 场景列表 */
+.cpv-scene-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cpv-scene {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.cpv-scene__idx {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: #1d3557;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.cpv-scene__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.cpv-scene__name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.cpv-scene__desc {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 </style>

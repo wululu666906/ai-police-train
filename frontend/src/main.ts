@@ -19,10 +19,14 @@ const routes = [
     children: [
       { path: 'dashboard', component: () => import('./views/Dashboard.vue') },
       { path: 'cases', component: () => import('./views/Cases.vue') },
+      { path: 'cases/:id', component: () => import('./views/CaseDetail.vue') },
+      { path: 'cases/:id/edit', component: () => import('./views/CaseEdit.vue') },
       { path: 'data-quality', component: () => import('./views/DataQuality.vue') },
       { path: 'state-influence', component: () => import('./views/StateInfluence.vue') },
       { path: 'knowledge', component: () => import('./views/Knowledge.vue') },
       { path: 'roles', component: () => import('./views/Roles.vue') },
+      { path: 'roles/new', component: () => import('./views/RoleEdit.vue') },
+      { path: 'roles/:id/edit', component: () => import('./views/RoleEdit.vue') },
       { path: 'students', component: () => import('./views/Students.vue') },
       { path: 'profile', component: () => import('./views/Profile.vue') }
     ]

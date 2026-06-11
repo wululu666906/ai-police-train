@@ -1,6 +1,7 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { showConfirmDialog, showToast } from 'vant'
+import { useRouter } from 'vue-router'
 import RoleCompactForm from '../components/RoleCompactForm.vue'
 import {
   buildRoleCompactSummary,
@@ -13,6 +14,8 @@ import {
   normalizeBehaviorTemplate,
 } from '../utils/personaTemplate'
 import request from '../utils/request'
+
+const router = useRouter()
 
 const roles = ref<any[]>([])
 const roleSearchText = ref('')
@@ -256,24 +259,11 @@ const closeDetail = () => {
 }
 
 const openCreate = () => {
-  resetForm()
-  showDetail.value = true
+  router.push('/admin/roles/new')
 }
 
 const openDetail = (role: any) => {
-  syncingCaseSelection.value = true
-  form.id = role.id
-  form.scope = role.is_public ? 'public' : 'case'
-  form.case_id = role.case_id ?? null
-  form.scene_ids = Array.isArray(role.scene_ids) ? [...role.scene_ids] : []
-  form.primary_scene_id = role.primary_scene_id ?? null
-  const mode =
-    currentPrimaryScene.value?.behavior_mode ||
-    normalizeBehaviorTemplate(role).scene_behavior_mode ||
-    '核查取证型'
-  roleProfile.value = { ...expandRoleCompactToPerson(role, mode) }
-  syncingCaseSelection.value = false
-  showDetail.value = true
+  router.push(`/admin/roles/${role.id}/edit`)
 }
 
 const buildPayload = () => {
@@ -413,11 +403,11 @@ onMounted(refreshPage)
             <option v-for="item in roleCaseFilterOptions" :key="item" :value="item">{{ item }}</option>
           </select>
         </label>
-        <label class="admin-search-box">
-          <van-icon name="search" />
-          <input v-model.trim="roleSearchText" type="text" placeholder="搜索姓名、画像或案件" />
-        </label>
       </div>
+      <label class="admin-search-box">
+        <van-icon name="search" />
+        <input v-model.trim="roleSearchText" type="text" placeholder="搜索姓名、画像或案件" />
+      </label>
       <div class="admin-filter-summary">当前筛选 {{ filteredRoles.length }} / {{ roles.length }} 个角色</div>
     </section>
 
@@ -522,190 +512,6 @@ onMounted(refreshPage)
       暂无符合筛选条件的角色
     </div>
 
-    <van-popup v-model:show="showDetail" position="right" :style="{ width: 'min(640px, 100vw)', height: '100%' }" class="p-8">
-      <div class="flex h-full flex-col">
-        <div class="mb-2 flex items-center justify-between">
-          <h3 class="text-xl font-black text-[#1D3557]">{{ form.id ? '编辑角色' : '新增角色' }}</h3>
-          <van-icon name="cross" class="cursor-pointer text-slate-300" @click="closeDetail" />
-        </div>
-
-        <div class="flex-1 space-y-6 overflow-y-auto pr-2">
-          <section class="section-card">
-            <div class="section-card__header">
-              <div>
-                <div class="section-card__eyebrow">Scope</div>
-                <h4 class="section-card__title">角色范围</h4>
-              </div>
-            </div>
-            <div class="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                class="scope-card"
-                :class="{ active: form.scope === 'public', disabled: Boolean(form.id) }"
-                :disabled="Boolean(form.id)"
-                @click="form.scope = 'public'"
-              >
-                <span class="scope-card__title">公共模板</span>
-              </button>
-              <button
-                type="button"
-                class="scope-card"
-                :class="{ active: form.scope === 'case', disabled: Boolean(form.id) }"
-                :disabled="Boolean(form.id)"
-                @click="form.scope = 'case'"
-              >
-                <span class="scope-card__title">案件人物</span>
-              </button>
-            </div>
-            <p v-if="form.id" class="section-card__tip">编辑已有角色时，范围保持不变；如需迁移范围，建议新建后删除旧角色。</p>
-          </section>
-
-          <section v-if="form.scope === 'case'" class="section-card section-card--sky">
-            <div class="section-card__header">
-              <div>
-                <div class="section-card__eyebrow">Scenes</div>
-                <h4 class="section-card__title">案件与场景绑定</h4>
-              </div>
-            </div>
-            <div class="space-y-4">
-              <div>
-                <label class="field-label">所属案件</label>
-                <select v-model="form.case_id" class="form-input">
-                  <option :value="null">请选择所属案件</option>
-                  <option v-for="item in roleOptions" :key="item.id" :value="item.id">{{ item.title }}</option>
-                </select>
-              </div>
-              <div v-if="currentCaseScenes.length">
-                <label class="field-label">出现场景</label>
-                <div class="scene-grid">
-                  <label v-for="scene in currentCaseScenes" :key="scene.id" class="scene-option">
-                    <input v-model="form.scene_ids" type="checkbox" :value="scene.id" />
-                    <span>{{ scene.name }}</span>
-                  </label>
-                </div>
-              </div>
-              <div v-else-if="form.case_id" class="empty-inline-note">该案件下还没有可分配场景，请先回案件页生成或维护场景。</div>
-              <div v-if="form.scene_ids.length">
-                <label class="field-label">主对话场景</label>
-                <select v-model="form.primary_scene_id" class="form-input">
-                  <option :value="null">不指定，由系统自动决策</option>
-                  <option v-for="scene in currentCaseScenes.filter((item: any) => form.scene_ids.includes(item.id))" :key="scene.id" :value="scene.id">
-                    {{ scene.name }}
-                  </option>
-                </select>
-              </div>
-            </div>
-          </section>
-
-          <section class="section-card">
-            <div class="section-card__header">
-              <div>
-                <div class="section-card__eyebrow">Profile</div>
-                <h4 class="section-card__title">轻量角色模板</h4>
-              </div>
-              <p v-if="form.scope === 'case' && roleSceneBehaviorMode" class="section-card__tip">
-                场景行为模式：{{ roleSceneBehaviorMode }}（随主对话场景自动匹配）
-              </p>
-            </div>
-            <RoleCompactForm v-model="roleProfile" :scene-behavior-mode="roleSceneBehaviorMode" />
-          </section>
-
-          <section class="section-card section-card--emerald">
-            <div class="flex items-center justify-between gap-3">
-              <div>
-                <div class="section-card__eyebrow">Preview</div>
-                <h4 class="section-card__title">实时预览</h4>
-              </div>
-            </div>
-
-            <div class="preview-panel">
-              <div class="preview-panel__header">
-                <div>
-                  <div class="preview-panel__name">{{ roleProfile.name || '未命名角色' }}</div>
-                  <div class="preview-panel__meta">
-                    <span>{{ roleDraftProfile.normalized.role_type || '相关人员' }}</span>
-                    <span>{{ roleDraftProfile.normalized.behavior_archetype || '求助配合型' }}</span>
-                    <span>{{ roleDraftProfile.normalized.police_attitude || '试探观望' }}</span>
-                    <span>{{ roleSceneBehaviorMode || '核查取证型' }}</span>
-                    <span>{{ previewStateLabel }}</span>
-                    <span>情绪 {{ roleDraftProfile.normalized.emotion_level }}</span>
-                    <span>配合 {{ roleDraftProfile.normalized.cooperation_level }}</span>
-                    <span>风险 {{ roleDraftProfile.normalized.risk_level }}</span>
-                    <span>清晰 {{ roleDraftProfile.normalized.clarity_level }}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div class="preview-block">
-                <div class="preview-block__label">AI 会把这个人理解为</div>
-                <p class="preview-block__text">{{ roleDraftProfile.summaryText }}</p>
-              </div>
-
-              <div class="preview-grid">
-                <div class="preview-card">
-                  <div class="preview-card__title">诉求与顾虑</div>
-                  <p class="preview-quote">当前诉求：{{ roleDraftProfile.normalized.current_goal || '暂未填写' }}</p>
-                  <p class="preview-quote preview-quote--muted">核心顾虑：{{ roleDraftProfile.normalized.core_concern || '暂未填写' }}</p>
-                  <p class="preview-quote preview-quote--muted">开场口径：{{ roleDraftProfile.normalized.surface_stance || '系统会按行为原型自动生成' }}</p>
-                </div>
-                <div class="preview-card">
-                  <div class="preview-card__title">承压与触发</div>
-                  <p class="preview-quote">{{ roleDraftProfile.normalized.pressure_response || '系统会按行为原型自动生成承压反应' }}</p>
-                  <div class="preview-tags mt-3">
-                    <span v-for="item in roleDraftProfile.triggerPoints" :key="item" class="preview-tag preview-tag--amber">{{ item }}</span>
-                    <span v-if="!roleDraftProfile.triggerPoints.length" class="preview-empty">还没填敏感触发点</span>
-                  </div>
-                </div>
-              </div>
-
-              <div class="preview-card">
-                <div class="preview-card__title">安抚与关系压力</div>
-                <div class="preview-tags">
-                  <span v-for="item in roleDraftProfile.calmingPoints" :key="item" class="preview-tag preview-tag--emerald">{{ item }}</span>
-                  <span v-for="item in roleDraftProfile.relationshipPressure" :key="item" class="preview-tag preview-tag--blue">{{ item }}</span>
-                  <span v-if="!roleDraftProfile.calmingPoints.length && !roleDraftProfile.relationshipPressure.length" class="preview-empty">还没填安抚点或关系压力</span>
-                </div>
-              </div>
-
-              <div class="preview-grid">
-                <div v-for="field in roleDraftProfile.boundaryGroups" :key="field.key" class="preview-card">
-                  <div class="preview-card__title">{{ field.label }}</div>
-                  <ul class="preview-list">
-                    <li v-for="item in field.items" :key="item">{{ item }}</li>
-                    <li v-if="!field.items.length">当前还没有补充这一组场景边界。</li>
-                  </ul>
-                </div>
-              </div>
-
-              <div class="preview-block">
-                <div class="preview-block__label">预计突破口</div>
-                <ul class="preview-list">
-                  <li v-for="item in previewBreakthroughs" :key="item">{{ item }}</li>
-                  <li v-if="!previewBreakthroughs.length">建议先补“最担心的后果”“安抚点”或“敏感触发点”。</li>
-                </ul>
-              </div>
-
-              <div v-if="roleDraftProfile.contradictions.length" class="preview-block">
-                <div class="preview-block__label">人物矛盾感</div>
-                <ul class="preview-list">
-                  <li v-for="item in roleDraftProfile.contradictions" :key="item">{{ item }}</li>
-                </ul>
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <div class="flex gap-3 border-t border-slate-100 pt-6">
-          <van-button plain block class="!border-slate-200 !text-slate-500 h-11" @click="closeDetail">取消</van-button>
-          <van-button v-if="form.id" plain block type="danger" class="h-11" :loading="deleting" @click="deleteRole">
-            删除
-          </van-button>
-          <van-button block type="primary" class="!bg-[#1D3557] !border-none h-11" :loading="saving" @click="saveRole">
-            保存
-          </van-button>
-        </div>
-      </div>
-    </van-popup>
   </div>
 </template>
 
@@ -766,7 +572,6 @@ onMounted(refreshPage)
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  flex-wrap: wrap;
   padding: 14px 16px;
 }
 

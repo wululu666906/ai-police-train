@@ -158,11 +158,11 @@ onMounted(fetchKnowledge)
               <option v-for="item in sourceFilterOptions" :key="item" :value="item">{{ item }}</option>
             </select>
           </label>
-          <label class="search-box">
-            <van-icon name="search" />
-            <input v-model.trim="knowledgeSearchText" type="text" placeholder="搜索标题、内容、标签或引用" />
-          </label>
         </div>
+        <label class="search-box">
+          <van-icon name="search" />
+          <input v-model.trim="knowledgeSearchText" type="text" placeholder="搜索标题、内容、标签或引用" />
+        </label>
         <div class="filter-summary">当前筛选 {{ filteredKnowledgeList.length }} / {{ knowledgeList.length }} 条</div>
       </div>
 
@@ -219,7 +219,12 @@ onMounted(fetchKnowledge)
       </div>
     </section>
 
-    <van-popup v-model:show="showUpload" position="right" :style="{ width: '460px', height: '100%' }">
+    <van-popup
+      v-model:show="showUpload"
+      teleport="body"
+      :style="{ width: 'min(560px, 92vw)', maxHeight: '88vh', borderRadius: '18px', overflow: 'hidden' }"
+      class="knowledge-upload-popup"
+    >
       <div class="drawer">
         <div class="drawer-head">
           <div>
@@ -338,7 +343,6 @@ onMounted(fetchKnowledge)
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  flex-wrap: wrap;
   margin-bottom: 16px;
   border: 1px solid var(--police-border);
   border-radius: var(--police-radius-lg);

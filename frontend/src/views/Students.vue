@@ -1,290 +1,275 @@
 <template>
   <div class="students-page space-y-5 pb-20">
+
+    <!-- 页头 -->
     <div class="admin-list-header">
       <div>
         <h1>学员账号</h1>
-        <p>支持按学号模板批量开通、名单导入开户、号段删除，以及导出本次账号清单。</p>
+        <p>支持按学号模板批量开通、名单导入开户，以及导出账号清单。</p>
       </div>
-      <div class="template-tip">
-        模板示例：`251040702xx`，起始号 `1`，结束号 `50`
+      <div class="flex items-center gap-3">
+        <van-button plain class="!rounded-[6px] !border-slate-200 !text-slate-600" :loading="loading" @click="fetchStudents">
+          刷新列表
+        </van-button>
+        <van-button plain class="!rounded-[6px] !border-[#1D3557] !text-[#1D3557]" icon="description" @click="showImportPopup = true">
+          名单导入
+        </van-button>
+        <van-button type="primary" icon="plus" class="!bg-[#1D3557] !border-none !rounded-[6px]" @click="showBatchPopup = true">
+          批量开通
+        </van-button>
       </div>
     </div>
 
-    <div class="grid grid-cols-1 xl:grid-cols-[1.05fr_0.95fr] gap-6">
-      <section class="admin-form-panel">
-        <div class="flex items-center justify-between gap-4">
-          <div>
-            <h2 class="text-lg font-bold text-gray-800">模板批量开通</h2>
-            <p class="text-sm text-gray-500 mt-1">系统会把模板末尾的 `x / X` 当作流水号占位符。</p>
-          </div>
-          <van-button plain size="small" class="!border-gray-200 !text-gray-600" @click="fillExample">
-            填入示例
+    <!-- 上次操作结果条 -->
+    <div v-if="lastCreateResult.created_count > 0 || lastDeleteResult.deleted_count > 0" class="result-bar">
+      <div class="result-bar__inner">
+        <template v-if="lastCreateResult.created_count > 0">
+          <span class="result-bar__item text-emerald-700">
+            <van-icon name="success" />
+            本次新建 {{ lastCreateResult.created_count }} 个
+          </span>
+          <span v-if="lastCreateResult.skipped_count > 0" class="result-bar__item text-amber-600">
+            跳过重复 {{ lastCreateResult.skipped_count }} 个
+          </span>
+          <van-button plain size="mini" class="!border-slate-200 !text-slate-500 !rounded-full" :disabled="!lastCreateResult.created_usernames.length" @click="exportCreatedAccounts">
+            导出本次清单
           </van-button>
-        </div>
+        </template>
+        <template v-if="lastDeleteResult.deleted_count > 0">
+          <span class="result-bar__item text-red-600">
+            <van-icon name="delete-o" />
+            本次删除 {{ lastDeleteResult.deleted_count }} 个
+          </span>
+        </template>
+      </div>
+      <van-icon name="cross" class="cursor-pointer text-slate-300 hover:text-slate-500" @click="clearLastResult" />
+    </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mt-6">
-          <div class="field-block md:col-span-2">
+    <!-- 筛选栏 -->
+    <section class="admin-filter-panel">
+      <div class="admin-filter-bar">
+        <label class="admin-filter-item">
+          <span>排序</span>
+          <select v-model="sortMode" class="admin-filter-select">
+            <option value="risk">风险优先</option>
+            <option value="score_asc">均分从低到高</option>
+            <option value="sessions_desc">训练次数从高到低</option>
+            <option value="latest">创建时间从新到旧</option>
+          </select>
+        </label>
+        <label class="student-checkbox-filter">
+          <input v-model="onlyLowScore" type="checkbox" class="h-4 w-4 rounded border-slate-300" />
+          仅看均分低于 60
+        </label>
+      </div>
+      <label class="admin-search-box">
+        <van-icon name="search" />
+        <input v-model.trim="searchText" type="text" placeholder="搜索学号" />
+      </label>
+      <div class="admin-filter-summary">
+        筛选 {{ filteredStudents.length }} / {{ students.length }} 人 &nbsp;·&nbsp; 低分预警 {{ lowScoreCount }} 人
+      </div>
+    </section>
+
+    <!-- 高频薄弱项标签筛选 -->
+    <div v-if="gapFilterOptions.length" class="gap-filter-bar">
+      <span class="gap-filter-label">薄弱项</span>
+      <button
+        type="button"
+        class="gap-chip"
+        :class="selectedGap === '' ? 'gap-chip--active' : ''"
+        @click="selectedGap = ''"
+      >全部</button>
+      <button
+        v-for="item in gapFilterOptions"
+        :key="item"
+        type="button"
+        class="gap-chip"
+        :class="selectedGap === item ? 'gap-chip--warn' : ''"
+        @click="selectedGap = item"
+      >{{ item }}</button>
+    </div>
+
+    <!-- 学员列表 -->
+    <div v-if="loading" class="rounded-2xl border border-slate-100 bg-white py-24 text-center">
+      <van-loading color="#1D3557" vertical>正在加载学员账号...</van-loading>
+    </div>
+    <div v-else-if="pageError" class="rounded-2xl border border-amber-200 bg-amber-50 px-6 py-12 text-center">
+      <van-icon name="warning-o" size="30" class="text-amber-500" />
+      <p class="mt-4 text-sm font-bold text-amber-800">{{ pageError }}</p>
+      <van-button plain type="primary" class="mt-5" @click="fetchStudents">重新加载</van-button>
+    </div>
+    <div v-else-if="filteredStudents.length" class="student-table-wrap">
+      <table class="student-table">
+        <thead>
+          <tr>
+            <th>学员账号</th>
+            <th>创建时间</th>
+            <th>训练次数</th>
+            <th>已完成</th>
+            <th>均分</th>
+            <th>高频薄弱项</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="student in filteredStudents" :key="student.id">
+            <td>
+              <div class="student-name">{{ student.username }}</div>
+              <van-tag type="primary" plain>学员</van-tag>
+            </td>
+            <td>{{ formatTime(student.created_at) }}</td>
+            <td class="metric-cell">{{ student.total_sessions ?? 0 }}</td>
+            <td class="metric-cell text-[#165dff]">{{ student.finished_sessions ?? 0 }}</td>
+            <td class="metric-cell" :class="getScoreTextClass(student.avg_score)">
+              {{ formatAvgScore(student.avg_score) }}
+            </td>
+            <td>
+              <div v-if="student.top_gap_missing?.length" class="student-gap-list">
+                <span v-for="item in student.top_gap_missing" :key="item" class="student-gap-chip">{{ item }}</span>
+              </div>
+              <span v-else class="student-ok">暂无明显重复缺口</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div v-else class="rounded-2xl border border-dashed border-slate-200 bg-white py-20 text-center text-slate-400">
+      暂无符合条件的学员账号
+    </div>
+
+    <!-- 弹窗：批量开通 -->
+    <van-popup
+      v-model:show="showBatchPopup"
+      teleport="body"
+      :style="{ width: 'min(560px, 96vw)', borderRadius: '16px', overflow: 'hidden' }"
+      class="flex flex-col"
+    >
+      <div class="flex h-14 items-center justify-between border-b border-slate-100 px-5">
+        <h3 class="font-bold text-slate-800">批量开通账号</h3>
+        <van-icon name="cross" class="cursor-pointer text-slate-400" @click="showBatchPopup = false" />
+      </div>
+      <div class="overflow-y-auto p-5 space-y-4" style="max-height: 80vh">
+        <div class="rounded-xl bg-blue-50 border border-blue-100 px-4 py-3 text-sm text-blue-700">
+          系统将模板末尾的 <code>x / X</code> 作为流水号占位符，例如 <code>251040702xx</code> → 01 ~ 50
+        </div>
+        <div class="grid grid-cols-1 gap-4">
+          <div class="field-block">
             <label class="field-label">学号模板</label>
-            <input v-model.trim="form.template" type="text" class="field-input" placeholder="例如 251040702xx" />
+            <div class="flex gap-2">
+              <input v-model.trim="form.template" type="text" class="field-input" placeholder="例如 251040702xx" />
+              <van-button plain size="small" class="!border-slate-200 !text-slate-500 shrink-0" @click="fillExample">示例</van-button>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div class="field-block">
+              <label class="field-label">起始编号</label>
+              <input v-model.number="form.startNo" type="number" min="1" class="field-input" placeholder="1" />
+            </div>
+            <div class="field-block">
+              <label class="field-label">结束编号</label>
+              <input v-model.number="form.endNo" type="number" min="1" class="field-input" placeholder="50" />
+            </div>
           </div>
           <div class="field-block">
-            <label class="field-label">起始编号</label>
-            <input v-model.number="form.startNo" type="number" min="1" class="field-input" placeholder="1" />
-          </div>
-          <div class="field-block">
-            <label class="field-label">结束编号</label>
-            <input v-model.number="form.endNo" type="number" min="1" class="field-input" placeholder="50" />
-          </div>
-          <div class="field-block md:col-span-2">
             <label class="field-label">初始密码</label>
             <input v-model.trim="form.password" type="text" class="field-input" placeholder="请输入统一初始密码" />
           </div>
         </div>
 
-        <div class="mt-6 rounded-2xl bg-slate-50 border border-slate-100 p-5">
-          <div class="text-sm font-bold text-slate-700">模板生成预览</div>
-          <div class="mt-3 text-sm text-slate-500 leading-7">
+        <div class="rounded-xl bg-slate-50 border border-slate-100 p-4">
+          <div class="text-sm font-bold text-slate-700">生成预览</div>
+          <div class="mt-2 text-sm text-slate-500 leading-7">
             <template v-if="previewError">{{ previewError }}</template>
             <template v-else-if="previewList.length">
               <div>将生成 {{ previewList.length }} 个账号：</div>
-              <div class="mt-3 flex flex-wrap gap-2">
+              <div class="mt-2 flex flex-wrap gap-2">
                 <span v-for="item in previewVisibleList" :key="item" class="preview-chip">{{ item }}</span>
               </div>
-              <div v-if="previewHiddenCount > 0" class="mt-3 text-xs text-slate-400">
-                其余 {{ previewHiddenCount }} 个账号会在执行时一并生成，避免预览区域过长。
+              <div v-if="previewHiddenCount > 0" class="mt-2 text-xs text-slate-400">
+                其余 {{ previewHiddenCount }} 个账号执行时一并生成。
               </div>
             </template>
-            <template v-else>请输入模板、编号范围与初始密码后查看预览。</template>
+            <template v-else>请输入模板、编号范围后查看预览。</template>
           </div>
         </div>
 
-        <div class="mt-6 flex flex-wrap gap-3">
-          <van-button type="primary" class="!bg-[#16324F] !border-none !rounded-full !px-8" :loading="creating" @click="createStudents">
+        <div class="flex gap-3 pt-1">
+          <van-button type="primary" class="!bg-[#1D3557] !border-none !rounded-[6px] flex-1" :loading="creating" @click="createStudents">
             批量开通账号
           </van-button>
-          <van-button plain class="!rounded-full !px-8 !border-red-200 !text-red-600" :loading="deleting" @click="deleteStudents">
-            批量删除该号段
-          </van-button>
-          <van-button plain class="!rounded-full !px-8 !border-gray-200 !text-gray-600" :loading="loading" @click="fetchStudents">
-            刷新列表
+          <van-button plain class="!rounded-[6px] !border-red-200 !text-red-600" :loading="deleting" @click="deleteStudents">
+            删除该号段
           </van-button>
         </div>
-      </section>
+      </div>
+    </van-popup>
 
-      <section class="admin-form-panel">
-        <div class="flex items-center justify-between gap-4">
-          <div>
-            <h2 class="text-lg font-bold text-gray-800">名单导入开户</h2>
-            <p class="text-sm text-gray-500 mt-1">支持 `xlsx / csv`，自动识别 `学号` 或 `username` 列。</p>
-          </div>
-          <div class="flex items-center gap-2">
-            <input ref="fileInputRef" type="file" accept=".xlsx,.csv" class="hidden" @change="handleFileChange" />
-            <van-button plain size="small" class="!border-gray-200 !text-gray-600" @click="downloadImportTemplate">
-              下载模板
-            </van-button>
-            <van-button plain size="small" class="!border-gray-200 !text-gray-600" @click="chooseFile">
-              选择文件
-            </van-button>
-          </div>
+    <!-- 弹窗：名单导入 -->
+    <van-popup
+      v-model:show="showImportPopup"
+      teleport="body"
+      :style="{ width: 'min(520px, 96vw)', borderRadius: '16px', overflow: 'hidden' }"
+      class="flex flex-col"
+    >
+      <div class="flex h-14 items-center justify-between border-b border-slate-100 px-5">
+        <h3 class="font-bold text-slate-800">名单导入开户</h3>
+        <van-icon name="cross" class="cursor-pointer text-slate-400" @click="showImportPopup = false" />
+      </div>
+      <div class="overflow-y-auto p-5 space-y-4" style="max-height: 80vh">
+        <div class="rounded-xl bg-slate-50 border border-slate-100 p-4 text-sm text-slate-500 leading-7">
+          支持 <code>xlsx / csv</code>，优先识别 <code>学号</code>、<code>username</code>、<code>账号</code>、<code>account</code> 列；若无表头则读取第一列。
         </div>
 
-        <div class="mt-6 rounded-2xl border border-slate-100 bg-slate-50 p-5">
-          <div class="text-sm font-bold text-slate-700">导入说明</div>
-          <div class="mt-2 text-sm leading-7 text-slate-500">
-            第一行可写表头，优先读取 `学号`、`username`、`账号`、`account` 列；若没有表头，则默认读取第一列。
-          </div>
-          <div class="mt-3 text-xs text-slate-400">当前文件：{{ importFileName || '未选择文件' }}</div>
+        <div class="flex items-center gap-3">
+          <input ref="fileInputRef" type="file" accept=".xlsx,.csv" class="hidden" @change="handleFileChange" />
+          <van-button plain class="!rounded-[6px] !border-slate-200 !text-slate-600 flex-1" icon="description" @click="chooseFile">
+            {{ importFileName || '选择名单文件' }}
+          </van-button>
+          <van-button plain size="small" class="!rounded-[6px] !border-slate-200 !text-slate-500 shrink-0" @click="downloadImportTemplate">
+            下载模板
+          </van-button>
+          <van-button v-if="importFileName" plain size="small" class="!rounded-[6px] !border-slate-200 !text-slate-400 shrink-0" @click="clearImportFile">
+            清空
+          </van-button>
         </div>
 
-        <div class="mt-5 field-block">
+        <div class="field-block">
           <label class="field-label">导入初始密码</label>
           <input v-model.trim="importForm.password" type="text" class="field-input" placeholder="请输入导入账号统一初始密码" />
         </div>
 
-        <div class="mt-5 rounded-2xl bg-slate-50 border border-slate-100 p-5">
+        <div class="rounded-xl bg-slate-50 border border-slate-100 p-4">
           <div class="flex items-center justify-between gap-3">
             <div class="text-sm font-bold text-slate-700">名单预览</div>
             <div v-if="importPreviewList.length" class="text-xs text-slate-400">
               有效 {{ importSummary.validCount }} 条，去重 {{ importSummary.duplicateCount }} 条
             </div>
           </div>
-          <div class="mt-3 text-sm text-slate-500 leading-7">
+          <div class="mt-2 text-sm text-slate-500 leading-7">
             <template v-if="importError">{{ importError }}</template>
             <template v-else-if="importPreviewList.length">
               <div>识别到 {{ importPreviewList.length }} 个账号：</div>
-              <div class="mt-3 flex flex-wrap gap-2">
+              <div class="mt-2 flex flex-wrap gap-2">
                 <span v-for="item in importPreviewVisibleList" :key="item" class="preview-chip">{{ item }}</span>
               </div>
-              <div v-if="importPreviewHiddenCount > 0" class="mt-3 text-xs text-slate-400">
-                还有 {{ importPreviewHiddenCount }} 个账号已识别成功，可直接导入创建。
+              <div v-if="importPreviewHiddenCount > 0" class="mt-2 text-xs text-slate-400">
+                还有 {{ importPreviewHiddenCount }} 个已识别，可直接导入。
               </div>
             </template>
             <template v-else>请选择名单文件后查看预览。</template>
           </div>
         </div>
 
-        <div v-if="lastImportSummary.totalRows > 0" class="mt-5 rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm text-slate-600">
-          上次导入结果：原始 {{ lastImportSummary.totalRows }} 行，识别 {{ lastImportSummary.validCount }} 个学号，去重 {{ lastImportSummary.duplicateCount }} 个，成功创建 {{ lastCreateResult.created_count }} 个，跳过已有 {{ lastCreateResult.skipped_count }} 个。
+        <div v-if="lastImportSummary.totalRows > 0" class="rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs text-slate-500">
+          上次导入：原始 {{ lastImportSummary.totalRows }} 行，识别 {{ lastImportSummary.validCount }} 个，去重 {{ lastImportSummary.duplicateCount }} 个，创建 {{ lastCreateResult.created_count }} 个，跳过 {{ lastCreateResult.skipped_count }} 个。
         </div>
 
-        <div class="mt-6 flex flex-wrap gap-3">
-          <van-button type="primary" class="!bg-[#1D3557] !border-none !rounded-full !px-8" :loading="importing" @click="importStudents">
-            导入并开通账号
-          </van-button>
-          <van-button plain class="!rounded-full !px-8 !border-gray-200 !text-gray-600" @click="clearImportFile">
-            清空导入
-          </van-button>
-        </div>
-      </section>
-    </div>
+        <van-button type="primary" class="!bg-[#1D3557] !border-none !rounded-[6px] w-full" :loading="importing" @click="importStudents">
+          导入并开通账号
+        </van-button>
+      </div>
+    </van-popup>
 
-    <section class="admin-form-panel">
-      <div class="flex items-center justify-between gap-4">
-        <div>
-          <h2 class="text-lg font-bold text-gray-800">本次结果</h2>
-          <p class="text-sm text-gray-500 mt-1">新建成功后可直接导出学号与初始密码清单。</p>
-        </div>
-        <div class="text-xs text-gray-400">当前学员总数 {{ students.length }}</div>
-      </div>
-
-      <div class="grid grid-cols-2 gap-4 mt-6">
-        <div class="result-stat bg-emerald-50 border-emerald-100">
-          <div class="result-stat__label text-emerald-600">本次创建</div>
-          <div class="result-stat__value text-emerald-700">{{ lastCreateResult.created_count }}</div>
-        </div>
-        <div class="result-stat bg-amber-50 border-amber-100">
-          <div class="result-stat__label text-amber-600">跳过重复</div>
-          <div class="result-stat__value text-amber-700">{{ lastCreateResult.skipped_count }}</div>
-        </div>
-      </div>
-
-      <div class="mt-5 space-y-4">
-        <div class="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-          <div class="flex items-center justify-between gap-3">
-            <div class="text-sm font-bold text-slate-700">新建账号</div>
-            <van-button plain size="small" class="!border-gray-200 !text-gray-600" :disabled="!lastCreateResult.created_usernames.length" @click="exportCreatedAccounts">
-              导出本次清单
-            </van-button>
-          </div>
-          <div class="mt-2 text-sm leading-7 text-slate-500 break-all">
-            {{ lastCreateResult.created_usernames.length ? lastCreateResult.created_usernames.join('、') : '暂无本次新增账号' }}
-          </div>
-          <div v-if="lastCreatePassword" class="mt-3 text-xs text-slate-400">本次导出将使用初始密码：{{ lastCreatePassword }}</div>
-        </div>
-
-        <div class="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-          <div class="text-sm font-bold text-slate-700">重复跳过</div>
-          <div class="mt-2 text-sm leading-7 text-slate-500 break-all">
-            {{ lastCreateResult.skipped_usernames.length ? lastCreateResult.skipped_usernames.join('、') : '暂无重复账号' }}
-          </div>
-        </div>
-
-        <div class="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-          <div class="text-sm font-bold text-slate-700">本次删除</div>
-          <div class="mt-2 text-sm leading-7 text-slate-500 break-all">
-            {{ lastDeleteResult.deleted_usernames.length ? lastDeleteResult.deleted_usernames.join('、') : '暂无本次删除账号' }}
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="admin-form-panel">
-      <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h2 class="text-lg font-bold text-gray-800">已开通学员账号</h2>
-          <p class="text-sm text-gray-500 mt-1">这里只展示学生账号，训练记录仍然各自独立。</p>
-        </div>
-        <div class="student-filter-controls">
-          <input v-model.trim="searchText" type="text" class="search-input" placeholder="搜索学号" />
-          <select v-model="sortMode" class="search-input">
-            <option value="risk">按风险优先排序</option>
-            <option value="score_asc">按均分从低到高</option>
-            <option value="sessions_desc">按训练次数从高到低</option>
-            <option value="latest">按创建时间从新到旧</option>
-          </select>
-          <label class="student-checkbox-filter">
-            <input v-model="onlyLowScore" type="checkbox" class="h-4 w-4 rounded border-slate-300 text-[#1D3557]" />
-            仅看均分低于 60 的学员
-          </label>
-        </div>
-      </div>
-
-      <div v-if="gapFilterOptions.length" class="mt-5">
-        <div class="text-xs font-bold text-slate-500">按高频薄弱项筛选</div>
-        <div class="mt-3 flex flex-wrap gap-2">
-          <button
-            type="button"
-            class="rounded-full px-3 py-1.5 text-xs font-bold transition-colors"
-            :class="selectedGap === '' ? 'bg-[#1D3557] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
-            @click="selectedGap = ''"
-          >
-            全部
-          </button>
-          <button
-            v-for="item in gapFilterOptions"
-            :key="item"
-            type="button"
-            class="rounded-full px-3 py-1.5 text-xs font-bold transition-colors"
-            :class="selectedGap === item ? 'bg-amber-500 text-white' : 'bg-amber-50 text-amber-700 hover:bg-amber-100'"
-            @click="selectedGap = item"
-          >
-            {{ item }}
-          </button>
-        </div>
-      </div>
-
-      <div class="mt-5 flex flex-wrap gap-2 text-xs">
-        <span class="summary-pill">当前筛选 {{ filteredStudents.length }} 人</span>
-        <span class="summary-pill">低分预警 {{ lowScoreCount }} 人</span>
-        <span class="summary-pill">存在高频缺口 {{ gapStudentCount }} 人</span>
-      </div>
-
-      <div v-if="loading" class="mt-6 rounded-2xl border border-slate-100 py-16 text-center text-slate-400">
-        <van-loading color="#1D3557">正在加载学员账号...</van-loading>
-      </div>
-      <div v-else-if="pageError" class="mt-6 rounded-2xl border border-amber-200 bg-amber-50 px-6 py-12 text-center">
-        <van-icon name="warning-o" size="30" class="text-amber-500" />
-        <p class="mt-4 text-sm font-bold text-amber-800">{{ pageError }}</p>
-        <van-button plain type="primary" class="mt-5" @click="fetchStudents">重新加载</van-button>
-      </div>
-      <div v-else-if="filteredStudents.length" class="student-table-wrap mt-6">
-        <table class="student-table">
-          <thead>
-            <tr>
-              <th>学员账号</th>
-              <th>创建时间</th>
-              <th>训练次数</th>
-              <th>已完成</th>
-              <th>均分</th>
-              <th>高频薄弱项</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="student in filteredStudents" :key="student.id">
-              <td>
-                <div class="student-name">{{ student.username }}</div>
-                <van-tag type="primary" plain>学员</van-tag>
-              </td>
-              <td>{{ formatTime(student.created_at) }}</td>
-              <td class="metric-cell">{{ student.total_sessions ?? 0 }}</td>
-              <td class="metric-cell text-[#165dff]">{{ student.finished_sessions ?? 0 }}</td>
-              <td class="metric-cell" :class="getScoreTextClass(student.avg_score)">
-                {{ formatAvgScore(student.avg_score) }}
-              </td>
-              <td>
-                <div v-if="student.top_gap_missing?.length" class="student-gap-list">
-                  <span v-for="item in student.top_gap_missing" :key="item" class="student-gap-chip">{{ item }}</span>
-                </div>
-                <span v-else class="student-ok">暂无明显重复缺口</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div v-else class="mt-6 rounded-2xl border border-dashed border-slate-200 py-16 text-center text-slate-400">
-        暂无符合条件的学员账号
-      </div>
-    </section>
   </div>
 </template>
 
@@ -312,6 +297,8 @@ const importedUsernames = ref<string[]>([])
 const importError = ref('')
 const pageError = ref('')
 const previewLimit = 12
+const showBatchPopup = ref(false)
+const showImportPopup = ref(false)
 
 const form = reactive({
   template: '',
@@ -480,6 +467,17 @@ const getScoreTextClass = (value: number | null | undefined) => {
   return 'text-red-500'
 }
 
+const clearLastResult = () => {
+  lastCreateResult.created_count = 0
+  lastCreateResult.skipped_count = 0
+  lastCreateResult.created_usernames = []
+  lastCreateResult.skipped_usernames = []
+  lastDeleteResult.deleted_count = 0
+  lastDeleteResult.skipped_count = 0
+  lastDeleteResult.deleted_usernames = []
+  lastDeleteResult.skipped_usernames = []
+}
+
 const fillExample = () => {
   form.template = '251040702xx'
   form.startNo = 1
@@ -534,6 +532,7 @@ const createStudents = async () => {
       ? `已创建 ${lastCreateResult.created_count} 个账号${lastCreateResult.skipped_count ? `，跳过 ${lastCreateResult.skipped_count} 个已存在账号` : ''}`
       : `没有新建账号，${lastCreateResult.skipped_count} 个账号已存在`
     showToast({ type: lastCreateResult.created_count ? 'success' : 'fail', message })
+    if (lastCreateResult.created_count > 0) showBatchPopup.value = false
   } catch {
     showToast('批量开通失败')
   } finally {
@@ -695,6 +694,7 @@ const importStudents = async () => {
       ? `已导入创建 ${lastCreateResult.created_count} 个账号${lastCreateResult.skipped_count ? `，跳过 ${lastCreateResult.skipped_count} 个已有账号` : ''}`
       : `名单中账号均已存在，本次没有新建`
     showToast({ type: lastCreateResult.created_count ? 'success' : 'fail', message })
+    if (lastCreateResult.created_count > 0) showImportPopup.value = false
   } catch {
     showToast('名单导入失败')
   } finally {
@@ -739,19 +739,15 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.admin-list-header,
-.admin-form-panel {
-  border: 1px solid var(--police-border);
-  border-radius: var(--police-radius-lg);
-  background: #fff;
-}
-
 .admin-list-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   padding: 18px 20px;
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius-lg);
+  background: #fff;
 }
 
 .admin-list-header h1 {
@@ -767,39 +763,160 @@ onMounted(() => {
   font-size: 13px;
 }
 
-.template-tip {
-  border: 1px solid #bfdbfe;
-  border-radius: var(--police-radius);
-  background: #eff6ff;
-  padding: 10px 12px;
-  color: #1d4ed8;
+/* 操作结果条 */
+.result-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border: 1px solid #d1fae5;
+  border-radius: var(--police-radius-lg);
+  background: #f0fdf4;
+}
+
+.result-bar__inner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.result-bar__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* 筛选栏 */
+.admin-filter-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 16px;
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius-lg);
+  background: #fff;
+}
+
+.admin-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.admin-filter-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--police-text-secondary);
   font-size: 13px;
 }
 
-.admin-form-panel {
-  padding: 20px;
+.admin-filter-select {
+  height: 34px;
+  min-width: 160px;
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius);
+  background: #fff;
+  padding: 0 10px;
+  color: var(--police-text-primary);
+  font-size: 13px;
 }
 
-.student-filter-controls {
-  display: flex;
+.admin-search-box {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  gap: 8px;
+  width: min(220px, 100%);
+  height: 34px;
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius);
+  background: #fff;
+  padding: 0 12px;
+  color: var(--police-text-muted);
+}
+
+.admin-search-box input {
+  min-width: 0;
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--police-text-primary);
+  font-size: 13px;
+  outline: none;
+}
+
+.admin-filter-summary {
+  color: var(--police-text-muted);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .student-checkbox-filter {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   color: var(--police-text-secondary);
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
+/* 薄弱项筛选 */
+.gap-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  border: 1px solid var(--police-border);
+  border-radius: var(--police-radius-lg);
+  background: #fff;
+}
+
+.gap-filter-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--police-text-muted);
+  margin-right: 4px;
+}
+
+.gap-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.gap-chip:hover {
+  background: #e2e8f0;
+}
+
+.gap-chip--active {
+  background: #1D3557;
+  color: #fff;
+}
+
+.gap-chip--warn {
+  background: #f59e0b;
+  color: #fff;
+}
+
+/* 弹窗内字段 */
 .field-block {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .field-label {
@@ -808,10 +925,9 @@ onMounted(() => {
   color: #334155;
 }
 
-.field-input,
-.search-input {
+.field-input {
   width: 100%;
-  min-height: 34px;
+  min-height: 36px;
   border-radius: var(--police-radius);
   border: 1px solid #dbe3ee;
   background: #fff;
@@ -822,8 +938,7 @@ onMounted(() => {
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.field-input:focus,
-.search-input:focus {
+.field-input:focus {
   border-color: #93b4d6;
   box-shadow: 0 0 0 3px rgba(69, 123, 157, 0.1);
 }
@@ -831,7 +946,7 @@ onMounted(() => {
 .preview-chip {
   display: inline-flex;
   align-items: center;
-  padding: 6px 10px;
+  padding: 4px 10px;
   border-radius: 999px;
   background: #fff;
   border: 1px solid #e2e8f0;
@@ -840,34 +955,7 @@ onMounted(() => {
   font-weight: 700;
 }
 
-.summary-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: #f8fafc;
-  color: #475569;
-  font-weight: 700;
-}
-
-.result-stat {
-  border-width: 1px;
-  border-style: solid;
-  border-radius: 20px;
-  padding: 18px 20px;
-}
-
-.result-stat__label {
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.result-stat__value {
-  margin-top: 10px;
-  font-size: 28px;
-  font-weight: 800;
-}
-
+/* 学员表格 */
 .student-table-wrap {
   overflow-x: auto;
   border: 1px solid var(--police-border);

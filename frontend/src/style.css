@@ -171,3 +171,19 @@ select {
   box-shadow: var(--police-shadow);
   transform: translateY(-1px);
 }
+
+/* Admin cases scene editor: hide "primary speaker" controls in the roles panel. */
+.scene-editor-card__panel--roles .scene-editor-card__section-title {
+  font-size: 0;
+}
+
+.scene-editor-card__panel--roles .scene-editor-card__section-title::after {
+  content: "参与角色";
+  font-size: 14px;
+}
+
+.scene-editor-card__panel--roles > .mt-4,
+.scene-editor-card__panel--roles > .rounded-xl.border.border-sky-200.bg-sky-50,
+.scene-editor-card__panel--roles > .rounded-xl.bg-slate-50 {
+  display: none !important;
+}

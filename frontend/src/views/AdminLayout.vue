@@ -36,7 +36,7 @@
       <nav
           :class="[
             'flex-1 overflow-y-auto transition-[padding] duration-[260ms] ease-out',
-          sidebarCollapsed ? 'px-0 py-3 space-y-1' : 'px-2 py-3 space-y-1',
+          sidebarCollapsed ? 'flex flex-col items-center px-0 py-3 space-y-1' : 'px-2 py-3 space-y-1',
         ]"
       >
         <button
@@ -46,8 +46,8 @@
           :title="sidebarCollapsed ? item.label : ''"
           @click="onChange(item.name)"
           :class="[
-            'admin-nav-item group relative isolate grid w-full grid-cols-[32px_minmax(0,1fr)] items-center overflow-hidden rounded-[8px] px-3 py-2.5 text-left transition-[padding,gap,background-color,color,box-shadow] duration-200',
-            sidebarCollapsed ? 'admin-nav-item--collapsed mx-auto h-10 w-10 grid-cols-[1fr] justify-items-center px-0 py-0 gap-x-0' : 'gap-x-2.5',
+            'admin-nav-item group relative isolate grid items-center overflow-hidden rounded-[8px] text-left transition-[padding,gap,background-color,color,box-shadow] duration-200',
+            sidebarCollapsed ? 'admin-nav-item--collapsed h-10 w-10 grid-cols-[1fr] justify-items-center px-0 py-0 gap-x-0' : 'w-full grid-cols-[32px_minmax(0,1fr)] px-3 py-2.5 gap-x-2.5',
             active === item.name ? 'bg-[var(--police-primary)] text-white shadow-[0_2px_8px_rgba(0,48,135,0.4)]' : 'text-white/65 hover:bg-[#002d6e] hover:text-white',
           ]"
         >
@@ -77,7 +77,7 @@
       <div
         :class="[
           'hidden transition-[padding] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)] lg:block',
-          sidebarCollapsed ? 'px-0 py-4' : 'px-3 py-4',
+          sidebarCollapsed ? 'flex justify-center px-0 py-4' : 'px-3 py-4',
         ]"
       >
         <button
@@ -85,8 +85,8 @@
           :title="sidebarCollapsed ? '展开导航' : '收起导航'"
           @click="toggleSidebar"
           :class="[
-            'group grid w-full grid-cols-[32px_minmax(0,1fr)] items-center overflow-hidden rounded-[8px] px-3 py-2.5 text-left text-white/65 transition-[padding,gap,background-color,color] duration-200 hover:bg-[#002d6e] hover:text-white',
-            sidebarCollapsed ? 'mx-auto h-10 w-10 grid-cols-[1fr] justify-items-center px-0 py-0 gap-x-0' : 'gap-x-2.5',
+            'group grid items-center overflow-hidden rounded-[8px] text-left text-white/65 transition-[padding,gap,background-color,color] duration-200 hover:bg-[#002d6e] hover:text-white',
+            sidebarCollapsed ? 'h-10 w-10 grid-cols-[1fr] justify-items-center px-0 py-0 gap-x-0' : 'w-full grid-cols-[32px_minmax(0,1fr)] px-3 py-2.5 gap-x-2.5',
           ]"
         >
           <span
