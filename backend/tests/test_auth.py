@@ -1,3 +1,7 @@
+import json
+from datetime import datetime, timedelta
+
+import models
 import pytest
 
 
@@ -78,6 +82,78 @@ class TestListStudents:
 
     def test_list_students_as_student_should_fail(self, client, student_headers):
         response = client.get("/auth/students", headers=student_headers)
+        assert response.status_code == 403
+
+    def test_get_student_profile_as_admin(self, client, admin_headers, db_session):
+        student = db_session.query(models.User).filter(models.User.username == "student001").first()
+        db_session.query(models.Message).filter(models.Message.session_id.in_(
+            db_session.query(models.TrainingSession.id).filter(models.TrainingSession.user_id == student.id)
+        )).delete(synchronize_session=False)
+        db_session.query(models.TrainingSession).filter(models.TrainingSession.user_id == student.id).delete(
+            synchronize_session=False
+        )
+        db_session.commit()
+
+        base_time = datetime.utcnow() - timedelta(days=6)
+        payloads = [
+            (72, ["关键信息遗漏"], [18, 16, 14, 13, 11]),
+            (58, ["情绪安抚不足", "关键信息遗漏"], [14, 12, 10, 8, 14]),
+            (81, ["流程收束不足"], [20, 17, 16, 14, 14]),
+            (64, ["关键信息遗漏"], [16, 13, 12, 10, 13]),
+            (67, ["风险识别不足"], [17, 15, 11, 12, 12]),
+            (86, ["关键信息遗漏"], [21, 18, 17, 15, 15]),
+        ]
+        dimensions = ["沟通表达", "流程规范", "风险判断", "情绪控制", "信息获取"]
+        full_scores = [25, 25, 20, 15, 15]
+
+        for index, (total_score, missing_items, score_values) in enumerate(payloads):
+            db_session.add(
+                models.TrainingSession(
+                    user_id=student.id,
+                    scene_id=1,
+                    status="finished",
+                    current_stage="完成",
+                    current_emotion=60,
+                    current_trust=60,
+                    revealed_info="[]",
+                    evaluation_result=json.dumps(
+                        {
+                            "total_score": total_score,
+                            "scores": [
+                                {
+                                    "dimension": dimensions[item_index],
+                                    "score": score_values[item_index],
+                                    "full_score": full_scores[item_index],
+                                    "reason": "",
+                                }
+                                for item_index in range(len(dimensions))
+                            ],
+                            "evaluation_meta": {
+                                "stage_gap_summary": {
+                                    "missing": missing_items,
+                                }
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    created_at=base_time + timedelta(days=index),
+                )
+            )
+        db_session.commit()
+
+        response = client.get(f"/auth/students/{student.id}/profile", headers=admin_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["student"]["username"] == "student001"
+        assert data["summary"]["total_sessions"] == 6
+        assert data["summary"]["finished_sessions"] == 6
+        assert len(data["dimensions"]) == 5
+        assert data["high_frequency_issues"][0]["label"] == "关键信息遗漏"
+        assert len(data["suggestions"]) >= 1
+        assert len(data["trend_points"]) == 6
+
+    def test_get_student_profile_as_student_should_fail(self, client, student_headers):
+        response = client.get("/auth/students/2/profile", headers=student_headers)
         assert response.status_code == 403
 
 

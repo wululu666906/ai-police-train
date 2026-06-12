@@ -139,6 +139,325 @@ def _safe_json_loads(value, default):
         return default
 
 
+PROFILE_DIMENSIONS = [
+    ("communication", "沟通表达"),
+    ("procedure", "流程规范"),
+    ("risk", "风险判断"),
+    ("emotion", "情绪控制"),
+    ("information", "信息获取"),
+]
+
+
+def _round_score(value):
+    if isinstance(value, (int, float)):
+        return round(float(value), 1)
+    return None
+
+
+def _classify_score_level(score: float | None) -> str:
+    if score is None:
+        return "待积累"
+    if score >= 85:
+        return "优势明显"
+    if score >= 70:
+        return "基础稳定"
+    if score >= 60:
+        return "需要巩固"
+    return "重点提升"
+
+
+def _scene_status(score: float | None) -> str:
+    if score is None:
+        return "待积累"
+    if score >= 85:
+        return "表现突出"
+    if score >= 70:
+        return "相对稳定"
+    if score >= 60:
+        return "波动可控"
+    return "需重点跟进"
+
+
+def _stability_status(scores: list[float]) -> str:
+    if len(scores) < 3:
+        return "样本积累中"
+    score_range = max(scores) - min(scores)
+    if score_range <= 8:
+        return "稳定优秀" if sum(scores) / len(scores) >= 80 else "稳定一般"
+    if score_range <= 18:
+        return "轻微波动"
+    return "波动较大"
+
+
+def _progress_status(scores: list[float]) -> str:
+    if len(scores) < 4:
+        return "趋势待观察"
+    midpoint = len(scores) // 2
+    early = scores[:midpoint]
+    recent = scores[midpoint:]
+    if not early or not recent:
+        return "趋势待观察"
+    diff = (sum(recent) / len(recent)) - (sum(early) / len(early))
+    if diff >= 5:
+        return "近期进步明显"
+    if diff <= -5:
+        return "近期有所回落"
+    return "近期相对平稳"
+
+
+def _dimension_key_from_index(index: int) -> tuple[str, str]:
+    if 0 <= index < len(PROFILE_DIMENSIONS):
+        return PROFILE_DIMENSIONS[index]
+    return ("general", f"能力项{index + 1}")
+
+
+def _extract_dimension_scores(payload: dict) -> dict[str, dict]:
+    rows = payload.get("scores") if isinstance(payload.get("scores"), list) else []
+    result: dict[str, dict] = {}
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        score = row.get("score")
+        full_score = row.get("full_score")
+        if not isinstance(score, (int, float)):
+            continue
+        key, default_label = _dimension_key_from_index(index)
+        label = str(row.get("dimension") or default_label).strip() or default_label
+        result[key] = {
+            "label": default_label,
+            "raw_label": label,
+            "score": float(score),
+            "full_score": float(full_score) if isinstance(full_score, (int, float)) and float(full_score) > 0 else 100.0,
+        }
+    return result
+
+
+def _normalize_issue_label(item) -> str:
+    return str(item or "").strip()
+
+
+def _issue_category(label: str) -> str:
+    lowered = label.lower()
+    if any(keyword in label for keyword in ("情绪", "安抚", "沟通", "语言")):
+        return "沟通处置"
+    if any(keyword in label for keyword in ("流程", "规范", "处置", "程序")):
+        return "流程执行"
+    if any(keyword in label for keyword in ("风险", "受伤", "安全", "危险")):
+        return "风险判断"
+    if any(keyword in label for keyword in ("信息", "事实", "时间", "地点", "身份", "经过")):
+        return "信息采集"
+    if "law" in lowered:
+        return "规范执行"
+    return "综合能力"
+
+
+def _issue_severity(count: int, boosted: bool = False) -> str:
+    if boosted or count >= 4:
+        return "high"
+    if count >= 2:
+        return "medium"
+    return "low"
+
+
+def _build_profile_summary(student: models.User, stats: dict, dimensions: list[schemas.StudentProfileDimension], suggestions: list[str]) -> schemas.StudentProfileSummary:
+    avg_score = stats.get("average_score")
+    stability_status = _stability_status(stats.get("finished_scores") or [])
+    progress_status = _progress_status(stats.get("finished_scores") or [])
+    top_dimension = max(dimensions, key=lambda item: item.score, default=None)
+    weak_dimension = min(dimensions, key=lambda item: item.score, default=None)
+
+    strengths_text = top_dimension.label if top_dimension and top_dimension.score > 0 else "基础能力"
+    weakness_text = weak_dimension.label if weak_dimension and weak_dimension.score > 0 else "综合表现"
+    suggestion_text = suggestions[0] if suggestions else "建议继续通过阶段训练积累稳定表现。"
+    summary_text = (
+        f"{student.username} 当前整体处于“{_classify_score_level(avg_score)}”阶段，"
+        f"{strengths_text}相对更稳，{weakness_text}仍需优先补强。{suggestion_text}"
+    )
+
+    return schemas.StudentProfileSummary(
+        level=_classify_score_level(avg_score),
+        summary_text=summary_text,
+        total_sessions=int(stats.get("total_sessions") or 0),
+        finished_sessions=int(stats.get("finished_sessions") or 0),
+        average_score=_round_score(avg_score),
+        latest_training_at=stats.get("latest_training_at"),
+        stability_status=stability_status,
+        progress_status=progress_status,
+    )
+
+
+def _build_dimension_cards(history_rows: list[dict]) -> list[schemas.StudentProfileDimension]:
+    series_map: dict[str, list[tuple[float, float]]] = {key: [] for key, _ in PROFILE_DIMENSIONS}
+    recent_map: dict[str, list[float]] = {key: [] for key, _ in PROFILE_DIMENSIONS}
+    previous_map: dict[str, list[float]] = {key: [] for key, _ in PROFILE_DIMENSIONS}
+    finished_rows = [row for row in history_rows if row.get("status") == "finished"]
+    midpoint = len(finished_rows) // 2
+
+    for index, row in enumerate(finished_rows):
+        dimension_scores = row.get("dimension_scores") or {}
+        for key, label in PROFILE_DIMENSIONS:
+            payload = dimension_scores.get(key)
+            if not payload:
+                continue
+            score = float(payload.get("score") or 0)
+            full_score = float(payload.get("full_score") or 100)
+            series_map[key].append((score, full_score))
+            normalized_score = (score / full_score) * 100 if full_score else 0
+            if index < midpoint:
+                previous_map[key].append(normalized_score)
+            else:
+                recent_map[key].append(normalized_score)
+
+    cards: list[schemas.StudentProfileDimension] = []
+    for key, label in PROFILE_DIMENSIONS:
+        values = series_map.get(key) or []
+        if values:
+            normalized_values = [(score / full_score) * 100 if full_score else 0 for score, full_score in values]
+            avg_score = sum(normalized_values) / len(normalized_values)
+            prev_values = previous_map.get(key) or []
+            recent_values = recent_map.get(key) or []
+            trend = "持平"
+            if prev_values and recent_values:
+                diff = (sum(recent_values) / len(recent_values)) - (sum(prev_values) / len(prev_values))
+                if diff >= 5:
+                    trend = "上升"
+                elif diff <= -5:
+                    trend = "下降"
+            cards.append(
+                schemas.StudentProfileDimension(
+                    key=key,
+                    label=label,
+                    score=round(avg_score, 1),
+                    full_score=100,
+                    trend=trend,
+                )
+            )
+        else:
+            cards.append(
+                schemas.StudentProfileDimension(
+                    key=key,
+                    label=label,
+                    score=0,
+                    full_score=100,
+                    trend="待积累",
+                )
+            )
+    return cards
+
+
+def _build_scene_performance(history_rows: list[dict]) -> list[schemas.StudentProfileScenePerformance]:
+    grouped: dict[str, list[float]] = {}
+    for row in history_rows:
+        label = str(row.get("scene_label") or "未分类场景").strip()
+        total_score = row.get("total_score")
+        if not isinstance(total_score, (int, float)):
+            continue
+        grouped.setdefault(label, []).append(float(total_score))
+
+    results = []
+    for label, scores in grouped.items():
+        avg_score = sum(scores) / len(scores) if scores else None
+        results.append(
+            schemas.StudentProfileScenePerformance(
+                label=label,
+                session_count=len(scores),
+                average_score=_round_score(avg_score),
+                status=_scene_status(avg_score),
+            )
+        )
+    results.sort(key=lambda item: ((item.average_score or 0), item.session_count))
+    return results[:6]
+
+
+def _build_issue_buckets(history_rows: list[dict]) -> tuple[list[schemas.StudentProfileIssue], list[schemas.StudentProfileIssue], list[schemas.StudentProfileIssue]]:
+    overall_counter: Counter[str] = Counter()
+    risk_counter: Counter[str] = Counter()
+    recent_counter: Counter[str] = Counter()
+    recent_rows = history_rows[-5:]
+
+    for row in history_rows:
+        for label in row.get("missing_items") or []:
+            clean = _normalize_issue_label(label)
+            if not clean:
+                continue
+            overall_counter[clean] += 1
+            if isinstance(row.get("total_score"), (int, float)) and float(row["total_score"]) < 60:
+                risk_counter[clean] += 2
+            if row.get("scene_label") and "高" in str(row.get("scene_label")):
+                risk_counter[clean] += 1
+
+    for row in recent_rows:
+        for label in row.get("missing_items") or []:
+            clean = _normalize_issue_label(label)
+            if clean:
+                recent_counter[clean] += 1
+
+    def build_rows(counter: Counter[str], category: str, min_count: int = 1, boosted: bool = False) -> list[schemas.StudentProfileIssue]:
+        rows: list[schemas.StudentProfileIssue] = []
+        for label, count in counter.most_common():
+            if count < min_count:
+                continue
+            rows.append(
+                schemas.StudentProfileIssue(
+                    label=label,
+                    count=int(count),
+                    severity=_issue_severity(int(count), boosted=boosted),
+                    category=category or _issue_category(label),
+                )
+            )
+        return rows[:5]
+
+    high_frequency = build_rows(overall_counter, "", min_count=2)
+    high_risk = build_rows(risk_counter, "", min_count=2, boosted=True)
+    stubborn = build_rows(recent_counter, "", min_count=3)
+    return high_frequency, high_risk, stubborn
+
+
+def _build_suggestions(dimensions: list[schemas.StudentProfileDimension], high_frequency: list[schemas.StudentProfileIssue], stubborn: list[schemas.StudentProfileIssue]) -> list[str]:
+    suggestions: list[str] = []
+    weakest = sorted(dimensions, key=lambda item: item.score)[:2]
+    for item in weakest:
+        if item.score <= 0:
+            continue
+        if item.key == "information":
+            suggestions.append("建议优先补练事实核验类场景，重点追问时间、地点、人物和经过。")
+        elif item.key == "emotion":
+            suggestions.append("建议增加情绪安抚训练，先稳住对方情绪再推进关键信息获取。")
+        elif item.key == "procedure":
+            suggestions.append("建议连续练习标准处置流程，先把开场、核实和收束动作练稳定。")
+        elif item.key == "risk":
+            suggestions.append("建议补练高压和风险识别场景，强化对受伤、安全和升级风险的判断。")
+        else:
+            suggestions.append("建议加强沟通表达训练，减少重复追问，提升推进效率。")
+
+    if high_frequency:
+        suggestions.append(f"当前最常见问题是“{high_frequency[0].label}”，建议安排专项复盘并连续跟踪。")
+    if stubborn:
+        suggestions.append(f"“{stubborn[0].label}”在最近训练中反复出现，建议教官重点盯防这一环节。")
+
+    unique: list[str] = []
+    for item in suggestions:
+        if item not in unique:
+            unique.append(item)
+    return unique[:3]
+
+
+def _build_trend_points(history_rows: list[dict]) -> list[schemas.StudentProfileTrendPoint]:
+    points = []
+    for row in history_rows[-6:]:
+        total_score = row.get("total_score")
+        if not isinstance(total_score, (int, float)):
+            continue
+        points.append(
+            schemas.StudentProfileTrendPoint(
+                session_id=int(row.get("session_id") or 0),
+                score=round(float(total_score), 1),
+                created_at=row.get("created_at"),
+            )
+        )
+    return points
+
+
 @router.post("/token")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(database.get_db)):
     identifier = (form_data.username or "").strip()
@@ -250,6 +569,94 @@ def list_students(
             )
         )
     return results
+
+
+@router.get("/students/{student_id}/profile", response_model=schemas.AdminStudentProfile)
+def get_student_profile(
+    student_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_admin_user),
+):
+    student = (
+        db.query(models.User)
+        .filter(models.User.id == student_id, models.User.role == "student")
+        .first()
+    )
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    rows = (
+        db.query(
+            models.TrainingSession.id,
+            models.TrainingSession.status,
+            models.TrainingSession.created_at,
+            models.TrainingSession.evaluation_result,
+            models.Scene.name,
+            models.Scene.difficulty,
+            models.Case.case_type,
+        )
+        .outerjoin(models.Scene, models.Scene.id == models.TrainingSession.scene_id)
+        .outerjoin(models.Case, models.Case.id == models.Scene.case_id)
+        .filter(models.TrainingSession.user_id == student.id)
+        .order_by(models.TrainingSession.created_at.asc(), models.TrainingSession.id.asc())
+        .all()
+    )
+
+    history_rows: list[dict] = []
+    total_sessions = len(rows)
+    finished_sessions = 0
+    finished_scores: list[float] = []
+    latest_training_at = rows[-1].created_at if rows else None
+
+    for row in rows:
+        payload = _safe_json_loads(row.evaluation_result, {})
+        if not isinstance(payload, dict):
+            payload = {}
+        total_score = payload.get("total_score")
+        if row.status == "finished" and isinstance(total_score, (int, float)):
+            finished_sessions += 1
+            finished_scores.append(float(total_score))
+        dimension_scores = _extract_dimension_scores(payload)
+        evaluation_meta = payload.get("evaluation_meta") if isinstance(payload.get("evaluation_meta"), dict) else {}
+        stage_gap_summary = evaluation_meta.get("stage_gap_summary") if isinstance(evaluation_meta.get("stage_gap_summary"), dict) else {}
+        missing_items = stage_gap_summary.get("missing") if isinstance(stage_gap_summary.get("missing"), list) else []
+        scene_parts = [str(row.case_type or "").strip(), str(row.name or "").strip(), str(row.difficulty or "").strip()]
+        scene_label = " / ".join([part for part in scene_parts if part]) or "未分类场景"
+        history_rows.append(
+            {
+                "session_id": row.id,
+                "status": row.status,
+                "created_at": row.created_at,
+                "total_score": float(total_score) if isinstance(total_score, (int, float)) else None,
+                "dimension_scores": dimension_scores,
+                "missing_items": [_normalize_issue_label(item) for item in missing_items if _normalize_issue_label(item)],
+                "scene_label": scene_label,
+            }
+        )
+
+    dimensions = _build_dimension_cards(history_rows)
+    high_frequency, high_risk, stubborn = _build_issue_buckets(history_rows)
+    suggestions = _build_suggestions(dimensions, high_frequency, stubborn)
+    average_score = (sum(finished_scores) / len(finished_scores)) if finished_scores else None
+    stats = {
+        "total_sessions": total_sessions,
+        "finished_sessions": finished_sessions,
+        "average_score": average_score,
+        "latest_training_at": latest_training_at,
+        "finished_scores": finished_scores,
+    }
+
+    return schemas.AdminStudentProfile(
+        student=schemas.User.model_validate(student),
+        summary=_build_profile_summary(student, stats, dimensions, suggestions),
+        dimensions=dimensions,
+        scene_performance=_build_scene_performance(history_rows),
+        high_frequency_issues=high_frequency,
+        high_risk_issues=high_risk,
+        stubborn_issues=stubborn,
+        suggestions=suggestions,
+        trend_points=_build_trend_points(history_rows),
+    )
 
 
 @router.post("/students/batch", response_model=schemas.BatchStudentCreateResponse)

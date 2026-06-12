@@ -28,6 +28,7 @@ const routes = [
       { path: 'roles/new', component: () => import('./views/RoleEdit.vue') },
       { path: 'roles/:id/edit', component: () => import('./views/RoleEdit.vue') },
       { path: 'students', component: () => import('./views/Students.vue') },
+      { path: 'students/:id', component: () => import('./views/StudentProfile.vue') },
       { path: 'profile', component: () => import('./views/Profile.vue') }
     ]
   },

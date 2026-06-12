@@ -259,6 +259,57 @@ class AdminStudentOverview(User):
     top_gap_missing: List[str] = []
 
 
+class StudentProfileSummary(BaseModel):
+    level: str
+    summary_text: str
+    total_sessions: int = 0
+    finished_sessions: int = 0
+    average_score: Optional[float] = None
+    latest_training_at: Optional[datetime] = None
+    stability_status: str
+    progress_status: str
+
+
+class StudentProfileDimension(BaseModel):
+    key: str
+    label: str
+    score: float
+    full_score: float
+    trend: str
+
+
+class StudentProfileScenePerformance(BaseModel):
+    label: str
+    session_count: int = 0
+    average_score: Optional[float] = None
+    status: str
+
+
+class StudentProfileIssue(BaseModel):
+    label: str
+    count: int = 0
+    severity: str
+    category: str
+
+
+class StudentProfileTrendPoint(BaseModel):
+    session_id: int
+    score: float
+    created_at: Optional[datetime] = None
+
+
+class AdminStudentProfile(BaseModel):
+    student: User
+    summary: StudentProfileSummary
+    dimensions: List[StudentProfileDimension] = []
+    scene_performance: List[StudentProfileScenePerformance] = []
+    high_frequency_issues: List[StudentProfileIssue] = []
+    high_risk_issues: List[StudentProfileIssue] = []
+    stubborn_issues: List[StudentProfileIssue] = []
+    suggestions: List[str] = []
+    trend_points: List[StudentProfileTrendPoint] = []
+
+
 class BatchStudentCreateRequest(BaseModel):
     template: str
     start_no: int

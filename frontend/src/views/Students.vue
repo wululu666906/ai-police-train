@@ -109,12 +109,15 @@
             <th>已完成</th>
             <th>均分</th>
             <th>高频薄弱项</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="student in filteredStudents" :key="student.id">
             <td>
-              <div class="student-name">{{ student.username }}</div>
+              <button type="button" class="student-name student-link" @click="openStudentProfile(student.id)">
+                {{ student.username }}
+              </button>
               <van-tag type="primary" plain>学员</van-tag>
             </td>
             <td>{{ formatTime(student.created_at) }}</td>
@@ -128,6 +131,11 @@
                 <span v-for="item in student.top_gap_missing" :key="item" class="student-gap-chip">{{ item }}</span>
               </div>
               <span v-else class="student-ok">暂无明显重复缺口</span>
+            </td>
+            <td>
+              <button type="button" class="profile-action-btn" @click="openStudentProfile(student.id)">
+                查看画像
+              </button>
             </td>
           </tr>
         </tbody>
@@ -275,12 +283,13 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import * as XLSX from 'xlsx'
 import { showConfirmDialog, showToast } from 'vant'
 import request from '../utils/request'
 
 const route = useRoute()
+const router = useRouter()
 const loading = ref(false)
 const creating = ref(false)
 const deleting = ref(false)
@@ -465,6 +474,10 @@ const getScoreTextClass = (value: number | null | undefined) => {
   if (num >= 85) return 'text-emerald-600'
   if (num >= 60) return 'text-amber-600'
   return 'text-red-500'
+}
+
+const openStudentProfile = (studentId: number) => {
+  router.push(`/admin/students/${studentId}`)
 }
 
 const clearLastResult = () => {
@@ -1000,6 +1013,39 @@ onMounted(() => {
   margin-bottom: 5px;
   font-weight: 700;
   color: #1e293b;
+}
+
+.student-link {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.student-link:hover {
+  color: #1d4ed8;
+}
+
+.profile-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 88px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #1d3557;
+  font-size: 13px;
+  font-weight: 700;
+  transition: all 0.2s ease;
+}
+
+.profile-action-btn:hover {
+  border-color: #1d3557;
+  background: #eff6ff;
 }
 
 .metric-cell {
