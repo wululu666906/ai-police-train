@@ -1,8 +1,0 @@
-        return persons
-
-    def extract_case_person_names(self, text: str) -> list[str]:
-        """Extract unique character names from case text using focused LLM call."""
-        messages = [
-            {"role": "system", "content": NAME_EXTRACTION_PROMPT},
-            {"role": "user", "content": str(text or "")[:8000]},
-        ]

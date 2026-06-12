@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import secrets
 import subprocess
 import sys
@@ -13,10 +14,10 @@ from pathlib import Path
 import paramiko
 
 ROOT = Path(__file__).resolve().parents[1]
-HOST = "129.211.8.122"
-USER = "ubuntu"
-PASSWORD = "DAXZFYdaxzfy6@"
-REMOTE_DIR = "/opt/ai-police-sim"
+HOST = os.environ.get("DEPLOY_HOST", "")
+USER = os.environ.get("DEPLOY_USER", "ubuntu")
+PASSWORD = os.environ.get("DEPLOY_PASSWORD", "")
+REMOTE_DIR = os.environ.get("DEPLOY_DIR", "/opt/ai-police-sim")
 
 SKIP_DIRS = {
     ".git", "node_modules", "venv", ".venv", "__pycache__", ".pytest_cache",
@@ -187,7 +188,15 @@ sudo systemctl is-active nginx
     return ok
 
 
+def require_deploy_credentials() -> None:
+    if not HOST or not PASSWORD:
+        raise SystemExit(
+            "Set DEPLOY_HOST and DEPLOY_PASSWORD (optional: DEPLOY_USER, DEPLOY_DIR) before running."
+        )
+
+
 def main() -> int:
+    require_deploy_credentials()
     build_frontend()
     payload = make_zip()
     safe_print(f"Package size: {len(payload) / 1024 / 1024:.2f} MB")
@@ -347,6 +356,7 @@ sudo test -f /etc/letsencrypt/live/ai-police-ip/fullchain.pem && echo OK_le_ngin
 
 def issue_letsencrypt_ip_cert() -> int:
     """Request Let's Encrypt short-lived certificate for public IP (SAN=IP)."""
+    require_deploy_credentials()
     # Bootstrap nginx: HTTP + ACME only (443 uses temporary self-signed until cert exists)
     bootstrap_conf = f"""
 server {{
@@ -463,6 +473,7 @@ echo | openssl s_client -connect {HOST}:443 -servername {HOST} 2>/dev/null | ope
 
 def enable_https_only() -> int:
     """Switch existing deployment to HTTPS without full rebuild."""
+    require_deploy_credentials()
     nginx_conf = (ROOT / "deploy" / "nginx" / "ai-police-sim.conf").read_text(encoding="utf-8")
     nginx_b64 = base64.b64encode(nginx_conf.encode()).decode()
     env_b64 = base64.b64encode(build_env_content().encode()).decode()

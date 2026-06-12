@@ -217,9 +217,10 @@ def acceptance_tests() -> list[tuple[str, bool, str]]:
 
 
 def main() -> int:
-    pwd = PASSWORD or os.environ.get("DEPLOY_PASSWORD")
-    if not pwd:
-        pwd = "DAXZFYdaxzfy6@"
+    pwd = PASSWORD or os.environ.get("DEPLOY_PASSWORD", "")
+    if not HOST or not pwd:
+        safe_print("Set DEPLOY_HOST and DEPLOY_PASSWORD before running.")
+        return 1
 
     safe_print("Building deploy package...")
     payload = make_zip()

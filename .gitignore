@@ -65,5 +65,43 @@ fileio.json
 *.db.bak*
 上传的存放文件/
 
+# Ad-hoc remote deploy / debug scripts (may contain credentials)
+_*.py
+check_*.py
+debug_*.py
+deploy_*.py
+diagnose_*.py
+fix_*.py
+install_pip_venv.py
+restart*.py
+setup_venv.py
+test_ssh.py
+upload_*.py
+update_*.py
+verify_*.py
+final_check.py
+test.txt
+test2.txt
+test3.txt
+test_write.txt
+scripts/edit*.json
+scripts/edits*.json
+scripts/esc_test*
+scripts/ins1.txt
+scripts/method_*
+scripts/new_method.txt
+scripts/old_method.txt
+scripts/step2*.py
+scripts/test_edit.py
+scripts/write_test.py
+scripts/wtest.py
+scripts/apply_edits.py
+scripts/editor_helper.py
+scripts/final_edit.py
+scripts/fix_edits_step1.py
+scripts/fix_parse.py
+scripts/replace_parse.py
+scripts/add_name_prompt.py
+
 # Word docs (design drafts)
 *.docx
