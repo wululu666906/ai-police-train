@@ -47,6 +47,11 @@ backend/logs/
 *.tar.gz
 release/
 deploy_*_bundle/
+deploy_native_bundle/
+backend/venv/
+push_audit.txt
+git_status_tmp.txt
+push_log.txt
 deploy_*.tar.gz
 deploy_*.zip
 ai_police*.zip

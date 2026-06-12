@@ -168,7 +168,7 @@ WS=$($CURL -H "Authorization: Bearer $(echo "$TOKEN" | python3 -c 'import sys,js
 echo "$WS" | grep -q 'wss://' && echo OK_iflytek_ws_url
 
 echo "=== public IP :443 ==="
-$CURL -m 8 -o /dev/null -w "public_home=%{http_code}\n" https://129.211.8.122/ || echo public_home_fail
+$CURL -m 8 -o /dev/null -w "public_home=%{http_code}\n" https://{HOST}/ || echo public_home_fail
 sudo supervisorctl status
 sudo systemctl is-active nginx
 """

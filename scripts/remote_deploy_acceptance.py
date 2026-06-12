@@ -16,7 +16,7 @@ from pathlib import Path
 import paramiko
 
 ROOT = Path(__file__).resolve().parents[1]
-HOST = os.environ.get("DEPLOY_HOST", "129.211.8.122")
+HOST = os.environ.get("DEPLOY_HOST", "")
 USER = os.environ.get("DEPLOY_USER", "ubuntu")
 PASSWORD = os.environ.get("DEPLOY_PASSWORD", "")
 REMOTE_DIR = "/opt/ai-police-sim"
