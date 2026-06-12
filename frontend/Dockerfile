@@ -2,13 +2,20 @@ FROM node:20-alpine AS build-stage
 
 WORKDIR /app
 
+ARG VITE_API_URL=/api
+ARG VITE_SPEECH_PROVIDER=auto
+ARG VITE_IFLYTEK_VAD_EOS=1600
+
+ENV VITE_API_URL=$VITE_API_URL \
+    VITE_SPEECH_PROVIDER=$VITE_SPEECH_PROVIDER \
+    VITE_IFLYTEK_VAD_EOS=$VITE_IFLYTEK_VAD_EOS
+
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY . .
 RUN npm run build
 
-# 生产环境 Nginx
 FROM nginx:alpine
 
 COPY --from=build-stage /app/dist /usr/share/nginx/html

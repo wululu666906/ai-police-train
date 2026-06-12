@@ -176,8 +176,6 @@ const sidebarCollapsed = ref(false)
 const navItems = [
   { name: 'dashboard', label: '数据总览', shortLabel: '总览', icon: 'bar-chart-o' },
   { name: 'cases', label: '案件剧本库', shortLabel: '案件', icon: 'orders-o' },
-  { name: 'data-quality', label: '数据质检', shortLabel: '质检', icon: 'warning-o' },
-  { name: 'state-influence', label: '四轴触发表', shortLabel: '触发表', icon: 'setting-o' },
   { name: 'knowledge', label: '知识库管理', shortLabel: '知识', icon: 'cluster-o' },
   { name: 'roles', label: 'AI角色库', shortLabel: '角色', icon: 'friends-o' },
   { name: 'students', label: '学员账号', shortLabel: '账号', icon: 'contact-o' },
@@ -196,8 +194,6 @@ watch(
 
     if (val.includes('/dashboard')) active.value = 'dashboard'
     else if (val.includes('/cases')) active.value = 'cases'
-    else if (val.includes('/data-quality')) active.value = 'data-quality'
-    else if (val.includes('/state-influence')) active.value = 'state-influence'
     else if (val.includes('/knowledge')) active.value = 'knowledge'
     else if (val.includes('/roles')) active.value = 'roles'
     else if (val.includes('/students')) active.value = 'students'

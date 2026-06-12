@@ -137,6 +137,11 @@ def health_check():
 def health_check_api():
     return {"status": "ok"}
 
+# 像素风头像静态文件
+_avatars_dir = os.path.join(os.path.dirname(__file__), "static", "avatars")
+if os.path.exists(_avatars_dir):
+    app.mount("/avatars", StaticFiles(directory=_avatars_dir), name="avatars")
+
 frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 
 if os.path.exists(os.path.join(frontend_dist, "assets")):

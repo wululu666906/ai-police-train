@@ -123,6 +123,8 @@ class SceneRoleBrief(BaseModel):
     truth_stage: Optional[str] = None
     is_active: bool = False
     is_targeted: bool = False
+    avatar_id: Optional[int] = None
+    avatar_url: Optional[str] = None
 
 
 class RecommendedQuestionItem(BaseModel):

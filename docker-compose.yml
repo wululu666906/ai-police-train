@@ -1,24 +1,86 @@
+# 默认单容器：docker compose up -d --build
+# 浏览器访问 http://127.0.0.1:5175（WEB_PORT）
+# 拆分部署（Nginx 前端 + API）：docker compose --profile split up -d --build api frontend
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api
+        VITE_SPEECH_PROVIDER: auto
+        VITE_IFLYTEK_VAD_EOS: "1600"
+    image: ai-police-sim:unified
     container_name: ai_police_app
     env_file:
       - ./backend/.env
     environment:
-      # 与 ./data 挂载一致，避免 SQLite 文件被 Docker 误建为目录
+      DATABASE_URL: sqlite:///data/ai_police.db
+      CHROMA_DB_PATH: data/chroma_db
+      PORT: "8000"
+    ports:
+      - "${WEB_PORT:-5175}:8000"
+    volumes:
+      - ./data:/app/backend/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  api:
+    profiles: ["split"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: ai-police-sim:api
+    container_name: ai_police_api
+    env_file:
+      - ./backend/.env
+    environment:
       DATABASE_URL: sqlite:///data/ai_police.db
       CHROMA_DB_PATH: data/chroma_db
       PORT: "8000"
     ports:
       - "${APP_PORT:-8000}:8000"
     volumes:
-      - ./data:/app/backend/data
+      - ./data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')",
+        ]
       interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 40s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  frontend:
+    profiles: ["split"]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api
+        VITE_SPEECH_PROVIDER: auto
+        VITE_IFLYTEK_VAD_EOS: "1600"
+    image: ai-police-sim:frontend
+    container_name: ai_police_frontend
+    ports:
+      - "${WEB_PORT:-5175}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

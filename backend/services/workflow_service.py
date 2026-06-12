@@ -107,6 +107,36 @@ BASE_PARSE_RESULT = {
     "parse_engine": "heuristic",
 }
 
+NAME_EXTRACTION_PROMPT = """你是公安警情训练平台的人物名称识别专家。
+
+任务：从以下案件文本中，找出所有**真实人物的姓名**，返回一个纯 JSON 字符串数组。
+
+核心规则（严格遵循）：
+1. 只提取2-4个汉字的真实人名（如：张三、李四、王小明、赵建国）。
+2. **绝对不能**把以下类型当作人名输出：
+   - 地名（如：某某村、东风路、向阳街、幸福小区、某小区、某村）
+   - 名词/抽象词（如：证言、陈述、供述、交代、案情、纠纷、口供、笔录）
+   - 物品名称（如：电动车、手机、菜刀、木棍、汽车、钱包）
+   - 角色称谓本身（如：嫌疑人、被害人、报警人、证人、邻居、家属、报警、报案）
+3. 同一人物只保留一个标准名称。如果文本中出现同一人的不同写法（如"张三供述"中的"张三"和"张三审讯"中的"张三"），只保留最简洁的标准名"张三"。
+4. 如果文本中没有任何明确的人名，返回空数组 []。
+5. 只输出一个合法的 JSON 数组，不要 markdown、解释或额外说明。
+
+示例：
+输入："报警人张三称，其与邻居李四因纠纷发生冲突，李四手持木棍打伤张三。"
+输出：["张三", "李四"]
+
+输入："某某村幸福小区发生一起邻里纠纷，现场无人员受伤。"
+输出：[]
+
+输入："据被害人王小花陈述，嫌疑人赵大龙在东风路持刀抢劫其手机。"
+输出：["王小花", "赵大龙"]
+
+输入："民警到场后，证言显示某某村的李某和王某因琐事发生口角。"
+输出：["李某", "王某"]
+"""
+
+
 PARSE_PROMPT = f"""你是“公安警情训练平台”的案件结构化解析专家。你的输出会直接进入管理员的“AI 解析结果预览”页，管理员会把其中一部分当作 AI 建议值，再人工确认最终发布值。
 
 你的任务：仅依据输入文本，把案件整理成训练平台需要的结构化 JSON。
@@ -566,7 +596,7 @@ class WorkflowService:
         clean = WorkflowService._normalize_person_name(name)
         if not re.fullmatch(r"[\u4e00-\u9fa5]{2,4}", clean):
             return False
-        bad_tokens = {"男子", "女子", "对方", "一名", "民警", "嫌疑人", "被害人", "受害人", "报警人", "报案人"}
+        bad_tokens = {"男子", "女子", "对方", "一名", "民警", "嫌疑人", "被害人", "受害人", "报警人", "报案人", "证言", "陈述", "供述", "笔录", "口供", "某某"}
         return clean not in bad_tokens
 
     @staticmethod
@@ -581,7 +611,7 @@ class WorkflowService:
             "",
             clean,
         ).strip()
-        clean = re.sub(r"(?:称|说|表示|反映|供述|陈述|介绍|联系|发现|报警|报案|哭诉|求助)$", "", clean).strip()
+        clean = re.sub(r"(?:称|说|表示|反映|供述|陈述|介绍|联系|发现|报警|报案|哭诉|求助|证言|口供|笔录|交代|讲述|回忆|证实)$", "", clean).strip()
 
         prefix_match = re.match(r"^([\u4e00-\u9fa5]{2,4})(?=称|说|表示|反映|供述|陈述|介绍|与|和|因|于|在|被|将|把|向|对|及|并|后|时|处|，|。|、|：|:|$)", clean)
         if prefix_match:
@@ -744,6 +774,29 @@ class WorkflowService:
 
         return persons
 
+    def extract_case_person_names(self, text: str) -> list[str]:
+        """Extract unique character names from case text using focused LLM call."""
+        messages = [
+            {"role": "system", "content": NAME_EXTRACTION_PROMPT},
+            {"role": "user", "content": str(text or "")[:8000]},
+        ]
+        try:
+            from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
+            response = create_json_chat_completion(messages=messages, model=get_chat_model(), temperature=0.1, max_tokens=1000)
+            payload = self._safe_json_loads(extract_message_text(response), [])
+            if isinstance(payload, list):
+                valid_names = []
+                seen = set()
+                for name in payload:
+                    clean = self._normalize_person_name(str(name or "").strip())
+                    if clean and self._is_valid_person_name(clean) and clean not in seen:
+                        seen.add(clean)
+                        valid_names.append(clean)
+                return valid_names
+        except Exception:
+            pass
+        return []
+
     def _normalize_parsed_case(self, text: str, payload: dict[str, Any], source_mode: str, source_meta: dict[str, Any] | None) -> dict[str, Any]:
         result = self._default_parse_result(text, "笔录" if source_mode == "transcript_file" else "普通案件文本")
         result.update(payload or {})
@@ -849,7 +902,19 @@ class WorkflowService:
         return result
 
     def parse_case_text(self, text: str, source_mode: str = "plain_case", source_meta: dict[str, Any] | None = None):
-        prompt = TRANSCRIPT_PARSE_PROMPT if source_mode == "transcript_file" else PARSE_PROMPT
+        # Step 1: Pre-extract character names for accurate constraint
+        extracted_names = self.extract_case_person_names(text)
+        # Step 2: Build name constraint for the prompt
+        name_constraint = ""
+        if extracted_names:
+            name_constraint = (
+                "\n\n【已在文本中识别到以下角色名】"
+                + json.dumps(extracted_names, ensure_ascii=False)
+                + "\npersons 中每个条目的 name 字段必须严格从该名单中选取，不得编造不在名单中的新名字。"
+                + "所有场景中同一角色必须使用完全相同的 name 作为标识。"
+            )
+        base_prompt = TRANSCRIPT_PARSE_PROMPT if source_mode == "transcript_file" else PARSE_PROMPT
+        prompt = base_prompt + name_constraint
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": text}]
         try:
             response = create_json_chat_completion(messages=messages, model=get_chat_model(), temperature=0.2, max_tokens=4000)

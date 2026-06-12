@@ -13,8 +13,8 @@
     <section class="admin-list-panel">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h2 class="admin-list-section-title">场景人物校验</h2>
-          <p class="mt-1 text-sm text-slate-500">检查场景主对话人是否缺失，以及是否存在不适合进入训练场景的角色分配。</p>
+          <h2 class="admin-list-section-title">数据质量与场景校验</h2>
+          <p class="mt-1 text-sm text-slate-500">全面扫描案件配置问题、别名漂移及场景角色缺失，一键修复异常数据，保障训练质量。</p>
         </div>
         <div class="flex gap-3">
           <van-button plain type="primary" class="!rounded-[6px]" :loading="auditLoading" @click="fetchSceneRoleAudit">重新校验</van-button>
@@ -203,12 +203,12 @@
             <div class="cpv-card__label">训练场景</div>
             <div class="cpv-scene-list">
               <div v-for="(scene, idx) in previewCase.scenes" :key="scene.id" class="cpv-scene">
-                <span class="cpv-scene__idx">{{ idx + 1 }}</span>
+                <span class="cpv-scene__idx">{{ Number(idx) + 1 }}</span>
                 <div class="cpv-scene__info">
                   <div class="cpv-scene__name">{{ scene.name || '未命名场景' }}</div>
                   <div v-if="scene.description" class="cpv-scene__desc">{{ scene.description }}</div>
                 </div>
-                <van-tag plain size="small">{{ scene.difficulty || '中等' }}</van-tag>
+                <van-tag plain size="medium">{{ scene.difficulty || '中等' }}</van-tag>
               </div>
             </div>
           </div>
@@ -2561,7 +2561,24 @@ const fetchSceneRoleAudit = async () => {
 
 const repairSceneRoles = async () => {
   repairing.value = true
+  let dqRepairedPerson = 0
+  let dqRepairedCase = 0
   try {
+    // 第一步：数据质量扫描与修复
+    try {
+      const dqRes: any = await request.get('/cases/data-quality-report', { _skipErrorToast: true } as any)
+      const issues = dqRes?.issues || dqRes?.report?.issues || []
+      const hasConflicts = (dqRes?.summary?.alias_conflict_count ?? 0) > 0 || issues.some((item: any) => item.type === 'person_alias_conflict')
+      if (hasConflicts) {
+        const repairRes: any = await request.post('/cases/data-quality-repair', {}, { _skipErrorToast: true } as any)
+        dqRepairedPerson = Number(repairRes?.repaired_person_count ?? 0)
+        dqRepairedCase = Number(repairRes?.repaired_case_count ?? 0)
+      }
+    } catch {
+      // 数据质量检查非关键路径，静默继续
+    }
+
+    // 第二步：场景人物关系修复
     const res: any = await request.post('/cases/scene-role-repair', {}, { _skipErrorToast: true } as any)
     auditSummary.lastRepairCount = res.repaired_scene_count || 0
     if (res.audit) {
@@ -2569,9 +2586,19 @@ const repairSceneRoles = async () => {
       auditSummary.caseCount = res.audit.case_count || 0
       auditSummary.issueSceneCount = res.audit.issue_scene_count || 0
     }
-    showToast({ type: 'success', message: `已修复 ${auditSummary.lastRepairCount} 个场景` })
+
+    // 第三步：重新校验刷新数据
+    await fetchSceneRoleAudit()
+
+    const parts: string[] = []
+    if (auditSummary.lastRepairCount > 0) parts.push(`修复 ${auditSummary.lastRepairCount} 个场景`)
+    if (dqRepairedPerson > 0 || dqRepairedCase > 0) {
+      parts.push(`修正 ${dqRepairedPerson} 个人物字段（${dqRepairedCase} 个案件）`)
+    }
+    if (!parts.length) parts.push('未发现需要修复的问题，所有案件数据正常')
+    showToast({ type: 'success', message: parts.join('；') })
   } catch {
-    showToast('场景人物修复失败')
+    showToast('一键修复执行失败，请稍后重试')
   } finally {
     repairing.value = false
   }

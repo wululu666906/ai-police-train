@@ -2053,7 +2053,7 @@ const previewFormatDate = (dt: string | null | undefined) => {
     <div v-if="loadingCase" class="ce-loading"><van-loading color="#1D3557" vertical>加载案件中...</van-loading></div>
     <div v-else-if="loadError" class="ce-error"><p>{{ loadError }}</p><van-button plain @click="goBack">返回列表</van-button></div>
     <div v-else-if="editableCase" class="ce-content">
-      <div <nav class="review-module-nav" aria-label="审核模块">
+      <nav class="review-module-nav" aria-label="审核模块">
             <button
               v-for="module in reviewModules"
               :key="module.id"
@@ -2596,7 +2596,6 @@ const previewFormatDate = (dt: string | null | undefined) => {
           </div>
           </section>
     </div>
-  </div>
 </div>
 </template>
 

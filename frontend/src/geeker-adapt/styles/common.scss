@@ -1,0 +1,41 @@
+.student-app {
+  .flx-center {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .flx-align-center {
+    display: flex;
+    align-items: center;
+  }
+
+  .flx-justify-between {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .sle {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mle {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--el-border-color-darker);
+    border-radius: 20px;
+  }
+}

@@ -10,8 +10,12 @@
     "test:iflytek-parser": "node scripts/iflytek-parser-selfcheck.mjs"
   },
   "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
     "axios": "^1.15.0",
+    "echarts": "^5.6.0",
+    "element-plus": "^2.14.1",
     "pinia": "^3.0.4",
+    "sass": "^1.100.0",
     "vant": "^4.9.24",
     "vue": "^3.5.32",
     "vue-router": "^5.0.4",

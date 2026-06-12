@@ -1,167 +1,163 @@
 <template>
-  <div class="history-page">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">训练历史</h1>
-        <p class="page-desc">查看你的训练记录、会话完成情况和评估结果。</p>
-      </div>
-      <div class="history-tools">
-        <span class="tool-label">显示空会话</span>
-        <van-switch v-model="showEmptySessions" size="22px" @change="handleToggleEmpty" />
-      </div>
+  <div class="student-page history-page">
+    <template v-if="!loading">
+      <el-row :gutter="16" class="summary-row">
+        <el-col :xs="12" :sm="6">
+          <StudentStatCard
+            :label="showEmptySessions ? '当前筛选结果' : '当前可见记录'"
+            :value="total"
+            tone="primary"
+          />
+        </el-col>
+        <el-col :xs="12" :sm="6">
+          <StudentStatCard label="进行中训练" :value="activeCount" tone="primary" />
+        </el-col>
+        <el-col :xs="12" :sm="6">
+          <StudentStatCard label="已完成训练" :value="finishedCount" tone="success" />
+        </el-col>
+        <el-col v-if="hiddenEmptyCount > 0 && !showEmptySessions" :xs="12" :sm="6">
+          <StudentStatCard label="已隐藏空会话" :value="hiddenEmptyCount" tone="warning" />
+        </el-col>
+      </el-row>
+
+      <section class="card card--compact toolbar-card">
+        <div class="toolbar-card__main">
+          <SelectFilter
+            :data="statusFilterData"
+            :default-values="statusFilterValues"
+            @change="onStatusFilterChange"
+          />
+          <p v-if="showEmptySessions" class="summary-tip">空会话指尚未产生有效对话内容的训练记录。</p>
+        </div>
+        <div class="summary-tools">
+          <span class="tool-label">显示空会话</span>
+          <el-switch v-model="showEmptySessions" @change="handleToggleEmpty" />
+        </div>
+      </section>
+    </template>
+
+    <div v-if="loading" class="card loading-state">
+      <el-skeleton :rows="8" animated />
     </div>
 
-    <div v-if="!loading" class="summary-bar">
-      <div class="summary-item">
-        <span class="summary-num">{{ total }}</span>
-        <span class="summary-label">{{ showEmptySessions ? '当前筛选结果' : '当前可见记录' }}</span>
-      </div>
-      <div class="summary-item">
-        <span class="summary-num">{{ activeCount }}</span>
-        <span class="summary-label">进行中训练</span>
-      </div>
-      <div class="summary-item">
-        <span class="summary-num">{{ finishedCount }}</span>
-        <span class="summary-label">已完成训练</span>
-      </div>
-      <div v-if="hiddenEmptyCount > 0 && !showEmptySessions" class="summary-item">
-        <span class="summary-num summary-warn">{{ hiddenEmptyCount }}</span>
-        <span class="summary-label">已隐藏空会话</span>
-      </div>
-      <div v-if="showEmptySessions" class="summary-tip">空会话指尚未产生有效对话内容的训练记录。</div>
+    <div v-else-if="loadError" class="card error-state">
+      <el-empty :description="loadError">
+        <div class="error-actions">
+          <el-button @click="fetchHistory">重新加载</el-button>
+          <el-button type="primary" @click="router.push('/student/hall')">前往训练大厅</el-button>
+        </div>
+      </el-empty>
     </div>
 
-    <div v-if="!loading" class="status-filter-row">
-      <button
-        v-for="item in statusOptions"
-        :key="item.value"
-        type="button"
-        class="status-chip"
-        :class="{ active: statusFilter === item.value }"
-        @click="changeStatusFilter(item.value)"
-      >
-        {{ item.label }}
-      </button>
+    <div v-else-if="records.length === 0" class="card empty-state">
+      <el-empty :description="emptyTitle">
+        <template #description>
+          <p>{{ emptyTitle }}</p>
+          <span v-if="hiddenEmptyCount > 0">当前有 {{ hiddenEmptyCount }} 条空会话被自动隐藏。</span>
+          <span v-else>{{ emptyDescription }}</span>
+        </template>
+        <el-button type="primary" @click="router.push('/student/hall')">前往训练大厅</el-button>
+      </el-empty>
     </div>
 
-    <div v-if="loading" class="loading-state">
-      <van-loading color="#165DFF">加载中...</van-loading>
-    </div>
-
-    <div v-else-if="loadError" class="error-state">
-      <van-icon name="warning-o" size="48" color="#f59e0b" />
-      <p>{{ loadError }}</p>
-      <span>你可以稍后重试，或先返回训练大厅继续训练。</span>
-      <div class="error-actions">
-        <van-button plain size="small" @click="fetchHistory">重新加载</van-button>
-        <van-button type="primary" size="small" class="go-btn" @click="router.push('/student/hall')">
-          前往训练大厅
-        </van-button>
-      </div>
-    </div>
-
-    <div v-else-if="records.length === 0" class="empty-state">
-      <van-icon name="records-o" size="48" color="#C9CDD4" />
-      <p>{{ emptyTitle }}</p>
-      <span v-if="hiddenEmptyCount > 0">当前有 {{ hiddenEmptyCount }} 条空会话被自动隐藏。</span>
-      <span v-else>{{ emptyDescription }}</span>
-      <van-button type="primary" size="small" class="go-btn" @click="router.push('/student/hall')">
-        前往训练大厅
-      </van-button>
-    </div>
-
-    <div v-else>
+    <div v-else class="history-list-wrapper">
       <div class="history-list">
-        <article v-for="record in records" :key="record.id" class="history-card">
-          <div class="card-top">
-            <div>
-              <h3 class="record-title">{{ record.case_title }}</h3>
-              <div v-if="record.status !== 'finished'" class="record-substatus" :class="{ empty: record.is_empty_session }">
-                {{ record.is_empty_session ? '仅创建未开聊' : '已有进行中对话' }}
+        <article
+          v-for="record in records"
+          :key="record.id"
+          class="card history-card"
+          :class="record.status === 'finished' ? 'history-card--finished' : 'history-card--active'"
+        >
+          <!-- 头部：核心识别信息 -->
+          <header class="card-header">
+            <div class="card-header-main">
+              <div class="card-title-row">
+                <span class="status-badge" :class="record.status === 'finished' ? 'status-badge--done' : 'status-badge--live'">
+                  {{ record.status === 'finished' ? '已完成' : '进行中' }}
+                </span>
+                <h3 class="record-title">{{ record.case_title || '未命名案件' }}</h3>
+              </div>
+              <p class="record-scene">{{ record.scene_name || '未指定场景' }}</p>
+              <div class="record-meta">
+                <span class="meta-chip">{{ record.case_type || '未分类' }}</span>
+                <span class="meta-dot">·</span>
+                <span class="meta-text">难度 {{ record.difficulty || '中等' }}</span>
+                <span class="meta-dot">·</span>
+                <span class="meta-text">{{ formatTime(record.created_at) }}</span>
               </div>
             </div>
-            <van-tag :type="record.status === 'finished' ? 'success' : 'warning'" size="medium">
-              {{ record.status === 'finished' ? '已完成' : '进行中' }}
-            </van-tag>
-          </div>
 
-          <div class="record-grid">
-            <div class="record-item">
-              <span class="item-label">案件类型</span>
-              <span class="item-value">{{ record.case_type }}</span>
-            </div>
-            <div class="record-item">
-              <span class="item-label">训练场景</span>
-              <span class="item-value">{{ record.scene_name }}</span>
-            </div>
-            <div class="record-item">
-              <span class="item-label">难度</span>
-              <span class="item-value">{{ record.difficulty }}</span>
-            </div>
-            <div class="record-item">
-              <span class="item-label">时间</span>
-              <span class="item-value">{{ formatTime(record.created_at) }}</span>
-            </div>
-          </div>
-
-          <div class="metric-row">
-            <div class="metric-card">
-              <span class="metric-label">对话轮次</span>
-              <strong class="metric-value">{{ record.turn_count ?? 0 }}</strong>
-              <span v-if="record.is_empty_session" class="metric-tip">尚未开始有效对话</span>
-            </div>
-            <div class="metric-card">
-              <span class="metric-label">最终情绪</span>
-              <strong class="metric-value" :style="{ color: getEmotionColor(record.final_emotion) }">
-                {{ record.final_emotion }}
+            <div v-if="record.status === 'finished'" class="score-highlight">
+              <span class="score-label">综合评分</span>
+              <strong class="score-value" :class="getScoreClass(record.total_score)">
+                {{ record.total_score ?? '--' }}
               </strong>
             </div>
-            <div class="metric-card">
-              <span class="metric-label">最终配合</span>
-              <strong class="metric-value trust">{{ record.final_cooperation ?? record.final_trust ?? 30 }}</strong>
+            <div v-else class="progress-highlight">
+              <span class="score-label">对话轮次</span>
+              <strong class="score-value score-value--primary">{{ record.turn_count ?? 0 }}</strong>
             </div>
-            <div class="metric-card">
-              <span class="metric-label">失控风险</span>
-              <strong class="metric-value risk">{{ record.final_risk ?? 50 }}</strong>
-            </div>
-            <div class="metric-card">
-              <span class="metric-label">表达清晰</span>
-              <strong class="metric-value clarity">{{ record.final_clarity ?? 50 }}</strong>
-            </div>
-            <div class="metric-card">
-              <span class="metric-label">已获信息</span>
-              <strong class="metric-value">{{ record.revealed_info_count ?? 0 }}</strong>
-            </div>
-          </div>
+          </header>
 
-          <div v-if="record.status === 'finished'" class="result-strip">
-            <div class="result-strip-item">
-              <span class="result-strip-label">综合评分</span>
-              <strong class="result-strip-score">{{ record.total_score ?? '--' }}</strong>
-            </div>
-            <div v-if="record.stage_gap_missing?.length" class="result-strip-item grow">
-              <span class="result-strip-label">待复盘缺口</span>
-              <div class="gap-chip-row">
-                <span v-for="item in record.stage_gap_missing" :key="item" class="gap-chip">{{ item }}</span>
+          <!-- 训练数据：主次分明 -->
+          <section class="card-body">
+            <div class="stat-group stat-group--primary">
+              <div class="stat-block">
+                <span class="stat-label">对话轮次</span>
+                <strong class="stat-value">{{ record.turn_count ?? 0 }}</strong>
+              </div>
+              <div class="stat-block">
+                <span class="stat-label">已获信息</span>
+                <strong class="stat-value stat-value--primary">{{ record.revealed_info_count ?? 0 }}</strong>
               </div>
             </div>
-            <div v-else class="result-strip-item grow">
-              <span class="result-strip-label">阶段回顾</span>
-              <span class="gap-complete">关键项覆盖较完整</span>
-            </div>
-          </div>
 
-          <div class="action-cell">
-            <van-button
+            <div class="stat-divider" aria-hidden="true"></div>
+
+            <div class="stat-group stat-group--secondary">
+              <div class="stat-pill">
+                <span class="stat-pill-label">情绪</span>
+                <strong class="stat-pill-value" :style="{ color: getEmotionColor(record.final_emotion) }">
+                  {{ record.final_emotion ?? '--' }}
+                </strong>
+              </div>
+              <div class="stat-pill">
+                <span class="stat-pill-label">配合</span>
+                <strong class="stat-pill-value stat-pill-value--blue">
+                  {{ record.final_cooperation ?? record.final_trust ?? 30 }}
+                </strong>
+              </div>
+              <div class="stat-pill">
+                <span class="stat-pill-label">风险</span>
+                <strong class="stat-pill-value stat-pill-value--amber">{{ record.final_risk ?? 50 }}</strong>
+              </div>
+              <div class="stat-pill">
+                <span class="stat-pill-label">清晰</span>
+                <strong class="stat-pill-value stat-pill-value--green">{{ record.final_clarity ?? 50 }}</strong>
+              </div>
+            </div>
+          </section>
+
+          <!-- 已完成：复盘摘要 -->
+          <section v-if="record.status === 'finished'" class="card-review">
+            <span class="review-label">阶段复盘</span>
+            <div v-if="record.stage_gap_missing?.length" class="review-gaps">
+              <span v-for="item in record.stage_gap_missing" :key="item" class="gap-chip">{{ item }}</span>
+            </div>
+            <span v-else class="review-ok">关键项覆盖较完整</span>
+          </section>
+
+          <!-- 操作区 -->
+          <footer class="card-footer">
+            <el-button
               v-if="record.status === 'finished'"
               size="small"
               type="primary"
-              plain
               @click="router.push(`/student/evaluation?session_id=${record.id}`)"
             >
               查看报告
-            </van-button>
-            <van-button
+            </el-button>
+            <el-button
               v-if="record.status === 'finished'"
               size="small"
               plain
@@ -170,34 +166,33 @@
               @click="reEvaluate(record.id)"
             >
               重新评估
-            </van-button>
-            <van-button
+            </el-button>
+            <el-button
               v-if="record.status !== 'finished'"
               size="small"
-              type="success"
-              plain
+              type="primary"
               @click="continueTraining(record.id)"
             >
               继续训练
-            </van-button>
-            <van-button
+            </el-button>
+            <el-button
               size="small"
-              type="danger"
               plain
+              type="danger"
               :loading="deletingId === record.id"
               :disabled="deletingId !== null || reEvaluatingId !== null"
               @click="deleteSession(record.id)"
             >
               删除记录
-            </van-button>
-          </div>
+            </el-button>
+          </footer>
         </article>
       </div>
 
-      <div v-if="total > pageSize" class="pager">
-        <van-button size="small" plain :disabled="page <= 1" @click="changePage(page - 1)">上一页</van-button>
+      <div v-if="total > pageSize" class="pager card card--compact">
+        <el-button size="small" :disabled="page <= 1" @click="changePage(page - 1)">上一页</el-button>
         <span class="pager-text">第 {{ page }} / {{ totalPages }} 页，共 {{ total }} 条</span>
-        <van-button size="small" plain :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</van-button>
+        <el-button size="small" :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</el-button>
       </div>
     </div>
   </div>
@@ -207,6 +202,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
+import SelectFilter from '../geeker-adapt/components/SelectFilter/index.vue'
+import StudentStatCard from '../geeker-adapt/components/StudentStatCard.vue'
 import request from '../utils/request'
 
 const router = useRouter()
@@ -230,6 +227,21 @@ const statusOptions = [
   { label: '进行中', value: 'active' as const },
   { label: '已完成', value: 'finished' as const },
 ]
+
+const statusFilterValues = computed(() => ({ status: statusFilter.value }))
+
+const statusFilterData = computed(() => [
+  {
+    title: '记录状态',
+    key: 'status',
+    options: statusOptions.map((item) => ({ label: item.label, value: item.value })),
+  },
+])
+
+const onStatusFilterChange = async (values: Record<string, unknown>) => {
+  const next = values.status as 'all' | 'active' | 'finished'
+  await changeStatusFilter(next)
+}
 
 const emptyTitle = computed(() => {
   if (statusFilter.value === 'active') return showEmptySessions.value ? '暂无进行中的训练记录' : '暂无有效进行中训练'
@@ -352,6 +364,15 @@ const getEmotionColor = (value: number) => {
   return '#00B42A'
 }
 
+const getScoreClass = (score: number | null | undefined) => {
+  const value = Number(score)
+  if (!Number.isFinite(value)) return ''
+  if (value >= 85) return 'score-value--excellent'
+  if (value >= 70) return 'score-value--good'
+  if (value >= 60) return 'score-value--pass'
+  return 'score-value--weak'
+}
+
 const formatTime = (iso: string) => {
   if (!iso) return '-'
   const d = new Date(iso)
@@ -363,62 +384,43 @@ onMounted(fetchHistory)
 
 <style scoped>
 .history-page {
-  padding: 24px 24px 36px;
-  max-width: 1240px;
-  margin: 0 auto;
-  font-family: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+  padding-top: 16px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.page-header {
-  margin-bottom: 14px;
+.summary-row {
+  margin-bottom: 16px;
+}
+
+.toolbar-card {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 20px;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
 }
 
-.page-title {
-  font-size: 22px;
-  font-weight: 700;
-  color: #0f172a;
-  margin: 0;
+.toolbar-card__main {
+  flex: 1;
+  min-width: 0;
 }
 
-.page-desc {
-  font-size: 14px;
-  color: #86909c;
-  margin: 8px 0 0;
-}
-
-.history-tools {
+.summary-tools {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  background: #fff;
-  border: 1px solid #e5e6eb;
-  border-radius: 8px;
+  gap: 8px;
+  margin-left: auto;
+  padding-left: 12px;
 }
 
 .tool-label {
   font-size: 13px;
-  color: #4e5969;
-}
-
-.summary-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 14px;
-  padding: 14px 16px;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  flex-wrap: wrap;
+  color: #64748b;
+  white-space: nowrap;
 }
 
 .summary-item {
@@ -434,46 +436,8 @@ onMounted(fetchHistory)
   border-right: none;
 }
 
-.status-filter-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
-  padding: 12px 14px;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-}
-
-.status-chip {
-  border: 1px solid #cbd5e1;
-  background: #fff;
-  color: #4e5969;
-  border-radius: 6px;
-  padding: 7px 12px;
-  font-size: 13px;
-  font-weight: 700;
-  transition: all 0.2s ease;
-}
-
-.status-chip.active {
-  border-color: #165dff;
-  background: #165dff;
-  color: #fff;
-}
-
-.summary-num {
-  font-size: 22px;
-  font-weight: 700;
-  color: #165dff;
-}
-
-.summary-warn {
-  color: #ff7d00;
-}
-
-.summary-label,
 .summary-tip {
+  margin: 8px 0 0;
   font-size: 13px;
   color: #4e5969;
 }
@@ -513,203 +477,350 @@ onMounted(fetchHistory)
   margin-top: 16px;
 }
 
+.history-list-wrapper {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .history-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: grid;
   gap: 10px;
+  align-content: start;
+  padding-right: 4px;
 }
 
 .history-card {
   background: #fff;
-  border-radius: 12px;
-  border: 1px solid #e2e8f0;
-  box-shadow: none;
-  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  overflow: hidden;
+  height: 240px;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
 }
 
-.card-top {
+.history-card--finished {
+  border-left: 4px solid #10b981;
+}
+
+.history-card--active {
+  border-left: 4px solid #165dff;
+}
+
+.card-header {
   display: flex;
-  justify-content: space-between;
   align-items: flex-start;
+  justify-content: space-between;
   gap: 12px;
+  padding: 6px 14px 4px;
+  border-bottom: 1px solid #f1f5f9;
+  flex-shrink: 0;
+  height: 60px;
+}
+
+.card-header-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.status-badge--done {
+  color: #047857;
+  background: #ecfdf5;
+}
+
+.status-badge--live {
+  color: #165dff;
+  background: #eff6ff;
 }
 
 .record-title {
   margin: 0;
   color: #0f172a;
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.record-substatus {
-  display: inline-flex;
-  margin-top: 8px;
-  padding: 4px 10px;
-  border-radius: 999px;
+.record-scene {
+  color: #334155;
   font-size: 12px;
-  font-weight: 700;
-  color: #165dff;
-  background: #eaf2ff;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.record-substatus.empty {
-  color: #c2410c;
-  background: #fff7ed;
-}
-
-.record-grid {
-  margin-top: 12px;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+.record-meta {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #111827;
+  flex-shrink: 0;
   overflow: hidden;
 }
 
-.record-item {
-  padding: 10px 12px;
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 3px;
   background: #f8fafc;
-  border-right: 1px solid #e2e8f0;
-}
-
-.record-item:last-child {
-  border-right: none;
-}
-
-.item-label {
-  display: block;
+  color: #111827;
   font-size: 12px;
-  color: #7b8794;
+  font-weight: 600;
+  flex-shrink: 0;
 }
 
-.item-value {
+.meta-dot {
+  color: #cbd5e1;
+  flex-shrink: 0;
+}
+
+.meta-text {
+  color: #111827;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+}
+
+.score-highlight,
+.progress-highlight {
+  flex-shrink: 0;
+  min-width: 80px;
+  text-align: right;
+}
+
+.score-label {
   display: block;
-  margin-top: 6px;
-  font-size: 14px;
-  color: #1d2129;
+  font-size: 11px;
+  color: #94a3b8;
   font-weight: 600;
 }
 
-.metric-row {
-  margin-top: 10px;
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 0;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.metric-card {
-  padding: 10px 12px;
-  border-radius: 0;
-  background: #fff;
-  border: none;
-  border-right: 1px solid #e2e8f0;
-}
-
-.metric-card:last-child {
-  border-right: none;
-}
-
-.metric-label {
+.score-value {
   display: block;
-  color: #7b8794;
-  font-size: 12px;
-}
-
-.metric-value {
-  display: block;
-  margin-top: 4px;
-  color: #1d2129;
-  font-size: 18px;
-  font-weight: 700;
-}
-
-.metric-value.trust {
+  margin-top: 2px;
+  font-size: 30px;
+  font-weight: 900;
+  line-height: 1;
   color: #165dff;
 }
 
-.metric-value.risk {
+.score-value--primary {
+  color: #165dff;
+}
+
+.score-value--excellent {
+  color: #059669;
+}
+
+.score-value--good {
+  color: #165dff;
+}
+
+.score-value--pass {
   color: #d97706;
 }
 
-.metric-value.clarity {
-  color: #0f9f56;
+.score-value--weak {
+  color: #dc2626;
 }
 
-.metric-tip {
-  display: block;
-  margin-top: 6px;
-  color: #86909c;
-  font-size: 12px;
-}
-
-.action-cell {
-  margin-top: 12px;
+.card-body {
   display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 14px;
+  background: #fafbfc;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.stat-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.stat-group--primary {
+  flex-shrink: 0;
+}
+
+.stat-group--secondary {
+  flex: 1;
   flex-wrap: wrap;
-  gap: 8px;
   justify-content: flex-end;
 }
 
-.result-strip {
-  margin-top: 10px;
-  padding: 10px 12px;
+.stat-divider {
+  width: 1px;
+  height: 32px;
+  background: #e5e7eb;
+  flex-shrink: 0;
+}
+
+.stat-block {
+  min-width: 0;
+  padding: 6px 12px;
   border-radius: 8px;
-  background: #eff6ff;
-  border: 1px solid #dbe8ff;
+  background: #fff;
+  border: 1px solid #e5e7eb;
   display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
-.result-strip-item {
-  min-width: 120px;
-}
-
-.result-strip-item.grow {
-  flex: 1;
-}
-
-.result-strip-label {
-  display: block;
+.stat-label {
   font-size: 12px;
-  color: #6b7c93;
+  color: #64748b;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
-.result-strip-score {
-  display: block;
-  margin-top: 4px;
-  font-size: 20px;
-  font-weight: 700;
+.stat-value {
+  font-size: 18px;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1;
+}
+
+.stat-value--primary {
   color: #165dff;
 }
 
-.gap-chip-row {
+.stat-pill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+}
+
+.stat-pill-label {
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.stat-pill-value {
+  font-size: 16px;
+  font-weight: 800;
+  color: #334155;
+  line-height: 1;
+}
+
+.stat-pill-value--blue {
+  color: #165dff;
+}
+
+.stat-pill-value--amber {
+  color: #d97706;
+}
+
+.stat-pill-value--green {
+  color: #059669;
+}
+
+.card-review {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 14px;
+  border-top: 1px solid #f1f5f9;
+  background: #fff;
+  height: 30px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.review-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.review-gaps {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 6px;
+  flex: 1;
 }
 
 .gap-chip {
   display: inline-flex;
   align-items: center;
-  padding: 5px 10px;
-  border-radius: 999px;
+  padding: 2px 8px;
+  border-radius: 4px;
   background: #fff7ed;
   color: #c2410c;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
-.gap-complete {
-  display: inline-block;
-  margin-top: 8px;
-  color: #15803d;
-  font-size: 13px;
-  font-weight: 700;
+.review-ok {
+  color: #059669;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.card-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px;
+  border-top: 1px solid #f1f5f9;
+  background: #fff;
+  height: 44px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.card-footer :deep(.el-button) {
+  font-size: 13px !important;
+  padding: 7px 16px !important;
+  height: 34px !important;
 }
 
 .pager {
@@ -726,33 +837,75 @@ onMounted(fetchHistory)
 }
 
 @media (max-width: 900px) {
-  .record-grid,
-  .metric-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .card-header {
+    flex-direction: column;
+    gap: 8px;
   }
 
-  .record-item,
-  .metric-card {
-    border-right: none;
-    border-bottom: 1px solid #e2e8f0;
+  .score-highlight,
+  .progress-highlight {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    text-align: left;
+  }
+
+  .score-value {
+    font-size: 20px;
+  }
+
+  .card-body {
+    flex-direction: column;
+    gap: 8px;
+    align-items: stretch;
+  }
+
+  .stat-divider {
+    width: 100%;
+    height: 1px;
+  }
+
+  .stat-group--secondary {
+    justify-content: flex-start;
   }
 }
 
 @media (max-width: 640px) {
   .history-page {
-    padding: 16px 14px 28px;
+    padding: 12px 14px 24px;
   }
 
-  .page-header,
-  .card-top,
+  .summary-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .summary-tools {
+    margin-left: 0;
+    padding-left: 0;
+    padding-top: 8px;
+    border-top: 1px solid #f1f5f9;
+    justify-content: flex-end;
+  }
+
+  .card-footer,
   .pager {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .record-grid,
-  .metric-row {
-    grid-template-columns: 1fr;
+  .card-footer :deep(.van-button) {
+    width: 100%;
+  }
+
+  .stat-group--primary,
+  .stat-group--secondary {
+    width: 100%;
+  }
+
+  .stat-pill {
+    flex: 1;
+    min-width: calc(50% - 6px);
   }
 }
 </style>

@@ -48,9 +48,11 @@ def main() -> int:
         errors.append("缺少 backend/.env，请执行：cp backend/.env.example backend/.env")
     else:
         env = _load_env(ENV_PATH)
-        secret = env.get("JWT_SECRET_KEY", "")
+        secret = env.get("JWT_SECRET_KEY") or env.get("SECRET_KEY", "")
         if not secret or "replace-with" in secret.lower():
             errors.append("JWT_SECRET_KEY 仍为占位符，生产环境必须改为长随机字符串")
+        elif env.get("SECRET_KEY") and not env.get("JWT_SECRET_KEY"):
+            warnings.append("检测到旧变量 SECRET_KEY，建议改为 JWT_SECRET_KEY（代码已兼容两者）")
         if not (env.get("DASHSCOPE_API_KEY") or env.get("QWEN_API_KEY") or env.get("DEEPSEEK_API_KEY")):
             errors.append("未配置 LLM API Key（DASHSCOPE_API_KEY / QWEN_API_KEY / DEEPSEEK_API_KEY 至少一项）")
 

@@ -1,0 +1,27 @@
+.hall-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hall-layout--list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tasks-panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tasks-panel--list {
+  flex: 1;
+  min-height: 0;
+}
+
+.task-grid--list-view {
+  overflow: visible;
+}

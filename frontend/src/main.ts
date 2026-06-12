@@ -4,8 +4,10 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { Button, NavBar, Icon, Toast, ConfigProvider, Field, CellGroup, Form, Cell, Tabbar, TabbarItem, Loading, Circle, Progress, Popup, Dialog, Tag, Step, Steps, Slider, Divider, Image, Switch } from 'vant'
 
 import 'vant/lib/index.css'
+import 'element-plus/dist/index.css'
 import './style.css'
 import App from './App.vue'
+import { setupStudentElementPlus } from './geeker-adapt/setupElementPlus'
 import { clearAuth, getStoredRole, isLoggedIn, resetLoginRedirectState } from './utils/auth'
 
 // 配置路由
@@ -21,8 +23,6 @@ const routes = [
       { path: 'cases', component: () => import('./views/Cases.vue') },
       { path: 'cases/:id', component: () => import('./views/CaseDetail.vue') },
       { path: 'cases/:id/edit', component: () => import('./views/CaseEdit.vue') },
-      { path: 'data-quality', component: () => import('./views/DataQuality.vue') },
-      { path: 'state-influence', component: () => import('./views/StateInfluence.vue') },
       { path: 'knowledge', component: () => import('./views/Knowledge.vue') },
       { path: 'roles', component: () => import('./views/Roles.vue') },
       { path: 'roles/new', component: () => import('./views/RoleEdit.vue') },
@@ -89,6 +89,8 @@ app.use(Tabbar).use(TabbarItem)
 app.use(Loading).use(Circle).use(Progress).use(Popup).use(Dialog)
 app.use(Tag).use(Step).use(Steps).use(Slider)
 app.use(Divider).use(Image).use(Dialog).use(Switch)
+
+setupStudentElementPlus(app)
 
 app.use(createPinia())
 app.use(router)

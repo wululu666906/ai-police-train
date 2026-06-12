@@ -1,0 +1,55 @@
+.student-app {
+
+  --student-accent: #0066ff;
+
+  --student-accent-light: #e6f0ff;
+
+  --student-sidebar-bg: #001529;
+
+  --student-sidebar-active: #0066ff;
+
+  --student-page-bg: #f0f2f5;
+
+  --student-card-radius: 10px;
+
+  --student-success: #52c41a;
+
+  --student-warning: #fa8c16;
+
+  --student-danger: #ff4d4f;
+
+
+
+  --el-color-primary: #082a63;
+
+  --el-color-primary-light-3: #3d5f9a;
+
+  --el-color-primary-light-5: #5a7db3;
+
+  --el-color-primary-light-7: #8aa3c9;
+
+  --el-color-primary-light-8: #a8bbd6;
+
+  --el-color-primary-light-9: #e8eef7;
+
+  --el-color-primary-dark-2: #05204a;
+
+  --el-bg-color-page: var(--student-page-bg);
+
+  --el-header-bg-color: #ffffff;
+
+  --el-header-text-color: #1f2937;
+
+  --el-header-border-color: #e5e7eb;
+
+
+
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+
+  color: var(--el-text-color-primary);
+
+  background: var(--el-bg-color-page);
+
+}
+
+

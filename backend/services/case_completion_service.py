@@ -84,6 +84,8 @@ CASE_COMPLETION_PROMPT = f"""你是公安警情训练平台的「{CASE_OFFICER_R
 5. person status 只能是：正常、受伤可交流、昏迷、重伤无法交流、死亡。
 6. dispatch_brief_suggestion 只写接警时可知信息；first_impression_suggestion 只写到场第一眼可观察信息。
 7. persons 中 name 只能是纯人名，不要带”称、表示、供述”等后缀。
+8. 同一角色在不同场景中必须使用完全相同的 name 作为唯一标识，不得出现”张三”在场景A、”张三审讯”在场景B的情况。
+9. 严格避免将地名（某某村、东风路）、抽象名词（证言、陈述、纠纷）、角色称谓（嫌疑人、报警人、邻居）等非人名词当作 name 输出。
 8. 若【当前表单已有内容】某字段已有有效值且 mode=fill_gaps，不要覆盖，只在 field_evidence 标注 skipped；若 mode=full 则全部重新填写。
 9. parse_engine 固定为 “ai”；completion_engine 固定为 “deepseek-case-officer”。
 10. 各类要点（conflict_points / key_facts / hidden_info / evidence_points / inconsistencies）的区别：
@@ -290,6 +292,18 @@ def complete_case_information(
     text = _text(source_text)
     if not text:
         raise ValueError("案件原文不能为空")
+    # Extract character names from source text for accurate constraint
+    extracted_names = workflow_service.extract_case_person_names(text)
+
+    name_constraint = ""
+    if extracted_names:
+        name_constraint = (
+            "\n\n【已在文本中识别到以下角色名】"
+            + json.dumps(extracted_names, ensure_ascii=False)
+            + "\npersons 中 name 必须严格从该名单选取，不得编造不在名单中的新名字。"
+            + "同一角色在不同场景中必须使用完全相同的 name。"
+        )
+
 
     target_groups = target_groups or list(FIELD_CATALOG.keys())
     if include_scenes and "scenes" not in target_groups:
@@ -308,8 +322,9 @@ def complete_case_information(
     if source_meta:
         user_payload["source_meta"] = source_meta
 
+    enhanced_prompt = CASE_COMPLETION_PROMPT + name_constraint
     messages = [
-        {"role": "system", "content": CASE_COMPLETION_PROMPT},
+        {"role": "system", "content": enhanced_prompt},
         {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
     ]
 

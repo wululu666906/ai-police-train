@@ -180,12 +180,12 @@ const getTagType = (caseType: string) => {
                   :key="scene.id"
                   class="cd-scene-item"
                 >
-                  <div class="cd-scene-index">场景 {{ idx + 1 }}</div>
+                  <div class="cd-scene-index">场景 {{ Number(idx) + 1 }}</div>
                   <div class="cd-scene-info">
                     <div class="cd-scene-name">{{ scene.name || '未命名场景' }}</div>
                     <p v-if="scene.description" class="cd-scene-desc">{{ scene.description }}</p>
                     <div class="cd-scene-meta">
-                      <van-tag plain size="small">{{ scene.difficulty || '中等' }}</van-tag>
+                      <van-tag plain size="medium">{{ scene.difficulty || '中等' }}</van-tag>
                       <span v-if="scene.dispatch_brief" class="cd-scene-brief">{{ scene.dispatch_brief }}</span>
                     </div>
                   </div>

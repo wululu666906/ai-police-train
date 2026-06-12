@@ -5,6 +5,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 import models
+from .avatar_service import _safe_json_loads, assign_avatar, get_avatar_url
 from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
 from .persona_engine import build_persona_profile, build_role_script, format_persona_block
 from .role_resolver import is_role_speakable, resolve_scene_roles
@@ -331,6 +332,14 @@ def serialize_scene_roles(
         risk = int(snap.get("risk", 50))
         clarity = int(snap.get("clarity", 50))
         display_label = _state_label(emotion, cooperation, risk)
+
+        # Assign avatar based on persona_meta
+        persona_meta = _safe_json_loads(role.persona_meta, {})
+        age = persona_meta.get("age") if isinstance(persona_meta, dict) else None
+        gender = persona_meta.get("gender") if isinstance(persona_meta, dict) else None
+        avatar_id = assign_avatar(age, gender, _role_display_name(role))
+        avatar_url = get_avatar_url(avatar_id)
+
         payload.append(
             {
                 "id": role.id,
@@ -346,6 +355,8 @@ def serialize_scene_roles(
                 "state_label": display_label,
                 "is_active": role.id in active_ids,
                 "is_targeted": target_clean == _role_display_name(role),
+                "avatar_id": avatar_id,
+                "avatar_url": avatar_url,
             }
         )
     return payload

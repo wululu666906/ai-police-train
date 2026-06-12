@@ -1,0 +1,29 @@
+    def parse_case_text(self, text: str, source_mode: str = "plain_case", source_meta: dict[str, Any] | None = None):
+        # Step 1: Pre-extract character names for accurate constraint
+        extracted_names = self.extract_case_person_names(text)
+        # Step 2: Build name constraint for the prompt
+        name_constraint = ""
+        if extracted_names:
+            import json as _json
+            name_constraint = (
+                "
+
+【已在文本中识别到以下角色名】"
+                + _json.dumps(extracted_names, ensure_ascii=False)
+                + "
+persons 中每个条目的 name 字段必须严格从该名单中选取，不得编造不在名单中的新名字。"
+                + "所有场景中同一角色必须使用完全相同的 name 作为标识。"
+            )
+        base_prompt = TRANSCRIPT_PARSE_PROMPT if source_mode == "transcript_file" else PARSE_PROMPT
+        prompt = base_prompt + name_constraint
+        messages = [{"role": "system", "content": prompt}, {"role": "user", "content": text}]
+        try:
+            response = create_json_chat_completion(messages=messages, model=get_chat_model(), temperature=0.2, max_tokens=4000)
+            payload = self._safe_json_loads(extract_message_text(response), {})
+            if isinstance(payload, dict) and payload:
+                result = self._normalize_parsed_case(text, payload, source_mode, source_meta)
+                result["parse_engine"] = "ai"
+                return result
+        except Exception:
+            pass
+        return self._heuristic_parse_case(text, source_mode, source_meta)

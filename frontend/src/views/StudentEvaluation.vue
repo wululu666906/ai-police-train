@@ -1,46 +1,31 @@
 <template>
-  <div class="evaluation-page">
-    <div v-if="loading" class="loading-state">
-      <van-loading color="#165DFF" vertical>正在加载评估报告...</van-loading>
+  <div class="student-page evaluation-page">
+    <div v-if="loading" class="card loading-state">
+      <el-skeleton :rows="10" animated />
     </div>
 
     <article v-else-if="report" class="evaluation-shell">
-      <header class="page-heading">
+      <header class="card page-heading">
         <div>
           <h1>训练评估报告</h1>
-          <div class="meta-strip">
-            <div class="meta-item">
-              <span>案件名称</span>
-              <strong>{{ reportMeta.caseTitle }}</strong>
-            </div>
-            <div class="meta-item">
-              <span>训练场景</span>
-              <strong>{{ reportMeta.sceneName }}</strong>
-            </div>
-            <div class="meta-item">
-              <span>训练时长</span>
-              <strong>{{ reportMeta.duration }}</strong>
-            </div>
-            <div class="meta-item">
-              <span>完成时间</span>
-              <strong>{{ reportMeta.finishedAt }}</strong>
-            </div>
-            <div class="meta-item">
-              <span>评估人</span>
-              <strong>系统评估</strong>
-            </div>
-          </div>
+          <el-descriptions :column="2" border class="meta-descriptions">
+            <el-descriptions-item label="案件名称">{{ reportMeta.caseTitle }}</el-descriptions-item>
+            <el-descriptions-item label="训练场景">{{ reportMeta.sceneName }}</el-descriptions-item>
+            <el-descriptions-item label="训练时长">{{ reportMeta.duration }}</el-descriptions-item>
+            <el-descriptions-item label="完成时间">{{ reportMeta.finishedAt }}</el-descriptions-item>
+            <el-descriptions-item label="评估人">系统评估</el-descriptions-item>
+          </el-descriptions>
         </div>
         <div class="page-actions">
-          <van-button plain size="small" icon="down" @click="printReport">导出报告</van-button>
-          <van-button plain size="small" icon="printer" @click="printReport">打印报告</van-button>
-          <van-button type="primary" size="small" icon="cross" @click="router.push('/student/hall')">返回训练大厅</van-button>
+          <el-button plain size="small" @click="printReport">导出报告</el-button>
+          <el-button plain size="small" @click="printReport">打印报告</el-button>
+          <el-button type="primary" size="small" @click="router.push('/student/hall')">返回训练大厅</el-button>
         </div>
       </header>
 
       <div class="report-layout">
         <aside class="summary-panel">
-          <section class="summary-card score-card">
+          <section class="card summary-card score-card">
             <h2>综合评分</h2>
             <div class="score-line">
               <strong>{{ report.total_score ?? 0 }}</strong>
@@ -50,7 +35,7 @@
             <p>{{ scoreSummary }}</p>
           </section>
 
-          <section class="summary-card">
+          <section class="card summary-card">
             <h2>能力短板 TOP3</h2>
             <div v-for="item in weakestScoreItems" :key="item.dimension" class="weakness-row">
               <span>{{ item.dimension }}</span>
@@ -58,7 +43,7 @@
             </div>
           </section>
 
-          <section class="summary-card">
+          <section class="card summary-card">
             <h2>训练收尾</h2>
             <div class="closure-row">
               <span>会话结果</span>
@@ -72,11 +57,11 @@
               <span>阶段完成</span>
               <strong>{{ reportMeta.stageProgress }}</strong>
             </div>
-            <van-button block plain :loading="refreshing" @click="refreshEvaluation">重新评估</van-button>
+            <el-button style="width: 100%" plain :loading="refreshing" @click="refreshEvaluation">重新评估</el-button>
           </section>
         </aside>
 
-        <main class="formal-report">
+        <main class="card formal-report">
           <header class="document-header">
             <h2>训练评估报告</h2>
             <span>报告编号：{{ reportMeta.reportNo }}</span>
@@ -183,14 +168,18 @@
       </div>
     </article>
 
-    <div v-else class="empty-state">
-      <p>{{ emptyState.title }}</p>
-      <span>{{ emptyState.description }}</span>
-      <div class="empty-actions">
-        <van-button v-if="canResumeTraining" plain size="small" @click="resumeTraining">继续训练</van-button>
-        <van-button plain size="small" @click="router.push('/student/history')">训练历史</van-button>
-        <van-button type="primary" size="small" @click="router.push('/student/hall')">训练大厅</van-button>
-      </div>
+    <div v-else class="card empty-state">
+      <el-empty :description="emptyState.title">
+        <template #description>
+          <p>{{ emptyState.title }}</p>
+          <span>{{ emptyState.description }}</span>
+        </template>
+        <div class="empty-actions">
+          <el-button v-if="canResumeTraining" plain size="small" @click="resumeTraining">继续训练</el-button>
+          <el-button plain size="small" @click="router.push('/student/history')">训练历史</el-button>
+          <el-button type="primary" size="small" @click="router.push('/student/hall')">训练大厅</el-button>
+        </div>
+      </el-empty>
     </div>
   </div>
 </template>
@@ -456,22 +445,30 @@ onMounted(async () => {
 
 <style scoped>
 .evaluation-page {
-  min-height: calc(100vh - 52px);
-  padding: 18px 24px 36px;
-  background: #f3f6fb;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  font-size: 14px;
-  line-height: 1.6;
+  height: 100%;
+  padding: 20px 32px;
+  font-size: 16px;
+  line-height: 1.7;
   color: #111827;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
+.evaluation-shell {
+  max-width: none;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 32px;
+}
 .loading-state,
 .empty-state {
-  min-height: calc(100vh - 120px);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  flex: 1;
   text-align: center;
   gap: 8px;
 }
@@ -481,78 +478,52 @@ onMounted(async () => {
   color: #666;
 }
 
-.evaluation-shell {
-  max-width: 1360px;
-  margin: 0 auto;
-}
-
 .page-heading {
   display: flex;
   justify-content: space-between;
-  gap: 22px;
+  gap: 28px;
   align-items: flex-start;
-  margin-bottom: 16px;
+  margin-bottom: 20px;
 }
 
 .page-heading h1 {
-  margin: 0 0 12px;
-  font-size: 24px;
+  margin: 0 0 16px;
+  font-size: 28px;
   color: #111827;
   font-weight: 900;
 }
 
-.meta-strip {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(120px, auto));
-  gap: 18px 36px;
-}
-
-.meta-item {
-  display: grid;
-  gap: 2px;
-}
-
-.meta-item span {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.meta-item strong {
-  color: #111827;
-  font-size: 14px;
+.meta-descriptions {
+  margin-top: 14px;
 }
 
 .page-actions {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
 .report-layout {
   display: grid;
-  grid-template-columns: 340px minmax(0, 1fr);
-  gap: 20px;
+  grid-template-columns: 380px minmax(0, 1fr);
+  gap: 28px;
   align-items: start;
 }
 
 .summary-panel {
   display: grid;
-  gap: 14px;
+  gap: 18px;
 }
 
 .summary-card {
-  padding: 22px 24px;
-  background: #fff;
-  border: 1px solid #e6edf5;
-  border-radius: 8px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+  padding: 28px 30px;
 }
 
 .summary-card h2 {
-  margin: 0 0 16px;
+  margin: 0 0 18px;
   color: #111827;
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 900;
 }
 
@@ -565,7 +536,7 @@ onMounted(async () => {
 
 .score-line strong {
   color: #f04423;
-  font-size: 56px;
+  font-size: 64px;
   line-height: 1;
   font-weight: 900;
   font-variant-numeric: tabular-nums;
@@ -573,17 +544,17 @@ onMounted(async () => {
 
 .score-line span {
   color: #94a3b8;
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 700;
 }
 
 .grade-badge {
   display: inline-flex;
-  min-width: 68px;
+  min-width: 80px;
   justify-content: center;
   border-radius: 999px;
-  padding: 5px 12px;
-  font-size: 13px;
+  padding: 6px 16px;
+  font-size: 15px;
   font-weight: 800;
   background: #fee2e2;
   color: #dc2626;
@@ -600,9 +571,9 @@ onMounted(async () => {
 }
 
 .score-card p {
-  margin: 14px 0 0;
+  margin: 16px 0 0;
   color: #64748b;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .weakness-row,
@@ -611,7 +582,7 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 12px;
   align-items: center;
-  padding: 10px 0;
+  padding: 12px 0;
   border-bottom: 1px solid #eef2f7;
 }
 
@@ -623,25 +594,27 @@ onMounted(async () => {
 .weakness-row span,
 .closure-row span {
   color: #334155;
+  font-size: 14px;
   font-weight: 700;
 }
 
 .weakness-row strong,
 .closure-row strong {
   color: #ef4444;
+  font-size: 15px;
   font-variant-numeric: tabular-nums;
 }
 
 .summary-card .van-button {
-  margin-top: 16px;
+  margin-top: 18px;
 }
 
 .formal-report {
   min-height: 720px;
-  padding: 34px 44px 42px;
+  padding: 44px 52px 48px;
   background: #fff;
   border: 1px solid #e6edf5;
-  border-radius: 8px;
+  border-radius: 12px;
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
 }
 
@@ -649,14 +622,14 @@ onMounted(async () => {
   display: flex;
   justify-content: center;
   position: relative;
-  padding-bottom: 22px;
+  padding-bottom: 28px;
   border-bottom: 2px solid #cbd5e1;
 }
 
 .document-header h2 {
   margin: 0;
   color: #111827;
-  font-size: 26px;
+  font-size: 30px;
   font-weight: 900;
   letter-spacing: 0;
 }
@@ -664,13 +637,13 @@ onMounted(async () => {
 .document-header span {
   position: absolute;
   right: 0;
-  bottom: 12px;
+  bottom: 16px;
   color: #64748b;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .report-section {
-  padding: 18px 0;
+  padding: 24px 0;
   border-bottom: 1px solid #cbd5e1;
 }
 
@@ -679,9 +652,9 @@ onMounted(async () => {
 }
 
 .report-section h3 {
-  margin: 0 0 12px;
+  margin: 0 0 14px;
   color: #111827;
-  font-size: 17px;
+  font-size: 20px;
   font-weight: 900;
 }
 
@@ -689,11 +662,11 @@ onMounted(async () => {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: 14px;
+  font-size: 15px;
 }
 
 .report-table td {
-  padding: 8px 10px;
+  padding: 10px 12px;
   border-bottom: 1px solid #eef2f7;
   text-align: left;
   vertical-align: middle;
@@ -704,14 +677,15 @@ onMounted(async () => {
 }
 
 .col-index {
-  width: 34px;
+  width: 38px;
   color: #111827;
 }
 
 .col-score {
-  width: 118px;
+  width: 130px;
   text-align: right;
   color: #111827;
+  font-size: 16px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -720,22 +694,23 @@ onMounted(async () => {
 .report-text {
   margin: 0;
   color: #111827;
-  font-size: 14px;
-  line-height: 1.9;
+  font-size: 15px;
+  line-height: 2;
   text-indent: 2em;
 }
 
 .overview-table {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px 60px;
+  gap: 10px 60px;
   padding: 0 18px;
 }
 
 .overview-table div {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
+  font-size: 15px;
 }
 
 .overview-table span {
@@ -752,44 +727,46 @@ onMounted(async () => {
   margin: 0;
   padding-left: 22px;
   color: #111827;
-  line-height: 1.9;
+  font-size: 15px;
+  line-height: 2;
 }
 
 .assessment-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 12px;
+  gap: 14px;
+  margin-bottom: 16px;
 }
 
 .assessment-summary div {
   display: grid;
-  gap: 4px;
-  padding: 10px 12px;
+  gap: 6px;
+  padding: 14px 16px;
   border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  border-radius: 10px;
   background: #fafafa;
 }
 
 .assessment-summary span {
   color: #64748b;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .assessment-summary strong {
   color: #111827;
-  font-size: 18px;
+  font-size: 22px;
   font-variant-numeric: tabular-nums;
 }
 
 .assessment-note {
-  margin-bottom: 10px;
+  margin-bottom: 12px;
   color: #334155;
+  font-size: 15px;
 }
 
 .compact-table td {
-  padding-top: 7px;
-  padding-bottom: 7px;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 .all-clear-text {
@@ -799,9 +776,9 @@ onMounted(async () => {
 }
 
 .detail-collapse {
-  margin-top: 12px;
+  margin-top: 14px;
   border-top: 1px dashed #cbd5e1;
-  padding-top: 10px;
+  padding-top: 12px;
 }
 
 .detail-collapse summary {
@@ -812,7 +789,7 @@ onMounted(async () => {
 }
 
 .detail-collapse .report-table {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .empty-actions {
@@ -840,11 +817,12 @@ onMounted(async () => {
 
 @media (max-width: 640px) {
   .evaluation-page {
-    padding: 16px 12px 28px;
+    padding: 16px 16px 28px;
+    font-size: 15px;
   }
 
   .formal-report {
-    padding: 24px 18px;
+    padding: 28px 20px;
   }
 
   .document-header {

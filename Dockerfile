@@ -2,6 +2,14 @@ FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
+ARG VITE_API_URL=/api
+ARG VITE_SPEECH_PROVIDER=auto
+ARG VITE_IFLYTEK_VAD_EOS=1600
+
+ENV VITE_API_URL=$VITE_API_URL \
+    VITE_SPEECH_PROVIDER=$VITE_SPEECH_PROVIDER \
+    VITE_IFLYTEK_VAD_EOS=$VITE_IFLYTEK_VAD_EOS
+
 COPY frontend/package*.json ./
 RUN npm ci
 
@@ -27,10 +35,20 @@ RUN pip install --upgrade pip \
 COPY backend/ ./
 COPY frontend /app/frontend
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
-COPY start.sh /app/start.sh
 
-RUN chmod +x /app/start.sh
+RUN printf '%s\n' \
+    '#!/bin/bash' \
+    'set -euo pipefail' \
+    'cd /app/backend' \
+    'mkdir -p data/chroma_db' \
+    'if [[ ! -f data/ai_police.db ]]; then' \
+    '  : > data/ai_police.db' \
+    'fi' \
+    'python init_db.py' \
+    'exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8000}"' \
+    > /app/start.sh \
+    && chmod +x /app/start.sh
 
 EXPOSE 8000
 
-CMD ["/app/start.sh"]
+CMD ["/bin/bash", "/app/start.sh"]

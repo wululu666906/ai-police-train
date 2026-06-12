@@ -8,7 +8,7 @@
       'role-speaking-avatar--primary': primary,
       'role-speaking-avatar--risk': risk,
     }"
-    :style="{ '--avatar-size': `${size}px` }"
+    :style="{ '--avatar-size': `${size}px`, '--avatar-bg': avatarBgColor }"
   >
     <span v-if="speaking || thinking" class="role-speaking-avatar__halo" aria-hidden="true">
       <span class="role-speaking-avatar__halo-core"></span>
@@ -16,7 +16,14 @@
       <span class="role-speaking-avatar__halo-ring role-speaking-avatar__halo-ring--b"></span>
     </span>
     <div class="role-speaking-avatar__circle">
-      <span class="role-speaking-avatar__initial">{{ initial }}</span>
+      <img
+        v-if="avatarUrl"
+        :src="avatarUrl"
+        :alt="name"
+        class="role-speaking-avatar__img"
+        @error="onImageError"
+      />
+      <span v-else class="role-speaking-avatar__initial">{{ initial }}</span>
     </div>
 
     <span v-if="risk && !speaking && !thinking" class="role-speaking-avatar__risk-dot" title="失控风险偏高" />
@@ -24,11 +31,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+
+const AVATAR_PALETTE = [
+  '#4F46E5', '#0891B2', '#059669', '#D97706', '#DC2626',
+  '#7C3AED', '#0E7490', '#047857', '#B45309', '#BE123C',
+  '#6366F1', '#0284C7', '#16A34A', '#D97706', '#E11D48',
+  '#8B5CF6', '#0EA5E9', '#22C55E', '#F59E0B', '#EF4444',
+]
 
 const props = withDefaults(
   defineProps<{
     name: string
+    avatarUrl?: string
+    avatarId?: number
     speaking?: boolean
     thinking?: boolean
     primary?: boolean
@@ -44,10 +60,28 @@ const props = withDefaults(
   }
 )
 
+const imageLoadFailed = ref(false)
+
 const initial = computed(() => {
   const text = String(props.name || '').trim()
   return text ? text.slice(0, 1) : '?'
 })
+
+const avatarBgColor = computed(() => {
+  if (props.avatarId != null && props.avatarId >= 0 && props.avatarId < AVATAR_PALETTE.length) {
+    return AVATAR_PALETTE[props.avatarId]
+  }
+  const hash = props.name.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
+  return AVATAR_PALETTE[hash % AVATAR_PALETTE.length]
+})
+
+const showFallback = computed(() => {
+  return !props.avatarUrl || imageLoadFailed.value
+})
+
+function onImageError() {
+  imageLoadFailed.value = true
+}
 </script>
 
 <style scoped>
@@ -93,17 +127,18 @@ const initial = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(160deg, #f4f7fb 0%, #e6edf5 100%);
-  border: 2px solid #c9d4e3;
+  background: var(--avatar-bg, linear-gradient(160deg, #f4f7fb 0%, #e6edf5 100%));
+  border: 2px solid color-mix(in srgb, var(--avatar-bg, #c9d4e3) 60%, transparent);
   box-sizing: border-box;
+  overflow: hidden;
   transition:
     border-color 0.25s ease,
     box-shadow 0.25s ease;
 }
 
 .role-speaking-avatar--primary .role-speaking-avatar__circle {
-  background: linear-gradient(160deg, #fff9f0 0%, #f5e6d0 100%);
-  border-color: #e0c9a6;
+  border-color: rgba(255, 200, 50, 0.6);
+  box-shadow: 0 0 0 1px rgba(255, 200, 50, 0.15);
 }
 
 .role-speaking-avatar--risk:not(.role-speaking-avatar--live) .role-speaking-avatar__circle {
@@ -120,12 +155,20 @@ const initial = computed(() => {
   box-shadow: 0 0 0 1px rgba(134, 173, 225, 0.2);
 }
 
+.role-speaking-avatar__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .role-speaking-avatar__initial {
   font-size: calc(var(--avatar-size) * 0.4);
   font-weight: 700;
-  color: #2c3e5c;
+  color: #fff;
   line-height: 1;
   letter-spacing: 0.02em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
 }
 
 .role-speaking-avatar--speaking .role-speaking-avatar__halo {

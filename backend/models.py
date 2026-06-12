@@ -83,6 +83,15 @@ class SceneRole(Base):
     is_primary = Column(Boolean, default=False)
 
 
+class AvatarImage(Base):
+    __tablename__ = "avatar_images"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String(50), nullable=False)
+    gender = Column(String(10), nullable=False)
+    age_group = Column(String(10), nullable=False)
+
+
 class PromptTemplate(Base):
     __tablename__ = "prompt_templates"
 

@@ -1,110 +1,80 @@
 <template>
-  <div class="hall-page">
-    <section class="filter-bar">
-      <label class="filter-field">
-        <span>案件类型</span>
-        <select v-model="selectedType" @change="filterCases">
-          <option value="">全部类型</option>
-          <option v-for="type in caseTypes" :key="type" :value="type">{{ type }}</option>
-        </select>
-      </label>
-      <label class="filter-field">
-        <span>训练状态</span>
-        <select v-model="selectedStatus" @change="filterCases">
-          <option value="">全部状态</option>
-          <option value="active">进行中</option>
-          <option value="completed">已完成</option>
-          <option value="idle">未开始</option>
-        </select>
-      </label>
-      <label class="filter-field">
-        <span>难度</span>
-        <select v-model="selectedDifficulty" @change="filterCases">
-          <option value="">全部难度</option>
-          <option v-for="difficulty in difficulties" :key="difficulty" :value="difficulty">{{ difficulty }}</option>
-        </select>
-      </label>
-    </section>
-
-    <section v-if="isLoadingCases" class="state-panel loading-state">
-      <van-loading color="#165dff" vertical>正在加载训练案件...</van-loading>
-    </section>
-
-    <section v-else-if="loadError" class="state-panel empty-state">
-      <van-icon name="warning-o" size="48" color="#F59E0B" />
-      <p>训练案件加载失败</p>
-      <span>{{ loadError }}</span>
-      <van-button type="primary" size="small" class="retry-btn" @click="fetchCases">
-        重新加载
-      </van-button>
-    </section>
-
-    <section v-else-if="filteredCases.length" class="cases-panel">
-      <div class="case-grid">
-        <article v-for="caseItem in filteredCases" :key="caseItem.id" class="case-card">
-          <div class="card-top">
-            <van-tag :type="getTypeColor(caseItem.case_type) as any" plain size="medium">
-              {{ caseItem.case_type || '未分类' }}
-            </van-tag>
-            <div class="card-top-right">
-              <span class="case-train-count">已训练 {{ caseItem.train_count || 0 }} 次</span>
-              <span class="case-status" :class="`status-${getCaseStatus(caseItem)}`">{{ getCaseStatusLabel(caseItem) }}</span>
-            </div>
-          </div>
-
-          <h3 class="case-title">{{ caseItem.title || '未命名案件' }}</h3>
-          <p class="case-background">
-            {{ truncateText(caseItem.background, 88) || '当前案件暂无完整背景描述。' }}
-          </p>
-
-          <div class="scene-block">
-            <div class="scene-block-title">训练场景</div>
-            <div class="scene-list">
-              <div v-for="scene in getVisibleScenes(caseItem).slice(0, 3)" :key="scene.id" class="scene-item">
-                <div class="scene-main">
-                  <div class="scene-name">{{ scene.name }}</div>
-                  <div class="scene-meta">
-                    <span>{{ normalizeDifficulty(scene.difficulty || '中等') }}</span>
-                    <span :class="scene.has_active_session ? 'meta-active' : 'meta-idle'">
-                      {{ scene.has_active_session ? '进行中' : '未开始' }}
-                    </span>
-                    <span v-if="scene.has_active_session" :class="scene.active_session_is_empty ? 'meta-empty' : 'meta-active'">
-                      {{ scene.active_session_is_empty ? '仅创建未开聊' : '已有进行中对话' }}
-                    </span>
-                  </div>
-                </div>
-                <div class="scene-actions">
-                  <van-button
-                    type="primary"
-                    size="small"
-                    :loading="loadingSceneId === scene.id"
-                    :disabled="loadingSceneId !== null"
-                    @click="startTraining(scene)"
-                  >
-                    {{ scene.has_active_session ? '继续训练' : '开始训练' }}
-                  </van-button>
-                </div>
-              </div>
-            </div>
-
-            <button
-              v-if="getVisibleScenes(caseItem).length > 3"
-              type="button"
-              class="expand-trigger"
-              @click="openExpandedDetail(caseItem)"
-            >
-              查看全部 {{ getVisibleScenes(caseItem).length }} 个场景
-            </button>
-          </div>
-        </article>
+  <div class="student-page student-page--hall hall-page">
+    <div class="hall-layout hall-layout--list">
+      <div class="list-toolbar">
+        <span class="list-title">全部训练案件（{{ displayCases.length }}）</span>
       </div>
-    </section>
 
-    <section v-else class="state-panel empty-state">
-      <van-icon name="orders-o" size="48" color="#C9CDD4" />
-      <p>暂无符合条件的训练案件</p>
-      <span>请调整筛选条件，或联系管理员补充案件。</span>
-    </section>
+      <section class="card card--compact filter-card">
+        <SelectFilter :data="filterData" :default-values="filterValues" @change="onFilterChange" />
+      </section>
+
+      <section class="card tasks-panel tasks-panel--list">
+        <div class="tasks-toolbar">
+          <el-tabs v-model="activeTaskTab" class="task-tabs">
+            <el-tab-pane label="全部任务" name="all" />
+            <el-tab-pane label="进行中" name="active" />
+            <el-tab-pane label="未开始" name="idle" />
+            <el-tab-pane label="已完成" name="completed" />
+          </el-tabs>
+          <div class="tasks-controls">
+            <el-select v-model="sortBy" size="small" class="sort-select">
+              <el-option label="最新创建" value="newest" />
+              <el-option label="训练次数" value="train_count" />
+              <el-option label="案件名称" value="title" />
+            </el-select>
+            <div class="view-toggle">
+              <button
+                type="button"
+                class="view-btn"
+                :class="{ 'view-btn--active': viewMode === 'grid' }"
+                @click="viewMode = 'grid'"
+              >
+                <el-icon><Grid /></el-icon>
+              </button>
+              <button
+                type="button"
+                class="view-btn"
+                :class="{ 'view-btn--active': viewMode === 'list' }"
+                @click="viewMode = 'list'"
+              >
+                <el-icon><List /></el-icon>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="isLoadingCases" class="state-panel">
+          <el-skeleton :rows="6" animated />
+        </div>
+        <div v-else-if="loadError" class="state-panel">
+          <el-empty :description="loadError">
+            <el-button type="primary" @click="fetchCases">重新加载</el-button>
+          </el-empty>
+        </div>
+        <div
+          v-else-if="displayCases.length"
+          class="task-grid task-grid--list-view"
+          :class="{ 'task-grid--list': viewMode === 'list' }"
+        >
+          <TrainingTaskCard
+            v-for="caseItem in displayCases"
+            :key="caseItem.id"
+            :case-item="caseItem"
+            :status="getCaseStatus(caseItem)"
+            :status-label="getCaseStatusLabel(caseItem)"
+            :view-mode="viewMode"
+            :loading-scene-id="loadingSceneId"
+            :disabled="loadingSceneId !== null"
+            @start-scene="startTraining"
+            @view-detail="openExpandedDetail(caseItem)"
+          />
+        </div>
+        <div v-else class="state-panel">
+          <el-empty description="暂无符合条件的训练案件" />
+        </div>
+      </section>
+    </div>
 
     <van-popup
       v-model:show="showExpanded"
@@ -115,17 +85,15 @@
       <div v-if="expandedCase" class="detail-card">
         <div class="detail-header">
           <div>
-            <van-tag type="primary" plain size="large">{{ expandedCase.case_type || '未分类' }}</van-tag>
+            <el-tag type="primary" effect="plain">{{ expandedCase.case_type || '未分类' }}</el-tag>
             <h2>{{ expandedCase.title || '未命名案件' }}</h2>
           </div>
           <van-icon name="cross" class="detail-close" @click="showExpanded = false" />
         </div>
-
         <section class="detail-section">
           <div class="detail-label">案件背景</div>
           <p>{{ expandedCase.background || '暂无案件背景信息。' }}</p>
         </section>
-
         <section class="detail-section">
           <div class="detail-label">全部训练场景（{{ getVisibleScenes(expandedCase).length }}）</div>
           <div class="detail-scene-list">
@@ -133,17 +101,14 @@
               <div>
                 <div class="scene-name">{{ scene.name }}</div>
                 <div class="scene-meta">
-                  <span>{{ normalizeDifficulty(scene.difficulty || '中等') }}</span>
+                  <span>{{ normalizeDifficulty(scene.difficulty || '中') }}</span>
                   <span :class="scene.has_active_session ? 'meta-active' : 'meta-idle'">
                     {{ scene.has_active_session ? '进行中' : '未开始' }}
-                  </span>
-                  <span v-if="scene.has_active_session" :class="scene.active_session_is_empty ? 'meta-empty' : 'meta-active'">
-                    {{ scene.active_session_is_empty ? '仅创建未开聊' : '已有进行中对话' }}
                   </span>
                 </div>
               </div>
               <div class="scene-actions">
-                <van-button
+                <el-button
                   type="primary"
                   size="small"
                   :loading="loadingSceneId === scene.id"
@@ -151,7 +116,7 @@
                   @click="startTraining(scene)"
                 >
                   {{ scene.has_active_session ? '继续训练' : '开始训练' }}
-                </van-button>
+                </el-button>
               </div>
             </div>
           </div>
@@ -162,10 +127,14 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { showToast } from 'vant'
+import { Grid, List } from '@element-plus/icons-vue'
+import SelectFilter from '../geeker-adapt/components/SelectFilter/index.vue'
+import TrainingTaskCard from '../geeker-adapt/components/TrainingTaskCard.vue'
 import request from '../utils/request'
+import '../geeker-adapt/styles/student-hall.scss'
 
 type SceneItem = {
   id: number
@@ -181,36 +150,96 @@ type CaseItem = {
   title: string
   case_type: string
   background: string
+  created_at?: string
   train_count?: number
   scenes?: SceneItem[]
 }
 
 const router = useRouter()
+const setMainScrollable = inject<(value: boolean) => void>('setMainScrollable')
 
 const cases = ref<CaseItem[]>([])
 const filteredCases = ref<CaseItem[]>([])
 const caseTypes = ref<string[]>([])
-const difficulties = ['低', '中等', '高']
+const difficulties = ['低', '中', '高']
 const selectedType = ref('')
 const selectedDifficulty = ref('')
 const selectedStatus = ref('')
+const activeTaskTab = ref<'all' | 'active' | 'idle' | 'completed'>('all')
+const sortBy = ref<'newest' | 'train_count' | 'title'>('newest')
+const viewMode = ref<'grid' | 'list'>('grid')
 const isLoadingCases = ref(false)
 const loadError = ref('')
 const loadingSceneId = ref<number | null>(null)
 const showExpanded = ref(false)
 const expandedCase = ref<CaseItem | null>(null)
 
-const truncateText = (value: string, maxLength: number) => {
-  const text = String(value || '').trim()
-  if (!text) return ''
-  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
-}
+onMounted(() => {
+  setMainScrollable?.(true)
+  fetchCases()
+})
+
+onUnmounted(() => {
+  setMainScrollable?.(false)
+})
+
+const filterValues = computed(() => ({
+  type: selectedType.value,
+  status: selectedStatus.value,
+  difficulty: selectedDifficulty.value,
+}))
+
+const filterData = computed(() => [
+  {
+    title: '案件类型',
+    key: 'type',
+    options: [{ label: '全部类型', value: '' }, ...caseTypes.value.map((type) => ({ label: type, value: type }))],
+  },
+  {
+    title: '训练状态',
+    key: 'status',
+    options: [
+      { label: '全部状态', value: '' },
+      { label: '进行中', value: 'active' },
+      { label: '已完成', value: 'completed' },
+      { label: '未开始', value: 'idle' },
+    ],
+  },
+  {
+    title: '案件难度',
+    key: 'difficulty',
+    options: [{ label: '全部难度', value: '' }, ...difficulties.map((item) => ({ label: item, value: item }))],
+  },
+])
+
+const displayCases = computed(() => {
+  let result = [...filteredCases.value]
+
+  if (activeTaskTab.value !== 'all') {
+    result = result.filter((caseItem) => getCaseStatus(caseItem) === activeTaskTab.value)
+  }
+
+  if (sortBy.value === 'train_count') {
+    result.sort((a, b) => Number(b.train_count || 0) - Number(a.train_count || 0))
+  } else if (sortBy.value === 'title') {
+    result.sort((a, b) => (a.title || '').localeCompare(b.title || '', 'zh-CN'))
+  } else {
+    result.sort((a, b) => {
+      const ta = a.created_at ? new Date(a.created_at).getTime() : 0
+      const tb = b.created_at ? new Date(b.created_at).getTime() : 0
+      return tb - ta
+    })
+  }
+
+  return result
+})
 
 const normalizeDifficulty = (value: string) => {
   const text = String(value || '').trim()
   if (['简单', '低'].includes(text)) return '低'
+  if (['中等'].includes(text)) return '中'
   if (['困难', '高'].includes(text)) return '高'
-  return text || '中等'
+  return text || '中'
 }
 
 const openExpandedDetail = (caseItem: CaseItem) => {
@@ -224,7 +253,7 @@ const getVisibleScenes = (caseItem: CaseItem) => {
   return scenes.filter((scene) => normalizeDifficulty(scene.difficulty || '') === selectedDifficulty.value)
 }
 
-const getCaseStatus = (caseItem: CaseItem) => {
+const getCaseStatus = (caseItem: CaseItem): 'active' | 'completed' | 'idle' => {
   const scenes = Array.isArray(caseItem?.scenes) ? caseItem.scenes : []
   if (scenes.some((scene) => scene.has_active_session)) return 'active'
   if (Number(caseItem.train_count || 0) > 0) return 'completed'
@@ -259,6 +288,13 @@ const fetchCases = async () => {
   }
 }
 
+const onFilterChange = (values: Record<string, unknown>) => {
+  selectedType.value = String(values.type ?? '')
+  selectedStatus.value = String(values.status ?? '')
+  selectedDifficulty.value = String(values.difficulty ?? '')
+  filterCases()
+}
+
 const filterCases = () => {
   let result = [...cases.value]
 
@@ -288,268 +324,124 @@ const startTraining = async (scene: SceneItem) => {
   loadingSceneId.value = sceneId
   try {
     const res: any = await request.post(`/training/start/${sceneId}`, null, { _skipErrorToast: true } as any)
-    if (!res?.id) {
-      throw new Error('训练初始化失败，请稍后重试')
-    }
+    if (!res?.id) throw new Error('训练初始化失败，请稍后重试')
 
     if (scene?.has_active_session && scene?.active_session_id === res.id) {
       showToast('已恢复你上次未完成的训练')
     }
     router.push(`/student/training/${res.id}`)
   } catch (error: any) {
-    const errorMsg = error?.response?.data?.detail || error?.message || '训练环境初始化失败'
-    showToast(errorMsg)
+    showToast(error?.response?.data?.detail || error?.message || '训练环境初始化失败')
   } finally {
     loadingSceneId.value = null
   }
 }
-
-const getTypeColor = (type: string) => {
-  const map: Record<string, string> = {
-    邻里纠纷: 'primary',
-    打架斗殴: 'danger',
-    酒驾醉驾: 'warning',
-    盗窃: 'success',
-    故意杀人: 'danger',
-  }
-  return map[type] || 'primary'
-}
-
-onMounted(fetchCases)
 </script>
 
-<style scoped>
-.hall-page {
-  max-width: 1360px;
-  margin: 0 auto;
-  padding: 16px 28px 32px;
-  background: #fff;
+<style scoped lang="scss">
+.tasks-panel {
+  padding: 0;
 }
 
-.filter-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px 24px;
-  align-items: center;
-  padding: 14px 18px;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  background: #fff;
-}
-
-.filter-field {
+.tasks-toolbar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
+  padding: 0 14px;
+  border-bottom: 1px solid #f3f4f6;
+  flex-shrink: 0;
 }
 
-.filter-field span {
-  font-size: 13px;
-  font-weight: 600;
-  color: #475569;
-  white-space: nowrap;
+.task-tabs {
+  :deep(.el-tabs__header) {
+    margin-bottom: 0;
+  }
+
+  :deep(.el-tabs__nav-wrap::after) {
+    display: none;
+  }
+
+  :deep(.el-tabs__item) {
+    height: 40px;
+    font-size: 13px;
+    padding: 0 12px;
+  }
+
+  :deep(.el-tabs__item.is-active) {
+    color: var(--student-accent, #0066ff);
+    font-weight: 600;
+  }
+
+  :deep(.el-tabs__active-bar) {
+    background: var(--student-accent, #0066ff);
+  }
 }
 
-.filter-field select {
-  min-width: 140px;
-  height: 36px;
-  border: 1px solid #d1d5db;
+.tasks-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sort-select {
+  width: 110px;
+}
+
+.view-toggle {
+  display: flex;
+  gap: 3px;
+  padding: 2px;
   border-radius: 6px;
-  background: #fff;
-  padding: 0 12px;
-  color: #334155;
-  font-size: 13px;
-  outline: none;
+  background: #f3f4f6;
 }
 
-.filter-field select:focus {
-  border-color: #165dff;
+.view-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+
+  &--active {
+    background: #fff;
+    color: var(--student-accent, #0066ff);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  }
 }
 
-.cases-panel {
-  margin-top: 16px;
-  padding-top: 4px;
-  border-top: 1px solid #f1f5f9;
-}
-
-.case-grid {
+.task-grid--list-view {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.case-card {
-  display: flex;
-  flex-direction: column;
   gap: 12px;
-  min-height: 292px;
-  padding: 16px;
-  border-radius: 10px;
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  padding: 14px;
+
+  &.task-grid--list {
+    grid-template-columns: 1fr;
+  }
 }
 
-.card-top {
+.list-toolbar {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 12px;
-  align-items: center;
+  flex-shrink: 0;
 }
 
-.card-top-right {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-  align-items: center;
-}
-
-.case-train-count {
-  color: #94a3b8;
-  font-size: 12px;
-}
-
-.case-status {
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.status-active {
-  color: #165dff;
-  background: #eff6ff;
-}
-
-.status-completed {
-  color: #047857;
-  background: #ecfdf5;
-}
-
-.status-idle {
-  color: #64748b;
-  background: #f8fafc;
-}
-
-.case-title {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 800;
-  color: #0f172a;
-}
-
-.case-background {
-  margin: 0;
-  color: #64748b;
-  line-height: 1.65;
-  min-height: 66px;
-  font-size: 13px;
-}
-
-.scene-block {
-  margin-top: auto;
-}
-
-.scene-block-title,
-.detail-label {
-  margin-bottom: 10px;
-  font-size: 13px;
-  font-weight: 700;
-  color: #64748b;
-}
-
-.scene-list,
-.detail-scene-list {
-  display: grid;
-  gap: 8px;
-}
-
-.scene-item,
-.detail-scene-item {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-  border-radius: 8px;
-  background: #f8fafc;
-  border: 1px solid #e5e7eb;
-  padding: 10px 12px;
-}
-
-.scene-main {
-  min-width: 0;
-  flex: 1;
-}
-
-.scene-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.scene-name {
-  font-weight: 700;
-  color: #1e293b;
+.list-title {
   font-size: 14px;
-}
-
-.scene-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 4px;
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.meta-active {
-  color: #165dff;
-}
-
-.meta-idle {
-  color: #94a3b8;
-}
-
-.meta-empty {
-  color: #c2410c;
-}
-
-.expand-trigger {
-  width: 100%;
-  margin-top: 10px;
-  border: 1px dashed #cbd5e1;
-  background: #fff;
-  color: #165dff;
-  border-radius: 8px;
-  padding: 9px 12px;
-  cursor: pointer;
-  font-size: 13px;
+  font-weight: 700;
+  color: #111827;
 }
 
 .state-panel {
-  margin-top: 16px;
-  border-radius: 10px;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  padding: 64px 20px;
+  padding: 32px 16px;
   text-align: center;
-}
-
-.empty-state {
-  color: #94a3b8;
-}
-
-.empty-state p {
-  margin: 16px 0 8px;
-  font-size: 16px;
-  color: #475569;
-}
-
-.retry-btn {
-  margin-top: 16px;
-  background: #165dff !important;
-  border: none !important;
 }
 
 .detail-popup {
@@ -571,16 +463,16 @@ onMounted(fetchCases)
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
-}
 
-.detail-header h2 {
-  margin: 12px 0 0;
-  color: #0f172a;
+  h2 {
+    margin: 12px 0 0;
+    color: #111827;
+  }
 }
 
 .detail-close {
   font-size: 22px;
-  color: #94a3b8;
+  color: #9ca3af;
   cursor: pointer;
 }
 
@@ -588,47 +480,67 @@ onMounted(fetchCases)
   margin-top: 20px;
 }
 
+.detail-label {
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #6b7280;
+}
+
 .detail-section p {
   margin: 0;
-  color: #64748b;
+  color: #6b7280;
   line-height: 1.8;
 }
 
-@media (max-width: 1100px) {
-  .case-grid {
+.detail-scene-list {
+  display: grid;
+  gap: 8px;
+}
+
+.detail-scene-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  padding: 10px 12px;
+}
+
+.scene-name {
+  font-weight: 700;
+  color: #1e293b;
+  font-size: 14px;
+}
+
+.scene-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.meta-active {
+  color: var(--student-accent, #0066ff);
+}
+
+.meta-idle {
+  color: #9ca3af;
+}
+
+@media (max-width: 1400px) {
+  .task-grid--list-view:not(.task-grid--list) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 768px) {
-  .hall-page {
-    padding: 12px 14px 24px;
-  }
-
-  .filter-bar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .filter-field {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .filter-field select {
-    width: 100%;
-    min-width: 0;
-  }
-
-  .case-grid {
+@media (max-width: 960px) {
+  .task-grid--list-view:not(.task-grid--list) {
     grid-template-columns: 1fr;
-  }
-
-  .scene-item,
-  .detail-scene-item,
-  .card-top {
-    flex-direction: column;
-    align-items: stretch;
   }
 }
 </style>

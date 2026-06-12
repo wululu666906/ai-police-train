@@ -31,241 +31,182 @@
 
     <div class="training-body">
     <aside class="info-panel">
-      <div class="panel-section">
-        <h3 class="panel-title">
-          <van-icon name="description" />
-          案件信息
-        </h3>
-        <div class="info-item">
-          <span class="info-label">案件名称</span>
-          <span class="info-value">{{ caseInfo.title }}</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">当前场景</span>
-          <span class="info-value">{{ caseInfo.sceneName }}</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">难度等级</span>
-          <van-tag :color="getDifficultyColor(caseInfo.difficulty)" plain size="medium">
-            {{ caseInfo.difficulty }}
-          </van-tag>
-        </div>
-        <van-button block plain type="primary" size="mini" class="brief-btn" @click="showCaseBrief = true">
-          查看接警简报与现场信息
-        </van-button>
-      </div>
-
-      <div class="panel-section briefing-section">
-        <h3 class="panel-title">
-          <van-icon name="notes-o" />
-          接警与现场
-        </h3>
-        <div class="briefing-card briefing-card--dispatch">
-          <span class="briefing-label">110 简报</span>
-          <p>{{ compactDispatchBrief }}</p>
-        </div>
-        <div v-if="!isIntakeScene" class="briefing-grid">
-          <div class="briefing-mini">
-            <span>第一印象</span>
-            <p>{{ compactFirstImpression }}</p>
-          </div>
-          <div class="briefing-mini">
-            <span>案件背景</span>
-            <p>{{ compactCaseBackground }}</p>
-          </div>
-        </div>
-        <van-button block plain type="primary" size="mini" class="brief-btn" @click="showCaseBrief = true">
-          查看完整接警简报
-        </van-button>
-      </div>
-
-      <div class="panel-section stage-section">
-        <h3 class="panel-title">
-          <van-icon name="send-gift-o" />
-          训练阶段
-        </h3>
-        <div class="stage-card">
-          <div class="stage-name-box">
-            <span class="stage-tag">当前阶段</span>
-            <span class="stage-name-text">{{ caseInfo.currentStage }}</span>
-          </div>
-          <div class="stage-goal-box">
-            <div class="goal-label">本阶段目标</div>
-            <div class="goal-text">{{ caseInfo.currentStageGoal || '请开始与对方交流，获取关键事实。' }}</div>
-          </div>
-          <div v-if="stageMissing.length" class="left-gap-row">
-            <span v-for="item in stageMissing.slice(0, 3)" :key="item" class="left-gap-chip">{{ item }}</span>
-          </div>
-          <div v-if="leftSuggestedQuestions.length" class="left-suggestion-list">
-            <button
-              v-for="item in leftSuggestedQuestions"
-              :key="item.text"
-              type="button"
-              class="left-suggestion"
-              :disabled="isLoading"
-              @click="applySuggestedQuestion(item)"
-            >
-              <span>{{ item.category || '追问' }}</span>
-              {{ item.text }}
+      <div class="panel-scroll">
+        <div class="panel-section panel-section--tertiary case-info-section">
+          <h3 class="panel-title">
+            <van-icon name="description" />
+            案件信息
+          </h3>
+          <div class="case-ref-card">
+            <div class="info-item">
+              <span class="info-label">当前场景</span>
+              <span class="info-value">{{ caseInfo.sceneName }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">难度等级</span>
+              <van-tag :color="getDifficultyColor(caseInfo.difficulty)" plain size="medium">
+                {{ caseInfo.difficulty }}
+              </van-tag>
+            </div>
+            <button type="button" class="brief-link" @click="showCaseBrief = true">
+              查看训练简报
+              <van-icon name="arrow" />
             </button>
           </div>
         </div>
-      </div>
 
-      <div class="panel-section progress-section">
-        <h3 class="panel-title">
-          <van-icon name="chart-trending-o" />
-          询问进度
-          <span class="progress-percent">{{ assessmentProgressPercent }}%</span>
-        </h3>
-        <div class="inquiry-progress">
-          <div class="inquiry-progress__head">
-            <span>必考点完成</span>
-            <strong>{{ progressSummary.earnedWeight }} / {{ progressSummary.totalWeight }}</strong>
+        <div class="panel-section panel-section--primary stage-section">
+          <h3 class="panel-title">
+            <van-icon name="send-gift-o" />
+            训练阶段
+          </h3>
+          <div class="stage-hero">
+            <span class="stage-tag">当前阶段</span>
+            <div class="stage-name-text">{{ caseInfo.currentStage }}</div>
+            <div class="goal-label">本阶段目标</div>
+            <div class="goal-text">{{ caseInfo.currentStageGoal || '请开始与对方交流，获取关键事实。' }}</div>
           </div>
-          <div class="inquiry-progress__track">
-            <div class="inquiry-progress__fill" :style="{ width: `${assessmentProgressPercent}%` }"></div>
-          </div>
-          <div class="inquiry-progress__meta">
-            <span>已完成 {{ progressSummary.completedCount }}</span>
-            <span>待补齐 {{ progressSummary.missingCount }}</span>
-          </div>
-          <div v-if="progressMissingLabels.length" class="progress-missing-list">
-            <span v-for="item in progressMissingLabels" :key="item" class="progress-missing-chip">{{ item }}</span>
-          </div>
-          <p v-else class="progress-ready-text">本阶段关键询问已基本覆盖，可视情况继续追问或结束训练。</p>
         </div>
-      </div>
 
-
-      <div v-if="sceneRoles.length" class="panel-section scene-roles-section">
-        <h3 class="panel-title">
-          <van-icon name="friends-o" />
-          现场角色
-        </h3>
-        <p class="scene-role-hint">点击或输入里写出角色名即可指定对象；点名多人会依次发言。仅左侧列出的角色能直接对话。</p>
-        <div class="scene-role-list">
+        <div v-if="sceneRoles.length" class="panel-section panel-section--primary scene-roles-section">
+          <h3 class="panel-title">
+            <van-icon name="friends-o" />
+            现场角色
+          </h3>
+          <p class="scene-role-hint">点击角色，或在输入框写「姓名，」指定对话对象</p>
+          <div class="scene-role-list">
+            <button
+              v-for="role in visibleSceneRoles"
+              :key="role.id"
+              type="button"
+              class="scene-role-card"
+              :class="{
+                'scene-role-card--selected': targetRoleName === role.name,
+                'scene-role-card--speaking': isRoleAvatarSpeaking(role.name),
+                'scene-role-card--thinking': isRoleAvatarThinking(role.name),
+              }"
+              :disabled="!role.speakable || isLoading || isPlayingReplies"
+              @click="toggleTargetRole(role)"
+            >
+              <RoleSpeakingAvatar
+                :name="role.name"
+                :avatar-url="role.avatar_url"
+                :avatar-id="role.avatar_id"
+                :speaking="isRoleAvatarSpeaking(role.name)"
+                :thinking="isRoleAvatarThinking(role.name)"
+                :primary="role.is_primary"
+                :risk="(role.risk ?? 0) >= 70"
+                :size="28"
+              />
+              <span class="scene-role-card__body">
+                <span class="scene-role-card__name">{{ role.name }}</span>
+                <span class="scene-role-card__meta">
+                  {{ role.state_label || role.role_type || '角色' }}
+                  <template v-if="role.emotion != null"> · 情绪{{ role.emotion }}</template>
+                </span>
+              </span>
+              <span v-if="isRoleAvatarSpeaking(role.name)" class="scene-role-card__badge">正在说话</span>
+              <span v-else-if="isRoleAvatarThinking(role.name)" class="scene-role-card__badge scene-role-card__badge--think">
+                准备发言
+              </span>
+            </button>
+          </div>
           <button
-            v-for="role in visibleSceneRoles"
-            :key="role.id"
+            v-if="hiddenSceneRoleCount > 0"
             type="button"
-            class="scene-role-card"
-            :class="{
-              'scene-role-card--selected': targetRoleName === role.name,
-              'scene-role-card--speaking': isRoleAvatarSpeaking(role.name),
-              'scene-role-card--thinking': isRoleAvatarThinking(role.name),
-            }"
-            :disabled="!role.speakable || isLoading || isPlayingReplies"
-            @click="toggleTargetRole(role)"
+            class="scene-role-toggle"
+            @click="showAllRoles = !showAllRoles"
           >
-            <RoleSpeakingAvatar
-              :name="role.name"
-              :speaking="isRoleAvatarSpeaking(role.name)"
-              :thinking="isRoleAvatarThinking(role.name)"
-              :primary="role.is_primary"
-              :risk="(role.risk ?? 0) >= 70"
-              :size="26"
-            />
-            <span class="scene-role-card__name">{{ role.name }}</span>
-            <span class="scene-role-card__meta">
-              {{ role.state_label || role.role_type || '角色' }}
-              <template v-if="role.emotion != null"> · 情绪{{ role.emotion }}</template>
-            </span>
-            <span v-if="isRoleAvatarSpeaking(role.name)" class="scene-role-card__badge">正在说话</span>
-            <span v-else-if="isRoleAvatarThinking(role.name)" class="scene-role-card__badge scene-role-card__badge--think">
-              准备发言
-            </span>
+            {{ showAllRoles ? '收起角色' : `展开其余 ${hiddenSceneRoleCount} 个角色` }}
           </button>
         </div>
-        <button
-          v-if="hiddenSceneRoleCount > 0"
-          type="button"
-          class="scene-role-toggle"
-          @click="showAllRoles = !showAllRoles"
-        >
-          {{ showAllRoles ? '收起角色' : `展开其余 ${hiddenSceneRoleCount} 个角色` }}
-        </button>
-      </div>
 
-      <div v-if="showStateDebug && stateDebug.contract" class="panel-section state-debug-panel">
-        <h3 class="panel-title">
-          <van-icon name="setting-o" />
-          状态契约（管理员）
-        </h3>
-        <div class="state-debug-tags">
-          <span class="state-debug-tag">{{ stateDebug.contract?.primary_affect || '—' }}</span>
-          <span v-if="stateInfluenceMetrics.consistency_rate != null" class="state-debug-tag">
-            一致率 {{ Math.round((stateInfluenceMetrics.consistency_rate || 0) * 100) }}%
-          </span>
-          <span v-if="stateInfluenceMetrics.stage_requirement_hit_rate != null" class="state-debug-tag">
-            阶段命中 {{ Math.round((stateInfluenceMetrics.stage_requirement_hit_rate || 0) * 100) }}%
-          </span>
-        </div>
-        <p class="state-debug-hint">{{ stateDebug.contract?.tone_hint || '' }}</p>
-        <p v-if="stateDebug.postcheck?.validation" class="state-debug-meta">
-          后验：{{ stateDebug.postcheck.validation.ok ? '通过' : '未通过' }}
-          （{{ stateDebug.postcheck.validation.score }}）
-        </p>
-      </div>
-
-      <div class="panel-section">
-        <h3 class="panel-title">
-          <van-icon name="chart-trending-o" />
-          实时状态
-        </h3>
-        <div class="state-bar">
-          <div class="state-header">
-            <span class="state-label">情绪值</span>
-            <span class="state-num" :style="{ color: currentState.emotion > 70 ? '#F53F3F' : '#FF7D00' }">
-              {{ currentState.emotion }}
+        <div v-if="showStateDebug && stateDebug.contract" class="panel-section state-debug-panel">
+          <h3 class="panel-title">
+            <van-icon name="setting-o" />
+            状态契约（管理员）
+          </h3>
+          <div class="state-debug-tags">
+            <span class="state-debug-tag">{{ stateDebug.contract?.primary_affect || '—' }}</span>
+            <span v-if="stateInfluenceMetrics.consistency_rate != null" class="state-debug-tag">
+              一致率 {{ Math.round((stateInfluenceMetrics.consistency_rate || 0) * 100) }}%
+            </span>
+            <span v-if="stateInfluenceMetrics.stage_requirement_hit_rate != null" class="state-debug-tag">
+              阶段命中 {{ Math.round((stateInfluenceMetrics.stage_requirement_hit_rate || 0) * 100) }}%
             </span>
           </div>
-          <div class="progress-track">
-            <div class="progress-fill emotion-fill" :style="{ width: currentState.emotion + '%' }"></div>
-          </div>
+          <p class="state-debug-hint">{{ stateDebug.contract?.tone_hint || '' }}</p>
+          <p v-if="stateDebug.postcheck?.validation" class="state-debug-meta">
+            后验：{{ stateDebug.postcheck.validation.ok ? '通过' : '未通过' }}
+            （{{ stateDebug.postcheck.validation.score }}）
+          </p>
         </div>
-        <div class="state-bar">
-          <div class="state-header">
-            <span class="state-label">信任度</span>
-            <span class="state-num" style="color: #165DFF;">{{ currentState.trust }}</span>
-          </div>
-          <div class="progress-track">
-            <div class="progress-fill trust-fill" :style="{ width: currentState.trust + '%' }"></div>
-          </div>
-        </div>
-        <div class="state-bar">
-          <div class="state-header">
-            <span class="state-label">失控风险</span>
-            <span class="state-num" :style="{ color: currentState.risk > 70 ? '#C2410C' : '#EA580C' }">{{ currentState.risk }}</span>
-          </div>
-          <div class="progress-track">
-            <div class="progress-fill risk-fill" :style="{ width: currentState.risk + '%' }"></div>
-          </div>
-        </div>
-        <div class="state-bar">
-          <div class="state-header">
-            <span class="state-label">表达清晰度</span>
-            <span class="state-num" :style="{ color: currentState.clarity < 40 ? '#7C3AED' : '#0F766E' }">{{ currentState.clarity }}</span>
-          </div>
-          <div class="progress-track">
-            <div class="progress-fill clarity-fill" :style="{ width: currentState.clarity + '%' }"></div>
-          </div>
-        </div>
-      </div>
 
-      <div class="panel-section facts-section">
-        <h3 class="panel-title">
-          <van-icon name="bookmark-o" />
-          已获取信息
-          <span class="fact-count">{{ revealedInfo.length }}</span>
-        </h3>
-        <div class="fact-list">
-          <div v-if="revealedInfo.length === 0" class="fact-empty">暂未获取关键线索</div>
-          <div v-for="(info, idx) in revealedInfo" :key="idx" class="fact-item">
-            <van-icon name="success" color="#00B42A" />
-            <span>{{ info }}</span>
+        <div class="panel-section panel-section--secondary">
+          <h3 class="panel-title">
+            <van-icon name="chart-trending-o" />
+            实时状态
+          </h3>
+          <div class="state-grid">
+            <div class="state-cell">
+              <div class="state-header">
+                <span class="state-label">情绪值</span>
+                <span class="state-num" :style="{ color: currentState.emotion > 70 ? '#F53F3F' : '#FF7D00' }">
+                  {{ currentState.emotion }}
+                </span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill emotion-fill" :style="{ width: currentState.emotion + '%' }"></div>
+              </div>
+            </div>
+            <div class="state-cell">
+              <div class="state-header">
+                <span class="state-label">信任度</span>
+                <span class="state-num" style="color: #165DFF;">{{ currentState.trust }}</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill trust-fill" :style="{ width: currentState.trust + '%' }"></div>
+              </div>
+            </div>
+            <div class="state-cell">
+              <div class="state-header">
+                <span class="state-label">失控风险</span>
+                <span class="state-num" :style="{ color: currentState.risk > 70 ? '#C2410C' : '#EA580C' }">{{ currentState.risk }}</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill risk-fill" :style="{ width: currentState.risk + '%' }"></div>
+              </div>
+            </div>
+            <div class="state-cell">
+              <div class="state-header">
+                <span class="state-label">表达清晰度</span>
+                <span class="state-num" :style="{ color: currentState.clarity < 40 ? '#7C3AED' : '#0F766E' }">{{ currentState.clarity }}</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill clarity-fill" :style="{ width: currentState.clarity + '%' }"></div>
+              </div>
+            </div>
           </div>
         </div>
+
+        <div class="panel-section panel-section--secondary facts-section">
+          <h3 class="panel-title">
+            <van-icon name="bookmark-o" />
+            已获取信息
+            <span class="fact-count">{{ revealedInfo.length }}</span>
+          </h3>
+          <div class="fact-list">
+            <div v-if="revealedInfo.length === 0" class="fact-empty">
+              <van-icon name="info-o" size="20" color="#C9CDD4" />
+              <span>暂未获取关键线索</span>
+            </div>
+            <div v-for="(info, idx) in revealedInfo" :key="idx" class="fact-item">
+              <van-icon name="success" color="#00B42A" />
+              <span>{{ info }}</span>
+            </div>
+          </div>
+        </div>
+
       </div>
 
       <div class="panel-actions">
@@ -288,11 +229,23 @@
           </div>
 
           <div v-else-if="msg.role === 'assistant'" class="msg-row msg-ai">
-            <div class="avatar avatar-ai" :title="msg.speakerName || roleInfo.name">
-              <span class="avatar-initial">{{ (msg.speakerName || roleInfo.name).slice(0, 1) }}</span>
+            <div
+              class="avatar avatar-ai"
+              :title="msg.speakerName || roleInfo.name"
+              :style="{ background: getAvatarBg(msg.avatarId), border: 'none' }"
+            >
+              <img
+                v-if="msg.avatarUrl"
+                :src="msg.avatarUrl"
+                :alt="msg.speakerName || roleInfo.name"
+                class="avatar-img"
+              />
+              <span v-else class="avatar-initial">{{ (msg.speakerName || roleInfo.name).slice(0, 1) }}</span>
             </div>
             <div class="msg-body">
-              <span class="msg-sender">{{ msg.speakerName || roleInfo.name }}</span>
+              <span class="msg-sender" :style="{ color: getAvatarBg(msg.avatarId) }">
+                {{ msg.speakerName || roleInfo.name }}
+              </span>
               <div class="msg-bubble bubble-ai">{{ msg.content }}</div>
             </div>
           </div>
@@ -348,7 +301,7 @@
               <span class="suggested-question-chip__text">{{ item.text }}</span>
             </button>
           </div>
-          </div>
+        </div>
         <TrainingInputBar
           v-model="inputMessage"
           :loading="isLoading"
@@ -365,7 +318,7 @@
       v-model:show="showCaseBrief"
       position="center"
       class="case-brief-popup"
-      :style="{ width: 'min(1440px, 98vw)', maxWidth: '98vw' }"
+      :style="{ width: 'min(720px, 96vw)', maxWidth: '96vw' }"
       :overlay="true"
       :close-on-click-overlay="false"
       :duration="0"
@@ -379,29 +332,13 @@
             </button>
 
             <section class="brief-hero">
-              <div class="brief-hero__meta">
-                <span class="brief-type-pill">{{ caseInfo.caseType || '训练案件' }}</span>
-                <span>案件编号：#{{ route.params.id || '—' }}</span>
-              </div>
-              <div>
-                <h1>{{ caseInfo.title }}</h1>
-                <p>{{ caseInfo.sceneName || '接警简报与现场信息' }}</p>
-              </div>
+              <span class="brief-type-pill">{{ caseInfo.caseType || '训练案件' }}</span>
+              <h1>{{ caseInfo.title }}</h1>
+              <p>{{ caseInfo.sceneName || '训练场景' }}</p>
             </section>
           </div>
 
-          <div class="brief-layout">
-            <aside class="brief-card brief-overview">
-              <h2>案件概览</h2>
-              <div v-for="item in briefOverviewItems" :key="item.label" class="brief-overview__item">
-                <span class="brief-overview__icon"><van-icon :name="item.icon" /></span>
-                <div>
-                  <label>{{ item.label }}</label>
-                  <strong>{{ item.value }}</strong>
-                </div>
-              </div>
-            </aside>
-
+          <div class="brief-layout brief-layout--single">
             <main class="brief-card brief-main">
               <section class="brief-info-section">
                 <h2>{{ isIntakeScene ? '110 接警状态' : '110 接警简报' }}</h2>
@@ -424,46 +361,18 @@
               <section class="brief-info-section">
                 <h2>执法提示</h2>
                 <div class="brief-text-box">
-                  <strong>当前阶段建议</strong>
                   <ol>
                     <li v-for="tip in (isIntakeScene ? intakeBriefTips : defaultBriefTips)" :key="tip">{{ tip }}</li>
                   </ol>
                 </div>
               </section>
             </main>
-
-            <aside class="brief-side">
-              <section class="brief-card brief-roles">
-                <h2>涉及角色</h2>
-                <div class="brief-role-list">
-                  <div v-for="role in briefRoleItems" :key="role.id || role.name" class="brief-role">
-                    <RoleSpeakingAvatar :name="role.name" :primary="role.is_primary" :risk="(role.risk ?? 0) >= 70" :size="40" />
-                    <div>
-                      <strong>{{ role.name }}</strong>
-                      <span>{{ role.role_type || '相关人员' }}</span>
-                      <p>情绪值：{{ role.emotion ?? '--' }}</p>
-                      <p>关系：{{ role.state_label || '现场相关人员' }}</p>
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <section class="brief-card brief-goals">
-                <h2>训练目标</h2>
-                <ul>
-                  <li v-for="goal in briefTrainingGoals" :key="goal">
-                    <van-icon name="checked" />
-                    <span>{{ goal }}</span>
-                  </li>
-                </ul>
-              </section>
-            </aside>
           </div>
 
           <div class="brief-bottom">
             <section class="brief-warm-tip">
-              <strong><van-icon name="info-o" />温馨提示</strong>
-              <span>{{ isIntakeScene ? '请确认已进入110接警状态，随后报警人将先开口说明情况；你再按规范顺序展开问询。' : '请仔细阅读以上案件简报和现场信息，确认后进入对话训练环节。训练过程中将根据你的提问与选择推进剧情发展。' }}</span>
+              <strong><van-icon name="info-o" /> 温馨提示</strong>
+              <span>{{ isIntakeScene ? '请确认已进入110接警状态，随后报警人将先开口说明情况；你再按规范顺序展开问询。' : '请阅读以上简报与现场信息，确认后进入对话训练。' }}</span>
             </section>
 
             <footer class="brief-actions">
@@ -490,6 +399,20 @@ import { showLoadingToast, showToast } from 'vant'
 import request from '../utils/request'
 import TrainingInputBar from '../components/TrainingInputBar.vue'
 import RoleSpeakingAvatar from '../components/RoleSpeakingAvatar.vue'
+
+const AVATAR_PALETTE = [
+  '#4F46E5', '#0891B2', '#059669', '#D97706', '#DC2626',
+  '#7C3AED', '#0E7490', '#047857', '#B45309', '#BE123C',
+  '#6366F1', '#0284C7', '#16A34A', '#D97706', '#E11D48',
+  '#8B5CF6', '#0EA5E9', '#22C55E', '#F59E0B', '#EF4444',
+]
+
+function getAvatarBg(avatarId?: number | null): string {
+  if (avatarId != null && avatarId >= 1 && avatarId <= AVATAR_PALETTE.length) {
+    return AVATAR_PALETTE[avatarId - 1]
+  }
+  return '#e2e8f0'
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -539,7 +462,16 @@ interface SceneRoleBrief {
   affect_label?: string
   is_active?: boolean
   is_targeted?: boolean
+  avatar_id?: number
+  avatar_url?: string
 }
+
+interface SuggestedQuestionItem {
+  text: string
+  category?: string
+  target_role_name?: string | null
+}
+
 const sceneRoles = ref<SceneRoleBrief[]>([])
 const showAllRoles = ref(false)
 const isAdminUser = computed(() => localStorage.getItem('role') === 'admin')
@@ -553,14 +485,9 @@ const stateInfluenceMetrics = ref<{
 const routingSummary = ref('')
 const addressingWarning = ref('')
 const targetRoleName = ref('')
-interface SuggestedQuestionItem {
-  text: string
-  category?: string
-  target_role_name?: string | null
-}
-const suggestedQuestionItems = ref<SuggestedQuestionItem[]>([])
 const communicationFeedback = ref<{ level?: string; message?: string }>({ message: '' })
 const stageMissing = ref<string[]>([])
+const suggestedQuestionItems = ref<SuggestedQuestionItem[]>([])
 const assessmentProgress = ref<any>(null)
 const completedPointIds = ref<string[]>([])
 const completedActionIds = ref<string[]>([])
@@ -569,7 +496,7 @@ const autoFinishReady = ref(false)
 const revealedInfo = ref<string[]>([])
 const currentState = ref({ emotion: 50, trust: 30, risk: 50, clarity: 50 })
 const chatHistory = ref<
-  Array<{ id: number; role: string; content: string; speakerName?: string; inputSource?: 'voice' | 'text' }>
+  Array<{ id: number; role: string; content: string; speakerName?: string; inputSource?: 'voice' | 'text'; avatarUrl?: string; avatarId?: number }>
 >([])
 
 const orderedSceneRoles = computed(() =>
@@ -588,34 +515,9 @@ const hiddenSceneRoleCount = computed(() => Math.max(0, orderedSceneRoles.value.
 
 
 
-const META_QUESTION_PATTERN = /先围绕|把最关键|这一点|训练已恢复|补齐这些关键项/
-
-const compactText = (value: string, maxLength = 72, fallback = '暂无信息') => {
-  const text = String(value || '').replace(/\s+/g, ' ').trim()
-  if (!text) return fallback
-  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
-}
-
-const compactDispatchBrief = computed(() => {
-  if (isIntakeScene.value) {
-    return compactText(caseInfo.dispatchBrief, 92, '110 有新报警来电，等待接听。')
-  }
-  return compactText(caseInfo.dispatchBrief, 92, '指挥中心暂未下发更详细的接警简报。')
-})
-const compactFirstImpression = computed(() => {
-  if (isIntakeScene.value) return '接警阶段尚未到场，暂无现场观察信息。'
-  return compactText(caseInfo.firstImpression, 54, '到场后先观察人员、环境和风险。')
-})
-const compactCaseBackground = computed(() =>
-  compactText(caseInfo.caseBackground || caseInfo.caseOriginalContent, 64, '案件背景待在对话中进一步核实。')
-)
 const structuredTimeline = computed(() => {
   const data = caseInfo.structuredData || {}
   return Array.isArray(data.timeline) ? data.timeline.map((item: any) => String(item)).filter(Boolean) : []
-})
-const structuredEvidence = computed(() => {
-  const data = caseInfo.structuredData || {}
-  return Array.isArray(data.evidence_points) ? data.evidence_points.map((item: any) => String(item)).filter(Boolean) : []
 })
 const extractBriefValue = (patterns: RegExp[], fallback: string) => {
   const source = [caseInfo.dispatchBrief, caseInfo.caseBackground, caseInfo.caseOriginalContent, structuredTimeline.value.join('；')]
@@ -646,40 +548,6 @@ const briefCaseLocation = computed(() =>
     '现场待核实',
   )
 )
-const briefRoleItems = computed(() => orderedSceneRoles.value.slice(0, 3))
-const briefTrainingGoals = computed(() => {
-  const goals = [
-    caseInfo.currentStageGoal,
-    ...stageMissing.value.slice(0, 3),
-    ...structuredEvidence.value.slice(0, 2).map((item: string) => `固定${item}`),
-  ]
-    .map((item) => String(item || '').trim())
-    .filter(Boolean)
-  const fallback = ['控制现场，防止事态扩大', '了解事件经过，固定证据', '依法调查取证，明确责任', '妥善处置，恢复现场秩序']
-  return Array.from(new Set(goals.length ? goals : fallback)).slice(0, 4)
-})
-const briefOverviewItems = computed(() => {
-  if (isIntakeScene.value) {
-    return [
-      { label: '接警电话', value: '110', icon: 'phone-o' },
-      { label: '当前状态', value: '等待接听', icon: 'phone-circle-o' },
-      { label: '当前场景', value: caseInfo.sceneName || '接警研判', icon: 'manager-o' },
-      { label: '训练难度', value: normalizeDifficulty(caseInfo.difficulty), icon: 'bar-chart-o' },
-      { label: '对话模式', value: '报警人先开口', icon: 'chat-o' },
-      { label: '推荐角色', value: briefRoleItems.value.map((role) => role.name).join('、') || roleInfo.name, icon: 'friends-o' },
-    ]
-  }
-  return [
-    { label: '接警电话', value: '110', icon: 'phone-o' },
-    { label: '接警时间', value: briefCaseTime.value, icon: 'clock-o' },
-    { label: '接警地点', value: briefCaseLocation.value, icon: 'location-o' },
-    { label: '案件类型', value: caseInfo.caseType || '未分类', icon: 'description' },
-    { label: '当前场景', value: caseInfo.sceneName || '训练场景', icon: 'manager-o' },
-    { label: '训练难度', value: normalizeDifficulty(caseInfo.difficulty), icon: 'bar-chart-o' },
-    { label: '预计时长', value: '20 分钟', icon: 'underway-o' },
-    { label: '推荐角色', value: briefRoleItems.value.map((role) => role.name).join('、') || roleInfo.name, icon: 'friends-o' },
-  ]
-})
 const intakeBriefTips = [
   '先听报警人说明出了什么事，不要急于追问时间、地点或联系方式。',
   '确认报警人是否安全、是否需要救助，再展开结构化问询。',
@@ -692,51 +560,7 @@ const defaultBriefTips = [
   '注意控制现场情绪，避免冲突升级。',
   '留意对方表述中的矛盾点、隐瞒点和风险点。',
 ]
-const leftSuggestedQuestions = computed(() => suggestedQuestionItems.value.slice(0, 2))
-const progressSummary = computed(() => {
-  const progress = assessmentProgress.value || {}
-  const summary = progress.summary || {}
-  const points = Array.isArray(progress.points) ? progress.points : []
-  const totalWeight = Number(summary.total_weight ?? summary.totalWeight ?? 0)
-  const earnedWeight = Number(summary.earned_weight ?? summary.earnedWeight ?? 0)
-  const completedFromSummary = Array.isArray(summary.completed_point_ids) ? summary.completed_point_ids.length : 0
-  const completedCount = completedFromSummary || points.filter((item: any) => item?.status === 'hit').length
-  const missingFromSummary = Array.isArray(summary.missing) ? summary.missing.length : 0
-  const missingCount = missingFromSummary || points.filter((item: any) => item?.status !== 'hit' && item?.required !== false).length
-  return {
-    totalWeight,
-    earnedWeight,
-    completedCount,
-    missingCount,
-  }
-})
-const assessmentProgressPercent = computed(() => {
-  const total = progressSummary.value.totalWeight
-  const earned = progressSummary.value.earnedWeight
-  if (total > 0) return Math.max(0, Math.min(100, Math.round((earned / total) * 100)))
-  const requirements = Array.isArray(assessmentProgress.value?.summary?.requirements)
-    ? assessmentProgress.value.summary.requirements.length
-    : stageMissing.value.length + (Array.isArray(assessmentProgress.value?.summary?.satisfied) ? assessmentProgress.value.summary.satisfied.length : 0)
-  const satisfied = Array.isArray(assessmentProgress.value?.summary?.satisfied)
-    ? assessmentProgress.value.summary.satisfied.length
-    : 0
-  if (requirements > 0) return Math.max(0, Math.min(100, Math.round((satisfied / requirements) * 100)))
-  return stageMissing.value.length ? 0 : 100
-})
-const progressMissingLabels = computed(() => {
-  const summaryMissing = assessmentProgress.value?.summary?.missing
-  const progress = assessmentProgress.value || {}
-  const points = Array.isArray(progress.points) ? progress.points : []
-  const labels = Array.isArray(summaryMissing) && summaryMissing.length
-    ? summaryMissing
-    : points
-      .filter((item: any) => item?.status !== 'hit' && item?.required !== false)
-      .map((item: any) => item?.label)
-  return labels
-    .map((item: any) => String(item || '').trim())
-    .filter(Boolean)
-    .slice(0, 4)
-})
+const META_QUESTION_PATTERN = /先围绕|把最关键|这一点|训练已恢复|补齐这些关键项/
 
 const normalizeSuggestedItems = (payload: unknown): SuggestedQuestionItem[] => {
   if (Array.isArray(payload) && payload.length && typeof payload[0] === 'object') {
@@ -766,6 +590,20 @@ const applySuggestedQuestions = (items: unknown, fallbackTexts?: unknown) => {
   suggestedQuestionItems.value = normalizeSuggestedItems(fallbackTexts)
 }
 
+const applySuggestedQuestion = (item: SuggestedQuestionItem | string) => {
+  const payload = typeof item === 'string' ? { text: item } : item
+  const text = String(payload?.text || '').trim()
+  if (!text || isLoading.value) return
+  inputMessage.value = text
+  const roleName = String(payload?.target_role_name || '').trim()
+  if (roleName) {
+    targetRoleName.value = roleName
+    return
+  }
+  const matched = sceneRoles.value.find((role) => text.startsWith(`${role.name}，`))
+  if (matched) targetRoleName.value = matched.name
+}
+
 const applyGuidancePayload = (res: any) => {
   applySuggestedQuestions(res?.recommended_question_items, res?.recommended_questions)
   const feedback = res?.communication_feedback
@@ -780,20 +618,6 @@ const applyGuidancePayload = (res: any) => {
   completedPointIds.value = Array.isArray(res?.completed_point_ids) ? res.completed_point_ids : []
   completedActionIds.value = Array.isArray(res?.completed_action_ids) ? res.completed_action_ids : []
   autoFinishReady.value = Boolean(res?.auto_finish_ready)
-}
-
-const applySuggestedQuestion = (item: SuggestedQuestionItem | string) => {
-  const payload = typeof item === 'string' ? { text: item } : item
-  const text = String(payload?.text || '').trim()
-  if (!text || isLoading.value) return
-  inputMessage.value = text
-  const roleName = String(payload?.target_role_name || '').trim()
-  if (roleName) {
-    targetRoleName.value = roleName
-    return
-  }
-  const matched = sceneRoles.value.find((role) => text.startsWith(`${role.name}，`))
-  if (matched) targetRoleName.value = matched.name
 }
 
 const toggleTargetRole = (role: SceneRoleBrief) => {
@@ -877,11 +701,15 @@ const playAssistantReplies = async (res: any, baseId: number) => {
     for (let index = 0; index < items.length; index += 1) {
       const item = items[index]
       speakingRoleName.value = item.speakerName
+      // Find avatar data for this speaker from scene roles
+      const speakerRole = sceneRoles.value.find((r) => r.name === item.speakerName)
       chatHistory.value.push({
         id: baseId + index,
         role: 'assistant',
         content: item.content,
         speakerName: item.speakerName,
+        avatarUrl: speakerRole?.avatar_url,
+        avatarId: speakerRole?.avatar_id,
       })
       await nextTick()
       scrollToBottom()
@@ -980,12 +808,17 @@ const fetchSessionData = async () => {
         role: 'system',
         content: buildSystemIntro(res.scene_name, res.role_name, sceneRoles.value),
       },
-      ...(res.messages || []).map((message: any) => ({
-        id: message.id,
-        role: message.role === 'user' ? 'human' : message.role === 'system' ? 'system' : 'assistant',
-        content: message.content,
-        speakerName: message.speaker_name || undefined,
-      }))
+      ...(res.messages || []).map((message: any) => {
+        const speaker = message.role === 'assistant' ? sceneRoles.value.find((r) => r.name === (message.speaker_name || '')) : null
+        return {
+          id: message.id,
+          role: message.role === 'user' ? 'human' : message.role === 'system' ? 'system' : 'assistant',
+          content: message.content,
+          speakerName: message.speaker_name || undefined,
+          avatarUrl: speaker?.avatar_url,
+          avatarId: speaker?.avatar_id,
+        }
+      })
     ]
     scrollToBottom()
 
@@ -1187,91 +1020,7 @@ onMounted(fetchSessionData)
   background: #f0f4f8;
 }
 
-.scene-role-hint {
-  margin: 0 0 10px;
-  font-size: 12px;
-  color: #86909c;
-  line-height: 1.5;
-}
-
-.scene-role-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.scene-role-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-  border: 1px solid #e5e6eb;
-  background: #fff;
-  border-radius: 12px;
-  padding: 10px 10px;
-  cursor: pointer;
-  text-align: center;
-  min-width: 96px;
-  max-width: 108px;
-  transition:
-    border-color 0.2s ease,
-    box-shadow 0.2s ease,
-    transform 0.2s ease;
-}
-
-.scene-role-card--selected {
-  border-color: #165dff;
-  background: #f7fbff;
-  box-shadow: 0 2px 10px rgba(22, 93, 255, 0.12);
-}
-
-.scene-role-card--speaking {
-  border-color: #8aa3c4;
-  background: #f6f8fb;
-  box-shadow: 0 2px 10px rgba(90, 127, 168, 0.15);
-}
-
-.scene-role-card--thinking {
-  border-color: #b8c9de;
-  background: #f8fafc;
-}
-
-.scene-role-card:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.scene-role-card__name {
-  display: block;
-  font-size: 13px;
-  font-weight: 600;
-  color: #1d2129;
-  line-height: 1.2;
-}
-
-.scene-role-card__meta {
-  display: block;
-  font-size: 10px;
-  color: #86909c;
-  line-height: 1.35;
-  min-height: 26px;
-}
-
-.scene-role-card__badge {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 600;
-  color: #3d5268;
-  background: #e2e8f0;
-  letter-spacing: 0.04em;
-}
-
-.scene-role-card__badge--think {
-  color: #5a6f86;
-  background: #edf1f5;
-}
+/* scene-role styles consolidated in sidebar block below */
 
 .state-debug-panel {
   border: 1px dashed #c9d4e3;
@@ -1339,208 +1088,6 @@ onMounted(fetchSessionData)
   color: #b45309;
 }
 
-.training-page {
-  display: flex;
-  height: 100vh;
-  overflow: hidden;
-  overflow-x: hidden;
-  font-family: 'PingFang SC', 'Microsoft YaHei', 'Inter', sans-serif;
-  background: #f0f4f8;
-}
-
-.info-panel {
-  width: 296px;
-  background: white;
-  border-right: 1px solid #e5e6eb;
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-  overflow-x: hidden;
-  flex-shrink: 0;
-}
-
-.panel-section {
-  padding: 20px;
-  border-bottom: 1px solid #f2f3f5;
-}
-
-.panel-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: #1d2129;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 0 14px;
-}
-
-.info-item {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-  font-size: 13px;
-}
-
-.info-label {
-  color: #86909c;
-}
-
-.info-value {
-  color: #1d2129;
-  text-align: right;
-  font-weight: 500;
-}
-
-.brief-btn {
-  margin-top: 10px;
-  border-radius: 8px;
-}
-
-.stage-card {
-  background: #f7f8fa;
-  border-radius: 12px;
-  padding: 14px;
-}
-
-.stage-tag {
-  display: inline-block;
-  font-size: 11px;
-  color: #165dff;
-  background: #e8f3ff;
-  padding: 4px 8px;
-  border-radius: 999px;
-}
-
-.stage-name-text {
-  display: block;
-  margin-top: 10px;
-  font-size: 18px;
-  font-weight: 700;
-  color: #1d2129;
-}
-
-.goal-label {
-  margin-top: 12px;
-  font-size: 12px;
-  color: #86909c;
-}
-
-.goal-text {
-  margin-top: 6px;
-  font-size: 13px;
-  color: #4e5969;
-  line-height: 1.7;
-}
-
-.state-bar + .state-bar {
-  margin-top: 16px;
-}
-
-.state-header {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  font-size: 13px;
-}
-
-.state-label {
-  color: #4e5969;
-}
-
-.state-num {
-  font-weight: 700;
-}
-
-.progress-track {
-  height: 8px;
-  border-radius: 999px;
-  background: #f2f3f5;
-  overflow: hidden;
-}
-
-.progress-fill {
-  height: 100%;
-  border-radius: inherit;
-}
-
-.progress-section {
-  border-left: 3px solid var(--police-primary, #003087);
-}
-
-.progress-percent {
-  margin-left: auto;
-  min-width: 42px;
-  text-align: right;
-  font-size: 13px;
-  font-weight: 800;
-  color: var(--police-primary, #003087);
-}
-
-.inquiry-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.inquiry-progress__head,
-.inquiry-progress__meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  color: #475569;
-}
-
-.inquiry-progress__head strong {
-  font-size: 13px;
-  color: #0f172a;
-}
-
-.inquiry-progress__track {
-  height: 8px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #e2e8f0;
-}
-
-.inquiry-progress__fill {
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #003087, #0ea5e9);
-  transition: width 0.2s ease;
-}
-
-.progress-missing-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.progress-missing-chip {
-  display: inline-flex;
-  align-items: center;
-  max-width: 100%;
-  border-radius: 999px;
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  padding: 3px 8px;
-  font-size: 11px;
-  font-weight: 700;
-  color: #1d4ed8;
-}
-
-.progress-ready-text {
-  margin: 0;
-  border-radius: 6px;
-  background: #ecfdf5;
-  padding: 6px 8px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #047857;
-}
-
 .emotion-fill {
   background: linear-gradient(90deg, #fb7185 0%, #f97316 100%);
 }
@@ -1557,47 +1104,13 @@ onMounted(fetchSessionData)
   background: linear-gradient(90deg, #5eead4 0%, #0f766e 100%);
 }
 
-.fact-count {
-  margin-left: auto;
-  font-size: 12px;
-  color: #165dff;
-}
-
-.fact-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.fact-empty {
-  font-size: 13px;
-  color: #86909c;
-}
-
-.fact-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  font-size: 13px;
-  line-height: 1.6;
-  color: #4e5969;
-}
-
-.panel-actions {
-  padding: 20px;
-  margin-top: auto;
-}
-
-.finish-btn {
-  border-radius: 10px;
-}
-
 .chat-area {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   background: #f7f8fa;
-  overflow-x: hidden;
 }
 
 .chat-messages {
@@ -1628,8 +1141,9 @@ onMounted(fetchSessionData)
 }
 
 .avatar {
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
+  box-sizing: border-box;
   border-radius: 999px;
   display: flex;
   align-items: center;
@@ -1640,13 +1154,24 @@ onMounted(fetchSessionData)
 .avatar-ai {
   background: #e8f3ff;
   color: #165dff;
+  border: none;
+  overflow: hidden;
 }
 
 .avatar-initial {
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 700;
-  color: #165dff;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
   line-height: 1;
+}
+
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
 }
 
 .avatar-human {
@@ -1661,8 +1186,16 @@ onMounted(fetchSessionData)
   gap: 6px;
 }
 
+.msg-ai .msg-body {
+  align-items: flex-start;
+}
+
+.msg-human .msg-body {
+  align-items: flex-end;
+}
+
 .msg-sender {
-  font-size: 12px;
+  font-size: 13px;
   color: #86909c;
   display: inline-flex;
   align-items: center;
@@ -1689,13 +1222,13 @@ onMounted(fetchSessionData)
 .bubble-ai {
   background: white;
   color: #1d2129;
-  border-top-left-radius: 6px;
+  border-radius: 12px;
 }
 
 .bubble-human {
   background: #165dff;
   color: white;
-  border-top-right-radius: 6px;
+  border-radius: 12px;
 }
 
 
@@ -2090,7 +1623,11 @@ onMounted(fetchSessionData)
 }
 
 .training-page {
+  display: flex;
   flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Inter', sans-serif;
   background: var(--police-bg);
 }
 
@@ -2129,7 +1666,7 @@ onMounted(fetchSessionData)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
   color: #1e293b;
 }
@@ -2178,63 +1715,384 @@ onMounted(fetchSessionData)
   width: 33.333%;
   min-width: 320px;
   max-width: none;
-  border-right-color: #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-right: 1px solid #e2e8f0;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.panel-scroll {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   scrollbar-width: thin;
 }
 
-.info-panel > .panel-section:first-child {
-  display: none;
-}
-
 .panel-section {
-  position: relative;
-  padding: 9px 12px;
-  border-bottom-color: #e2e8f0;
+  margin: 10px 12px 0;
+  padding: 14px 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 0 12px rgb(0 0 0 / 4%);
 }
 
-.panel-section::before {
-  content: '';
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 2px;
-  border-radius: 0 2px 2px 0;
-  background: var(--police-primary);
-  opacity: 0;
-  transition: opacity 0.2s ease;
+.panel-section:last-child {
+  margin-bottom: 10px;
 }
 
-.panel-section:hover::before {
-  opacity: 1;
+.panel-section--primary {
+  padding-top: 16px;
+}
+
+.panel-section--secondary {
+  background: #fafbfc;
+}
+
+.panel-section--tertiary {
+  background: #f8fafc;
 }
 
 .panel-title {
+  display: flex;
+  align-items: center;
   gap: 6px;
-  margin-bottom: 6px;
-  font-size: 11px;
-  line-height: 1.2;
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
   color: #64748b;
 }
 
-.info-item {
-  margin-bottom: 5px;
+.stage-hero {
+  border-left: 3px solid #082a63;
+  border-radius: 0 10px 10px 0;
+  background: #e8eef7;
+  padding: 12px 14px;
+}
+
+.stage-tag {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: #e8eef7;
+  color: #082a63;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.stage-name-text {
+  margin-top: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #1e293b;
+}
+
+.goal-label {
+  margin-top: 12px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.goal-text {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #475569;
+}
+
+.left-suggestion-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.left-suggestion {
+  width: 100%;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.left-suggestion span {
+  display: inline-block;
+  margin-right: 6px;
+  color: #2563eb;
   font-size: 11px;
+  font-weight: 700;
+}
+
+.left-suggestion:hover:not(:disabled) {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.scene-role-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #94a3b8;
+}
+
+.scene-role-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scene-role-card {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--police-border);
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease;
+}
+
+.scene-role-card:hover:not(:disabled) {
+  border-color: #93c5fd;
+  background: var(--police-primary-light);
+}
+
+.scene-role-card--selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+.scene-role-card--speaking {
+  border-color: #60a5fa;
+  background: #f0f9ff;
+}
+
+.scene-role-card--thinking {
+  border-color: #93c5fd;
+  background: #f8fafc;
+}
+
+.scene-role-card:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.scene-role-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.scene-role-card__name {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #1e293b;
+}
+
+.scene-role-card__meta {
+  font-size: 12px;
   line-height: 1.35;
+  color: #94a3b8;
+}
+
+.scene-role-card__badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #1d4ed8;
+  background: #dbeafe;
+  white-space: nowrap;
+}
+
+.scene-role-card__badge--think {
+  color: #475569;
+  background: #e2e8f0;
+}
+
+.scene-role-toggle {
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px dashed #bfdbfe;
+  border-radius: 8px;
+  background: #f8fbff;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.scene-role-toggle:hover {
+  background: #eff6ff;
+}
+
+.state-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.state-cell {
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.state-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.state-label {
+  color: #64748b;
+}
+
+.state-num {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.progress-track {
+  height: 5px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.fact-count {
+  margin-left: auto;
+  min-width: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.fact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.fact-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 8px;
+  font-size: 13px;
+  color: #94a3b8;
+  text-align: center;
+}
+
+.fact-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #475569;
+}
+
+.case-ref-card {
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.info-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.info-item:last-of-type {
+  margin-bottom: 10px;
 }
 
 .info-label {
-  color: var(--police-text-muted);
+  color: #94a3b8;
+  flex-shrink: 0;
 }
 
 .info-value {
   color: #1e293b;
   font-weight: 600;
+  text-align: right;
 }
 
-.brief-btn {
-  height: 26px;
-  border-radius: 6px;
-  margin-top: 6px;
+.brief-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 0;
+  border: none;
+  border-top: 1px solid #eef2f7;
+  background: transparent;
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.brief-link:hover {
+  color: #1d4ed8;
+}
+
+.panel-actions {
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border-top: 1px solid #e2e8f0;
+  background: #fff;
+}
+
+.finish-btn {
+  height: 36px;
+  border-radius: 8px;
+  background: #0f1e3c !important;
+  border-color: #0f1e3c !important;
+  font-size: 13px;
 }
 
 .briefing-section {
@@ -2280,16 +2138,16 @@ onMounted(fetchSessionData)
 
 .case-brief-popup {
   background: transparent;
-  border-radius: 0;
+  border-radius: 12px;
 }
 
 .brief-dialog {
-  height: min(760px, 94vh);
+  max-height: min(680px, 92vh);
   overflow: hidden;
-  background: #f4f8ff;
-  border-radius: 0;
-  border: 1px solid rgba(14, 38, 79, 0.08);
-  box-shadow: 0 28px 80px rgba(8, 25, 55, 0.28);
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.18);
 }
 
 .brief-topbar {
@@ -2359,38 +2217,39 @@ onMounted(fetchSessionData)
 }
 
 .brief-page {
-  height: 100%;
+  max-height: min(680px, 92vh);
   overflow: hidden;
-  padding: 14px 26px 14px;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 12px;
+  padding: 20px 24px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .brief-head {
-  display: grid;
-  grid-template-columns: 210px 1fr;
-  gap: 18px;
-  align-items: end;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .brief-bottom {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 16px;
-  align-items: center;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .brief-back-link {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  align-self: flex-start;
   border: none;
   background: transparent;
-  color: #334155;
-  font-size: 15px;
+  color: #64748b;
+  font-size: 14px;
   cursor: pointer;
-  margin-bottom: 10px;
+  padding: 0;
 }
 
 .brief-back-link:disabled {
@@ -2399,12 +2258,11 @@ onMounted(fetchSessionData)
 }
 
 .brief-hero {
-  max-width: none;
   margin: 0;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: end;
-  gap: 12px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 .brief-hero__meta {
@@ -2439,10 +2297,14 @@ onMounted(fetchSessionData)
 }
 
 .brief-layout {
-  display: grid;
-  grid-template-columns: 300px minmax(420px, 1fr) 340px;
-  gap: 14px;
-  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.brief-layout--single {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
 }
 
@@ -2502,8 +2364,9 @@ onMounted(fetchSessionData)
 }
 
 .brief-main {
-  padding: 14px 18px 12px;
-  overflow: hidden;
+  padding: 16px 18px;
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 .brief-info-section + .brief-info-section {
@@ -2639,15 +2502,16 @@ onMounted(fetchSessionData)
 
 .brief-warm-tip {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
-  max-width: none;
   margin: 0;
-  padding: 10px 14px;
-  border: 1px solid #cfe0f7;
+  padding: 12px 14px;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
-  background: #f8fbff;
+  background: #f8fafc;
   color: #475569;
+  font-size: 14px;
+  line-height: 1.55;
 }
 
 .brief-warm-tip strong {
@@ -2668,10 +2532,9 @@ onMounted(fetchSessionData)
 
 .brief-actions {
   display: flex;
-  justify-content: center;
+  justify-content: space-between;
   align-items: center;
-  gap: 18px;
-  padding-bottom: 0;
+  gap: 12px;
   flex: 0 0 auto;
 }
 
@@ -2735,24 +2598,16 @@ onMounted(fetchSessionData)
 
 @media (max-width: 720px) {
   .brief-page {
-    padding: 24px 14px;
-  }
-
-  .brief-hero {
-    margin-bottom: 24px;
+    padding: 16px 14px 14px;
   }
 
   .brief-hero h1 {
-    font-size: 28px;
+    font-size: 22px;
   }
 
   .brief-actions {
     flex-direction: column;
-  }
-
-  .brief-head,
-  .brief-bottom {
-    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
   .brief-remember,
@@ -2762,199 +2617,8 @@ onMounted(fetchSessionData)
   }
 }
 
-.stage-card {
-  border: 1px solid var(--police-border-light);
-  border-radius: 7px;
-  background: #f8fafc;
-  padding: 8px 10px;
-}
-
-.stage-tag {
-  padding: 2px 8px;
-  background: #eff6ff;
-  color: #2563eb;
-}
-
-.stage-name-text {
-  margin-top: 5px;
-  font-size: 12px;
-  color: #1e293b;
-}
-
-.goal-label {
-  margin-top: 6px;
-  font-size: 10px;
-  color: var(--police-text-muted);
-}
-
-.goal-text {
-  font-size: 11px;
-  line-height: 1.45;
-  color: #64748b;
-}
-
-.left-gap-row {
-  display: none;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 7px;
-}
-
-.left-gap-chip {
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: #fff7ed;
-  color: #c2410c;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.left-suggestion-list {
-  display: none;
-  gap: 4px;
-  margin-top: 7px;
-}
-
-.left-suggestion {
-  width: 100%;
-  border: 1px solid #dbeafe;
-  border-radius: 6px;
-  background: #fff;
-  color: #334155;
-  padding: 5px 7px;
-  font-size: 11px;
-  line-height: 1.35;
-  text-align: left;
-  cursor: pointer;
-}
-
-.left-suggestion span {
-  display: inline-block;
-  margin-right: 5px;
-  color: #2563eb;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.left-suggestion:hover:not(:disabled) {
-  border-color: #2563eb;
-  background: #eff6ff;
-}
-
-.scene-role-hint {
-  display: none;
-}
-
-.scene-role-list {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.scene-role-card {
-  max-width: none;
-  min-width: 0;
-  width: 100%;
-  display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 5px;
-  border-color: var(--police-border);
-  border-radius: 6px;
-  padding: 5px 7px;
-  text-align: left;
-}
-
-.scene-role-card:hover:not(:disabled) {
-  background: var(--police-primary-light);
-  border-color: #93c5fd;
-  box-shadow: var(--police-shadow-sm);
-  transform: translateX(2px);
-}
-
-.scene-role-card--selected {
-  border-color: #93c5fd;
-  background: #eff6ff;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
-}
-
-.scene-role-card__name,
-.scene-role-card__meta {
-  grid-column: 2;
-}
-
-.scene-role-card__badge {
-  grid-column: 3;
-  grid-row: 1 / span 2;
-  align-self: center;
-  white-space: nowrap;
-}
-
-.scene-role-toggle {
-  width: 100%;
-  margin-top: 5px;
-  border: 1px dashed #bfdbfe;
-  border-radius: 6px;
-  background: #f8fbff;
-  color: #2563eb;
-  padding: 5px 8px;
-  font-size: 11px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.scene-role-toggle:hover {
-  background: #eff6ff;
-}
-
-.state-bar + .state-bar {
-  margin-top: 7px;
-}
-
-.state-header {
-  margin-bottom: 3px;
-  font-size: 11px;
-}
-
-.progress-track {
-  height: 4px;
-  border-radius: 3px;
-  background: #e2e8f0;
-}
-
-.fact-list {
-  gap: 3px;
-  max-height: 88px;
-  overflow: auto;
-}
-
-.fact-empty {
-  font-size: 11px;
-  color: var(--police-text-muted);
-}
-
-.fact-item {
-  gap: 5px;
-  font-size: 11px;
-  line-height: 1.35;
-  color: #475569;
-}
-
-.panel-actions {
-  padding: 7px 12px;
-  border-top: 1px solid var(--police-border);
-}
-
-.finish-btn {
-  height: 30px;
-  border-radius: 8px;
-  background: #0f1e3c !important;
-  border-color: #0f1e3c !important;
-}
-
 .chat-area {
-  flex: 1 1 66.667%;
-  width: 66.667%;
+  flex: 1;
   min-width: 0;
   background: #f0f4f8;
 }
@@ -2970,18 +2634,27 @@ onMounted(fetchSessionData)
 }
 
 .msg-row {
-  gap: 8px;
-  align-items: flex-end;
+  gap: 10px;
+  align-items: flex-start;
 }
 
 .avatar {
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
+  box-sizing: border-box;
 }
 
 .avatar-ai {
-  background: #e2e8f0;
-  color: #64748b;
+  border: none;
+  overflow: hidden;
+}
+
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
 }
 
 .avatar-human {
@@ -2991,34 +2664,41 @@ onMounted(fetchSessionData)
 
 .msg-body {
   max-width: min(680px, 62%);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.msg-ai .msg-body {
+  align-items: flex-start;
+}
+
+.msg-human .msg-body {
+  align-items: flex-end;
+}
+
+.msg-sender {
+  font-size: 13px;
 }
 
 .msg-bubble {
-  padding: 9px 13px;
+  padding: 12px 17px;
   border-radius: 12px;
-  font-size: 13px;
-  line-height: 1.65;
-  transition: box-shadow 0.2s ease, transform 0.2s ease;
-}
-
-.msg-bubble:hover {
-  transform: translateY(-1px);
+  font-size: 17px;
+  line-height: 1.7;
 }
 
 .bubble-ai {
-  border: 1px solid var(--police-border-light);
-  border-radius: 4px 12px 12px 12px;
+  background: #fff;
   color: #1e293b;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+  border-radius: 12px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 
 .bubble-human {
-  border-radius: 12px 4px 12px 12px;
   background: #2563eb;
-}
-
-.bubble-human:hover {
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
+  color: #fff;
+  border-radius: 12px;
 }
 
 .chat-input-area {
@@ -3117,18 +2797,28 @@ onMounted(fetchSessionData)
 @media (max-width: 960px) {
   .training-page {
     flex-direction: column;
-    height: auto;
+    height: 100vh;
   }
 
   .training-body {
     flex-direction: column;
-    overflow: visible;
+    overflow: hidden;
   }
 
   .info-panel {
+    flex: none;
     width: 100%;
+    max-height: none;
     border-right: none;
     border-bottom: 1px solid #e5e6eb;
+  }
+
+  .panel-scroll {
+    max-height: none;
+  }
+
+  .state-grid {
+    grid-template-columns: 1fr;
   }
 
   .msg-body {

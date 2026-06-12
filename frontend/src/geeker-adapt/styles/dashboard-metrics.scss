@@ -1,0 +1,45 @@
+.metric-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.metric-cell {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 8px;
+  border-radius: 8px;
+  background: #f8fafc;
+  min-width: 0;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.metric-cell-label {
+  font-size: 11px;
+  color: #6b7280;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.metric-cell-value {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+
+  strong {
+    font-size: 18px;
+    font-weight: 800;
+    color: #111827;
+    line-height: 1.1;
+  }
+
+  em {
+    font-style: normal;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--student-success, #52c41a);
+  }
+}
