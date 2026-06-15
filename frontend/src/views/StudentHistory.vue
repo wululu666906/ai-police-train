@@ -685,8 +685,8 @@ onUnmounted(() => {
 
 .history-row__metrics {
   display: grid;
-  grid-template-columns: repeat(2, minmax(88px, 1fr));
-  gap: 10px 12px;
+  grid-template-columns: repeat(2, minmax(72px, 1fr));
+  gap: 6px 8px;
   align-content: center;
   align-self: stretch;
 }
@@ -695,11 +695,11 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--police-radius);
-  padding: 8px 12px;
+  border-radius: 6px;
+  padding: 4px 10px;
   font-size: 12px;
   font-weight: 700;
-  min-height: 40px;
+  min-height: 28px;
   box-sizing: border-box;
   white-space: nowrap;
 }
