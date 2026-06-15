@@ -1,212 +1,202 @@
 <template>
-  <div class="student-page history-page">
-    <template v-if="!loading">
-      <el-row :gutter="16" class="summary-row">
-        <el-col :xs="12" :sm="6">
-          <StudentStatCard
-            :label="showEmptySessions ? '当前筛选结果' : '当前可见记录'"
-            :value="total"
-            tone="primary"
-          />
-        </el-col>
-        <el-col :xs="12" :sm="6">
-          <StudentStatCard label="进行中训练" :value="activeCount" tone="primary" />
-        </el-col>
-        <el-col :xs="12" :sm="6">
-          <StudentStatCard label="已完成训练" :value="finishedCount" tone="success" />
-        </el-col>
-        <el-col v-if="hiddenEmptyCount > 0 && !showEmptySessions" :xs="12" :sm="6">
-          <StudentStatCard label="已隐藏空会话" :value="hiddenEmptyCount" tone="warning" />
-        </el-col>
-      </el-row>
-
-      <section class="card card--compact toolbar-card">
-        <div class="toolbar-card__main">
-          <SelectFilter
-            :data="statusFilterData"
-            :default-values="statusFilterValues"
-            @change="onStatusFilterChange"
-          />
-          <p v-if="showEmptySessions" class="summary-tip">空会话指尚未产生有效对话内容的训练记录。</p>
+  <div class="student-page student-page--hall history-page">
+    <div class="hall-layout hall-layout--list">
+      <template v-if="!loading">
+        <div class="list-toolbar history-toolbar">
+          <div>
+            <h1 class="history-title">训练历史</h1>
+            <p class="list-subtitle">统一查看进行中、已完成和已隐藏的训练记录</p>
+          </div>
         </div>
-        <div class="summary-tools">
-          <span class="tool-label">显示空会话</span>
-          <el-switch v-model="showEmptySessions" @change="handleToggleEmpty" />
+
+        <section class="summary-grid">
+          <article v-for="item in summaryCards" :key="item.key" class="card summary-card">
+            <div class="summary-card__content">
+              <span class="summary-card__label">{{ item.label }}</span>
+              <strong class="summary-card__value" :class="`summary-card__value--${item.tone}`">
+                {{ item.value }}
+              </strong>
+            </div>
+          </article>
+        </section>
+
+        <section class="card filter-panel">
+          <div class="filter-panel__left">
+            <span class="filter-panel__label">状态筛选：</span>
+            <button
+              v-for="item in statusTabs"
+              :key="item.value"
+              type="button"
+              class="filter-chip"
+              :class="{ 'filter-chip--active': item.active }"
+              @click="item.onClick"
+            >
+              {{ item.label }}
+            </button>
+          </div>
+
+          <div class="filter-panel__right">
+            <div class="filter-input">
+              <input
+                v-model.trim="searchKeyword"
+                type="text"
+                class="filter-input__field"
+                placeholder="搜索案件名称或训练类型"
+              />
+            </div>
+
+            <div class="date-filter">
+              <el-date-picker
+                v-model="dateRange"
+                type="daterange"
+                range-separator="-"
+                start-placeholder="开始日期"
+                end-placeholder="结束日期"
+                value-format="YYYY-MM-DD"
+                :teleported="false"
+              />
+            </div>
+          </div>
+        </section>
+      </template>
+
+      <section class="card history-table-card">
+        <div v-if="loading" class="state-panel loading-state">
+          <el-skeleton :rows="8" animated />
         </div>
-      </section>
-    </template>
 
-    <div v-if="loading" class="card loading-state">
-      <el-skeleton :rows="8" animated />
-    </div>
-
-    <div v-else-if="loadError" class="card error-state">
-      <el-empty :description="loadError">
-        <div class="error-actions">
-          <el-button @click="fetchHistory">重新加载</el-button>
-          <el-button type="primary" @click="router.push('/student/hall')">前往训练大厅</el-button>
+        <div v-else-if="loadError" class="state-panel error-state">
+          <el-empty :description="loadError">
+            <div class="error-actions">
+              <el-button @click="fetchHistory">重新加载</el-button>
+              <el-button type="primary" @click="router.push('/student/hall')">前往训练大厅</el-button>
+            </div>
+          </el-empty>
         </div>
-      </el-empty>
-    </div>
 
-    <div v-else-if="records.length === 0" class="card empty-state">
-      <el-empty :description="emptyTitle">
-        <template #description>
-          <p>{{ emptyTitle }}</p>
-          <span v-if="hiddenEmptyCount > 0">当前有 {{ hiddenEmptyCount }} 条空会话被自动隐藏。</span>
-          <span v-else>{{ emptyDescription }}</span>
-        </template>
-        <el-button type="primary" @click="router.push('/student/hall')">前往训练大厅</el-button>
-      </el-empty>
-    </div>
+        <div v-else-if="filteredRecords.length === 0" class="state-panel empty-state">
+          <el-empty :description="emptyTitle">
+            <template #description>
+              <p>{{ emptyTitle }}</p>
+              <span v-if="searchKeyword || hasDateRange">可以清空筛选条件后再查看。</span>
+              <span v-else>{{ emptyDescription }}</span>
+            </template>
+            <el-button type="primary" @click="router.push('/student/hall')">前往训练大厅</el-button>
+          </el-empty>
+        </div>
 
-    <div v-else class="history-list-wrapper">
-      <div class="history-list">
-        <article
-          v-for="record in records"
-          :key="record.id"
-          class="card history-card"
-          :class="record.status === 'finished' ? 'history-card--finished' : 'history-card--active'"
-        >
-          <!-- 头部：核心识别信息 -->
-          <header class="card-header">
-            <div class="card-header-main">
-              <div class="card-title-row">
+        <template v-else>
+          <div class="history-table__head">
+            <div>案件信息</div>
+            <div>训练状态</div>
+            <div>时间</div>
+            <div>能力指标</div>
+            <div>综合评分</div>
+            <div>操作</div>
+          </div>
+
+          <div class="history-table__body">
+            <article v-for="record in filteredRecords" :key="record.id" class="history-row">
+              <div class="history-row__case">
+                <div class="history-row__case-text">
+                  <h3 class="history-row__title">{{ record.case_title || '未命名案件' }}</h3>
+                  <p class="history-row__scene">{{ record.scene_name || '未指定场景' }}</p>
+                  <div class="history-row__meta">
+                    <span>{{ record.case_type || '未分类' }}</span>
+                    <span>难度 {{ record.difficulty || '中等' }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="history-row__status">
                 <span class="status-badge" :class="record.status === 'finished' ? 'status-badge--done' : 'status-badge--live'">
                   {{ record.status === 'finished' ? '已完成' : '进行中' }}
                 </span>
-                <h3 class="record-title">{{ record.case_title || '未命名案件' }}</h3>
               </div>
-              <p class="record-scene">{{ record.scene_name || '未指定场景' }}</p>
-              <div class="record-meta">
-                <span class="meta-chip">{{ record.case_type || '未分类' }}</span>
-                <span class="meta-dot">·</span>
-                <span class="meta-text">难度 {{ record.difficulty || '中等' }}</span>
-                <span class="meta-dot">·</span>
-                <span class="meta-text">{{ formatTime(record.created_at) }}</span>
+
+              <div class="history-row__time">
+                <div class="history-row__time-main">{{ formatTime(record.created_at) }}</div>
+                <div class="history-row__time-sub">对话 {{ record.turn_count ?? 0 }} 轮次</div>
               </div>
+
+              <div class="history-row__metrics">
+                <span class="metric-chip metric-chip--blue">配合 {{ record.final_cooperation ?? record.final_trust ?? 30 }}</span>
+                <span class="metric-chip metric-chip--orange">风险 {{ record.final_risk ?? 50 }}</span>
+                <span class="metric-chip metric-chip--green">清晰 {{ record.final_clarity ?? 50 }}</span>
+                <span class="metric-chip metric-chip--red">情绪 {{ record.final_emotion ?? '--' }}</span>
+              </div>
+
+              <div class="history-row__score" :class="getScoreClass(record.total_score)">
+                {{ getDisplayScore(record) }}
+              </div>
+
+              <div class="history-row__actions">
+                <el-button
+                  v-if="record.status === 'finished'"
+                  size="small"
+                  type="primary"
+                  @click="router.push(`/student/evaluation?session_id=${record.id}`)"
+                >
+                  查看报告
+                </el-button>
+                <el-button
+                  v-if="record.status === 'finished'"
+                  size="small"
+                  plain
+                  :loading="reEvaluatingId === record.id"
+                  :disabled="reEvaluatingId !== null"
+                  @click="reEvaluate(record.id)"
+                >
+                  重新评估
+                </el-button>
+                <el-button
+                  v-if="record.status !== 'finished'"
+                  size="small"
+                  type="primary"
+                  @click="continueTraining(record.id)"
+                >
+                  继续训练
+                </el-button>
+                <el-button
+                  size="small"
+                  plain
+                  :type="record.status === 'finished' ? 'default' : 'danger'"
+                  :loading="deletingId === record.id"
+                  :disabled="deletingId !== null || reEvaluatingId !== null"
+                  @click="deleteSession(record.id)"
+                >
+                  删除记录
+                </el-button>
+              </div>
+            </article>
+          </div>
+
+          <div class="history-table__footer">
+            <span class="history-table__count">共 {{ filteredRecords.length }} 条记录</span>
+
+            <div v-if="total > pageSize" class="pager">
+              <el-button size="small" :disabled="page <= 1" @click="changePage(page - 1)">上一页</el-button>
+              <span class="pager-number">{{ page }}</span>
+              <el-button size="small" :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</el-button>
+              <span class="pager-size">{{ pageSize }} 条/页</span>
             </div>
-
-            <div v-if="record.status === 'finished'" class="score-highlight">
-              <span class="score-label">综合评分</span>
-              <strong class="score-value" :class="getScoreClass(record.total_score)">
-                {{ record.total_score ?? '--' }}
-              </strong>
-            </div>
-            <div v-else class="progress-highlight">
-              <span class="score-label">对话轮次</span>
-              <strong class="score-value score-value--primary">{{ record.turn_count ?? 0 }}</strong>
-            </div>
-          </header>
-
-          <!-- 训练数据：主次分明 -->
-          <section class="card-body">
-            <div class="stat-group stat-group--primary">
-              <div class="stat-block">
-                <span class="stat-label">对话轮次</span>
-                <strong class="stat-value">{{ record.turn_count ?? 0 }}</strong>
-              </div>
-              <div class="stat-block">
-                <span class="stat-label">已获信息</span>
-                <strong class="stat-value stat-value--primary">{{ record.revealed_info_count ?? 0 }}</strong>
-              </div>
-            </div>
-
-            <div class="stat-divider" aria-hidden="true"></div>
-
-            <div class="stat-group stat-group--secondary">
-              <div class="stat-pill">
-                <span class="stat-pill-label">情绪</span>
-                <strong class="stat-pill-value" :style="{ color: getEmotionColor(record.final_emotion) }">
-                  {{ record.final_emotion ?? '--' }}
-                </strong>
-              </div>
-              <div class="stat-pill">
-                <span class="stat-pill-label">配合</span>
-                <strong class="stat-pill-value stat-pill-value--blue">
-                  {{ record.final_cooperation ?? record.final_trust ?? 30 }}
-                </strong>
-              </div>
-              <div class="stat-pill">
-                <span class="stat-pill-label">风险</span>
-                <strong class="stat-pill-value stat-pill-value--amber">{{ record.final_risk ?? 50 }}</strong>
-              </div>
-              <div class="stat-pill">
-                <span class="stat-pill-label">清晰</span>
-                <strong class="stat-pill-value stat-pill-value--green">{{ record.final_clarity ?? 50 }}</strong>
-              </div>
-            </div>
-          </section>
-
-          <!-- 已完成：复盘摘要 -->
-          <section v-if="record.status === 'finished'" class="card-review">
-            <span class="review-label">阶段复盘</span>
-            <div v-if="record.stage_gap_missing?.length" class="review-gaps">
-              <span v-for="item in record.stage_gap_missing" :key="item" class="gap-chip">{{ item }}</span>
-            </div>
-            <span v-else class="review-ok">关键项覆盖较完整</span>
-          </section>
-
-          <!-- 操作区 -->
-          <footer class="card-footer">
-            <el-button
-              v-if="record.status === 'finished'"
-              size="small"
-              type="primary"
-              @click="router.push(`/student/evaluation?session_id=${record.id}`)"
-            >
-              查看报告
-            </el-button>
-            <el-button
-              v-if="record.status === 'finished'"
-              size="small"
-              plain
-              :loading="reEvaluatingId === record.id"
-              :disabled="reEvaluatingId !== null"
-              @click="reEvaluate(record.id)"
-            >
-              重新评估
-            </el-button>
-            <el-button
-              v-if="record.status !== 'finished'"
-              size="small"
-              type="primary"
-              @click="continueTraining(record.id)"
-            >
-              继续训练
-            </el-button>
-            <el-button
-              size="small"
-              plain
-              type="danger"
-              :loading="deletingId === record.id"
-              :disabled="deletingId !== null || reEvaluatingId !== null"
-              @click="deleteSession(record.id)"
-            >
-              删除记录
-            </el-button>
-          </footer>
-        </article>
-      </div>
-
-      <div v-if="total > pageSize" class="pager card card--compact">
-        <el-button size="small" :disabled="page <= 1" @click="changePage(page - 1)">上一页</el-button>
-        <span class="pager-text">第 {{ page }} / {{ totalPages }} 页，共 {{ total }} 条</span>
-        <el-button size="small" :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</el-button>
-      </div>
+          </div>
+        </template>
+      </section>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
-import SelectFilter from '../geeker-adapt/components/SelectFilter/index.vue'
-import StudentStatCard from '../geeker-adapt/components/StudentStatCard.vue'
 import request from '../utils/request'
+import '../geeker-adapt/styles/student-hall.scss'
 
 const router = useRouter()
+const setMainScrollable = inject<(value: boolean) => void>('setMainScrollable')
+
 const records = ref<any[]>([])
 const loading = ref(true)
 const page = ref(1)
@@ -221,43 +211,82 @@ const loadError = ref('')
 const statusFilter = ref<'all' | 'active' | 'finished'>('all')
 const activeCount = ref(0)
 const finishedCount = ref(0)
+const searchKeyword = ref('')
+const dateRange = ref<[string, string] | []>([])
 
-const statusOptions = [
-  { label: '全部', value: 'all' as const },
-  { label: '进行中', value: 'active' as const },
-  { label: '已完成', value: 'finished' as const },
-]
+const hasDateRange = computed(() => Array.isArray(dateRange.value) && dateRange.value.length === 2)
 
-const statusFilterValues = computed(() => ({ status: statusFilter.value }))
+const summaryCards = computed(() => [
+  { key: 'total', label: '全部记录', value: total.value, tone: 'blue' },
+  { key: 'active', label: '进行中', value: activeCount.value, tone: 'indigo' },
+  { key: 'finished', label: '已完成', value: finishedCount.value, tone: 'green' },
+  { key: 'hidden', label: '已隐藏会话', value: hiddenEmptyCount.value, tone: 'orange' },
+])
 
-const statusFilterData = computed(() => [
+const statusTabs = computed(() => [
   {
-    title: '记录状态',
-    key: 'status',
-    options: statusOptions.map((item) => ({ label: item.label, value: item.value })),
+    label: '全部',
+    value: 'all',
+    active: statusFilter.value === 'all' && !showEmptySessions.value,
+    onClick: () => changeStatusFilter('all'),
+  },
+  {
+    label: '进行中',
+    value: 'active',
+    active: statusFilter.value === 'active',
+    onClick: () => changeStatusFilter('active'),
+  },
+  {
+    label: '已完成',
+    value: 'finished',
+    active: statusFilter.value === 'finished',
+    onClick: () => changeStatusFilter('finished'),
+  },
+  {
+    label: '已隐藏',
+    value: 'hidden',
+    active: showEmptySessions.value,
+    onClick: () => handleToggleEmpty(),
   },
 ])
 
-const onStatusFilterChange = async (values: Record<string, unknown>) => {
-  const next = values.status as 'all' | 'active' | 'finished'
-  await changeStatusFilter(next)
-}
+const filteredRecords = computed(() => {
+  const keyword = searchKeyword.value.trim().toLowerCase()
+  const start = hasDateRange.value ? String(dateRange.value[0] ?? '') : ''
+  const end = hasDateRange.value ? String(dateRange.value[1] ?? '') : ''
+
+  return records.value.filter((record) => {
+    const title = String(record.case_title || '').toLowerCase()
+    const type = String(record.case_type || '').toLowerCase()
+    const scene = String(record.scene_name || '').toLowerCase()
+    const created = String(record.created_at || '')
+    const day = created ? created.slice(0, 10) : ''
+
+    const matchKeyword = !keyword || title.includes(keyword) || type.includes(keyword) || scene.includes(keyword)
+    const matchDate = !hasDateRange.value || (day >= start && day <= end)
+    return matchKeyword && matchDate
+  })
+})
 
 const emptyTitle = computed(() => {
-  if (statusFilter.value === 'active') return showEmptySessions.value ? '暂无进行中的训练记录' : '暂无有效进行中训练'
+  if (searchKeyword.value || hasDateRange.value) return '当前筛选条件下暂无训练记录'
+  if (statusFilter.value === 'active') return '暂无进行中的训练记录'
   if (statusFilter.value === 'finished') return '暂无已完成训练记录'
-  return showEmptySessions.value ? '暂无训练记录' : '暂无有效训练记录'
+  if (showEmptySessions.value) return '暂无隐藏会话记录'
+  return '暂无训练记录'
 })
 
 const emptyDescription = computed(() => {
   if (statusFilter.value === 'active') return '开始一场训练后，未结束的会话会显示在这里。'
   if (statusFilter.value === 'finished') return '完成一次训练并生成评估后，记录会显示在这里。'
+  if (showEmptySessions.value) return '这里会显示被隐藏的空会话记录。'
   return '完成一次训练后，记录会显示在这里。'
 })
 
 const fetchHistory = async () => {
   loading.value = true
   loadError.value = ''
+
   try {
     const res: any = await request.get('/student/history', {
       params: {
@@ -268,11 +297,12 @@ const fetchHistory = async () => {
       },
       _skipErrorToast: true,
     } as any)
+
     records.value = res.items || []
     total.value = res.total || 0
     activeCount.value = Number(res.active_count || 0)
     finishedCount.value = Number(res.finished_count || 0)
-    hiddenEmptyCount.value = res.hidden_empty_count || 0
+    hiddenEmptyCount.value = Number(res.hidden_empty_count || 0)
     totalPages.value = Math.max(1, Math.ceil(total.value / pageSize))
   } catch (error: any) {
     records.value = []
@@ -281,10 +311,12 @@ const fetchHistory = async () => {
     activeCount.value = 0
     finishedCount.value = 0
     totalPages.value = 1
+
     const isBackendUnavailable = !error?.response
     loadError.value = isBackendUnavailable
       ? '后端服务未启动，请先运行 backend\\start.ps1'
       : error?.response?.data?.detail || '训练历史加载失败'
+
     showToast(isBackendUnavailable ? '无法连接后端服务' : '获取历史记录失败')
   } finally {
     loading.value = false
@@ -293,14 +325,14 @@ const fetchHistory = async () => {
 
 const reEvaluate = async (sessionId: number) => {
   if (!sessionId || reEvaluatingId.value !== null) return
+
   reEvaluatingId.value = sessionId
   try {
     await request.post(`/training/re-evaluate/${sessionId}`, null, { _skipErrorToast: true } as any)
     showToast({ type: 'success', message: '评估报告已重新生成' })
     router.push(`/student/evaluation?session_id=${sessionId}&refresh=1`)
   } catch (error: any) {
-    const errorMsg = error?.response?.data?.detail || '重新评估失败'
-    showToast(errorMsg)
+    showToast(error?.response?.data?.detail || '重新评估失败')
   } finally {
     reEvaluatingId.value = null
   }
@@ -333,8 +365,7 @@ const deleteSession = async (sessionId: number) => {
     }
     await fetchHistory()
   } catch (error: any) {
-    const errorMsg = error?.response?.data?.detail || '删除训练记录失败'
-    showToast(errorMsg)
+    showToast(error?.response?.data?.detail || '删除训练记录失败')
   } finally {
     deletingId.value = null
   }
@@ -347,6 +378,7 @@ const changePage = async (nextPage: number) => {
 }
 
 const changeStatusFilter = async (nextStatus: 'all' | 'active' | 'finished') => {
+  showEmptySessions.value = false
   if (nextStatus === statusFilter.value) return
   statusFilter.value = nextStatus
   page.value = 1
@@ -354,119 +386,431 @@ const changeStatusFilter = async (nextStatus: 'all' | 'active' | 'finished') => 
 }
 
 const handleToggleEmpty = async () => {
+  showEmptySessions.value = !showEmptySessions.value
+  if (showEmptySessions.value) {
+    statusFilter.value = 'all'
+  }
   page.value = 1
   await fetchHistory()
 }
 
-const getEmotionColor = (value: number) => {
-  if (value >= 70) return '#F53F3F'
-  if (value >= 40) return '#FF7D00'
-  return '#00B42A'
+const getDisplayScore = (record: any) => {
+  if (record.status === 'finished') return record.total_score ?? '--'
+  return record.final_emotion ?? '--'
 }
 
 const getScoreClass = (score: number | null | undefined) => {
   const value = Number(score)
-  if (!Number.isFinite(value)) return ''
-  if (value >= 85) return 'score-value--excellent'
-  if (value >= 70) return 'score-value--good'
-  if (value >= 60) return 'score-value--pass'
-  return 'score-value--weak'
+  if (!Number.isFinite(value)) return 'history-row__score--warning'
+  if (value >= 85) return 'history-row__score--excellent'
+  if (value >= 70) return 'history-row__score--good'
+  if (value >= 60) return 'history-row__score--warning'
+  return 'history-row__score--weak'
 }
 
 const formatTime = (iso: string) => {
   if (!iso) return '-'
-  const d = new Date(iso)
-  return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
+  const date = new Date(iso)
+  return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`
 }
 
-onMounted(fetchHistory)
+onMounted(() => {
+  setMainScrollable?.(true)
+  fetchHistory()
+})
+
+onUnmounted(() => {
+  setMainScrollable?.(false)
+})
 </script>
 
 <style scoped>
 .history-page {
-  padding-top: 16px;
-  height: 100%;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  gap: 12px;
 }
 
-.summary-row {
-  margin-bottom: 16px;
-}
-
-.toolbar-card {
-  display: flex;
+.history-toolbar {
   align-items: flex-start;
+}
+
+.history-title {
+  margin: 0;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.list-subtitle {
+  margin: 4px 0 0;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.summary-card {
+  padding: 14px 16px;
+  border-radius: 6px;
+}
+
+.summary-card__content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.summary-card__label {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.summary-card__value {
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.summary-card__value--blue,
+.summary-card__value--indigo {
+  color: #0f2d6b;
+}
+
+.summary-card__value--green {
+  color: #18a058;
+}
+
+.summary-card__value--orange {
+  color: #f97316;
+}
+
+.filter-panel {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 16px;
+  padding: 12px 16px;
+  border-radius: 6px;
+}
+
+.filter-panel__left,
+.filter-panel__right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.filter-panel__left {
   flex-wrap: wrap;
 }
 
-.toolbar-card__main {
-  flex: 1;
+.filter-panel__right {
+  margin-left: auto;
+}
+
+.filter-panel__label {
+  color: #111827;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.filter-chip {
+  border: 1px solid #e5e7eb;
+  border-radius: var(--police-radius-lg);
+  background: #fff;
+  padding: 7px 16px;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.filter-chip--active {
+  border-color: var(--student-accent, #0066ff);
+  background: var(--student-accent, #0066ff);
+  color: #fff;
+}
+
+.filter-input,
+.date-filter {
+  min-width: 280px;
+  border: 1px solid #e5e7eb;
+  border-radius: var(--police-radius-lg);
+  background: #fff;
+  padding: 0 12px;
+}
+
+.filter-input__field {
+  width: 100%;
+  height: 38px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #111827;
+  font-size: 13px;
+}
+
+.date-filter :deep(.el-input__wrapper) {
+  box-shadow: none !important;
+  padding: 0;
+}
+
+.date-filter :deep(.el-range-input) {
+  font-size: 13px;
+  color: #111827;
+}
+
+.date-filter :deep(.el-range-separator),
+.date-filter :deep(.el-input__icon) {
+  color: #9ca3af;
+}
+
+.history-table-card {
+  overflow: hidden;
+  padding: 0;
+  border-radius: 6px;
+}
+
+.history-table__head {
+  display: grid;
+  grid-template-columns: 2.2fr 1fr 1.2fr 1.8fr 0.8fr 0.9fr;
+  gap: 16px;
+  border-bottom: 1px solid #f3f4f6;
+  padding: 18px 24px 16px;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.history-table__body {
+  padding: 0 14px;
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: 2.2fr 1fr 1.2fr 1.8fr 0.8fr 0.9fr;
+  gap: 16px;
+  align-items: center;
+  border-bottom: 1px solid #f3f4f6;
+  padding: 18px 10px;
+  min-height: 140px;
+}
+
+.history-row__case-text {
   min-width: 0;
 }
 
-.summary-tools {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-  padding-left: 12px;
+.history-row__title {
+  margin: 0;
+  color: #111827;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 22px;
 }
 
-.tool-label {
-  font-size: 13px;
-  color: #64748b;
+.history-row__scene {
+  margin: 4px 0 0;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.history-row__meta {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.history-row__status,
+.history-row__time,
+.history-row__score,
+.history-row__actions {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+}
+
+.history-row__time,
+.history-row__actions {
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+}
+
+.history-row__status,
+.history-row__score {
+  justify-content: center;
+}
+
+.history-row__time-main {
+  color: #111827;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.history-row__time-sub {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--police-radius);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.status-badge--done {
+  border: 1px solid #d1fae5;
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.status-badge--live {
+  border: 1px solid #dbeafe;
+  background: #eff6ff;
+  color: #165dff;
+}
+
+.history-row__metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(88px, 1fr));
+  gap: 10px 12px;
+  align-content: center;
+  align-self: stretch;
+}
+
+.metric-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--police-radius);
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 40px;
+  box-sizing: border-box;
   white-space: nowrap;
 }
 
-.summary-item {
+.metric-chip--blue {
+  border: 1px solid #dbeafe;
+  background: #eff6ff;
+  color: #165dff;
+}
+
+.metric-chip--orange {
+  border: 1px solid #fed7aa;
+  background: #fff7ed;
+  color: #ea580c;
+}
+
+.metric-chip--green {
+  border: 1px solid #d1fae5;
+  background: #ecfdf5;
+  color: #059669;
+}
+
+.metric-chip--red {
+  border: 1px solid #fecaca;
+  background: #fff1f2;
+  color: #ef4444;
+}
+
+.history-row__score {
+  font-size: 20px;
+  font-weight: 900;
+  min-width: 72px;
+}
+
+.history-row__score--excellent,
+.history-row__score--good {
+  color: #ef4444;
+}
+
+.history-row__score--warning {
+  color: #f97316;
+}
+
+.history-row__score--weak {
+  color: #dc2626;
+}
+
+.history-row__actions {
+  min-width: 132px;
+}
+
+.history-row__actions :deep(.el-button) {
+  width: 132px;
+  height: 34px !important;
+  border-radius: var(--police-radius) !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  margin: 0 !important;
+}
+
+.history-table__footer {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-width: 150px;
-  padding-right: 14px;
-  border-right: 1px solid #e2e8f0;
+  justify-content: space-between;
+  padding: 16px 24px;
 }
 
-.summary-item:last-of-type {
-  border-right: none;
-}
-
-.summary-tip {
-  margin: 8px 0 0;
+.history-table__count {
+  color: #111827;
   font-size: 13px;
-  color: #4e5969;
+  font-weight: 700;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.pager-number {
+  display: inline-flex;
+  height: 34px;
+  min-width: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--police-radius);
+  background: var(--student-accent, #0066ff);
+  padding: 0 12px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.pager-size {
+  border: 1px solid #e5e7eb;
+  border-radius: var(--police-radius-lg);
+  padding: 8px 14px;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .loading-state,
 .empty-state,
 .error-state {
   display: flex;
+  min-height: 360px;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 80px 0;
-  gap: 8px;
-  color: #86909c;
   text-align: center;
-}
-
-.empty-state p {
-  font-size: 15px;
-  color: #4e5969;
-  font-weight: 500;
-  margin: 16px 0 4px;
-}
-
-.go-btn {
-  margin-top: 16px;
-  background: #165dff !important;
-  border: none !important;
-  border-radius: 8px !important;
 }
 
 .error-actions {
@@ -477,435 +821,75 @@ onMounted(fetchHistory)
   margin-top: 16px;
 }
 
-.history-list-wrapper {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
+@media (max-width: 1480px) {
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 
-.history-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  display: grid;
-  gap: 10px;
-  align-content: start;
-  padding-right: 4px;
-}
-
-.history-card {
-  background: #fff;
-  border-radius: 10px;
-  border: 1px solid #e5e7eb;
-  overflow: hidden;
-  height: 240px;
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-}
-
-.history-card--finished {
-  border-left: 4px solid #10b981;
-}
-
-.history-card--active {
-  border-left: 4px solid #165dff;
-}
-
-.card-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 14px 4px;
-  border-bottom: 1px solid #f1f5f9;
-  flex-shrink: 0;
-  height: 60px;
-}
-
-.card-header-main {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.card-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: nowrap;
-  flex-shrink: 0;
-}
-
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.status-badge--done {
-  color: #047857;
-  background: #ecfdf5;
-}
-
-.status-badge--live {
-  color: #165dff;
-  background: #eff6ff;
-}
-
-.record-title {
-  margin: 0;
-  color: #0f172a;
-  font-size: 15px;
-  font-weight: 800;
-  line-height: 1.3;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.record-scene {
-  color: #334155;
-  font-size: 12px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.record-meta {
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  color: #111827;
-  flex-shrink: 0;
-  overflow: hidden;
-}
-
-.meta-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 7px;
-  border-radius: 3px;
-  background: #f8fafc;
-  color: #111827;
-  font-size: 12px;
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-.meta-dot {
-  color: #cbd5e1;
-  flex-shrink: 0;
-}
-
-.meta-text {
-  color: #111827;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex-shrink: 1;
-}
-
-.score-highlight,
-.progress-highlight {
-  flex-shrink: 0;
-  min-width: 80px;
-  text-align: right;
-}
-
-.score-label {
-  display: block;
-  font-size: 11px;
-  color: #94a3b8;
-  font-weight: 600;
-}
-
-.score-value {
-  display: block;
-  margin-top: 2px;
-  font-size: 30px;
-  font-weight: 900;
-  line-height: 1;
-  color: #165dff;
-}
-
-.score-value--primary {
-  color: #165dff;
-}
-
-.score-value--excellent {
-  color: #059669;
-}
-
-.score-value--good {
-  color: #165dff;
-}
-
-.score-value--pass {
-  color: #d97706;
-}
-
-.score-value--weak {
-  color: #dc2626;
-}
-
-.card-body {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 6px 14px;
-  background: #fafbfc;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.stat-group {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.stat-group--primary {
-  flex-shrink: 0;
-}
-
-.stat-group--secondary {
-  flex: 1;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.stat-divider {
-  width: 1px;
-  height: 32px;
-  background: #e5e7eb;
-  flex-shrink: 0;
-}
-
-.stat-block {
-  min-width: 0;
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.stat-label {
-  font-size: 12px;
-  color: #64748b;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
-
-.stat-value {
-  font-size: 18px;
-  font-weight: 800;
-  color: #0f172a;
-  line-height: 1;
-}
-
-.stat-value--primary {
-  color: #165dff;
-}
-
-.stat-pill {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  border-radius: 8px;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-}
-
-.stat-pill-label {
-  font-size: 12px;
-  color: #64748b;
-  font-weight: 600;
-}
-
-.stat-pill-value {
-  font-size: 16px;
-  font-weight: 800;
-  color: #334155;
-  line-height: 1;
-}
-
-.stat-pill-value--blue {
-  color: #165dff;
-}
-
-.stat-pill-value--amber {
-  color: #d97706;
-}
-
-.stat-pill-value--green {
-  color: #059669;
-}
-
-.card-review {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 14px;
-  border-top: 1px solid #f1f5f9;
-  background: #fff;
-  height: 30px;
-  flex-shrink: 0;
-  overflow: hidden;
-}
-
-.review-label {
-  flex-shrink: 0;
-  font-size: 12px;
-  font-weight: 700;
-  color: #64748b;
-}
-
-.review-gaps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  flex: 1;
-}
-
-.gap-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 4px;
-  background: #fff7ed;
-  color: #c2410c;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.review-ok {
-  color: #059669;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.card-footer {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 14px;
-  border-top: 1px solid #f1f5f9;
-  background: #fff;
-  height: 44px;
-  flex-shrink: 0;
-  overflow: hidden;
-}
-
-.card-footer :deep(.el-button) {
-  font-size: 13px !important;
-  padding: 7px 16px !important;
-  height: 34px !important;
-}
-
-.pager {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-  padding: 20px 4px 0;
-}
-
-.pager-text {
-  font-size: 13px;
-  color: #86909c;
-}
-
-@media (max-width: 900px) {
-  .card-header {
+  .filter-panel {
     flex-direction: column;
-    gap: 8px;
-  }
-
-  .score-highlight,
-  .progress-highlight {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    text-align: left;
-  }
-
-  .score-value {
-    font-size: 20px;
-  }
-
-  .card-body {
-    flex-direction: column;
-    gap: 8px;
     align-items: stretch;
   }
 
-  .stat-divider {
-    width: 100%;
-    height: 1px;
+  .filter-panel__right {
+    margin-left: 0;
+    flex-wrap: wrap;
   }
 
-  .stat-group--secondary {
+  .history-table__head,
+  .history-row {
+    grid-template-columns: 2fr 0.9fr 1fr 1.6fr 0.7fr 0.8fr;
+  }
+}
+
+@media (max-width: 1200px) {
+  .history-table__head {
+    display: none;
+  }
+
+  .history-row {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding: 18px 16px;
+  }
+
+  .history-row__score {
     justify-content: flex-start;
   }
+
+  .history-row__metrics {
+    grid-template-columns: repeat(2, minmax(0, 120px));
+  }
+
+  .history-row__actions {
+    align-items: stretch;
+    min-width: 0;
+  }
 }
 
-@media (max-width: 640px) {
-  .history-page {
-    padding: 12px 14px 24px;
+@media (max-width: 768px) {
+  .summary-grid {
+    grid-template-columns: 1fr;
   }
 
-  .summary-bar {
+  .filter-input,
+  .date-filter {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .history-table__footer {
     flex-direction: column;
     align-items: stretch;
+    gap: 12px;
   }
 
-  .summary-tools {
-    margin-left: 0;
-    padding-left: 0;
-    padding-top: 8px;
-    border-top: 1px solid #f1f5f9;
-    justify-content: flex-end;
+  .history-row__metrics {
+    grid-template-columns: 1fr 1fr;
   }
 
-  .card-footer,
   .pager {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .card-footer :deep(.van-button) {
-    width: 100%;
-  }
-
-  .stat-group--primary,
-  .stat-group--secondary {
-    width: 100%;
-  }
-
-  .stat-pill {
-    flex: 1;
-    min-width: calc(50% - 6px);
+    justify-content: space-between;
   }
 }
 </style>
