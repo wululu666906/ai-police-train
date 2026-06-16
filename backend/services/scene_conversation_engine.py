@@ -40,6 +40,11 @@ def consolidate_scene_conversation(
     new_facts: list[str] = []
     inner_thoughts: list[str] = []
     role_contracts: dict[str, Any] = {}
+    role_state_deltas: dict[str, dict[str, int]] = {
+        str(key): {"emotion": 0, "cooperation": 0, "risk": 0, "clarity": 0}
+        for key in (role_snapshots or {}).keys()
+        if str(key).strip()
+    }
 
     for actor in actor_outputs:
         role = actor.get("role")
@@ -49,7 +54,14 @@ def consolidate_scene_conversation(
             active_role_ids.append(int(role_id))
         snap_key = str(role_id) if role_id is not None else ""
         if snap_key:
-            role_snapshots[snap_key] = actor.get("updated_snapshot") or role_snapshots.get(snap_key) or {}
+            previous_snapshot = role_snapshots.get(snap_key) or {}
+            updated_snapshot = actor.get("updated_snapshot") or previous_snapshot or {}
+            role_snapshots[snap_key] = updated_snapshot
+            role_state_deltas[snap_key] = {
+                axis: _clamp_score(updated_snapshot.get(axis), _clamp_score(previous_snapshot.get(axis), 50))
+                - _clamp_score(previous_snapshot.get(axis), 50)
+                for axis in ("emotion", "cooperation", "risk", "clarity")
+            }
             contract = actor.get("state_contract")
             if isinstance(contract, dict):
                 role_contracts[snap_key] = contract
@@ -107,6 +119,8 @@ def consolidate_scene_conversation(
     return {
         "director_plan": director_plan,
         "interaction_mode": _text(director_plan.get("interaction_mode")) or "mixed",
+        "scene_mood": _text(director_plan.get("scene_mood")) or "stable",
+        "scene_mood_shift": _text(director_plan.get("scene_mood_shift")) or "stable",
         "routing_summary": _text(director_plan.get("routing_summary")) or "",
         "addressing_warning": _text(director_plan.get("addressing_warning")) or "",
         "reply_turns": reply_turns,
@@ -116,6 +130,7 @@ def consolidate_scene_conversation(
         "primary_role": primary_role,
         "active_role_ids": active_role_ids,
         "role_state_snapshots": role_snapshots,
+        "role_state_deltas": role_state_deltas,
         "scene_state_snapshot": scene_snapshot,
         "updated_emotion": primary_snap.get("emotion", 50),
         "updated_trust": scene_snapshot.get("cooperation", 30),

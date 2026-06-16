@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from typing import Any, List, Optional
 
@@ -122,6 +123,12 @@ case_completion_client = OpenAI(
 )
 
 
+def _provider_for_client(llm_client: Optional[OpenAI]) -> str:
+    if llm_client is case_completion_client:
+        return CASE_COMPLETION_ACTIVE_PROVIDER
+    return ACTIVE_PROVIDER
+
+
 def get_chat_model() -> str:
     return ACTIVE_CHAT_MODEL
 
@@ -176,26 +183,46 @@ def extract_json_payload(text: Any) -> Any:
     raw = str(text or "").strip()
     if not raw:
         return None
-    try:
-        return json.loads(raw)
-    except Exception:
-        pass
+
+    raw = raw.strip("\ufeff")
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw).strip()
+
+    def _try_load(candidate: str) -> Any:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, str):
+                nested = parsed.strip()
+                if nested and nested != candidate:
+                    return _try_load(nested)
+            return parsed
+        except Exception:
+            repaired = re.sub(r",\s*([}\]])", r"\1", candidate)
+            if repaired != candidate:
+                try:
+                    return json.loads(repaired)
+                except Exception:
+                    pass
+        return None
+
+    parsed = _try_load(raw)
+    if parsed is not None:
+        return parsed
 
     start = raw.find("{")
     end = raw.rfind("}")
     if start != -1 and end != -1 and end > start:
-        try:
-            return json.loads(raw[start : end + 1])
-        except Exception:
-            pass
+        parsed = _try_load(raw[start : end + 1])
+        if parsed is not None:
+            return parsed
 
     start = raw.find("[")
     end = raw.rfind("]")
     if start != -1 and end != -1 and end > start:
-        try:
-            return json.loads(raw[start : end + 1])
-        except Exception:
-            pass
+        parsed = _try_load(raw[start : end + 1])
+        if parsed is not None:
+            return parsed
     return None
 
 
@@ -230,10 +257,11 @@ def create_json_chat_completion(
     if extra_kwargs:
         kwargs.update(extra_kwargs)
 
-    retries = 4 if ACTIVE_PROVIDER == "deepseek" else 2
+    provider = _provider_for_client(llm_client)
+    retries = 4 if provider == "deepseek" else 2
     last_response = None
     for attempt in range(retries):
-        if attempt > 0 and ACTIVE_PROVIDER == "deepseek":
+        if attempt > 0 and provider == "deepseek":
             kwargs["temperature"] = min(1.0, float(kwargs.get("temperature", temperature)) + 0.05)
 
         active_client = llm_client or client
@@ -249,9 +277,8 @@ def create_json_chat_completion(
         except Exception:
             finish_reason = ""
 
-        provider_label = CASE_COMPLETION_ACTIVE_PROVIDER if llm_client is case_completion_client else ACTIVE_PROVIDER
         print(
-            f"LLM empty JSON response detected: provider={provider_label}, "
+            f"LLM empty JSON response detected: provider={provider}, "
             f"attempt={attempt + 1}, finish_reason={finish_reason or 'unknown'}"
         )
 
@@ -266,7 +293,7 @@ def create_json_chat_completion(
         ]
         time.sleep(0.35 * (attempt + 1))
 
-    if ACTIVE_PROVIDER == "deepseek":
+    if provider == "deepseek":
         fallback_kwargs = {
             "model": model or get_chat_model(),
             "messages": list(request_messages)

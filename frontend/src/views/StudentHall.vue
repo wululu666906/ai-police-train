@@ -13,9 +13,9 @@
         <div class="tasks-toolbar">
           <el-tabs v-model="activeTaskTab" class="task-tabs">
             <el-tab-pane label="全部任务" name="all" />
-            <el-tab-pane label="进行中" name="active" />
+            <el-tab-pane label="继续训练" name="active" />
             <el-tab-pane label="未开始" name="idle" />
-            <el-tab-pane label="已完成" name="completed" />
+            <el-tab-pane label="已完成训练" name="completed" />
           </el-tabs>
           <div class="tasks-controls">
             <el-select v-model="sortBy" size="small" class="sort-select">
@@ -67,6 +67,7 @@
             :loading-scene-id="loadingSceneId"
             :disabled="loadingSceneId !== null"
             @start-scene="startTraining"
+            @view-review="viewSceneReview"
             @view-detail="openExpandedDetail(caseItem)"
           />
         </div>
@@ -102,20 +103,40 @@
                 <div class="scene-name">{{ scene.name }}</div>
                 <div class="scene-meta">
                   <span>{{ normalizeDifficulty(scene.difficulty || '中') }}</span>
-                  <span :class="scene.has_active_session ? 'meta-active' : 'meta-idle'">
-                    {{ scene.has_active_session ? '进行中' : '未开始' }}
+                  <span :class="scene.training_status === 'completed' ? 'meta-done' : scene.has_active_session ? 'meta-active' : 'meta-idle'">
+                    {{ getSceneStatusLabel(scene) }}
                   </span>
                 </div>
               </div>
               <div class="scene-actions">
+                <template v-if="scene.training_status === 'completed'">
+                  <el-button
+                    plain
+                    size="small"
+                    :disabled="loadingSceneId !== null"
+                    @click="viewSceneReview(scene)"
+                  >
+                    查看复盘
+                  </el-button>
+                  <el-button
+                    type="primary"
+                    size="small"
+                    :loading="loadingSceneId === scene.id"
+                    :disabled="loadingSceneId !== null"
+                    @click="startTraining(scene)"
+                  >
+                    重新训练
+                  </el-button>
+                </template>
                 <el-button
+                  v-else
                   type="primary"
                   size="small"
                   :loading="loadingSceneId === scene.id"
-                  :disabled="loadingSceneId !== null"
+                  :disabled="loadingSceneId !== null || scene.training_status === 'evaluating'"
                   @click="startTraining(scene)"
                 >
-                  {{ scene.has_active_session ? '继续训练' : '开始训练' }}
+                  {{ getSceneActionLabel(scene) }}
                 </el-button>
               </div>
             </div>
@@ -143,6 +164,10 @@ type SceneItem = {
   has_active_session?: boolean
   active_session_id?: number | null
   active_session_is_empty?: boolean
+  finished_session_id?: number | null
+  final_score?: number | null
+  training_status?: 'not_started' | 'in_progress' | 'evaluating' | 'completed'
+  status_label?: string
 }
 
 type CaseItem = {
@@ -200,8 +225,8 @@ const filterData = computed(() => [
     key: 'status',
     options: [
       { label: '全部状态', value: '' },
-      { label: '进行中', value: 'active' },
-      { label: '已完成', value: 'completed' },
+      { label: '继续训练', value: 'active' },
+      { label: '已完成训练', value: 'completed' },
       { label: '未开始', value: 'idle' },
     ],
   },
@@ -253,18 +278,51 @@ const getVisibleScenes = (caseItem: CaseItem) => {
   return scenes.filter((scene) => normalizeDifficulty(scene.difficulty || '') === selectedDifficulty.value)
 }
 
+const getSceneTrainingStatus = (scene: SceneItem) => {
+  if (scene.training_status) return scene.training_status
+  if (scene.has_active_session) return 'in_progress'
+  return 'not_started'
+}
+
+const getSceneStatusLabel = (scene: SceneItem) => {
+  const status = getSceneTrainingStatus(scene)
+  if (status === 'completed') return scene.final_score != null ? `已评分 ${scene.final_score}分` : '已完成训练'
+  if (scene.status_label) return scene.status_label
+  if (status === 'evaluating') return '评估中'
+  if (status === 'in_progress') return '继续训练'
+  return '未开始训练'
+}
+
+const getSceneActionLabel = (scene: SceneItem) => {
+  const status = getSceneTrainingStatus(scene)
+  if (status === 'evaluating') return '评估中'
+  if (status === 'in_progress') return '继续训练'
+  return '开始训练'
+}
+
 const getCaseStatus = (caseItem: CaseItem): 'active' | 'completed' | 'idle' => {
   const scenes = Array.isArray(caseItem?.scenes) ? caseItem.scenes : []
-  if (scenes.some((scene) => scene.has_active_session)) return 'active'
-  if (Number(caseItem.train_count || 0) > 0) return 'completed'
+  if (!scenes.length) return 'idle'
+  const statuses = scenes.map(getSceneTrainingStatus)
+  if (statuses.every((status) => status === 'completed')) return 'completed'
+  if (statuses.some((status) => status === 'in_progress' || status === 'evaluating' || status === 'completed')) return 'active'
   return 'idle'
 }
 
 const getCaseStatusLabel = (caseItem: CaseItem) => {
   const status = getCaseStatus(caseItem)
-  if (status === 'active') return '进行中'
-  if (status === 'completed') return '已完成'
+  if (status === 'active') return '继续训练'
+  if (status === 'completed') return '已完成训练'
   return '未开始'
+}
+
+const viewSceneReview = (scene: SceneItem) => {
+  const sessionId = Number(scene.finished_session_id || scene.active_session_id)
+  if (!sessionId) {
+    showToast('该场景暂无可查看的复盘记录')
+    return
+  }
+  router.push(`/student/evaluation?session_id=${sessionId}`)
 }
 
 const fetchCases = async () => {
@@ -526,6 +584,10 @@ const startTraining = async (scene: SceneItem) => {
 
 .meta-active {
   color: var(--student-accent, #0066ff);
+}
+
+.meta-done {
+  color: #047857;
 }
 
 .meta-idle {

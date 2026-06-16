@@ -3,12 +3,40 @@ import { computed, onMounted, ref } from 'vue'
 import request from '../utils/request'
 import { showConfirmDialog, showFailToast, showSuccessToast } from 'vant'
 
-const knowledgeList = ref<any[]>([])
-const knowledgeSearchText = ref('')
-const knowledgeCategoryFilter = ref('')
-const knowledgeSourceFilter = ref('')
+type KnowledgeRow = {
+  id: string
+  title?: string
+  content?: string
+  category?: string
+  source?: string
+  tags?: string[]
+  referenced_by_count?: number
+  referenced_by?: string[]
+}
+
+type CaseKnowledgeRow = KnowledgeRow & {
+  case_id?: string
+  case_title?: string
+  doc_type?: 'case_info' | 'role_script' | string
+  role_id?: string
+  role_name?: string
+  in_knowledge?: boolean
+  metadata?: Record<string, any>
+}
+
+const activeTab = ref<'general' | 'cases'>('cases')
+const knowledgeList = ref<KnowledgeRow[]>([])
+const caseKnowledgeList = ref<CaseKnowledgeRow[]>([])
+const keyword = ref('')
+const categoryFilter = ref('')
+const sourceFilter = ref('')
+const caseFilter = ref('')
+const docTypeFilter = ref('')
 const loading = ref(false)
+const syncing = ref(false)
 const showUpload = ref(false)
+const showDetail = ref(false)
+const selectedItem = ref<KnowledgeRow | CaseKnowledgeRow | null>(null)
 const form = ref({
   title: '',
   category: '',
@@ -17,38 +45,68 @@ const form = ref({
   content: '',
 })
 
+const normalizeTags = (tags: unknown) => (Array.isArray(tags) ? tags.map(String).filter(Boolean) : [])
+
 const totalRefs = computed(() => knowledgeList.value.reduce((sum, item) => sum + Number(item.referenced_by_count || 0), 0))
-const categoryFilterOptions = computed(() =>
-  Array.from(new Set(knowledgeList.value.map((item) => String(item?.category || '').trim()).filter(Boolean))).sort()
+const syncedCaseDocs = computed(() => caseKnowledgeList.value.filter((item) => item.in_knowledge).length)
+const unsyncedCaseDocs = computed(() => caseKnowledgeList.value.filter((item) => !item.in_knowledge).length)
+
+const categoryOptions = computed(() =>
+  Array.from(new Set(knowledgeList.value.map((item) => String(item.category || '').trim()).filter(Boolean))).sort()
 )
-const sourceFilterOptions = computed(() =>
-  Array.from(new Set(knowledgeList.value.map((item) => String(item?.source || '').trim()).filter(Boolean))).sort()
+const sourceOptions = computed(() =>
+  Array.from(new Set(knowledgeList.value.map((item) => String(item.source || '').trim()).filter(Boolean))).sort()
 )
-const filteredKnowledgeList = computed(() => {
-  const keyword = knowledgeSearchText.value.trim()
+const caseOptions = computed(() =>
+  Array.from(
+    new Map(
+      caseKnowledgeList.value
+        .filter((item) => item.case_id)
+        .map((item) => [String(item.case_id), item.case_title || `案件 ${item.case_id}`])
+    ).entries()
+  ).map(([id, title]) => ({ id, title }))
+)
+
+const currentGeneralList = computed(() => {
+  const text = keyword.value.trim()
   return knowledgeList.value.filter((item) => {
-    if (knowledgeCategoryFilter.value && item.category !== knowledgeCategoryFilter.value) return false
-    if (knowledgeSourceFilter.value && item.source !== knowledgeSourceFilter.value) return false
-    if (!keyword) return true
+    if (categoryFilter.value && item.category !== categoryFilter.value) return false
+    if (sourceFilter.value && item.source !== sourceFilter.value) return false
+    if (!text) return true
+    const haystack = [item.title, item.content, item.category, item.source, ...(item.tags || []), ...(item.referenced_by || [])].join(' ')
+    return haystack.includes(text)
+  })
+})
+
+const currentCaseList = computed(() => {
+  const text = keyword.value.trim()
+  return caseKnowledgeList.value.filter((item) => {
+    if (caseFilter.value && String(item.case_id || '') !== caseFilter.value) return false
+    if (docTypeFilter.value && item.doc_type !== docTypeFilter.value) return false
+    if (!text) return true
     const haystack = [
+      item.id,
       item.title,
       item.content,
+      item.case_title,
+      item.role_name,
       item.category,
       item.source,
-      ...(Array.isArray(item.tags) ? item.tags : []),
-      ...(Array.isArray(item.referenced_by) ? item.referenced_by : []),
+      ...(item.tags || []),
     ].join(' ')
-    return haystack.includes(keyword)
+    return haystack.includes(text)
   })
 })
 
 const fetchKnowledge = async () => {
   loading.value = true
   try {
-    const res: any = await request.get('/knowledge/list')
-    knowledgeList.value = Array.isArray(res) ? res : []
+    const [general, cases]: any[] = await Promise.all([request.get('/knowledge/list'), request.get('/knowledge/cases')])
+    knowledgeList.value = Array.isArray(general) ? general.map((item) => ({ ...item, tags: normalizeTags(item.tags) })) : []
+    caseKnowledgeList.value = Array.isArray(cases) ? cases.map((item) => ({ ...item, tags: normalizeTags(item.tags) })) : []
   } catch (error) {
     console.error('Fetch knowledge error:', error)
+    showFailToast('知识库加载失败')
   } finally {
     loading.value = false
   }
@@ -62,6 +120,11 @@ const resetForm = () => {
     source: 'manual',
     content: '',
   }
+}
+
+const openDetail = (item: KnowledgeRow | CaseKnowledgeRow) => {
+  selectedItem.value = item
+  showDetail.value = true
 }
 
 const handleUpload = async () => {
@@ -93,13 +156,40 @@ const handleDelete = async (id: string) => {
   try {
     await showConfirmDialog({
       title: '确认删除',
-      message: '确定要从知识库中移除这条知识吗？删除后相关考察点将失去引用。',
+      message: '确定要从知识库中移除这条知识吗？',
     })
-    await request.delete(`/knowledge/${id}`)
+    await request.delete(`/knowledge/${encodeURIComponent(id)}`)
     showSuccessToast('已删除')
     fetchKnowledge()
   } catch (error) {
-    // noop
+    // user cancelled
+  }
+}
+
+const handleSyncAllCases = async () => {
+  syncing.value = true
+  try {
+    const res: any = await request.post('/knowledge/cases/sync-all')
+    showSuccessToast(`同步完成：成功 ${res?.succeeded ?? 0}，失败 ${res?.failed ?? 0}`)
+    await fetchKnowledge()
+  } catch (error) {
+    showFailToast('案件知识同步失败')
+  } finally {
+    syncing.value = false
+  }
+}
+
+const handleSyncCase = async (caseId?: string) => {
+  if (!caseId) return
+  syncing.value = true
+  try {
+    await request.post(`/knowledge/cases/${caseId}/sync`)
+    showSuccessToast('案件知识已同步')
+    await fetchKnowledge()
+  } catch (error) {
+    showFailToast('案件知识同步失败')
+  } finally {
+    syncing.value = false
   }
 }
 
@@ -111,66 +201,147 @@ onMounted(fetchKnowledge)
     <section class="hero">
       <div>
         <h1>知识库管理</h1>
-        <p>为考察点配置可引用的法规、流程与执法提示，让评估和训练都更有依据。</p>
+        <p>统一查看通用知识、案件信息和角色剧本，训练时 AI 角色会读取对应案件与剧本内容。</p>
       </div>
-      <van-button type="primary" icon="plus" class="hero-btn" @click="showUpload = true">
-        新增知识条目
-      </van-button>
+      <div class="hero-actions">
+        <van-button plain icon="replay" :loading="loading" @click="fetchKnowledge">刷新</van-button>
+        <van-button type="primary" icon="plus" @click="showUpload = true">新增知识</van-button>
+      </div>
     </section>
 
     <section class="stats">
       <article class="stat-card">
-        <span>知识条目</span>
+        <span>通用知识</span>
         <strong>{{ knowledgeList.length }}</strong>
       </article>
       <article class="stat-card">
-        <span>被引用次数</span>
-        <strong>{{ totalRefs }}</strong>
+        <span>案件/剧本文档</span>
+        <strong>{{ caseKnowledgeList.length }}</strong>
       </article>
       <article class="stat-card">
-        <span>知识状态</span>
-        <strong>在线</strong>
+        <span>已同步 / 待同步</span>
+        <strong>{{ syncedCaseDocs }} / {{ unsyncedCaseDocs }}</strong>
+      </article>
+      <article class="stat-card">
+        <span>考察点引用</span>
+        <strong>{{ totalRefs }}</strong>
       </article>
     </section>
 
-    <section class="list-card">
+    <section class="toolbar">
+      <div class="tabs">
+        <button :class="{ active: activeTab === 'cases' }" @click="activeTab = 'cases'">案件与角色剧本</button>
+        <button :class="{ active: activeTab === 'general' }" @click="activeTab = 'general'">通用知识</button>
+      </div>
+      <label class="search-box">
+        <van-icon name="search" />
+        <input v-model.trim="keyword" type="text" placeholder="搜索标题、内容、角色或标签" />
+      </label>
+    </section>
+
+    <section v-if="activeTab === 'cases'" class="list-card">
       <div class="list-head">
         <div>
-          <h3>知识清单</h3>
-          <p>支持标题、分类、标签、来源和反向引用查看。</p>
+          <h3>案件信息与角色剧本</h3>
+          <p>案件信息和每个角色的剧本都会作为独立知识文档供 AI 角色读取。</p>
         </div>
-        <van-button icon="replay" size="small" plain round @click="fetchKnowledge" />
+        <van-button type="primary" icon="exchange" :loading="syncing" @click="handleSyncAllCases">同步全部案件</van-button>
       </div>
 
       <div class="filter-panel">
-        <div class="filter-bar">
-          <label class="filter-item">
-            <span>分类</span>
-            <select v-model="knowledgeCategoryFilter">
-              <option value="">全部</option>
-              <option v-for="item in categoryFilterOptions" :key="item" :value="item">{{ item }}</option>
-            </select>
-          </label>
-          <label class="filter-item">
-            <span>来源</span>
-            <select v-model="knowledgeSourceFilter">
-              <option value="">全部</option>
-              <option v-for="item in sourceFilterOptions" :key="item" :value="item">{{ item }}</option>
-            </select>
-          </label>
-        </div>
-        <label class="search-box">
-          <van-icon name="search" />
-          <input v-model.trim="knowledgeSearchText" type="text" placeholder="搜索标题、内容、标签或引用" />
+        <label class="filter-item">
+          <span>案件</span>
+          <select v-model="caseFilter">
+            <option value="">全部案件</option>
+            <option v-for="item in caseOptions" :key="item.id" :value="item.id">{{ item.title }}</option>
+          </select>
         </label>
-        <div class="filter-summary">当前筛选 {{ filteredKnowledgeList.length }} / {{ knowledgeList.length }} 条</div>
+        <label class="filter-item">
+          <span>类型</span>
+          <select v-model="docTypeFilter">
+            <option value="">全部类型</option>
+            <option value="case_info">案件信息</option>
+            <option value="role_script">角色剧本</option>
+          </select>
+        </label>
+        <div class="filter-summary">当前 {{ currentCaseList.length }} / {{ caseKnowledgeList.length }} 条</div>
       </div>
 
       <div v-if="loading" class="loading-box">
         <van-loading type="spinner" color="#1D3557" />
       </div>
+      <div v-else-if="currentCaseList.length" class="table-wrap">
+        <table class="knowledge-table">
+          <thead>
+            <tr>
+              <th>案件 / 文档</th>
+              <th>类型</th>
+              <th>角色</th>
+              <th>同步状态</th>
+              <th>内容预览</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in currentCaseList" :key="item.id">
+              <td>
+                <div class="row-title">{{ item.case_title || item.title || '未命名案件' }}</div>
+                <div class="id-text">{{ item.id }}</div>
+              </td>
+              <td>
+                <span class="category-chip">{{ item.doc_type === 'role_script' ? '角色剧本' : '案件信息' }}</span>
+              </td>
+              <td>{{ item.role_name || '-' }}</td>
+              <td>
+                <span :class="['status-chip', item.in_knowledge ? 'ok' : 'warn']">
+                  {{ item.in_knowledge ? '已入库' : '未同步' }}
+                </span>
+              </td>
+              <td class="preview-cell">{{ item.content }}</td>
+              <td class="actions-cell">
+                <van-button size="small" plain @click="openDetail(item)">查看</van-button>
+                <van-button size="small" type="primary" plain :loading="syncing" @click="handleSyncCase(item.case_id)">同步</van-button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-else class="empty-box">
+        <van-icon name="description-o" size="52" />
+        <p>暂无案件知识文档</p>
+      </div>
+    </section>
 
-      <div v-else-if="filteredKnowledgeList.length" class="knowledge-table-wrap">
+    <section v-else class="list-card">
+      <div class="list-head">
+        <div>
+          <h3>通用知识清单</h3>
+          <p>法规、流程、处置模板等可被考察点引用的知识条目。</p>
+        </div>
+      </div>
+
+      <div class="filter-panel">
+        <label class="filter-item">
+          <span>分类</span>
+          <select v-model="categoryFilter">
+            <option value="">全部</option>
+            <option v-for="item in categoryOptions" :key="item" :value="item">{{ item }}</option>
+          </select>
+        </label>
+        <label class="filter-item">
+          <span>来源</span>
+          <select v-model="sourceFilter">
+            <option value="">全部</option>
+            <option v-for="item in sourceOptions" :key="item" :value="item">{{ item }}</option>
+          </select>
+        </label>
+        <div class="filter-summary">当前 {{ currentGeneralList.length }} / {{ knowledgeList.length }} 条</div>
+      </div>
+
+      <div v-if="loading" class="loading-box">
+        <van-loading type="spinner" color="#1D3557" />
+      </div>
+      <div v-else-if="currentGeneralList.length" class="table-wrap">
         <table class="knowledge-table">
           <thead>
             <tr>
@@ -183,78 +354,82 @@ onMounted(fetchKnowledge)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in filteredKnowledgeList" :key="item.id">
-              <td class="knowledge-title-cell">
-                <div class="knowledge-row-title">{{ item.title || '未命名知识' }}</div>
-                <div class="knowledge-row-content">{{ item.content }}</div>
+            <tr v-for="item in currentGeneralList" :key="item.id">
+              <td>
+                <div class="row-title">{{ item.title || '未命名知识' }}</div>
+                <div class="preview-cell">{{ item.content }}</div>
                 <div class="id-text">{{ item.id }}</div>
               </td>
               <td><span class="category-chip">{{ item.category || '通用' }}</span></td>
               <td><span class="source-chip">{{ item.source || 'manual' }}</span></td>
               <td>
-                <div v-if="item.tags?.length" class="tag-list tag-list--compact">
+                <div v-if="item.tags?.length" class="tag-list">
                   <span v-for="tag in item.tags" :key="tag" class="tag-chip">{{ tag }}</span>
                 </div>
-                <span v-else class="reference-empty">-</span>
+                <span v-else class="muted">-</span>
               </td>
-              <td class="reference-cell">
-                <strong>{{ item.referenced_by_count || 0 }} 次</strong>
-                <div v-if="item.referenced_by?.length" class="reference-list reference-list--compact">
-                  <span v-for="ref in item.referenced_by.slice(0, 3)" :key="ref" class="reference-chip">{{ ref }}</span>
-                  <span v-if="item.referenced_by.length > 3" class="reference-empty">+{{ item.referenced_by.length - 3 }}</span>
-                </div>
-              </td>
-              <td>
-                <van-button icon="delete-o" size="small" danger plain class="delete-btn" @click="handleDelete(item.id)" />
+              <td>{{ item.referenced_by_count || 0 }} 次</td>
+              <td class="actions-cell">
+                <van-button size="small" plain @click="openDetail(item)">查看</van-button>
+                <van-button icon="delete-o" size="small" danger plain @click="handleDelete(item.id)" />
               </td>
             </tr>
           </tbody>
         </table>
       </div>
-
       <div v-else class="empty-box">
-        <van-icon name="comment-o" size="56" />
+        <van-icon name="comment-o" size="52" />
         <p>暂无知识条目</p>
-        <span>可以先录入法规、流程要点或处置模板。</span>
       </div>
     </section>
+
+    <van-popup v-model:show="showDetail" teleport="body" class="detail-popup" :style="{ width: 'min(760px, 94vw)' }">
+      <div class="drawer">
+        <div class="drawer-head">
+          <div>
+            <h3>{{ selectedItem?.title || selectedItem?.id || '知识详情' }}</h3>
+            <p>{{ (selectedItem as CaseKnowledgeRow)?.case_title || selectedItem?.source || '知识库文档' }}</p>
+          </div>
+          <van-icon name="cross" class="drawer-close" @click="showDetail = false" />
+        </div>
+        <div class="detail-meta">
+          <span>{{ (selectedItem as CaseKnowledgeRow)?.doc_type === 'role_script' ? '角色剧本' : selectedItem?.category || '知识条目' }}</span>
+          <span v-if="(selectedItem as CaseKnowledgeRow)?.role_name">角色：{{ (selectedItem as CaseKnowledgeRow).role_name }}</span>
+          <span v-if="(selectedItem as CaseKnowledgeRow)?.in_knowledge !== undefined">
+            {{ (selectedItem as CaseKnowledgeRow).in_knowledge ? '已同步到知识库' : '数据库快照，尚未同步' }}
+          </span>
+        </div>
+        <pre class="detail-content">{{ selectedItem?.content || '暂无内容' }}</pre>
+      </div>
+    </van-popup>
 
     <van-popup
       v-model:show="showUpload"
       teleport="body"
-      :style="{ width: 'min(560px, 92vw)', maxHeight: '88vh', borderRadius: '18px', overflow: 'hidden' }"
-      class="knowledge-upload-popup"
+      :style="{ width: 'min(560px, 92vw)', maxHeight: '88vh', borderRadius: '12px', overflow: 'hidden' }"
     >
       <div class="drawer">
         <div class="drawer-head">
           <div>
             <h3>新增知识条目</h3>
-            <p>录入后可在考察点里直接关联引用。</p>
+            <p>案件信息和角色剧本请在案件管理中维护，这里用于录入通用知识。</p>
           </div>
           <van-icon name="cross" class="drawer-close" @click="showUpload = false" />
         </div>
-
         <div class="drawer-form">
           <label>标题</label>
-          <input v-model="form.title" type="text" class="input" placeholder="例如：酒驾现场呼气检测告知要点" />
-
+          <input v-model="form.title" type="text" class="input" placeholder="例如：现场询问注意事项" />
           <label>分类</label>
-          <input v-model="form.category" type="text" class="input" placeholder="例如：道路交通 / 现场处置" />
-
+          <input v-model="form.category" type="text" class="input" placeholder="例如：现场处置" />
           <label>标签</label>
           <input v-model="form.tags" type="text" class="input" placeholder="多个标签用逗号分隔" />
-
           <label>来源</label>
-          <input v-model="form.source" type="text" class="input" placeholder="例如：manual / 法条 / 内部规范" />
-
+          <input v-model="form.source" type="text" class="input" placeholder="例如：manual / 内部规范" />
           <label>知识内容</label>
           <textarea v-model="form.content" rows="12" class="textarea" placeholder="请输入法规条文、处置流程或教学提示..."></textarea>
         </div>
-
         <div class="drawer-actions">
-          <van-button block round type="primary" class="submit-btn" @click="handleUpload">
-            保存知识条目
-          </van-button>
+          <van-button block type="primary" @click="handleUpload">保存知识条目</van-button>
         </div>
       </div>
     </van-popup>
@@ -265,96 +440,141 @@ onMounted(fetchKnowledge)
 .knowledge-page {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
 }
 
 .hero,
 .list-card,
-.stat-card {
-  border-radius: var(--police-radius-lg);
-  background: #fff;
+.stat-card,
+.toolbar {
   border: 1px solid var(--police-border);
+  border-radius: 8px;
+  background: #fff;
 }
 
 .hero {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  gap: 18px;
+  gap: 16px;
   padding: 18px 20px;
 }
 
-.hero h1 {
+.hero h1,
+.list-head h3,
+.drawer-head h3 {
   margin: 0;
   color: var(--police-text-primary);
-  font-size: 22px;
-  font-weight: 800;
 }
 
-.hero p {
-  margin: 4px 0 0;
+.hero p,
+.list-head p,
+.drawer-head p {
+  margin: 6px 0 0;
   color: var(--police-text-muted);
   font-size: 13px;
 }
 
-.hero-btn {
-  align-self: center;
-  border-radius: var(--police-radius) !important;
-  border: none !important;
-  background: var(--police-primary) !important;
+.hero-actions,
+.actions-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
 }
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .stat-card {
-  padding: 16px 18px;
+  padding: 14px 16px;
 }
 
 .stat-card span {
-  display: block;
-  color: #64748b;
+  color: var(--police-text-muted);
   font-size: 13px;
 }
 
 .stat-card strong {
   display: block;
   margin-top: 8px;
-  font-size: 28px;
   color: #0f172a;
+  font-size: 26px;
 }
 
-.list-card {
-  padding: 16px 20px;
-}
-
-.list-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: center;
-  margin-bottom: 18px;
-}
-
-.filter-panel {
+.toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  margin-bottom: 16px;
-  border: 1px solid var(--police-border);
-  border-radius: var(--police-radius-lg);
-  background: #fff;
-  padding: 14px 16px;
+  padding: 12px;
 }
 
-.filter-bar {
+.tabs {
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid var(--police-border);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.tabs button {
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 14px;
+  color: var(--police-text-secondary);
+  cursor: pointer;
+}
+
+.tabs button.active {
+  background: var(--police-primary);
+  color: #fff;
+}
+
+.search-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: min(360px, 100%);
+  height: 36px;
+  border: 1px solid var(--police-border);
+  border-radius: 8px;
+  padding: 0 12px;
+  color: var(--police-text-muted);
+}
+
+.search-box input {
+  min-width: 0;
+  flex: 1;
+  border: none;
+  outline: none;
+  color: var(--police-text-primary);
+}
+
+.list-card {
+  padding: 16px;
+}
+
+.list-head,
+.filter-panel {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
+  margin-bottom: 14px;
+}
+
+.filter-panel {
+  justify-content: flex-start;
   flex-wrap: wrap;
+  border: 1px solid var(--police-border);
+  border-radius: 8px;
+  padding: 12px;
 }
 
 .filter-item {
@@ -366,291 +586,188 @@ onMounted(fetchKnowledge)
 }
 
 .filter-item select {
-  min-width: 112px;
   height: 34px;
+  min-width: 140px;
   border: 1px solid var(--police-border);
-  border-radius: var(--police-radius);
+  border-radius: 6px;
   background: #fff;
   padding: 0 10px;
-  color: var(--police-text-primary);
 }
 
-.search-box {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  width: min(360px, 100%);
-  height: 34px;
-  border: 1px solid var(--police-border);
-  border-radius: var(--police-radius);
-  background: #fff;
-  padding: 0 12px;
+.filter-summary,
+.muted,
+.id-text {
   color: var(--police-text-muted);
+  font-size: 12px;
 }
 
-.search-box input {
-  min-width: 0;
-  flex: 1;
-  border: none;
-  background: transparent;
-  color: var(--police-text-primary);
-  font-size: 13px;
-  outline: none;
-}
-
-.filter-summary {
-  color: var(--police-text-muted);
-  font-size: 13px;
-}
-
-.list-head h3 {
-  margin: 0;
-  color: #0f172a;
-}
-
-.list-head p {
-  margin: 6px 0 0;
-  color: #64748b;
-  font-size: 13px;
-}
-
-.loading-box,
-.empty-box {
-  min-height: 260px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: #94a3b8;
-  text-align: center;
-}
-
-.knowledge-list {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.knowledge-table-wrap {
+.table-wrap {
   overflow-x: auto;
   border: 1px solid var(--police-border);
-  border-radius: var(--police-radius-lg);
-  background: #fff;
+  border-radius: 8px;
 }
 
 .knowledge-table {
   width: 100%;
-  min-width: 960px;
+  min-width: 1000px;
   border-collapse: collapse;
+}
+
+.knowledge-table th,
+.knowledge-table td {
+  border-bottom: 1px solid var(--police-border-light);
+  padding: 12px;
+  text-align: left;
+  vertical-align: top;
+  font-size: 13px;
 }
 
 .knowledge-table th {
   background: #f8fafc;
-  border-bottom: 1px solid var(--police-border);
-  padding: 12px 14px;
-  text-align: left;
-  font-size: 13px;
-  font-weight: 700;
   color: var(--police-text-secondary);
-  white-space: nowrap;
-}
-
-.knowledge-table td {
-  border-bottom: 1px solid var(--police-border-light);
-  padding: 13px 14px;
-  vertical-align: top;
-  font-size: 13px;
-  color: var(--police-text-primary);
+  font-weight: 700;
 }
 
 .knowledge-table tr:last-child td {
   border-bottom: none;
 }
 
-.knowledge-table tbody tr:hover td {
-  background: #f8fafc;
-}
-
-.knowledge-title-cell {
-  width: 42%;
-}
-
-.knowledge-row-title {
-  font-weight: 700;
+.row-title {
   color: #0f172a;
+  font-weight: 700;
 }
 
-.knowledge-row-content {
+.preview-cell {
   display: -webkit-box;
-  margin-top: 6px;
-  max-width: 560px;
+  max-width: 520px;
   overflow: hidden;
   color: #475569;
-  line-height: 1.65;
+  line-height: 1.6;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
-}
-
-.reference-cell {
-  min-width: 120px;
-}
-
-.knowledge-item {
-  display: flex;
-  gap: 16px;
-  justify-content: space-between;
-  align-items: flex-start;
-  padding: 18px;
-  border-radius: 22px;
-  background: #f8fafc;
-}
-
-.knowledge-main {
-  flex: 1;
-  min-width: 0;
-}
-
-.knowledge-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.source-chip,
-.category-chip,
-.tag-chip,
-.reference-chip {
-  padding: 5px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-}
-
-.source-chip {
-  background: rgba(22, 93, 255, 0.1);
-  color: #165dff;
-}
-
-.category-chip {
-  background: rgba(0, 180, 42, 0.1);
-  color: #00b42a;
-}
-
-.id-text {
-  align-self: center;
-  color: #94a3b8;
-  font-size: 11px;
-}
-
-.knowledge-item h4 {
-  margin: 0;
-  color: #0f172a;
-}
-
-.knowledge-item p {
-  margin: 10px 0 0;
-  line-height: 1.8;
-  color: #334155;
   white-space: pre-wrap;
 }
 
-.tag-list,
-.reference-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
+.category-chip,
+.source-chip,
+.tag-chip,
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 12px;
 }
 
-.tag-list--compact,
-.reference-list--compact {
-  margin-top: 0;
-  gap: 5px;
+.category-chip {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.source-chip {
+  background: #eef2ff;
+  color: #4338ca;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .tag-chip {
-  background: #eef2ff;
+  background: #f1f5f9;
   color: #334155;
 }
 
-.reference-box {
-  margin-top: 14px;
-  padding: 14px;
-  border-radius: 16px;
-  background: #fff;
+.status-chip.ok {
+  background: #dcfce7;
+  color: #166534;
 }
 
-.reference-box strong {
-  color: #0f172a;
-  font-size: 13px;
-}
-
-.reference-chip {
+.status-chip.warn {
   background: #fef3c7;
   color: #92400e;
 }
 
-.reference-empty {
-  margin-top: 10px;
-  color: #94a3b8;
-  font-size: 13px;
-}
-
-.delete-btn {
-  flex-shrink: 0;
+.loading-box,
+.empty-box {
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--police-text-muted);
+  text-align: center;
 }
 
 .drawer {
-  height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 24px;
+  max-height: 88vh;
+  padding: 22px;
   background: #fff;
 }
 
 .drawer-head {
   display: flex;
   justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 18px;
-}
-
-.drawer-head h3 {
-  margin: 0;
-  color: #0f172a;
-}
-
-.drawer-head p {
-  margin: 6px 0 0;
-  color: #64748b;
-  font-size: 13px;
+  gap: 16px;
+  margin-bottom: 16px;
 }
 
 .drawer-close {
   cursor: pointer;
-  color: #94a3b8;
+  color: var(--police-text-muted);
+}
+
+.detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.detail-meta span {
+  border-radius: 999px;
+  background: #f1f5f9;
+  padding: 5px 10px;
+  color: #334155;
+  font-size: 12px;
+}
+
+.detail-content {
+  max-height: 62vh;
+  overflow: auto;
+  border: 1px solid var(--police-border);
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 14px;
+  color: #0f172a;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.8;
+  white-space: pre-wrap;
 }
 
 .drawer-form {
-  flex: 1;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  overflow-y: auto;
 }
 
 .drawer-form label {
+  color: #334155;
   font-size: 13px;
   font-weight: 700;
-  color: #334155;
 }
 
 .input,
 .textarea {
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 16px;
-  padding: 12px 14px;
-  background: #f8fafc;
+  border: 1px solid var(--police-border);
+  border-radius: 8px;
+  padding: 11px 12px;
   color: #0f172a;
   outline: none;
 }
@@ -659,28 +776,20 @@ onMounted(fetchKnowledge)
   resize: vertical;
 }
 
-.input:focus,
-.textarea:focus {
-  border-color: rgba(22, 93, 255, 0.28);
-  box-shadow: 0 0 0 4px rgba(22, 93, 255, 0.08);
-}
-
 .drawer-actions {
   padding-top: 16px;
 }
 
-.submit-btn {
-  border: none !important;
-  background: linear-gradient(135deg, #1d3557 0%, #3b5f93 100%) !important;
-}
-
 @media (max-width: 900px) {
-  .stats {
-    grid-template-columns: 1fr;
+  .hero,
+  .toolbar,
+  .list-head {
+    align-items: stretch;
+    flex-direction: column;
   }
 
-  .hero {
-    flex-direction: column;
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

@@ -144,11 +144,35 @@ COMBINATION_RULES: list[dict[str, Any]] = [
 TRIGGER_DELTAS: list[dict[str, Any]] = [
     {
         "id": "soft_contact",
-        "pattern": r"(别急|慢慢说|不用着急|辛苦|先别慌|深呼吸)",
+        "pattern": r"(别急|慢慢说|不用着急|辛苦|先别慌|深呼吸|你先缓一下|先稳住)",
+        "emotion": -7,
+        "cooperation": 5,
+        "risk": -5,
+        "clarity": 2,
+    },
+    {
+        "id": "empathy_validation",
+        "pattern": r"(我理解|能理解|知道你着急|知道你害怕|你受委屈|先听你说|我在听|我会记录|我们会处理)",
+        "emotion": -6,
+        "cooperation": 5,
+        "risk": -3,
+        "clarity": 2,
+    },
+    {
+        "id": "safety_reassurance",
+        "pattern": r"(先保证安全|到安全位置|别靠近|先分开|保持距离|保护你|已经派警|民警.*路上|救护|120|安全位置)",
+        "emotion": -5,
+        "cooperation": 4,
+        "risk": -7,
+        "clarity": 2,
+    },
+    {
+        "id": "procedural_explanation",
+        "pattern": r"(我先核实|按流程|依法|先确认|再处理|方便回拨|给你回电|我这边记录|我们一步一步)",
         "emotion": -4,
         "cooperation": 4,
-        "risk": -4,
-        "clarity": 2,
+        "risk": -3,
+        "clarity": 3,
     },
     {
         "id": "hard_pressure",
@@ -178,8 +202,12 @@ TRIGGER_DELTAS: list[dict[str, Any]] = [
 
 ACTION_DELTAS: dict[str, dict[str, int]] = {
     "控制": {"emotion": 4, "cooperation": -4, "risk": 8, "clarity": -2},
-    "分离": {"emotion": 3, "cooperation": -3, "risk": 6, "clarity": -1},
-    "安抚": {"emotion": -5, "cooperation": 5, "risk": -5, "clarity": 2},
+    "强制": {"emotion": 5, "cooperation": -5, "risk": 7, "clarity": -2},
+    "分离": {"emotion": -3, "cooperation": 2, "risk": -8, "clarity": 2},
+    "隔离": {"emotion": -3, "cooperation": 2, "risk": -8, "clarity": 2},
+    "安抚": {"emotion": -9, "cooperation": 7, "risk": -6, "clarity": 3},
+    "解释": {"emotion": -5, "cooperation": 5, "risk": -3, "clarity": 3},
+    "救助": {"emotion": -5, "cooperation": 4, "risk": -7, "clarity": 2},
     "警戒": {"emotion": 2, "cooperation": -2, "risk": 4, "clarity": 0},
 }
 

@@ -155,6 +155,9 @@ PARSE_PROMPT = f"""你是“公安警情训练平台”的案件结构化解析�
 11. parse_warnings 必须列出所有会影响训练建模的重要不确定性，例如“关键人物身份未明确”“案发时间缺失”“材料像摘要而非完整案情”。
 12. parse_engine 固定输出为 "ai"。
 13. 只输出一个合法 JSON 对象，不要输出 markdown、解释或额外说明。
+14. case_background 必须是给管理员预览的案件背景，优先 120-300 字，交代警情来源、时间、地点、人物、起因、已发生行为、后果和当前风险/争议；信息不足时仍要基于原文客观概括，并在 parse_warnings 写出缺口。
+15. fact_sheet.timeline 至少尝试提炼 2-6 条时间线短句；fact_sheet.relationships 至少尝试提炼人物关系、冲突关系或“关系未明确”的核实点。
+16. 如果输出长度受限，优先保证 case_name、case_type、case_background、fact_sheet、persons、key_facts、transcript_summary 完整。
 
 persons 字段要求：
 - persons 是人物数组，每个人物都要尽量输出这些字段：
@@ -195,6 +198,10 @@ TRANSCRIPT_PARSE_PROMPT = f"""你是“公安警情训练平台”的公安笔�
 9. parse_warnings 要明确指出会影响训练生成的缺口，如“材料只有单方陈述”“缺少时间线”“关键角色状态不清”。
 10. parse_engine 固定输出为 "ai"。
 11. 只输出一个合法 JSON 对象，不要附带解释。
+12. case_background 必须是给管理员预览的案件背景，优先 120-300 字，交代材料来源、时间、地点、人物、核心经过、后果、当前争议或风险；不要只复制笔录标题。
+13. fact_sheet.timeline 至少尝试提炼 2-6 条时间线短句；fact_sheet.relationships 至少尝试提炼人物关系、冲突关系或待核实关系。
+14. 如果输出长度受限，优先保证 case_name、case_type、case_background、fact_sheet、persons、key_facts、transcript_summary 完整。
+15. 如果正文包含“【文档识别结果】”“--- 块 n / type / location ---”“[表格]”“[图片OCR]”等标记，它们是 OCR/文档识别保真标记，不是案情原文；解析时必须利用这些标记恢复原文顺序、表格关系和图片文字，不要把标记本身当成人物、地点或案情事实。
 
 persons 字段要求：
 - persons 中每个人尽量输出：
@@ -396,6 +403,18 @@ class WorkflowService:
     @staticmethod
     def _infer_person_defaults(person: dict[str, Any]) -> dict[str, Any]:
         person = person or {}
+
+        def score(value: Any, default: int) -> int:
+            if value in (None, ""):
+                return default
+            if isinstance(value, bool):
+                return default
+            try:
+                parsed = int(float(str(value).strip()))
+            except (TypeError, ValueError):
+                return default
+            return max(0, min(100, parsed))
+
         role_type = str(person.get("role_type") or person.get("role") or "相关人员").strip()
         status = str(person.get("status") or "正常").strip()
         compact_fields = normalize_compact_persona_fields(person)
@@ -517,10 +536,10 @@ class WorkflowService:
             "interaction_style": interaction_style,
             "personality": personality,
             "speaking_style": speaking_style,
-            "init_emotion": max(0, min(100, int(init_emotion))),
-            "init_trust": max(0, min(100, int(init_trust))),
-            "init_risk": max(0, min(100, int(init_risk))),
-            "init_expression_clarity": max(0, min(100, int(init_expression_clarity))),
+            "init_emotion": score(init_emotion, 50),
+            "init_trust": score(init_trust, 30),
+            "init_risk": score(init_risk, 44),
+            "init_expression_clarity": score(init_expression_clarity, 52),
         }
 
     @staticmethod
@@ -533,7 +552,7 @@ class WorkflowService:
             "name": WorkflowService._normalize_person_name(person.get("name")) or "未明确",
             "role": str(person.get("role") or "相关人员").strip(),
             "role_type": str(person.get("role_type") or WorkflowService._guess_role_type(person.get("role"))).strip() or "相关人员",
-            "interaction_style": inferred_defaults["interaction_style"],
+            "interaction_style": str(person.get("interaction_style") or inferred_defaults["interaction_style"]).strip() or inferred_defaults["interaction_style"],
             "personality": inferred_defaults["personality"],
             "speaking_style": inferred_defaults["speaking_style"],
             "init_emotion": inferred_defaults["init_emotion"],
@@ -649,6 +668,232 @@ class WorkflowService:
         return default
 
     @staticmethod
+    def _sentence_chunks(text: str, limit: int = 80) -> list[str]:
+        chunks: list[str] = []
+        for raw_line in str(text or "").replace("\r", "\n").splitlines():
+            line = re.sub(r"\s+", " ", raw_line).strip()
+            if not line:
+                continue
+            for part in re.split(r"(?<=[。！？!?；;])", line):
+                clean = part.strip(" \t-—")
+                if not clean:
+                    continue
+                if len(clean) > 180:
+                    for subpart in re.split(r"[，,]", clean):
+                        subpart = subpart.strip()
+                        if subpart:
+                            chunks.append(subpart[:180])
+                else:
+                    chunks.append(clean[:180])
+                if len(chunks) >= limit:
+                    return WorkflowService._dedupe(chunks)
+        return WorkflowService._dedupe(chunks)
+
+    @staticmethod
+    def _compact_text(items: list[str], limit: int = 320) -> str:
+        cleaned = WorkflowService._dedupe([str(item or "").strip("；;，,。 ") for item in items if str(item or "").strip()])
+        if not cleaned:
+            return ""
+        result = "；".join(cleaned)
+        if len(result) <= limit:
+            return result
+        return result[:limit].rstrip("；;，,。 ") + "..."
+
+    @staticmethod
+    def _extract_timeline(text: str, fact_sheet: dict[str, Any] | None = None, limit: int = 8) -> list[str]:
+        fact_sheet = fact_sheet or {}
+        timeline: list[str] = []
+        case_time = str(fact_sheet.get("case_time") or "").strip()
+        report_time = str(fact_sheet.get("report_time") or "").strip()
+        if report_time and report_time != "未明确":
+            timeline.append(f"报案/接警时间：{report_time}")
+        if case_time and case_time != "未明确":
+            timeline.append(f"案发/事发时间：{case_time}")
+
+        time_regex = re.compile(
+            r"(\d{4}年\d{1,2}月\d{1,2}日(?:\d{1,2}时(?:\d{1,2}分)?(?:许)?)?|"
+            r"\d{1,2}月\d{1,2}日|\d{1,2}时(?:\d{1,2}分)?(?:许)?|"
+            r"凌晨|上午|中午|下午|晚上|晚间|当日|当天|随后|之后|后|接警|报警|报案|到场|发现|抓获|逃离)"
+        )
+        for chunk in WorkflowService._sentence_chunks(text):
+            if time_regex.search(chunk):
+                timeline.append(chunk[:140])
+            if len(timeline) >= limit:
+                break
+        return WorkflowService._dedupe(timeline)[:limit]
+
+    def _extract_relationships(self, text: str, persons: list[dict[str, Any]] | None = None, limit: int = 6) -> list[str]:
+        names = [
+            str((person or {}).get("name") or "").strip()
+            for person in (persons or [])
+            if self._is_valid_person_name(str((person or {}).get("name") or "").strip())
+        ]
+        relationships: list[str] = []
+        relation_tokens = ["与", "和", "系", "夫妻", "情侣", "朋友", "同事", "邻居", "家属", "父子", "母子", "兄弟", "纠纷", "矛盾", "冲突"]
+        for chunk in self._sentence_chunks(text):
+            name_hit_count = sum(1 for name in names if name and name in chunk)
+            if name_hit_count >= 2 or (name_hit_count >= 1 and any(token in chunk for token in relation_tokens)):
+                relationships.append(chunk[:140])
+            if len(relationships) >= limit:
+                break
+
+        if len(relationships) < limit:
+            for pattern in (
+                r"([\u4e00-\u9fa5]{2,4})(?:与|和)([\u4e00-\u9fa5]{2,4})(?:因|系|为|发生|存在|有)([^。；;，,]{0,40})",
+                r"([\u4e00-\u9fa5]{2,4})与([\u4e00-\u9fa5]{2,4})",
+            ):
+                for match in re.finditer(pattern, text):
+                    left = self._normalize_person_name(match.group(1))
+                    right = self._normalize_person_name(match.group(2))
+                    if not self._is_valid_person_name(left) or not self._is_valid_person_name(right):
+                        continue
+                    tail = str(match.group(3) if len(match.groups()) >= 3 else "").strip()
+                    relationships.append(f"{left}与{right}{tail}".strip())
+                    if len(relationships) >= limit:
+                        break
+        return self._dedupe(relationships)[:limit]
+
+    def _extract_key_facts_from_text(
+        self,
+        text: str,
+        fact_sheet: dict[str, Any] | None = None,
+        persons: list[dict[str, Any]] | None = None,
+        limit: int = 8,
+    ) -> list[str]:
+        keywords = [
+            "报警", "报案", "接警", "到场", "发现", "发生", "称", "表示", "反映",
+            "持刀", "殴打", "打伤", "受伤", "死亡", "逃离", "抓获", "盗窃", "诈骗",
+            "转账", "损失", "威胁", "纠纷", "冲突", "争吵", "监控", "证据",
+        ]
+        facts = self._extract_list_by_keywords(text, keywords, limit=limit)
+        names = [str((person or {}).get("name") or "").strip() for person in (persons or []) if (person or {}).get("name")]
+        if len(facts) < 3:
+            for chunk in self._sentence_chunks(text):
+                if any(name and name in chunk for name in names) or any(keyword in chunk for keyword in keywords):
+                    facts.append(chunk[:140])
+                if len(facts) >= limit:
+                    break
+
+        fact_sheet = fact_sheet or {}
+        for label, key in (("案发时间", "case_time"), ("案发地点", "case_location"), ("报案时间", "report_time")):
+            value = str(fact_sheet.get(key) or "").strip()
+            if value and value != "未明确":
+                facts.insert(0, f"{label}：{value}")
+        return self._dedupe(facts)[:limit]
+
+    def _extract_criminal_process(self, text: str) -> str:
+        action_keywords = [
+            "持刀", "殴打", "打伤", "刺伤", "砍伤", "抢", "盗窃", "偷", "诈骗", "骗",
+            "转账", "威胁", "敲诈", "勒索", "逃离", "损毁", "砸", "酒后", "毒品",
+        ]
+        chunks = [chunk for chunk in self._sentence_chunks(text) if any(keyword in chunk for keyword in action_keywords)]
+        return self._compact_text(chunks[:4], limit=360) or "未明确提取"
+
+    @staticmethod
+    def _infer_main_culprit(persons: list[dict[str, Any]] | None) -> str:
+        for person in persons or []:
+            role_type = str((person or {}).get("role_type") or (person or {}).get("role") or "").strip()
+            if "嫌疑" in role_type:
+                name = str((person or {}).get("name") or "").strip()
+                if name:
+                    return name
+        return "未明确"
+
+    def _extract_inconsistencies(self, text: str, limit: int = 6) -> list[str]:
+        keywords = ["矛盾", "不一致", "前后不一", "各执一词", "否认", "反驳", "不承认", "说法", "版本", "争议"]
+        return self._extract_list_by_keywords(text, keywords, limit=limit)
+
+    def _infer_hidden_info(
+        self,
+        *,
+        text: str,
+        fact_sheet: dict[str, Any],
+        persons: list[dict[str, Any]],
+        evidence_points: list[str],
+        conflict_points: list[str],
+        limit: int = 8,
+    ) -> list[str]:
+        hidden = self._extract_list_by_keywords(text, ["隐瞒", "不敢说", "没提", "担心", "害怕", "未说明", "不清楚", "无法确认"], limit=limit)
+        if self._is_placeholder(fact_sheet.get("case_time")):
+            hidden.append("案发或事发时间未明确，需要继续核实。")
+        if self._is_placeholder(fact_sheet.get("case_location")):
+            hidden.append("案发地点或具体现场位置未明确，需要继续核实。")
+        if not persons:
+            hidden.append("关键人物姓名、身份或可交流状态未明确。")
+        if not evidence_points:
+            hidden.append("原文未明确可固定的证据材料，需追问监控、伤情、物品、聊天记录等线索。")
+        if not conflict_points and any(token in text for token in ["纠纷", "冲突", "争吵", "打架", "矛盾"]):
+            hidden.append("双方冲突起因、责任分歧或利益诉求仍需进一步压实。")
+        if len(str(text or "").strip()) < 120:
+            hidden.append("原始材料较短，案件经过、人物关系和风险细节可能不完整。")
+        return self._dedupe(hidden)[:limit]
+
+    def _compose_case_background(
+        self,
+        text: str,
+        *,
+        case_type: str,
+        fact_sheet: dict[str, Any],
+        persons: list[dict[str, Any]],
+        limit: int = 360,
+    ) -> str:
+        names = [str((person or {}).get("name") or "").strip() for person in persons or [] if (person or {}).get("name")]
+        intro_parts = []
+        if case_type and case_type != "其他":
+            intro_parts.append(f"案件类型初判为{case_type}")
+        case_time = str(fact_sheet.get("case_time") or "").strip()
+        case_location = str(fact_sheet.get("case_location") or "").strip()
+        if case_time and case_time != "未明确":
+            intro_parts.append(f"案发时间为{case_time}")
+        if case_location and case_location != "未明确":
+            intro_parts.append(f"地点为{case_location}")
+        if names:
+            intro_parts.append(f"涉及人员包括{'、'.join(names[:5])}")
+
+        event_keywords = ["报警", "报案", "接警", "发生", "发现", "称", "表示", "反映", "纠纷", "冲突", "争吵", "打架", "受伤", "死亡", "盗窃", "诈骗", "威胁", "损失", "现场"]
+        body_candidates = []
+        for chunk in self._sentence_chunks(text):
+            if any(keyword in chunk for keyword in event_keywords) or any(name and name in chunk for name in names):
+                body_candidates.append(chunk[:160])
+            if len(body_candidates) >= 4:
+                break
+        if not body_candidates:
+            body_candidates = self._sentence_chunks(text, limit=3)
+
+        intro = "；".join(intro_parts)
+        body = self._compact_text(body_candidates, limit=260)
+        if intro and body:
+            return self._compact_text([intro, body], limit=limit)
+        return body or intro or "未提取到案件背景"
+
+    def _compose_transcript_summary(
+        self,
+        *,
+        fact_sheet: dict[str, Any],
+        persons: list[dict[str, Any]],
+        key_facts: list[str],
+        conflict_points: list[str],
+        hidden_info: list[str],
+        case_background: str,
+        limit: int = 420,
+    ) -> str:
+        who = "、".join([str((person or {}).get("name") or "").strip() for person in persons or [] if (person or {}).get("name")]) or "相关人员"
+        when = str(fact_sheet.get("case_time") or fact_sheet.get("report_time") or "未明确").strip()
+        where = str(fact_sheet.get("case_location") or "未明确").strip()
+        event = key_facts[0] if key_facts else case_background
+        risk = (conflict_points or hidden_info or ["暂无明确争议点，需继续核实"])[0]
+        return self._compact_text(
+            [
+                f"谁：{who}",
+                f"何时：{when}",
+                f"何地：{where}",
+                f"发生：{event}",
+                f"争议/风险：{risk}",
+            ],
+            limit=limit,
+        )
+
+    @staticmethod
     def _extract_list_by_keywords(text: str, keywords: list[str], limit: int = 6) -> list[str]:
         result = []
         for line in WorkflowService._split_lines(text):
@@ -754,6 +999,9 @@ class WorkflowService:
 
         relation_patterns = [
             (r"([\u4e00-\u9fa5]{2,4})与([\u4e00-\u9fa5]{2,4})因", "相关人员", "相关人员"),
+            (r"([\u4e00-\u9fa5]{2,4})(?:与|和)([\u4e00-\u9fa5]{2,4})(?:发生|产生|因|争吵|冲突|纠纷|打架|互殴)", "相关人员", "相关人员"),
+            (r"([\u4e00-\u9fa5]{2,4})(?:将|把)([\u4e00-\u9fa5]{2,4})(?:打伤|刺伤|砍伤|推倒|撞伤)", "嫌疑人", "被害人"),
+            (r"([\u4e00-\u9fa5]{2,4})被([\u4e00-\u9fa5]{2,4})(?:打伤|刺伤|砍伤|抢|骗|盗|威胁)", "被害人", "嫌疑人"),
             (r"([\u4e00-\u9fa5]{2,4})因被害人([\u4e00-\u9fa5]{2,4})", "嫌疑人", "被害人"),
         ]
         for line in self._split_lines(text):
@@ -804,18 +1052,14 @@ class WorkflowService:
         ai_case_type = self._normalize_case_type_name(str(result.get("case_type") or ""))
         text_case_type = self._best_case_type_from_text(text, fallback="其他")
         result["case_type"] = text_case_type if text_case_type != "其他" else self.normalize_case_type(text=text, ai_case_type=ai_case_type)
-        result["case_background"] = str(result.get("case_background") or str(text or "").strip()[:120] or "未提取到案件背景").strip()
-        result["full_narrative"] = str(result.get("full_narrative") or text or "").strip()[:4000]
         result["rawText"] = str(result.get("rawText") or text or "")
         result["original_content"] = str(result.get("original_content") or result["rawText"] or text or "")
-        result["criminal_process"] = str(result.get("criminal_process") or "未明确提取").strip()
-        result["main_culprit"] = str(result.get("main_culprit") or "未明确").strip()
 
         fact_sheet = self._safe_json_loads(result.get("fact_sheet"), {})
         if not isinstance(fact_sheet, dict):
             fact_sheet = {}
         extracted_case_time = self._extract_fact_value(text, [r"(?:案发时间|事发时间|时间)[：: ]*([^\n，。,；;]{2,40})", r"(\d{4}年\d{1,2}月\d{1,2}日(?:\d{1,2}时(?:\d{1,2}分)?(?:许)?|上午|下午|晚间|凌晨)?)"])
-        extracted_case_location = self._extract_fact_value(text, [r"(?:案发地点|地点|现场位于)[：: ]*([^\n，。,；;]{2,60})", r"在([A-Za-z0-9\u4e00-\u9fa5区市县路街道巷号弄村镇仓库小区广场学校医院商场]{2,40}?)(?:发现|见到|看见|发生|内|处|附近|，|。)"])
+        extracted_case_location = self._extract_fact_value(text, [r"(?:案发地点|地点|现场位于)[：: ]*([^\n，。,；;]{2,60})", r"在([A-Za-z0-9\u4e00-\u9fa5区市县路街道巷号弄村镇仓库小区广场学校医院商场]{2,40}?)(?:发现|见到|看见|发生|打架|争吵|冲突|纠纷|报警|报案|内|处|附近|，|。)"])
         extracted_report_time = self._extract_fact_value(text, [r"(?:报警时间|接警时间|报案时间)[：: ]*([^\n，。,；;]{2,40})", r"(\d{4}年\d{1,2}月\d{1,2}日\d{1,2}时(?:\d{1,2}分)?(?:许)?)"])
         ai_case_time = str(fact_sheet.get("case_time") or "").strip()
         ai_case_location = str(fact_sheet.get("case_location") or "").strip()
@@ -853,9 +1097,51 @@ class WorkflowService:
         persons = [person for person in persons if person.get("name") != "未明确"]
         result["persons"] = persons
 
+        if not result["fact_sheet"]["timeline"]:
+            result["fact_sheet"]["timeline"] = self._extract_timeline(text, result["fact_sheet"])
+        if not result["fact_sheet"]["relationships"]:
+            result["fact_sheet"]["relationships"] = self._extract_relationships(text, persons)
+
         for key in ["conflict_points", "key_facts", "hidden_info", "evidence_points", "inconsistencies", "parse_warnings"]:
             value = self._safe_json_loads(result.get(key), [])
             result[key] = value if isinstance(value, list) else []
+
+        if not result["key_facts"]:
+            result["key_facts"] = self._extract_key_facts_from_text(text, result["fact_sheet"], persons)
+        if not result["conflict_points"]:
+            result["conflict_points"] = self._extract_list_by_keywords(text, ["争吵", "矛盾", "冲突", "纠纷", "欠款", "威胁", "各执一词"], limit=6)
+        if not result["evidence_points"]:
+            result["evidence_points"] = self._extract_list_by_keywords(
+                text,
+                ["监控", "录像", "视频", "录音", "指纹", "DNA", "刀", "血迹", "足迹", "聊天记录", "转账记录", "伤情", "医院", "票据"],
+                limit=8,
+            )
+        if not result["inconsistencies"]:
+            result["inconsistencies"] = self._extract_inconsistencies(text)
+        if not result["hidden_info"]:
+            result["hidden_info"] = self._infer_hidden_info(
+                text=text,
+                fact_sheet=result["fact_sheet"],
+                persons=persons,
+                evidence_points=result["evidence_points"],
+                conflict_points=result["conflict_points"],
+            )
+
+        current_background = str(result.get("case_background") or "").strip()
+        if self._is_placeholder(current_background) or len(current_background) < 20:
+            result["case_background"] = self._compose_case_background(
+                text,
+                case_type=str(result.get("case_type") or ""),
+                fact_sheet=result["fact_sheet"],
+                persons=persons,
+            )
+        else:
+            result["case_background"] = current_background
+        result["full_narrative"] = str(result.get("full_narrative") or text or "").strip()[:4000]
+        criminal_process = str(result.get("criminal_process") or "").strip()
+        result["criminal_process"] = criminal_process if not self._is_placeholder(criminal_process) else self._extract_criminal_process(text)
+        main_culprit = str(result.get("main_culprit") or "").strip()
+        result["main_culprit"] = main_culprit if not self._is_placeholder(main_culprit) else self._infer_main_culprit(persons)
 
         current_dispatch_brief = str(result.get("dispatch_brief_suggestion") or "").strip()
         if self._should_refresh_dispatch_brief(current_dispatch_brief, result):
@@ -869,7 +1155,18 @@ class WorkflowService:
             result["first_impression_suggestion"] = self._default_first_impression(result, "接警研判", result["dispatch_brief_suggestion"])
         else:
             result["first_impression_suggestion"] = current_first_impression
-        result["transcript_summary"] = str(result.get("transcript_summary") or result["case_background"]).strip()
+        current_summary = str(result.get("transcript_summary") or "").strip()
+        if self._is_placeholder(current_summary) or len(current_summary) < 20:
+            result["transcript_summary"] = self._compose_transcript_summary(
+                fact_sheet=result["fact_sheet"],
+                persons=persons,
+                key_facts=result["key_facts"],
+                conflict_points=result["conflict_points"],
+                hidden_info=result["hidden_info"],
+                case_background=result["case_background"],
+            )
+        else:
+            result["transcript_summary"] = current_summary
         result["source_mode"] = source_mode
         if source_meta:
             result["source_file_name"] = source_meta.get("name")
@@ -885,13 +1182,37 @@ class WorkflowService:
         result["case_type"] = self.normalize_case_type(text=text)
         result["persons"] = self._extract_persons_from_text(text)
         result["fact_sheet"]["case_time"] = self._extract_fact_value(text, [r"(?:案发时间|事发时间|时间)[：: ]*([^\n，。,；;]{2,40})", r"(\d{4}年\d{1,2}月\d{1,2}日(?:\d{1,2}时(?:\d{1,2}分)?(?:许)?|上午|下午|晚间|凌晨)?)"])
-        result["fact_sheet"]["case_location"] = self._extract_fact_value(text, [r"(?:案发地点|地点|现场位于)[：: ]*([^\n，。,；;]{2,60})", r"在([A-Za-z0-9\u4e00-\u9fa5区市县路街道巷号弄村镇仓库小区广场学校医院商场]{2,40}?)(?:发现|见到|看见|发生|内|处|附近|，|。)"])
+        result["fact_sheet"]["case_location"] = self._extract_fact_value(text, [r"(?:案发地点|地点|现场位于)[：: ]*([^\n，。,；;]{2,60})", r"在([A-Za-z0-9\u4e00-\u9fa5区市县路街道巷号弄村镇仓库小区广场学校医院商场]{2,40}?)(?:发现|见到|看见|发生|打架|争吵|冲突|纠纷|报警|报案|内|处|附近|，|。)"])
         result["fact_sheet"]["report_time"] = self._extract_fact_value(text, [r"(?:报警时间|接警时间|报案时间)[：: ]*([^\n，。,；;]{2,40})", r"(\d{4}年\d{1,2}月\d{1,2}日\d{1,2}时(?:\d{1,2}分)?(?:许)?)"])
-        result["conflict_points"] = self._extract_list_by_keywords(text, ["争吵", "矛盾", "冲突", "纠纷", "欠款", "威胁"])
-        result["key_facts"] = self._extract_list_by_keywords(text, ["报警", "到场", "发现", "持刀", "受伤", "死亡", "逃离", "抓获"])
-        result["hidden_info"] = self._extract_list_by_keywords(text, ["隐瞒", "不敢说", "没提", "担心", "害怕"])
-        result["evidence_points"] = self._extract_list_by_keywords(text, ["监控", "录像", "指纹", "DNA", "刀", "血迹", "足迹", "聊天记录"])
-        result["transcript_summary"] = result["case_background"]
+        result["fact_sheet"]["timeline"] = self._extract_timeline(text, result["fact_sheet"])
+        result["fact_sheet"]["relationships"] = self._extract_relationships(text, result["persons"])
+        result["conflict_points"] = self._extract_list_by_keywords(text, ["争吵", "矛盾", "冲突", "纠纷", "欠款", "威胁", "各执一词"])
+        result["key_facts"] = self._extract_key_facts_from_text(text, result["fact_sheet"], result["persons"])
+        result["evidence_points"] = self._extract_list_by_keywords(text, ["监控", "录像", "视频", "录音", "指纹", "DNA", "刀", "血迹", "足迹", "聊天记录", "转账记录", "伤情", "医院", "票据"])
+        result["inconsistencies"] = self._extract_inconsistencies(text)
+        result["hidden_info"] = self._infer_hidden_info(
+            text=text,
+            fact_sheet=result["fact_sheet"],
+            persons=result["persons"],
+            evidence_points=result["evidence_points"],
+            conflict_points=result["conflict_points"],
+        )
+        result["case_background"] = self._compose_case_background(
+            text,
+            case_type=result["case_type"],
+            fact_sheet=result["fact_sheet"],
+            persons=result["persons"],
+        )
+        result["criminal_process"] = self._extract_criminal_process(text)
+        result["main_culprit"] = self._infer_main_culprit(result["persons"])
+        result["transcript_summary"] = self._compose_transcript_summary(
+            fact_sheet=result["fact_sheet"],
+            persons=result["persons"],
+            key_facts=result["key_facts"],
+            conflict_points=result["conflict_points"],
+            hidden_info=result["hidden_info"],
+            case_background=result["case_background"],
+        )
         result["source_mode"] = source_mode
         if source_meta:
             result["source_file_name"] = source_meta.get("name")
@@ -899,7 +1220,9 @@ class WorkflowService:
             result["source_file_size"] = source_meta.get("size")
             result["extracted_text_preview"] = str(text or "")[:500]
         self._append_warning(result, "本次案件解析未拿到完整 AI 结果，已切换为规则兜底解析，内容需要人工复核。")
-        return result
+        normalized = self._normalize_parsed_case(text, result, source_mode, source_meta)
+        normalized["parse_engine"] = "heuristic"
+        return normalized
 
     def parse_case_text(self, text: str, source_mode: str = "plain_case", source_meta: dict[str, Any] | None = None):
         # Step 1: Pre-extract character names for accurate constraint
@@ -915,7 +1238,18 @@ class WorkflowService:
             )
         base_prompt = TRANSCRIPT_PARSE_PROMPT if source_mode == "transcript_file" else PARSE_PROMPT
         prompt = base_prompt + name_constraint
-        messages = [{"role": "system", "content": prompt}, {"role": "user", "content": text}]
+        if source_meta:
+            user_content = json.dumps(
+                {
+                    "source_text": text,
+                    "source_meta": source_meta,
+                    "parse_instruction": "请基于 source_text 做案件结构化解析。source_meta 中的 OCR 信息只用于判断文本来源、识别质量和不确定性，不要当作案情事实。",
+                },
+                ensure_ascii=False,
+            )
+        else:
+            user_content = text
+        messages = [{"role": "system", "content": prompt}, {"role": "user", "content": user_content}]
         try:
             response = create_json_chat_completion(messages=messages, model=get_chat_model(), temperature=0.2, max_tokens=4000)
             payload = self._safe_json_loads(extract_message_text(response), {})
@@ -923,9 +1257,13 @@ class WorkflowService:
                 result = self._normalize_parsed_case(text, payload, source_mode, source_meta)
                 result["parse_engine"] = "ai"
                 return result
-        except Exception:
-            pass
-        return self._heuristic_parse_case(text, source_mode, source_meta)
+        except Exception as exc:
+            fallback = self._heuristic_parse_case(text, source_mode, source_meta)
+            self._append_warning(fallback, f"DeepSeek AI 解析调用失败，已进入规则兜底：{exc}")
+            return fallback
+        fallback = self._heuristic_parse_case(text, source_mode, source_meta)
+        self._append_warning(fallback, "DeepSeek AI 解析未返回可用 JSON，已进入规则兜底。")
+        return fallback
 
     def _pick_scene_roles(self, case_info: dict[str, Any], preferred_types: list[str], limit: int = 3) -> list[str]:
         selected = []

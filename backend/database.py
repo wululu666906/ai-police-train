@@ -8,7 +8,10 @@ load_dotenv()
 
 # 锁定数据库根目录，避免因启动目录不同而连接到不同的 SQLite 文件。
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_DB_PATH = os.path.join(BASE_DIR, "ai_police.db")
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+DEFAULT_DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+os.makedirs(DEFAULT_DATA_DIR, exist_ok=True)
+DEFAULT_DB_PATH = os.path.join(DEFAULT_DATA_DIR, "ai_police.db")
 
 
 def resolve_database_url() -> str:

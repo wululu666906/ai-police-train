@@ -15,6 +15,9 @@ PERSON_COMPACT_V1_FIELDS: tuple[str, ...] = (
     "opening_preset",
     "current_goal",
     "core_concern",
+    "relationship_pressure",
+    "surface_stance",
+    "pressure_response",
     "trigger_points",
     "calming_points",
     "cannot_answer",
@@ -102,6 +105,25 @@ def _first_non_empty(*values: Any) -> str:
 
 _ALIAS_LIST_FIELDS = frozenset({"trigger_topics", "knows_facts", "hidden_truths", "does_not_know"})
 
+PERSON_PROFILE_PRESERVE_TEXT_FIELDS: tuple[str, ...] = (
+    "self_image",
+    "current_need",
+    "authority_attitude",
+    "stress_response",
+    "public_mask",
+    "private_drive",
+    "persona_template_version",
+)
+
+PERSON_PROFILE_PRESERVE_LIST_FIELDS: tuple[str, ...] = (
+    "protected_targets",
+    "feared_people",
+    "conflict_targets",
+    "feared_consequences",
+    "trigger_topics",
+    "coping_patterns",
+)
+
 
 def sync_person_alias_fields(person: dict[str, Any]) -> dict[str, Any]:
     """Mirror canonical fields onto legacy alias keys so persisted JSON stays consistent."""
@@ -129,6 +151,12 @@ def canonicalize_person_payload(
     mode = _as_text(scene_behavior_mode) or _as_text(source.get("scene_behavior_mode")) or "核查取证型"
     expanded = expand_role_compact_to_person(source, scene_behavior_mode=mode)
     canonical = copy.deepcopy(expanded)
+    if _as_text(source.get("interaction_style")):
+        canonical["interaction_style"] = _as_text(source.get("interaction_style"))
+    if _as_text(source.get("personality")):
+        canonical["personality"] = _as_text(source.get("personality"))
+    if _as_text(source.get("speaking_style")):
+        canonical["speaking_style"] = _as_text(source.get("speaking_style"))
     for alias, target in PERSON_ALIAS_TO_CANONICAL.items():
         if target in canonical and canonical.get(target) not in (None, "", []):
             continue
@@ -190,6 +218,15 @@ def canonicalize_person_payload(
         canonical["withheld_key_points"] = _as_text_list(source.get("hidden_truths"))
     if not _as_text_list(canonical.get("cannot_answer")):
         canonical["cannot_answer"] = _as_text_list(source.get("does_not_know"))
+
+    for key in PERSON_PROFILE_PRESERVE_TEXT_FIELDS:
+        value = _first_non_empty(source.get(key), canonical.get(key))
+        if value:
+            canonical[key] = value
+    for key in PERSON_PROFILE_PRESERVE_LIST_FIELDS:
+        values = _as_text_list(source.get(key) or canonical.get(key))
+        if values:
+            canonical[key] = values
 
     canonical = sync_person_alias_fields(canonical)
     canonical["compact_v1"] = True

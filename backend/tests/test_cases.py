@@ -1,6 +1,9 @@
 import json
+from io import BytesIO
+from types import SimpleNamespace
 
 import models
+from docx import Document
 from services.workflow_service import workflow_service
 
 
@@ -67,6 +70,41 @@ class TestCasesParse:
         assert {"李娟", "张磊", "王浩"}.issubset(person_names)
         assert "报警人李娟称" not in person_names
         assert "嫌疑人张磊因债务纠纷" not in person_names
+
+    def test_parse_ai_result_with_unknown_numeric_person_scores_stays_ai(self, monkeypatch):
+        def fake_completion(**kwargs):
+            payload = {
+                "case_name": "仓库发现尸体警情",
+                "case_type": "故意杀人",
+                "case_background": "报警人李娟在废弃仓库发现王浩倒地，后续调查涉及张磊与王浩的债务纠纷。",
+                "persons": [
+                    {
+                        "name": "李娟",
+                        "role": "报警人",
+                        "role_type": "证人",
+                        "init_risk": "未明确",
+                        "init_expression_clarity": "待核实",
+                    }
+                ],
+                "parse_engine": "ai",
+            }
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=json.dumps(payload, ensure_ascii=False)),
+                        finish_reason="stop",
+                    )
+                ]
+            )
+
+        monkeypatch.setattr("services.workflow_service.create_json_chat_completion", fake_completion)
+        monkeypatch.setattr(workflow_service, "extract_case_person_names", lambda _text: ["李娟"])
+
+        result = workflow_service.parse_case_text(CASE_TEXT, source_mode="plain_case")
+
+        assert result["parse_engine"] == "ai"
+        assert result["persons"][0]["name"] == "李娟"
+        assert isinstance(result["persons"][0]["init_risk"], int)
 
 
 class TestCasesRoles:
@@ -160,6 +198,35 @@ class TestCasesRoles:
         assert updated_role["trigger_points"] == ["孩子受牵连", "单位追责"]
         assert updated_role["hidden_truths"] == ["其实提前见过双方一次"]
 
+    def test_public_role_preserves_new_reaction_archetype(self, client, admin_headers):
+        payload = {
+            "name": "公共模板-沉默证人",
+            "role_type": "证人",
+            "interaction_style": "观察型",
+            "personality": "害怕报复，不敢当众说明情况",
+            "speaking_style": "短答、停顿多",
+            "status": "正常",
+            "behavior_archetype": "沉默恐惧型",
+            "current_goal": "先确认自己不会被对方报复",
+            "core_concern": "怕说出事实后被找麻烦",
+            "trigger_points": ["要求当面对质", "公开记录其身份"],
+            "calming_points": ["说明保护措施", "先问能确认的安全事实"],
+            "pressure_response": "被逼指认时会沉默或改口",
+            "surface_stance": "我没怎么看清，别让我当面说。",
+        }
+
+        create_response = client.post("/cases/roles", json=payload, headers=admin_headers)
+        assert create_response.status_code == 200
+        role_id = create_response.json()["id"]
+
+        created_role = next(item for item in client.get("/cases/all/roles", headers=admin_headers).json() if item["id"] == role_id)
+        assert created_role["behavior_archetype"] == "沉默恐惧型"
+        assert created_role["current_goal"] == payload["current_goal"]
+        assert created_role["trigger_points"] == payload["trigger_points"]
+        assert created_role["calming_points"] == payload["calming_points"]
+        assert created_role["pressure_response"] == payload["pressure_response"]
+        assert created_role["surface_stance"] == payload["surface_stance"]
+
     def test_parse_markdown_file(self, client, admin_headers):
         markdown_content = (
             "# 仓库命案记录\n\n"
@@ -183,6 +250,29 @@ class TestCasesRoles:
         assert data["source_file_size"] > 0
         assert "仓库命案记录" in data["extracted_text_preview"]
         assert data["case_type"] == "故意杀人"
+
+    def test_parse_file_includes_ocr_metadata(self, client, admin_headers):
+        document = Document()
+        document.add_paragraph("2026年5月1日21时许，报警人李娟称在XX路东段废弃仓库发现一名男子倒地。")
+        document.add_paragraph("经调查，嫌疑人张磊与被害人王浩因债务纠纷发生冲突。")
+        buffer = BytesIO()
+        document.save(buffer)
+
+        response = client.post(
+            "/cases/parse-file",
+            files={"file": ("case.docx", buffer.getvalue(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+            data={"source_mode": "transcript_file"},
+            headers=admin_headers,
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["source_file_name"] == "case.docx"
+        assert data["ocr_method"] == "docx_unified_ocr"
+        assert data["ocr_engine"] == "python-docx+paddleocr"
+        assert "extracted_text_full" in data
+        assert "ocr_warnings" in data
+        assert "【文档识别结果】" in data["extracted_text_full"]
 
     def test_update_case_syncs_structured_persons_into_roles(self, client, admin_headers, db_session):
         parsed = client.post(

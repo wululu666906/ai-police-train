@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 import models
 from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
+from .case_knowledge_service import load_case_knowledge_bundle
 from .persona_engine import (
     analyze_dialogue_momentum,
     build_persona_profile,
@@ -67,6 +68,9 @@ SYSTEM_PROMPT_TEMPLATE = """
 - 报警时间：{report_time}
 - 时间线：
 {timeline}
+
+案件库与角色剧本库：
+{case_knowledge_block}
 
 角色画像：
 - 角色类型：{role_type}
@@ -390,6 +394,18 @@ def _build_role_archetype_block(role: Any, scene: Any, persona_profile: dict[str
         rules.append("对空泛说教和硬性逼问更容易关闭自己，可能沉默、拒答或突然失控。")
     elif behavior_archetype == "围观起哄型":
         rules.append("容易借着围观气氛壮胆，若觉得被针对会继续起哄或煽动旁人。")
+    elif behavior_archetype == "创伤受害型":
+        rules.append("最先需要安全感和被相信；若被暗示有错或被逼完整复述，会退缩、断续或情绪崩溃。")
+    elif behavior_archetype == "精神危机型":
+        rules.append("现实感和情绪稳定性波动大；遇到多人逼问、突然靠近或否定感受时，可能激动、拒答或失控。")
+    elif behavior_archetype == "利益算计型":
+        rules.append("会清楚表达对自己有利的信息，但对责任、赔偿和关键不利事实保持选择性配合。")
+    elif behavior_archetype == "权威敏感型":
+        rules.append("核心反应不是单纯不配合，而是对被命令、当众羞辱、扣帽子极敏感；给台阶后才可能有限配合。")
+    elif behavior_archetype == "沉默恐惧型":
+        rules.append("害怕报复或牵连，可能只给边缘信息；即使情绪下降，也需要保护承诺才会逐步补关键事实。")
+    elif behavior_archetype == "过度依赖型":
+        rules.append("愿意靠近警方但焦虑反复，需要明确下一步、责任人和联系渠道，否则会不断重复诉求。")
     elif behavior_archetype == "求助配合型":
         rules.append("如果确认警方在认真处理，配合度会明显提升。")
 
@@ -403,7 +419,9 @@ def _build_role_archetype_block(role: Any, scene: Any, persona_profile: dict[str
         rules.append("面对强压和先入为主的判断时更容易直接对着干，但并非每轮都要硬顶。")
 
     if current_goal and core_concern:
-        rules.append("内心最在意的事会影响语气和是否愿意多说，但不要在台词里直接复述配置字段或说「我最怕/最担心的是……」。")
+        rules.append(
+            f"内部动机会围绕“{current_goal}”，内心顾虑会影响语气和是否愿意多说，但不要在台词里直接复述配置字段或说「我最怕/最担心的是……」。"
+        )
     elif current_goal:
         rules.append(f"眼下优先想保住或达成的是“{current_goal}”。")
 
@@ -1099,14 +1117,14 @@ def _run_training_turn(
         ts.current_trust,
         ts.current_emotion,
     )
-    momentum = enrich_momentum_with_axis_deltas(momentum, prompt_text, recognized_actions)
+    momentum = enrich_momentum_with_axis_deltas(momentum, prompt_text, recognized_actions, persona_profile)
     current_axis_scores = {
         "emotion": ts.current_emotion,
         "cooperation": current_state_snapshot["cooperation"],
         "risk": current_state_snapshot["risk"],
         "clarity": current_state_snapshot["clarity"],
     }
-    state_contract = build_state_contract(current_axis_scores, momentum)
+    state_contract = build_state_contract(current_axis_scores, momentum, persona_profile)
     runtime_state["state_contract"] = state_contract
     state_contract_block = format_state_contract_block(state_contract)
     truth_state = evaluate_truth_stage(
@@ -1124,6 +1142,10 @@ def _run_training_turn(
         stage_turn_count,
     )
     runtime_state["dynamic_adjustment"] = dynamic_adjustment
+    knowledge_bundle = load_case_knowledge_bundle(case, role)
+    runtime_state["case_knowledge_doc_ids"] = [
+        item.get("id") for item in knowledge_bundle.get("documents", []) if item.get("id")
+    ]
     role_script = build_role_script(role, case, scene, persona_profile)
     session_memory = summarize_session_memory(history[-12:], revealed_info, current_stage_goal)
     persona_block = format_persona_block(persona_profile, role_script, recent_memory, momentum, dynamic_adjustment)
@@ -1155,6 +1177,7 @@ def _run_training_turn(
         runtime_state["role_state_snapshots"] = multi_turn_payload.get("role_state_snapshots") or runtime_state.get(
             "role_state_snapshots", {}
         )
+        runtime_state["role_state_deltas"] = multi_turn_payload.get("role_state_deltas") or {}
         runtime_state["role_contracts"] = multi_turn_payload.get("role_contracts") or {}
         if multi_turn_payload.get("state_contract"):
             state_contract = multi_turn_payload.get("state_contract")
@@ -1189,6 +1212,7 @@ def _run_training_turn(
         case_location=fact_sheet.get("case_location", "未记录"),
         report_time=fact_sheet.get("report_time", "未记录"),
         timeline=_build_timeline_text(structured),
+        case_knowledge_block=knowledge_bundle.get("knowledge_block") or "暂无案件知识库内容",
         knows_facts=_format_list_block(getattr(role, "knows_facts", [])),
         does_not_know=_format_list_block(getattr(role, "does_not_know", [])),
         hidden_truths=_format_list_block(getattr(role, "hidden_truths", [])),
@@ -1257,8 +1281,30 @@ def _run_training_turn(
         "risk": blended_state["risk"],
         "clarity": blended_state["clarity"],
     }
+    if not multi_turn_payload and role and getattr(role, "id", None):
+        role_key = str(role.id)
+        previous_role_snapshot = (runtime_state.get("role_state_snapshots") or {}).get(role_key) or {
+            "emotion": current_axis_scores["emotion"],
+            "cooperation": current_axis_scores["cooperation"],
+            "risk": current_axis_scores["risk"],
+            "clarity": current_axis_scores["clarity"],
+        }
+        next_role_snapshot = {
+            "emotion": blended_state["emotion"],
+            "cooperation": blended_state["cooperation"],
+            "risk": blended_state["risk"],
+            "clarity": blended_state["clarity"],
+        }
+        runtime_state.setdefault("role_state_snapshots", {})[role_key] = next_role_snapshot
+        runtime_state["role_state_deltas"] = {
+            role_key: {
+                axis: int(next_role_snapshot[axis]) - int(previous_role_snapshot.get(axis, next_role_snapshot[axis]))
+                for axis in ("emotion", "cooperation", "risk", "clarity")
+            }
+        }
+        runtime_state["last_active_role_ids"] = [int(role.id)]
     runtime_state["state_snapshot"] = current_state_snapshot
-    state_contract = build_state_contract(blended_state, momentum)
+    state_contract = build_state_contract(blended_state, momentum, persona_profile)
     runtime_state["state_contract"] = state_contract
 
     ai_reply = sanitize_spoken_line(str(result.get("response") or "……").strip() or "……")
@@ -1422,18 +1468,27 @@ def _run_training_turn(
     from .recommended_questions_service import (
         apply_stage_hit_rate_correction,
         build_recommended_question_items,
+        filter_stale_missing_requirements_for_history,
         serialize_message_history,
     )
 
     recent_messages = serialize_message_history(history[-10:])
     custom_prompts = list(active_stage_config.get("recommended_prompts") or []) if active_stage_config else []
+    scene_kind = infer_session_scene_kind(scene, ts)
+    effective_missing_requirements = filter_stale_missing_requirements_for_history(
+        active_coverage.get("missing") or [],
+        recent_messages=recent_messages,
+        revealed_info=revealed_info,
+        last_user_message=user_text if turn_role == "user" else "",
+        use_intake_flow=scene_kind == "intake",
+    )
     recommended_question_items = build_recommended_question_items(
         current_stage=ts.current_stage or current_stage,
         current_stage_goal=active_stage_goal,
         case_type=case_type,
         case_title=getattr(case, "title", "") or "",
         scene_name=getattr(scene, "name", "") or "",
-        scene_kind=infer_session_scene_kind(scene, ts),
+        scene_kind=scene_kind,
         role_name=getattr(role, "name", "") or "",
         role_type=getattr(role, "role_type", "") or "",
         target_role_name=target_role_name or "",
@@ -1442,7 +1497,7 @@ def _run_training_turn(
             for item in scene_roles
         ],
         revealed_info=revealed_info,
-        missing_requirements=active_coverage.get("missing") or [],
+        missing_requirements=effective_missing_requirements,
         truth_stage=truth_stage,
         emotion=ts.current_emotion,
         cooperation=current_state_snapshot["cooperation"],
@@ -1456,7 +1511,7 @@ def _run_training_turn(
     recommended_question_items = apply_stage_hit_rate_correction(
         recommended_question_items,
         satisfied=active_coverage.get("satisfied") or [],
-        missing=active_coverage.get("missing") or [],
+        missing=effective_missing_requirements,
         addressee=getattr(role, "name", "") or target_role_name or "",
     )
     recommended_questions = [item["text"] for item in recommended_question_items]
@@ -1469,8 +1524,8 @@ def _run_training_turn(
         risk=current_state_snapshot["risk"],
         clarity=current_state_snapshot["clarity"],
     )
-    if not auto_finished and active_coverage["missing"]:
-        coverage_msg = f"当前阶段仍缺少：{'、'.join(active_coverage['missing'][:3])}。"
+    if not auto_finished and effective_missing_requirements:
+        coverage_msg = f"当前阶段仍缺少：{'、'.join(effective_missing_requirements[:3])}。"
         communication_feedback["message"] = coverage_msg
         communication_feedback["all_messages"] = [coverage_msg, *communication_feedback.get("all_messages", [])]
         communication_feedback["tags"] = ["stage_gap", *communication_feedback.get("tags", [])]
@@ -1527,6 +1582,8 @@ def _run_training_turn(
             active_role_ids=runtime_state.get("last_active_role_ids") or [],
         ),
         "interaction_mode": multi_turn_payload.get("interaction_mode") if multi_turn_payload else None,
+        "scene_mood": multi_turn_payload.get("scene_mood") if multi_turn_payload else None,
+        "scene_mood_shift": multi_turn_payload.get("scene_mood_shift") if multi_turn_payload else None,
         "routing_summary": multi_turn_payload.get("routing_summary") if multi_turn_payload else None,
         "addressing_warning": multi_turn_payload.get("addressing_warning") if multi_turn_payload else None,
         "recognized_actions": recognized_actions,

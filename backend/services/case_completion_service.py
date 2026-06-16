@@ -99,6 +99,9 @@ CASE_COMPLETION_PROMPT = f"""你是公安警情训练平台的「{CASE_OFFICER_R
 13. source_classification 一般写”普通案件文本”，如果是庭审记录则写”庭审记录”，如果是报警记录则写”报警记录”。
 14. full_narrative 是完整叙事重述（按时间顺序）；criminal_process 是重点摘取违法/犯罪过程段落；transcript_summary 用”谁、何时、何地、发生了什么、当前争议点/风险点”格式概括。
 15. mode=fill_gaps 时仅补缺、不覆盖已有值；mode=full 时全部重新生成。
+16. case_background 必须是可直接展示给教官复核的案件背景，优先写 120-300 字，交代警情来源、时间、地点、人物、起因、已经发生的行为、后果、当前风险/争议；信息不足时也要基于原文客观概括，并把缺口写入 completion_warnings。
+17. fact_sheet.timeline 至少尝试抽取 2-6 条时间线，按“时间/阶段 + 事件”短句输出；relationships 至少尝试提炼人物关系或“关系未明确但存在冲突/接触”的说明。
+18. 若输出长度受限，优先保证 case_name、case_type、case_background、fact_sheet、persons、key_facts、transcript_summary 这些字段完整，再输出其他字段。
 
 输出 JSON 结构（与案件解析一致，并增加补全追踪字段）：
 {{
@@ -167,6 +170,31 @@ def _is_empty_value(value: Any) -> bool:
         return len(value) == 0
     if isinstance(value, dict):
         return len(value) == 0
+    return False
+
+
+def _looks_like_case_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+    for key in (
+        "case_name",
+        "case_type",
+        "case_background",
+        "full_narrative",
+        "criminal_process",
+        "main_culprit",
+        "dispatch_brief_suggestion",
+        "first_impression_suggestion",
+        "transcript_summary",
+    ):
+        if not _is_empty_value(payload.get(key)):
+            return True
+    for key in ("persons", "conflict_points", "key_facts", "hidden_info", "evidence_points", "inconsistencies"):
+        if isinstance(payload.get(key), list) and payload.get(key):
+            return True
+    fact_sheet = payload.get("fact_sheet")
+    if isinstance(fact_sheet, dict):
+        return any(not _is_empty_value(value) for value in fact_sheet.values())
     return False
 
 
@@ -318,6 +346,12 @@ def complete_case_information(
         "target_field_specs": target_specs,
         "current_form": existing_snapshot,
         "source_text": text[:12000],
+        "output_quality_requirements": [
+            "case_background 不得只写未明确或复制标题，至少概括案由、人物、时间地点、经过、后果/风险中的可得信息。",
+            "fact_sheet.timeline 和 relationships 能抽则抽，不能抽取时在 completion_warnings 写明缺口。",
+            "persons 不只列姓名，还要尽量补 role_type/status/current_goal/core_concern/trigger_points/calming_points。",
+            "所有字段只能来自原文或合理归纳，推测必须以待核实语气呈现。",
+        ],
     }
     if source_meta:
         user_payload["source_meta"] = source_meta
@@ -330,21 +364,27 @@ def complete_case_information(
 
     ai_payload: dict[str, Any] = {}
     completion_engine = "heuristic"
+    completion_warnings: list[str] = []
     try:
-        response = create_case_completion_chat_completion(messages=messages, temperature=0.2, max_tokens=8000)
+        response = create_case_completion_chat_completion(messages=messages, temperature=0.1, max_tokens=8000)
         raw = extract_message_text(response) or ""
         parsed = extract_json_payload(raw) or {}
-        if isinstance(parsed, dict) and parsed:
+        if _looks_like_case_payload(parsed):
             ai_payload = parsed
             completion_engine = "deepseek-case-officer"
+        elif isinstance(parsed, dict) and parsed:
+            completion_warnings.append("信息补全专员返回了 JSON，但缺少案件核心字段，已进入兜底解析。")
+        else:
+            completion_warnings.append("信息补全专员未返回可用 JSON，已进入兜底解析。")
     except Exception as exc:
-        ai_payload = {"completion_warnings": [f"信息补全专员调用失败：{exc}"]}
+        completion_warnings.append(f"信息补全专员调用失败：{exc}")
 
     if completion_engine != "deepseek-case-officer":
         parsed = workflow_service.parse_case_text(text, source_mode=source_mode, source_meta=source_meta)
         ai_payload = parsed
         ai_payload["completion_warnings"] = [
             *(ai_payload.get("completion_warnings") or []),
+            *completion_warnings,
             "未使用 DeepSeek 信息补全专员，已切换为规则/通用解析兜底，请人工复核。",
         ]
 
@@ -363,7 +403,21 @@ def complete_case_information(
     else:
         merged_case["filled_field_paths"] = normalized.get("filled_field_paths") or []
 
-    warnings = list(dict.fromkeys([*(merged_case.get("completion_warnings") or []), *(normalized.get("parse_warnings") or [])]))
+    merged_case["field_evidence"] = normalized.get("field_evidence") or {}
+    merged_case["completion_engine"] = completion_engine
+    merged_case["completion_agent"] = CASE_OFFICER_ROLE
+    merged_case["completion_model"] = get_case_completion_model()
+    merged_case["completion_provider"] = get_case_completion_provider()
+
+    warnings = list(
+        dict.fromkeys(
+            [
+                *(merged_case.get("completion_warnings") or []),
+                *(normalized.get("completion_warnings") or []),
+                *(normalized.get("parse_warnings") or []),
+            ]
+        )
+    )
     merged_case["completion_warnings"] = warnings
     merged_case["parse_warnings"] = warnings
     merged_case["parse_engine"] = normalized.get("parse_engine") or "ai"

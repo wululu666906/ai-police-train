@@ -21,6 +21,7 @@ from services.scene_role_service import audit_scene_roles, normalize_scene_roles
 from services.scene_compact_service import build_scene_stages_from_compact, infer_training_focus
 from services.stage_config_service import infer_scene_behavior_mode, normalize_stages
 from services.case_completion_service import complete_case_information, list_field_catalog
+from services.case_knowledge_service import delete_case_from_knowledge, try_sync_case_to_knowledge
 from services.workflow_service import workflow_service
 from services.assessment_point_policy import (
     ASSESSMENT_POINTS_MAX_PER_SCENE,
@@ -343,6 +344,7 @@ def _upsert_case_roles_from_structured_persons(db: Session, case: models.Case):
     }
 
     changed = False
+    newly_created_roles: list[models.Role] = []
     for person in persons:
         if not isinstance(person, dict):
             continue
@@ -377,6 +379,7 @@ def _upsert_case_roles_from_structured_persons(db: Session, case: models.Case):
             )
             db.add(role)
             existing_roles[person_name] = role
+            newly_created_roles.append(role)
             changed = True
             continue
 
@@ -398,6 +401,24 @@ def _upsert_case_roles_from_structured_persons(db: Session, case: models.Case):
 
     if changed:
         db.flush()
+        default_scene = (
+            db.query(models.Scene)
+            .filter(models.Scene.case_id == case.id)
+            .order_by(models.Scene.id.asc())
+            .first()
+        )
+        if default_scene:
+            for role in newly_created_roles:
+                has_scene_link = (
+                    db.query(models.SceneRole)
+                    .filter(models.SceneRole.role_id == role.id)
+                    .first()
+                    is not None
+                )
+                if has_scene_link:
+                    continue
+                role.scene_id = role.scene_id or default_scene.id
+                db.add(models.SceneRole(scene_id=default_scene.id, role_id=role.id, is_primary=False))
 
 
 def _remove_case_person(case: models.Case, role_name: str):
@@ -513,32 +534,30 @@ def read_all_roles(db: Session = Depends(database.get_db)):
         scene_links = scene_links_by_role_id.get(role.id, [])
         case_meta = case_meta_by_case_id.get(role.case_id or -1, {}).get(role.name, {})
         person_meta = _extract_person_meta({}, case_meta) if role.case_id else _extract_person_meta({}, _get_role_person_meta(role))
-        result.append(
-            {
-                "id": role.id,
-                "name": role.name,
-                "role_type": role.role_type,
-                "interaction_style": getattr(role, "interaction_style", None) or "配合型",
-                "personality": role.personality,
-                "speaking_style": role.speaking_style,
-                "init_emotion": role.init_emotion,
-                "init_trust": role.init_trust,
-                "status": role.status,
-                "iq_level": role.iq_level,
-                "eq_level": role.eq_level,
-                "lying_ability": role.lying_ability,
-                "weakness": role.weakness,
-                "knows_facts": _ensure_list(role.knows_facts),
-                "does_not_know": _ensure_list(role.does_not_know),
-                "hidden_truths": _ensure_list(role.hidden_truths),
-                "case_id": role.case_id,
-                "case_title": case_title_by_case_id.get(role.case_id or -1, "公共角色模板"),
-                "scene_ids": [row.scene_id for row in scene_links],
-                "primary_scene_id": next((row.scene_id for row in scene_links if row.is_primary), None),
-                "is_public": role.case_id is None,
-                **person_meta,
-            }
-        )
+        base_payload = {
+            "id": role.id,
+            "name": role.name,
+            "role_type": role.role_type,
+            "interaction_style": getattr(role, "interaction_style", None) or "配合型",
+            "personality": role.personality,
+            "speaking_style": role.speaking_style,
+            "init_emotion": role.init_emotion,
+            "init_trust": role.init_trust,
+            "status": role.status,
+            "iq_level": role.iq_level,
+            "eq_level": role.eq_level,
+            "lying_ability": role.lying_ability,
+            "weakness": role.weakness,
+            "knows_facts": _ensure_list(role.knows_facts),
+            "does_not_know": _ensure_list(role.does_not_know),
+            "hidden_truths": _ensure_list(role.hidden_truths),
+            "case_id": role.case_id,
+            "case_title": case_title_by_case_id.get(role.case_id or -1, "公共角色模板"),
+            "scene_ids": [row.scene_id for row in scene_links],
+            "primary_scene_id": next((row.scene_id for row in scene_links if row.is_primary), None),
+            "is_public": role.case_id is None,
+        }
+        result.append({**person_meta, **base_payload})
     return result
 
 
@@ -619,6 +638,9 @@ def create_role(payload: dict = Body(...), db: Session = Depends(database.get_db
         _apply_role_scene_links(db, db_role, scene_ids=scene_ids, primary_scene_id=primary_scene_id)
 
     db.commit()
+    if db_case:
+        db.refresh(db_case)
+        try_sync_case_to_knowledge(db_case)
     return {"message": "角色创建成功", "id": db_role.id}
 
 
@@ -673,6 +695,11 @@ def update_role(role_id: int, payload: dict = Body(...), db: Session = Depends(d
         db_role.persona_meta = _serialize_person_meta(_extract_person_meta(payload, existing_meta))
 
     db.commit()
+    if db_role.case_id:
+        db.refresh(db_role)
+        db_case = db.query(models.Case).filter(models.Case.id == db_role.case_id).first()
+        if db_case:
+            try_sync_case_to_knowledge(db_case)
     return {"message": "角色更新成功"}
 
 
@@ -682,6 +709,7 @@ def delete_role(role_id: int, db: Session = Depends(database.get_db)):
     if not db_role:
         raise HTTPException(status_code=404, detail="角色不存在")
 
+    case_id = db_role.case_id
     if db_role.case_id:
         db_case = db.query(models.Case).filter(models.Case.id == db_role.case_id).first()
         if db_case:
@@ -690,6 +718,10 @@ def delete_role(role_id: int, db: Session = Depends(database.get_db)):
     db.query(models.SceneRole).filter(models.SceneRole.role_id == db_role.id).delete()
     db.delete(db_role)
     db.commit()
+    if case_id:
+        db_case = db.query(models.Case).filter(models.Case.id == case_id).first()
+        if db_case:
+            try_sync_case_to_knowledge(db_case)
     return {"message": "角色删除成功"}
 
 
@@ -722,22 +754,26 @@ async def parse_case_file(
         raise HTTPException(status_code=400, detail="文件大小不能超过 20MB")
 
     try:
-        extracted_text = document_extract_service.extract_text(filename, file_bytes)
+        extraction = document_extract_service.recognize_file(filename, file_bytes)
+        extracted_text = extraction.text
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"文件解析失败: {exc}") from exc
 
     try:
-        return workflow_service.parse_case_text(
+        result = workflow_service.parse_case_text(
             extracted_text,
             source_mode=source_mode or "transcript_file",
-            source_meta={
-                "name": filename,
-                "type": extension.lstrip(".").upper(),
-                "size": len(file_bytes),
-            },
+            source_meta=extraction.as_source_meta(name=filename, extension=extension, size=len(file_bytes)),
         )
+        result["ocr_method"] = extraction.method
+        result["ocr_engine"] = extraction.engine
+        result["ocr_warnings"] = extraction.warnings
+        result["ocr_metadata"] = extraction.metadata
+        result["extracted_text_full"] = extracted_text
+        result["extracted_text_preview"] = extraction.preview
+        return result
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI file parsing failed: {exc}") from exc
 
@@ -1063,6 +1099,7 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
             "parse_warnings": case_data.get("parse_warnings", []),
             **case_data,
             "case_type": normalized_case_type,
+            "scene_role_map": case_data.get("scene_role_map") or _build_scene_role_map(scenes_data),
         }
         structured_data_to_save, _ = migrate_structured_data_payload(structured_data_to_save)
 
@@ -1164,6 +1201,7 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
 
         db.commit()
         db.refresh(db_case)
+        try_sync_case_to_knowledge(db_case)
         return db_case
     except Exception as exc:
         db.rollback()
@@ -1272,6 +1310,7 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
         db_case.structured_data = json.dumps(structured_data, ensure_ascii=False)
         db.commit()
         db.refresh(db_case)
+        try_sync_case_to_knowledge(db_case)
         return db_case
     except HTTPException:
         db.rollback()
@@ -1296,6 +1335,10 @@ def delete_case(case_id: int, db: Session = Depends(database.get_db)):
     case = db.query(models.Case).filter(models.Case.id == case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
+    try:
+        delete_case_from_knowledge(case_id)
+    except Exception as exc:
+        print(f"Case knowledge delete failed for case {case_id}: {exc}")
     db.delete(case)
     db.commit()
     return {"message": "Case deleted"}

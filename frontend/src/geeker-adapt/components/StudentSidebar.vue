@@ -49,13 +49,13 @@ const router = useRouter()
 
 const menuItems = [
   { key: 'hall', label: '训练大厅', icon: Grid, path: '/student/hall', disabled: false },
-  { key: 'tasks', label: '训练任务管理', icon: Files, path: '', disabled: true },
+  { key: 'tasks', label: '班级作业', icon: Files, path: '/student/classes', disabled: false },
   { key: 'history', label: '训练历史', icon: Clock, path: '/student/history', disabled: false },
   { key: 'knowledge', label: '个人知识库', icon: Reading, path: '', disabled: true },
   { key: 'settings', label: '系统设置', icon: Setting, path: '', disabled: true, hasChildren: true },
 ]
 
-const isActive = (path?: string) => Boolean(path && route.path === path)
+const isActive = (path?: string) => Boolean(path && (route.path === path || route.path.startsWith(`${path}/`)))
 
 const go = (path?: string) => {
   if (path && path !== route.path) router.push(path)

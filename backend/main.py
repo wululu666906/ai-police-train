@@ -8,7 +8,7 @@ from sqlalchemy import inspect, text
 
 import database
 import models
-from routers import auth, cases, dashboard, knowledge, speech, state_influence_admin, student, training
+from routers import auth, cases, classes, dashboard, knowledge, speech, student, training
 
 # 不在启动时强制初始化数据库，因为项目已经提供 init_db.py。
 # models.Base.metadata.create_all(bind=database.engine)
@@ -100,6 +100,22 @@ def ensure_role_schema_compatibility():
         print(f"Role schema compatibility check failed: {error}")
 
 
+def ensure_classroom_schema_compatibility():
+    try:
+        for table in (
+            models.TrainingClass.__table__,
+            models.ClassMembership.__table__,
+            models.TrainingAssignment.__table__,
+            models.TrainingAssignmentCase.__table__,
+            models.AssignmentSubmission.__table__,
+            models.AssignmentStudentOverride.__table__,
+            models.ClassAnnouncement.__table__,
+        ):
+            table.create(bind=database.engine, checkfirst=True)
+    except Exception as error:
+        print(f"Classroom schema compatibility check failed: {error}")
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 部署到云服务器时可改为真实域名白名单。
@@ -115,7 +131,7 @@ app.include_router(dashboard.router)
 app.include_router(knowledge.router)
 app.include_router(student.router)
 app.include_router(speech.router)
-app.include_router(state_influence_admin.router)
+app.include_router(classes.router)
 
 # 兼容 Docker 静态前端的 /api 前缀调用（frontend/.env.production 默认 VITE_API_URL=/api）
 app.include_router(auth.router, prefix="/api")
@@ -125,7 +141,7 @@ app.include_router(dashboard.router, prefix="/api")
 app.include_router(knowledge.router, prefix="/api")
 app.include_router(student.router, prefix="/api")
 app.include_router(speech.router, prefix="/api")
-app.include_router(state_influence_admin.router, prefix="/api")
+app.include_router(classes.router, prefix="/api")
 
 
 @app.get("/healthz")
@@ -144,6 +160,30 @@ if os.path.exists(_avatars_dir):
 
 frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 
+
+def _frontend_index_path() -> str:
+    return os.path.join(frontend_dist, "index.html")
+
+
+def _is_browser_navigation(request) -> bool:
+    accept = request.headers.get("accept", "")
+    return "text/html" in accept
+
+
+@app.middleware("http")
+async def serve_spa_routes_before_api_prefixes(request, call_next):
+    path = request.url.path
+    if (
+        request.method == "GET"
+        and _is_browser_navigation(request)
+        and path.startswith(("/admin", "/student"))
+        and not path.startswith("/api/")
+    ):
+        index_path = _frontend_index_path()
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+    return await call_next(request)
+
 if os.path.exists(os.path.join(frontend_dist, "assets")):
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
 
@@ -160,12 +200,13 @@ if os.path.exists(os.path.join(frontend_dist, "assets")):
 def on_startup():
     ensure_message_schema_compatibility()
     ensure_role_schema_compatibility()
+    ensure_classroom_schema_compatibility()
     ensure_default_users()
 
 
 @app.get("/{catchall:path}")
 def serve_vue_app(catchall: str):
-    index_path = os.path.join(frontend_dist, "index.html")
+    index_path = _frontend_index_path()
     if os.path.exists(index_path):
         return FileResponse(index_path)
     return {"message": "AI虚拟警情模拟训练平台后端已启动（前端尚未构建）。"}

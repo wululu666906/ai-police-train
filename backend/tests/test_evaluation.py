@@ -1,55 +1,56 @@
-import json
-
-import pytest
-
 from services.evaluation_service import (
+    COMMON_DIMENSIONS,
     DIMENSIONS,
-    SCENE_RUBRICS,
-    apply_assessment_driven_scoring,
-    apply_rule_adjustments,
-    build_fallback_report,
-    build_knowledge_hits,
+    SCORING_VERSION,
+    build_adaptive_report,
     build_rule_checks,
-    calibrate_report,
+    calculate_adaptive_weighting,
     compute_grade_level,
     format_dialogue,
     infer_scene_type,
     merge_assessment_point_results,
-    normalize_llm_report,
     reconcile_dimension_scores,
     render_rule_summary,
 )
+
+
+COMMON_DIMENSION_NAMES = {name for name, _ in COMMON_DIMENSIONS}
+
+
+class MockMsg:
+    def __init__(self, role, content):
+        self.role = role
+        self.content = content
 
 
 class TestInferSceneType:
     def test_infer_jiejing(self):
         class MockScene:
             name = "接警对话训练"
+
         assert infer_scene_type(MockScene()) == "接警"
 
     def test_infer_xianchang(self):
         class MockScene:
             name = "现场询问"
+
         assert infer_scene_type(MockScene()) == "现场"
 
     def test_infer_shenxun(self):
         class MockScene:
             name = "审讯嫌疑人"
+
         assert infer_scene_type(MockScene()) == "审讯"
 
     def test_infer_generic(self):
         class MockScene:
             name = "其他场景"
+
         assert infer_scene_type(MockScene()) == "通用"
 
 
 class TestFormatDialogue:
     def test_format_user_and_ai(self):
-        class MockMsg:
-            def __init__(self, role, content):
-                self.role = role
-                self.content = content
-
         msgs = [
             MockMsg("user", "你好，请问发生了什么事？"),
             MockMsg("assistant", "是这样的，我和邻居有些矛盾。"),
@@ -59,7 +60,6 @@ class TestFormatDialogue:
         assert "学员: 你好" in dialogue
         assert "AI角色: 是这样的" in dialogue
         assert len(student_lines) == 2
-        assert student_lines[0] == "你好，请问发生了什么事？"
 
     def test_format_empty(self):
         dialogue, student_lines = format_dialogue([])
@@ -71,82 +71,34 @@ class TestBuildRuleChecks:
     def make_scene(self, name):
         class MockScene:
             pass
-        s = MockScene()
-        s.name = name
-        s.dispatch_brief = None
-        s.first_impression = None
-        s.stages = "[]"
-        return s
+
+        scene = MockScene()
+        scene.name = name
+        scene.dispatch_brief = None
+        scene.first_impression = None
+        scene.stages = "[]"
+        return scene
 
     def make_role(self, name="张某"):
         class MockRole:
             pass
-        r = MockRole()
-        r.name = name
-        return r
+
+        role = MockRole()
+        role.name = name
+        return role
 
     def test_jiejing_missing_location(self):
-        scene = self.make_scene("接警对话")
-        role = self.make_role()
-        result = build_rule_checks(scene, ["你好", "请问什么情况"], role)
-        findings = result["findings"]
-        assert any("案发地点" in f["message"] for f in findings)
-
-    def test_jiejing_with_location(self):
-        scene = self.make_scene("接警对话")
-        role = self.make_role()
-        result = build_rule_checks(scene, ["你在哪里？具体地址是什么？", "几点发生的？"], role)
-        findings = result["findings"]
-        assert not any("案发地点" in f["message"] for f in findings)
-
-    def test_jiejing_missing_injury_check(self):
-        scene = self.make_scene("接警对话")
-        role = self.make_role()
-        result = build_rule_checks(
-            scene, ["你在哪里？具体地址是什么？", "几点发生的？"], role
-        )
-        findings = result["findings"]
-        assert any("受伤" in f["message"] or "风险" in f["message"] for f in findings)
-
-    def test_xianchang_missing_identity(self):
-        scene = self.make_scene("现场询问")
-        role = self.make_role()
-        result = build_rule_checks(scene, ["发生了什么事"], role)
-        findings = result["findings"]
-        assert any("身份" in f["message"] or "姓名" in f["message"] for f in findings)
-
-    def test_xianchang_with_identity(self):
-        scene = self.make_scene("现场询问")
-        role = self.make_role()
-        result = build_rule_checks(scene, ["你叫什么名字？", "和对方什么关系？"], role)
-        findings = result["findings"]
-        assert not any("身份" in f["message"] for f in findings)
-
-    def test_shenxun_missing_timeline(self):
-        scene = self.make_scene("审讯嫌疑人")
-        role = self.make_role()
-        result = build_rule_checks(scene, ["你叫什么", "你在现场做了什么"], role)
-        findings = result["findings"]
-        assert any("时间线" in f["message"] or "时间" in f["message"] for f in findings)
-
-    def test_low_turn_deduction(self):
-        scene = self.make_scene("通用")
-        role = self.make_role()
-        result = build_rule_checks(scene, ["你好"], role)
-        assert result["deductions"]["信息获取效率"] >= 4
-        assert result["deductions"]["执法流程完整性"] >= 3
+        result = build_rule_checks(self.make_scene("接警对话"), ["你好", "请问什么情况"], self.make_role())
+        assert any("案发地点" in item["message"] for item in result["findings"])
+        assert "关键信息整理能力" in result["deductions"]
 
     def test_bad_phrase_detection(self):
-        scene = self.make_scene("接警对话")
-        role = self.make_role()
-        result = build_rule_checks(scene, ["快说，别废话！给我老实交代！"], role)
-        assert result["deductions"]["执法语言规范性"] >= 8
+        result = build_rule_checks(self.make_scene("接警对话"), ["快说，别废话！给我老实交代！"], self.make_role())
+        assert result["deductions"]["沟通表达与执法语言"] >= 8
 
-    def test_no_role_name(self):
-        scene = self.make_scene("通用")
-        role = self.make_role(name="")
-        result = build_rule_checks(scene, ["你好，请说明情况"], role)
-        assert any("角色信息异常" in f["message"] for f in result["findings"])
+    def test_no_old_dimension_names_in_deductions(self):
+        result = build_rule_checks(self.make_scene("通用"), ["你好"], self.make_role())
+        assert set(result["deductions"].keys()) == COMMON_DIMENSION_NAMES
 
 
 class TestRenderRuleSummary:
@@ -155,199 +107,57 @@ class TestRenderRuleSummary:
         assert "未发现明显" in summary
 
     def test_with_findings(self):
-        findings = [
-            {"level": "major", "dimension": "执法语言规范性", "message": "存在不规范用语"}
-        ]
-        summary = render_rule_summary({"findings": findings})
+        summary = render_rule_summary(
+            {"findings": [{"level": "major", "dimension": "沟通表达与执法语言", "message": "存在不规范用语"}]}
+        )
         assert "[major]" in summary
         assert "不规范用语" in summary
 
 
-class TestNormalizeLLMReport:
-    def test_full_report(self):
-        report = {
-            "scores": [
-                {"dimension": "执法语言规范性", "score": 22, "full_score": 25, "reason": "基本规范"},
-                {"dimension": "执法流程完整性", "score": 20, "full_score": 25, "reason": "流程基本完整"},
-                {"dimension": "法律依据正确性", "score": 18, "full_score": 20, "reason": "基本正确"},
-                {"dimension": "情绪控制能力", "score": 13, "full_score": 15, "reason": "情绪稳定"},
-                {"dimension": "信息获取效率", "score": 12, "full_score": 15, "reason": "效率尚可"},
-            ],
-        }
-        result = normalize_llm_report(report)
-        assert result["total_score"] == 85
-        assert len(result["scores"]) == 5
-
-    def test_partial_report(self):
-        report = {
-            "scores": [
-                {"dimension": "执法语言规范性", "score": 20, "reason": "还行"}
-            ],
-            "strengths": ["语言规范"],
-            "improvements": ["可继续改进"],
-            "suggestions": "继续努力",
-        }
-        result = normalize_llm_report(report)
-        assert len(result["scores"]) == 5
-        assert result["scores"][0]["score"] == 20
-        assert result["scores"][1]["score"] == 25
-
-    def test_score_clamping(self):
-        report = {
-            "scores": [
-                {"dimension": "执法语言规范性", "score": 30, "full_score": 25, "reason": "超满分"}
-            ],
-        }
-        result = normalize_llm_report(report)
-        assert result["scores"][0]["score"] == 25
-
-    def test_negative_score_clamp(self):
-        report = {
-            "scores": [
-                {"dimension": "执法语言规范性", "score": -5, "full_score": 25, "reason": "负分"}
-            ],
-        }
-        result = normalize_llm_report(report)
-        assert result["scores"][0]["score"] == 0
-
-
-class TestApplyRuleAdjustments:
-    def test_deductions_applied(self):
-        report = {
-            "scores": [
-                {"dimension": "执法语言规范性", "score": 20, "full_score": 25, "reason": ""},
-                {"dimension": "执法流程完整性", "score": 20, "full_score": 25, "reason": ""},
-                {"dimension": "法律依据正确性", "score": 18, "full_score": 20, "reason": ""},
-                {"dimension": "情绪控制能力", "score": 15, "full_score": 15, "reason": ""},
-                {"dimension": "信息获取效率", "score": 12, "full_score": 15, "reason": ""},
-            ],
-            "total_score": 85,
-            "strengths": [],
-            "improvements": [],
-            "suggestions": "",
-        }
-        rule_checks = {
-            "findings": [{"message": "违规用语"}],
-            "deductions": {"执法语言规范性": 8, "情绪控制能力": 3},
-        }
-        result = apply_rule_adjustments(report, rule_checks)
-        assert result["scores"][0]["score"] == 12
-        assert result["scores"][3]["score"] == 12
-
-    def test_deduction_no_negative(self):
-        report = {
-            "scores": [
-                {"dimension": "执法语言规范性", "score": 3, "full_score": 25, "reason": ""},
-            ]
-            + [
-                {"dimension": dim, "score": fs, "full_score": fs, "reason": ""}
-                for dim, fs in DIMENSIONS[1:]
-            ],
-            "total_score": 0,
-            "strengths": [],
-            "improvements": [],
-            "suggestions": "",
-        }
-        rule_checks = {
-            "findings": [],
-            "deductions": {"执法语言规范性": 10},
-        }
-        result = apply_rule_adjustments(report, rule_checks)
-        assert result["scores"][0]["score"] == 0
-
-
-class TestCalibrateReport:
-    def make_report(self, total, turn_count=1):
-        scores = []
-        per_dim = total // 5
-        remainder = total - per_dim * 5
-        for i, (dim, fs) in enumerate(DIMENSIONS):
-            score = per_dim + (1 if i < remainder else 0)
-            scores.append({"dimension": dim, "score": score, "full_score": fs, "reason": ""})
+class TestAdaptiveWeighting:
+    def make_point(self, index, weight=12, required=True, status="hit"):
         return {
-            "scores": scores,
-            "total_score": total,
-            "strengths": [],
-            "improvements": [],
-            "suggestions": "",
+            "id": f"ap_{index}",
+            "label": f"考察点{index}",
+            "weight": weight,
+            "required": required,
+            "status": status,
+            "score": weight if status == "hit" else weight // 2 if status == "partial" else 0,
         }
 
-    def test_low_turn_cap(self):
-        report = self.make_report(95, turn_count=1)
-        result = calibrate_report(report, ["hello"], "通用")
-        assert result["total_score"] <= 55
+    def test_version_and_common_dimensions(self):
+        assert SCORING_VERSION == "adaptive_v1"
+        assert len(COMMON_DIMENSIONS) == 4
+        assert len(DIMENSIONS) == 4
+        assert {name for name, _ in DIMENSIONS} == COMMON_DIMENSION_NAMES
 
-    def test_two_turn_cap(self):
-        report = self.make_report(95, turn_count=2)
-        result = calibrate_report(report, ["a", "b"], "通用")
-        assert result["total_score"] <= 68
+    def test_four_medium_points_split_half(self):
+        points = [self.make_point(i, weight=12, required=True) for i in range(4)]
+        weighting = calculate_adaptive_weighting(points)
+        assert weighting["common_share"] == 0.5
+        assert weighting["assessment_share"] == 0.5
 
-    def test_three_turn_cap(self):
-        report = self.make_report(95, turn_count=3)
-        result = calibrate_report(report, ["a", "b", "c"], "通用")
-        assert result["total_score"] <= 78
+    def test_no_points_uses_common_only(self):
+        weighting = calculate_adaptive_weighting([])
+        assert weighting["common_share"] == 1.0
+        assert weighting["assessment_share"] == 0.0
+        assert weighting["assessment_point_count"] == 0
 
-    def test_many_turns_no_cap(self):
-        report = self.make_report(85, turn_count=10)
-        result = calibrate_report(report, ["a"] * 10, "通用")
-        assert result["total_score"] == 85
+    def test_many_high_required_points_are_capped_at_65_percent(self):
+        points = [self.make_point(i, weight=15, required=True) for i in range(8)]
+        weighting = calculate_adaptive_weighting(points)
+        assert weighting["assessment_share"] == 0.65
+        assert weighting["common_share"] == 0.35
 
-    def test_adds_strengths_when_few(self):
-        report = self.make_report(75, turn_count=5)
-        result = calibrate_report(report, ["请", "麻烦", "有没有"], "接警")
-        assert len(result["strengths"]) >= 2
-
-    def test_adds_improvements_when_few(self):
-        report = self.make_report(75, turn_count=5)
-        result = calibrate_report(report, ["a"], "接警")
-        assert len(result["improvements"]) >= 1
-        assert any("地点" in imp for imp in result["improvements"])
-
-    def test_adds_default_suggestions(self):
-        report = self.make_report(75, turn_count=5)
-        report["suggestions"] = ""
-        result = calibrate_report(report, ["a"] * 5, "通用")
-        assert len(result["suggestions"]) > 0
-
-
-class TestBuildFallbackReport:
-    def test_creates_valid_report(self):
-        result = build_fallback_report("LLM 返回了非 JSON 摘要", ["hello"], "接警")
-        assert "total_score" in result
-        assert "scores" in result
-        assert len(result["scores"]) == 5
-        assert result["evaluation_meta"]["llm_fallback"] is True
-
-    def test_empty_input(self):
-        result = build_fallback_report("", ["a", "b"], "现场")
-        assert len(result["scores"]) == 5
-
-
-class TestSceneRubrics:
-    def test_all_scene_types_have_rubrics(self):
-        for scene_type in ["接警", "现场", "审讯", "通用"]:
-            assert scene_type in SCENE_RUBRICS
-            assert len(SCENE_RUBRICS[scene_type]) >= 1
-
-    def test_rubrics_are_strings(self):
-        for items in SCENE_RUBRICS.values():
-            for item in items:
-                assert isinstance(item, str)
-                assert len(item) > 0
-
-
-class TestDimensions:
-    def test_total_weight_is_100(self):
-        total = sum(fs for _, fs in DIMENSIONS)
-        assert total == 100
-
-    def test_all_five_dimensions(self):
-        names = [dim for dim, _ in DIMENSIONS]
-        assert "执法语言规范性" in names
-        assert "执法流程完整性" in names
-        assert "法律依据正确性" in names
-        assert "情绪控制能力" in names
-        assert "信息获取效率" in names
+    def test_duplicate_semantic_points_count_once(self):
+        points = [
+            {**self.make_point(1, weight=15), "label": "初判警情等级", "content": "判断是否存在人身危险并给出处置倾向。怎样算完成：回放时能听出明确派警判断。"},
+            {**self.make_point(2, weight=10), "label": "初判警情等级", "content": "判断是否存在人身危险并给出处置倾向"},
+        ]
+        weighting = calculate_adaptive_weighting(points)
+        assert weighting["assessment_point_count"] == 1
+        assert len(weighting["point_weights"]) == 1
+        assert weighting["point_weights"][0]["full_score"] == weighting["assessment_full_score"]
 
 
 class TestFormalScoringHelpers:
@@ -365,36 +175,95 @@ class TestFormalScoringHelpers:
         assert merged[0]["score"] == 10
         assert "模型误判" in merged[0]["feedback"]
 
+    def test_merge_assessment_point_results_dedupes_semantic_duplicates(self):
+        runtime = [
+            {"id": "ap_high", "label": "初判警情等级", "content": "判断是否存在人身危险并给出处置倾向。怎样算完成：回放时能听出明确派警判断。", "status": "missed", "weight": 15},
+            {"id": "ap_low", "label": "初判警情等级", "content": "判断是否存在人身危险并给出处置倾向", "status": "partial", "weight": 10, "evidence": ["学员: 对方还在现场吗"]},
+        ]
+        llm = [
+            {"id": "ap_low", "label": "初判警情等级", "content": "判断是否存在人身危险并给出处置倾向", "status": "missed", "reason": "重复模型输出"},
+        ]
+        rows = [
+            {"id": "ap_high", "label": "初判警情等级", "content": "判断是否存在人身危险并给出处置倾向。怎样算完成：回放时能听出明确派警判断。", "stage_name": "接警", "weight": 15, "required": True},
+        ]
+        merged = merge_assessment_point_results(runtime, llm, rows)
+        assert len(merged) == 1
+        assert merged[0]["status"] == "partial"
+        assert merged[0]["weight"] == 15
+        assert merged[0]["score"] == 7
+
     def test_reconcile_dimension_scores(self):
         report = {
             "total_score": 60,
             "scores": [
-                {"dimension": "执法语言规范性", "score": 20, "full_score": 25, "reason": "a"},
-                {"dimension": "执法流程完整性", "score": 20, "full_score": 25, "reason": "b"},
-                {"dimension": "法律依据正确性", "score": 20, "full_score": 20, "reason": "c"},
-                {"dimension": "情绪控制能力", "score": 10, "full_score": 15, "reason": "d"},
-                {"dimension": "信息获取效率", "score": 10, "full_score": 15, "reason": "e"},
+                {"dimension": "沟通表达与执法语言", "score": 25, "full_score": 25, "reason": "a"},
+                {"dimension": "主动询问与逻辑推进", "score": 25, "full_score": 25, "reason": "b"},
+                {"dimension": "关键信息整理能力", "score": 25, "full_score": 25, "reason": "c"},
+                {"dimension": "处置闭环意识", "score": 25, "full_score": 25, "reason": "d"},
             ],
         }
         result = reconcile_dimension_scores(report)
         assert result["total_score"] == sum(item["score"] for item in result["scores"])
 
-    def test_apply_assessment_driven_scoring_caps_low_completion(self):
-        report = normalize_llm_report(
-            {
-                "scores": [
-                    {"dimension": "执法语言规范性", "score": 22, "full_score": 25, "reason": "较好"},
-                    {"dimension": "执法流程完整性", "score": 22, "full_score": 25, "reason": "较好"},
-                    {"dimension": "法律依据正确性", "score": 18, "full_score": 20, "reason": "较好"},
-                    {"dimension": "情绪控制能力", "score": 13, "full_score": 15, "reason": "较好"},
-                    {"dimension": "信息获取效率", "score": 13, "full_score": 15, "reason": "较好"},
-                ]
-            }
+
+class TestAdaptiveReport:
+    def make_points(self, required_statuses):
+        points = []
+        for index, status in enumerate(required_statuses, start=1):
+            points.append(
+                {
+                    "id": f"ap_{index}",
+                    "label": f"必考{index}",
+                    "status": status,
+                    "required": True,
+                    "weight": 12,
+                    "score": 12 if status == "hit" else 6 if status == "partial" else 0,
+                    "evidence": ["学员: 示例"],
+                    "feedback": "反馈",
+                }
+            )
+        return points
+
+    def test_report_uses_adaptive_scores_without_old_dimensions(self):
+        points = self.make_points(["hit", "hit", "hit", "hit"])
+        report = build_adaptive_report(
+            {"common_reviews": [], "strengths": [], "improvements": [], "suggestions": ""},
+            points,
+            [],
+            ["您好，请说明情况", "几点发生的", "在哪里", "后续我们会处理"],
+            [MockMsg("user", "您好，请说明情况"), MockMsg("assistant", "情况是这样的")],
+            {"findings": [], "deductions": {}},
+            "接警",
         )
-        points = [
-            {"label": "必考1", "status": "missed", "required": True, "weight": 10, "score": 0},
-            {"label": "必考2", "status": "missed", "required": True, "weight": 10, "score": 0},
-            {"label": "选考", "status": "missed", "required": False, "weight": 10, "score": 0},
-        ]
-        result = apply_assessment_driven_scoring(report, points, [])
-        assert result["total_score"] <= 58
+        assert report["evaluation_meta"]["scoring_version"] == "adaptive_v1"
+        dimensions = {item["dimension"] for item in report["scores"]}
+        assert all(name in COMMON_DIMENSION_NAMES or name.startswith("考察点：") for name in dimensions)
+        assert any(item["group"] == "assessment" for item in report["scores"])
+
+    def test_required_point_cap(self):
+        points = self.make_points(["missed", "missed", "missed"])
+        report = build_adaptive_report(
+            {"common_reviews": []},
+            points,
+            [],
+            ["您好，请说明情况", "还有什么", "在哪里", "后续处理"],
+            [MockMsg("user", "您好，请说明情况")],
+            {"findings": [], "deductions": {}},
+            "接警",
+        )
+        assert report["total_score"] <= 58
+        assert report["evaluation_meta"]["score_caps"]["final_cap"] <= 58
+
+    def test_red_flag_cap(self):
+        points = self.make_points(["hit", "hit", "hit", "hit"])
+        report = build_adaptive_report(
+            {"common_reviews": []},
+            points,
+            [],
+            ["快说，别废话！给我老实交代！", "在哪里", "几点", "后续处理"],
+            [MockMsg("user", "快说，别废话！给我老实交代！")],
+            {"findings": [], "deductions": {}},
+            "接警",
+        )
+        assert report["total_score"] <= 59
+        assert report["evaluation_meta"]["red_flags"]

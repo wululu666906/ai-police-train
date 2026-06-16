@@ -246,6 +246,102 @@ BEHAVIOR_ARCHETYPE_LIBRARY: dict[str, dict[str, Any]] = {
         "init_risk": 68,
         "init_expression_clarity": 56,
     },
+    "创伤受害型": {
+        "interaction_style": "情绪型",
+        "personality": "受惊、缺安全感，对被责备和被否定高度敏感",
+        "speaking_style": "说话可能断续、反复确认安全，事实细节会随安全感逐步恢复",
+        "police_attitude": "试探观望",
+        "authority_attitude": "希望警方先确认自己是安全的、不会被责怪，再进入细节核实",
+        "pressure_response": "被追问或暗示有责任时会退缩、哭泣、语无伦次或只重复最害怕的片段",
+        "surface_stance": "我现在有点乱，我怕说错，也怕之后还会出事。",
+        "trigger_points": ["被追问为什么不早说", "暗示其有过错", "要求马上完整复述创伤细节"],
+        "calming_points": ["先确认人身安全和保护措施", "允许按其能承受的顺序慢慢说", "明确不会因害怕或迟疑责怪其"],
+        "coping_patterns": ["反复确认是否安全", "跳过最刺激的片段", "先说感受再补事实"],
+        "init_emotion": 82,
+        "init_trust": 30,
+        "init_risk": 70,
+        "init_expression_clarity": 42,
+    },
+    "精神危机型": {
+        "interaction_style": "情绪型",
+        "personality": "现实感和情绪稳定性波动大，容易受刺激升级",
+        "speaking_style": "可能跳跃、偏执、抓住词语反复解释，难以持续回答复杂问题",
+        "police_attitude": "敌对抵触",
+        "authority_attitude": "容易把警方的靠近、反驳或命令理解成威胁，需要低刺激沟通",
+        "pressure_response": "被围堵、否定或连续命令时可能激动、拒绝、喊叫、离开或出现失控动作",
+        "surface_stance": "你们别靠太近，我现在听不清你们到底要干什么。",
+        "trigger_points": ["多人同时发问", "否定其感受或知觉", "突然靠近或强行控制"],
+        "calming_points": ["短句、慢速、一次只给一个要求", "保持距离并说明每一步动作", "先确认安全和医疗支持"],
+        "coping_patterns": ["抓住某个词反复回应", "突然转移话题", "在高刺激下逃避或对抗"],
+        "init_emotion": 88,
+        "init_trust": 14,
+        "init_risk": 92,
+        "init_expression_clarity": 24,
+    },
+    "利益算计型": {
+        "interaction_style": "观察型",
+        "personality": "现实权衡强，关注责任、赔偿、证据和自身得失",
+        "speaking_style": "表达相对清楚，但会选择性陈述有利事实，回避对自己不利部分",
+        "police_attitude": "防备排斥",
+        "authority_attitude": "会评估警方掌握的证据和处置方向，再决定透露多少",
+        "pressure_response": "一旦触及赔偿、责任或证据漏洞，会开始讨价还价、转移重点或保留关键事实",
+        "surface_stance": "我可以说，但这个责任和损失得讲清楚，不能都算到我头上。",
+        "trigger_points": ["直接追问赔偿责任", "要求其承认不利事实", "指出其陈述有利益倾向"],
+        "calming_points": ["说明依法核实和证据标准", "把事实核查与责任认定分开", "给其说明合理诉求的机会"],
+        "coping_patterns": ["先讲对自己有利的部分", "用损失或条件换取话语权", "回避核心不利细节"],
+        "init_emotion": 56,
+        "init_trust": 24,
+        "init_risk": 48,
+        "init_expression_clarity": 82,
+    },
+    "权威敏感型": {
+        "interaction_style": "对抗型",
+        "personality": "自尊和面子需求强，尤其反感被当众压制或贴标签",
+        "speaking_style": "容易反问、强调身份或面子，语气会随被尊重程度明显变化",
+        "police_attitude": "敌对抵触",
+        "authority_attitude": "不是单纯拒绝配合，而是对被命令、被羞辱、被扣帽子反应强烈",
+        "pressure_response": "当众被压或被直接定性时会顶撞、提高音量、拒绝回答或转向争面子",
+        "surface_stance": "你们可以问，但别一上来就像我犯了什么大事一样。",
+        "trigger_points": ["当众训斥或命令", "贴标签或扣帽子", "不给解释机会"],
+        "calming_points": ["私下、平稳地说明要求", "先给解释机会再核实", "用依法流程替代情绪压迫"],
+        "coping_patterns": ["先争面子再谈事实", "用身份或资格反问", "被尊重后才有限松口"],
+        "init_emotion": 76,
+        "init_trust": 18,
+        "init_risk": 72,
+        "init_expression_clarity": 70,
+    },
+    "沉默恐惧型": {
+        "interaction_style": "观察型",
+        "personality": "害怕报复、牵连或被看见说了什么，倾向沉默和回避",
+        "speaking_style": "短答、停顿多、经常说不清楚或不知道，只有安全感足够时才补充",
+        "police_attitude": "试探观望",
+        "authority_attitude": "会先判断警方能否保护自己，以及说出事实会不会带来后果",
+        "pressure_response": "被逼指认或要求公开表态时会沉默、改口、说没看见或请求别记录",
+        "surface_stance": "我不太想说，怕说了以后给自己惹麻烦。",
+        "trigger_points": ["要求当面对质或指认", "追问其和当事人的关系", "忽略其被报复顾虑"],
+        "calming_points": ["说明保护措施和记录范围", "先问其能确认的安全事实", "避免当众要求表态"],
+        "coping_patterns": ["说不知道或没看清", "等待警方先承诺保护", "先给边缘信息试探反应"],
+        "init_emotion": 66,
+        "init_trust": 18,
+        "init_risk": 56,
+        "init_expression_clarity": 46,
+    },
+    "过度依赖型": {
+        "interaction_style": "情绪型",
+        "personality": "把警方视为唯一解决出口，容易反复求助和寻求保证",
+        "speaking_style": "会反复追问能不能马上解决、谁来负责、之后怎么办",
+        "police_attitude": "主动求助",
+        "authority_attitude": "愿意靠近警方，但对含糊回复和责任不明确非常焦虑",
+        "pressure_response": "如果得不到清晰安排，会不断重复诉求、升级焦虑或把全部责任推给警方",
+        "surface_stance": "你们一定要管，这件事我真的不知道还能找谁。",
+        "trigger_points": ["回复含糊没有下一步", "让其自己回去等消息", "没有明确责任人或联系方式"],
+        "calming_points": ["给出清晰下一步和时间预期", "确认可联系渠道", "把能做与不能做的边界说清"],
+        "coping_patterns": ["反复确认警方是否会管", "不断补充焦虑细节", "要求承诺或立即处理"],
+        "init_emotion": 72,
+        "init_trust": 46,
+        "init_risk": 46,
+        "init_expression_clarity": 60,
+    },
 }
 
 
@@ -274,15 +370,34 @@ def _infer_behavior_archetype(person: dict[str, Any] | None) -> str:
             _clean_text(person.get("weakness")),
             _clean_text(person.get("pressure_response")),
             _clean_text(person.get("authority_attitude")),
+            _clean_text(person.get("surface_stance")),
+            " ".join(_to_list(person.get("trigger_points"))),
+            " ".join(_to_list(person.get("calming_points"))),
+            " ".join(_to_list(person.get("cannot_answer"))),
+            " ".join(_to_list(person.get("relationship_pressure"))),
         ]
     )
+    full_text = " ".join([role_type, status, text])
+    observed_text = " ".join([status, text])
 
+    if any(token in full_text for token in ["精神", "幻觉", "妄想", "恍惚", "自言自语", "躁狂", "意识混乱"]):
+        return "精神危机型"
+    if any(token in observed_text for token in ["创伤", "受害", "害怕", "惊吓", "不敢", "侵犯", "被打", "噩梦", "发抖", "恐惧"]):
+        return "创伤受害型"
     if any(token in text for token in ["轻生", "跳楼", "绝望", "不想活", "没意义", "别管我"]):
         return "绝望封闭型"
-    if any(token in (status + text) for token in ["醉", "酒", "喝多", "失控"]):
+    if any(token in full_text for token in ["醉", "酒", "喝多", "失控"]):
         return "醉酒失控型"
     if any(token in text for token in ["起哄", "围观", "带节奏", "煽动"]):
         return "围观起哄型"
+    if any(token in text for token in ["算计", "条件", "谈判", "赔偿", "补偿", "利益", "划算", "要价", "钱"]):
+        return "利益算计型"
+    if any(token in text for token in ["面子", "当众", "领导", "身份", "凭什么", "不服管", "权威", "丢脸", "扣帽子"]):
+        return "权威敏感型"
+    if any(token in text for token in ["报复", "不敢说", "怕被找麻烦", "害怕牵连", "沉默", "不想讲", "威胁", "灭口"]):
+        return "沉默恐惧型"
+    if any(token in text for token in ["你们必须", "必须帮", "没人管", "反复求助", "离不开警方", "你们不能不管", "一直找你们", "帮我解决"]):
+        return "过度依赖型"
     if role_type == "嫌疑人" or any(token in text for token in ["切责", "误会", "不是我先", "别定性", "先切责任"]):
         return "防御切责型"
     if role_type in {"被害人", "受害人"} or any(token in text for token in ["委屈", "吃亏", "受伤", "哭", "情绪"]):
@@ -1249,10 +1364,29 @@ def analyze_dialogue_momentum(
     emotion_delta = 0
     notes = []
 
-    if re.search(r"(别急|慢慢说|不用着急|辛苦|先别慌)", text):
+    if re.search(r"(别急|慢慢说|不用着急|辛苦|先别慌|深呼吸|你先缓一下|先稳住)", text):
         strategy_tags.append("soft_contact")
         trust_delta += 4
+        emotion_delta -= 3
         notes.append("语气相对平和，角色更容易维持交流。")
+
+    if re.search(r"(我理解|能理解|知道你着急|知道你害怕|你受委屈|先听你说|我在听|我会记录|我们会处理)", text):
+        strategy_tags.append("empathy_validation")
+        trust_delta += 4
+        emotion_delta -= 4
+        notes.append("回应了对方感受，角色情绪有回落空间。")
+
+    if re.search(r"(先保证安全|到安全位置|别靠近|先分开|保持距离|保护你|已经派警|民警.*路上|救护|120|安全位置)", text):
+        strategy_tags.append("safety_reassurance")
+        trust_delta += 3
+        emotion_delta -= 3
+        notes.append("先处理安全与救助，能降低失控风险。")
+
+    if re.search(r"(我先核实|按流程|依法|先确认|再处理|方便回拨|给你回电|我这边记录|我们一步一步)", text):
+        strategy_tags.append("procedural_explanation")
+        trust_delta += 3
+        emotion_delta -= 2
+        notes.append("说明处置步骤，能提升角色对流程的确定感。")
 
     if re.search(r"(快说|老实交代|别废话|是不是你干的|再不说)", text):
         strategy_tags.append("pressure")

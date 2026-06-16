@@ -178,6 +178,7 @@ const navItems = [
   { name: 'cases', label: '案件剧本库', shortLabel: '案件', icon: 'orders-o' },
   { name: 'knowledge', label: '知识库管理', shortLabel: '知识', icon: 'cluster-o' },
   { name: 'roles', label: 'AI角色库', shortLabel: '角色', icon: 'friends-o' },
+  { name: 'classes', label: '班级训练', shortLabel: '班级', icon: 'cluster-o' },
   { name: 'students', label: '学员账号', shortLabel: '账号', icon: 'contact-o' },
   { name: 'profile', label: '个人中心', shortLabel: '我的', icon: 'user-o' },
 ]
@@ -196,6 +197,7 @@ watch(
     else if (val.includes('/cases')) active.value = 'cases'
     else if (val.includes('/knowledge')) active.value = 'knowledge'
     else if (val.includes('/roles')) active.value = 'roles'
+    else if (val.includes('/classes')) active.value = 'classes'
     else if (val.includes('/students')) active.value = 'students'
     else if (val.includes('/profile')) active.value = 'profile'
   },

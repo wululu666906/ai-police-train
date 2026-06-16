@@ -75,41 +75,68 @@
           </h3>
           <p class="scene-role-hint">点击角色，或在输入框写「姓名，」指定对话对象</p>
           <div class="scene-role-list">
-            <button
+            <div
               v-for="role in visibleSceneRoles"
               :key="role.id"
-              type="button"
-              class="scene-role-card"
-              :class="{
-                'scene-role-card--selected': targetRoleName === role.name,
-                'scene-role-card--speaking': isRoleAvatarSpeaking(role.name),
-                'scene-role-card--thinking': isRoleAvatarThinking(role.name),
-              }"
-              :disabled="!role.speakable || isLoading || isPlayingReplies"
-              @click="toggleTargetRole(role)"
+              class="scene-role-stack"
             >
-              <RoleSpeakingAvatar
-                :name="role.name"
-                :avatar-url="role.avatar_url"
-                :avatar-id="role.avatar_id"
-                :speaking="isRoleAvatarSpeaking(role.name)"
-                :thinking="isRoleAvatarThinking(role.name)"
-                :primary="role.is_primary"
-                :risk="(role.risk ?? 0) >= 70"
-                :size="28"
-              />
-              <span class="scene-role-card__body">
-                <span class="scene-role-card__name">{{ role.name }}</span>
-                <span class="scene-role-card__meta">
-                  {{ role.state_label || role.role_type || '角色' }}
-                  <template v-if="role.emotion != null"> · 情绪{{ role.emotion }}</template>
+              <button
+                type="button"
+                class="scene-role-card"
+                :class="{
+                  'scene-role-card--selected': targetRoleName === role.name,
+                  'scene-role-card--speaking': isRoleAvatarSpeaking(role.name),
+                  'scene-role-card--thinking': isRoleAvatarThinking(role.name),
+                }"
+                :disabled="!role.speakable || isLoading || isPlayingReplies"
+                @click="toggleTargetRole(role)"
+              >
+                <RoleSpeakingAvatar
+                  :name="role.name"
+                  :avatar-url="role.avatar_url"
+                  :avatar-id="role.avatar_id"
+                  :speaking="isRoleAvatarSpeaking(role.name)"
+                  :thinking="isRoleAvatarThinking(role.name)"
+                  :primary="role.is_primary"
+                  :risk="(role.risk ?? 0) >= 70"
+                  :size="28"
+                />
+                <span class="scene-role-card__body">
+                  <span class="scene-role-card__name">{{ role.name }}</span>
+                  <span class="scene-role-card__meta">
+                    {{ role.state_label || role.role_type || '角色' }}
+                    <template v-if="role.emotion != null"> · 情绪{{ role.emotion }}</template>
+                  </span>
                 </span>
-              </span>
-              <span v-if="isRoleAvatarSpeaking(role.name)" class="scene-role-card__badge">正在说话</span>
-              <span v-else-if="isRoleAvatarThinking(role.name)" class="scene-role-card__badge scene-role-card__badge--think">
-                准备发言
-              </span>
-            </button>
+                <span v-if="isRoleAvatarSpeaking(role.name)" class="scene-role-card__badge">正在说话</span>
+                <span v-else-if="isRoleAvatarThinking(role.name)" class="scene-role-card__badge scene-role-card__badge--think">
+                  准备发言
+                </span>
+              </button>
+
+              <div class="role-state-table">
+                <div v-for="axis in roleStateAxes" :key="axis.key" class="role-state-axis">
+                  <div class="role-state-axis__head">
+                    <span>{{ axis.label }}</span>
+                    <span class="role-state-axis__values">
+                      <strong :style="{ color: axisColor(axis.key, axisValue(role, axis.key)) }">
+                        {{ axisValue(role, axis.key) }}
+                      </strong>
+                      <span class="role-state-delta" :class="deltaClass(axisDelta(role, axis.key))">
+                        {{ formatDelta(axisDelta(role, axis.key)) }}
+                      </span>
+                    </span>
+                  </div>
+                  <div class="role-state-track">
+                    <div
+                      class="role-state-fill"
+                      :class="axis.fillClass"
+                      :style="{ width: axisValue(role, axis.key) + '%' }"
+                    ></div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
           <button
             v-if="hiddenSceneRoleCount > 0"
@@ -119,74 +146,6 @@
           >
             {{ showAllRoles ? '收起角色' : `展开其余 ${hiddenSceneRoleCount} 个角色` }}
           </button>
-        </div>
-
-        <div v-if="showStateDebug && stateDebug.contract" class="panel-section state-debug-panel">
-          <h3 class="panel-title">
-            <van-icon name="setting-o" />
-            状态契约（管理员）
-          </h3>
-          <div class="state-debug-tags">
-            <span class="state-debug-tag">{{ stateDebug.contract?.primary_affect || '—' }}</span>
-            <span v-if="stateInfluenceMetrics.consistency_rate != null" class="state-debug-tag">
-              一致率 {{ Math.round((stateInfluenceMetrics.consistency_rate || 0) * 100) }}%
-            </span>
-            <span v-if="stateInfluenceMetrics.stage_requirement_hit_rate != null" class="state-debug-tag">
-              阶段命中 {{ Math.round((stateInfluenceMetrics.stage_requirement_hit_rate || 0) * 100) }}%
-            </span>
-          </div>
-          <p class="state-debug-hint">{{ stateDebug.contract?.tone_hint || '' }}</p>
-          <p v-if="stateDebug.postcheck?.validation" class="state-debug-meta">
-            后验：{{ stateDebug.postcheck.validation.ok ? '通过' : '未通过' }}
-            （{{ stateDebug.postcheck.validation.score }}）
-          </p>
-        </div>
-
-        <div class="panel-section panel-section--secondary">
-          <h3 class="panel-title">
-            <van-icon name="chart-trending-o" />
-            实时状态
-          </h3>
-          <div class="state-grid">
-            <div class="state-cell">
-              <div class="state-header">
-                <span class="state-label">情绪值</span>
-                <span class="state-num" :style="{ color: currentState.emotion > 70 ? '#F53F3F' : '#FF7D00' }">
-                  {{ currentState.emotion }}
-                </span>
-              </div>
-              <div class="progress-track">
-                <div class="progress-fill emotion-fill" :style="{ width: currentState.emotion + '%' }"></div>
-              </div>
-            </div>
-            <div class="state-cell">
-              <div class="state-header">
-                <span class="state-label">信任度</span>
-                <span class="state-num" style="color: #165DFF;">{{ currentState.trust }}</span>
-              </div>
-              <div class="progress-track">
-                <div class="progress-fill trust-fill" :style="{ width: currentState.trust + '%' }"></div>
-              </div>
-            </div>
-            <div class="state-cell">
-              <div class="state-header">
-                <span class="state-label">失控风险</span>
-                <span class="state-num" :style="{ color: currentState.risk > 70 ? '#C2410C' : '#EA580C' }">{{ currentState.risk }}</span>
-              </div>
-              <div class="progress-track">
-                <div class="progress-fill risk-fill" :style="{ width: currentState.risk + '%' }"></div>
-              </div>
-            </div>
-            <div class="state-cell">
-              <div class="state-header">
-                <span class="state-label">表达清晰度</span>
-                <span class="state-num" :style="{ color: currentState.clarity < 40 ? '#7C3AED' : '#0F766E' }">{{ currentState.clarity }}</span>
-              </div>
-              <div class="progress-track">
-                <div class="progress-fill clarity-fill" :style="{ width: currentState.clarity + '%' }"></div>
-              </div>
-            </div>
-          </div>
         </div>
 
         <div class="panel-section panel-section--secondary facts-section">
@@ -458,6 +417,10 @@ interface SceneRoleBrief {
   cooperation?: number
   risk?: number
   clarity?: number
+  emotion_delta?: number
+  cooperation_delta?: number
+  risk_delta?: number
+  clarity_delta?: number
   state_label?: string
   affect_label?: string
   is_active?: boolean
@@ -474,14 +437,6 @@ interface SuggestedQuestionItem {
 
 const sceneRoles = ref<SceneRoleBrief[]>([])
 const showAllRoles = ref(false)
-const isAdminUser = computed(() => localStorage.getItem('role') === 'admin')
-const showStateDebug = computed(() => isAdminUser.value)
-const stateDebug = ref<{ contract?: Record<string, unknown>; postcheck?: { validation?: { ok?: boolean; score?: number } } }>({})
-const stateInfluenceMetrics = ref<{
-  consistency_rate?: number
-  stage_requirement_hit_rate?: number
-  turn_count?: number
-}>({})
 const routingSummary = ref('')
 const addressingWarning = ref('')
 const targetRoleName = ref('')
@@ -494,10 +449,61 @@ const completedActionIds = ref<string[]>([])
 const autoFinishReady = ref(false)
 
 const revealedInfo = ref<string[]>([])
-const currentState = ref({ emotion: 50, trust: 30, risk: 50, clarity: 50 })
 const chatHistory = ref<
   Array<{ id: number; role: string; content: string; speakerName?: string; inputSource?: 'voice' | 'text'; avatarUrl?: string; avatarId?: number }>
 >([])
+
+type RoleStateAxisKey = 'emotion' | 'cooperation' | 'risk' | 'clarity'
+
+const roleStateAxes: Array<{ key: RoleStateAxisKey; label: string; fillClass: string }> = [
+  { key: 'emotion', label: '情绪值', fillClass: 'emotion-fill' },
+  { key: 'cooperation', label: '配合度', fillClass: 'trust-fill' },
+  { key: 'risk', label: '失控风险', fillClass: 'risk-fill' },
+  { key: 'clarity', label: '表达清晰度', fillClass: 'clarity-fill' },
+]
+
+const clampStateValue = (value: unknown, fallback = 50) => {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+  return Math.max(0, Math.min(100, Math.round(numeric)))
+}
+
+const roleAxisFallback: Record<RoleStateAxisKey, number> = {
+  emotion: 50,
+  cooperation: 30,
+  risk: 50,
+  clarity: 50,
+}
+
+const roleDeltaField: Record<RoleStateAxisKey, keyof SceneRoleBrief> = {
+  emotion: 'emotion_delta',
+  cooperation: 'cooperation_delta',
+  risk: 'risk_delta',
+  clarity: 'clarity_delta',
+}
+
+const axisValue = (role: SceneRoleBrief, key: RoleStateAxisKey) =>
+  clampStateValue(role[key], roleAxisFallback[key])
+
+const axisDelta = (role: SceneRoleBrief, key: RoleStateAxisKey) => {
+  const numeric = Number(role[roleDeltaField[key]] ?? 0)
+  return Number.isFinite(numeric) ? Math.round(numeric) : 0
+}
+
+const formatDelta = (value: number) => (value > 0 ? `+${value}` : value < 0 ? `${value}` : '0')
+
+const deltaClass = (value: number) => ({
+  'role-state-delta--up': value > 0,
+  'role-state-delta--down': value < 0,
+  'role-state-delta--flat': value === 0,
+})
+
+const axisColor = (key: RoleStateAxisKey, value: number) => {
+  if (key === 'emotion') return value > 70 ? '#F53F3F' : '#FF7D00'
+  if (key === 'cooperation') return '#165DFF'
+  if (key === 'risk') return value > 70 ? '#C2410C' : '#EA580C'
+  return value < 40 ? '#7C3AED' : '#0F766E'
+}
 
 const orderedSceneRoles = computed(() =>
   [...sceneRoles.value].sort((a, b) => {
@@ -796,10 +802,6 @@ const fetchSessionData = async () => {
     sceneRoles.value = Array.isArray(res.scene_roles) ? res.scene_roles : []
     showAllRoles.value = false
     applyGuidancePayload(res)
-    currentState.value.emotion = res.current_emotion
-    currentState.value.trust = res.current_trust
-    currentState.value.risk = res.current_risk ?? 50
-    currentState.value.clarity = res.current_clarity ?? 50
     revealedInfo.value = safeParse<string[]>(res.revealed_info, [])
 
     chatHistory.value = [
@@ -929,17 +931,6 @@ const sendMessage = async (content?: string, inputSource: 'voice' | 'text' = 'te
     routingSummary.value = String(res.routing_summary || '').trim()
     addressingWarning.value = String(res.addressing_warning || '').trim()
     applyGuidancePayload(res)
-    if (isAdminUser.value) {
-      stateDebug.value = {
-        contract: res.state_contract,
-        postcheck: res.last_postcheck,
-      }
-      stateInfluenceMetrics.value = res.state_influence_metrics || {}
-    }
-    currentState.value.emotion = res.updated_emotion
-    currentState.value.trust = res.updated_trust
-    currentState.value.risk = res.updated_risk ?? currentState.value.risk
-    currentState.value.clarity = res.updated_clarity ?? currentState.value.clarity
 
     if (hasAssistantReply) {
       if (res.new_fact_revealed && res.new_fact_revealed !== 'null' && !revealedInfo.value.includes(res.new_fact_revealed)) {
@@ -953,8 +944,9 @@ const sendMessage = async (content?: string, inputSource: 'voice' | 'text' = 'te
 
       if (res.is_stage_completed) {
         const updatedRes: any = await request.get(`/training/session/${sessionId.value}`)
-        currentState.value.risk = updatedRes.current_risk ?? currentState.value.risk
-        currentState.value.clarity = updatedRes.current_clarity ?? currentState.value.clarity
+        if (Array.isArray(updatedRes.scene_roles) && updatedRes.scene_roles.length) {
+          sceneRoles.value = updatedRes.scene_roles
+        }
         if (updatedRes.current_stage !== caseInfo.currentStage) {
           const oldStage = caseInfo.currentStage
           caseInfo.currentStage = updatedRes.current_stage
@@ -1021,40 +1013,6 @@ onMounted(fetchSessionData)
 }
 
 /* scene-role styles consolidated in sidebar block below */
-
-.state-debug-panel {
-  border: 1px dashed #c9d4e3;
-  background: #f8fafc;
-}
-
-.state-debug-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.state-debug-tag {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  background: #e8f0fe;
-  color: #1d3557;
-  font-weight: 600;
-}
-
-.state-debug-hint {
-  font-size: 11px;
-  color: #64748b;
-  line-height: 1.45;
-  margin: 0;
-}
-
-.state-debug-meta {
-  font-size: 10px;
-  color: #94a3b8;
-  margin: 6px 0 0;
-}
 
 .scene-session-bar {
   display: flex;
@@ -1847,7 +1805,14 @@ onMounted(fetchSessionData)
 .scene-role-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+}
+
+.scene-role-stack {
+  border: 1px solid var(--police-border);
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
 }
 
 .scene-role-card {
@@ -1858,8 +1823,8 @@ onMounted(fetchSessionData)
   min-height: 44px;
   width: 100%;
   padding: 8px 10px;
-  border: 1px solid var(--police-border);
-  border-radius: 8px;
+  border: 0;
+  border-radius: 0;
   background: #fff;
   text-align: left;
   cursor: pointer;
@@ -1870,23 +1835,19 @@ onMounted(fetchSessionData)
 }
 
 .scene-role-card:hover:not(:disabled) {
-  border-color: #93c5fd;
   background: var(--police-primary-light);
 }
 
 .scene-role-card--selected {
-  border-color: #2563eb;
   background: #eff6ff;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+  box-shadow: inset 3px 0 0 #2563eb;
 }
 
 .scene-role-card--speaking {
-  border-color: #60a5fa;
   background: #f0f9ff;
 }
 
 .scene-role-card--thinking {
-  border-color: #93c5fd;
   background: #f8fafc;
 }
 
@@ -1930,6 +1891,91 @@ onMounted(fetchSessionData)
   background: #e2e8f0;
 }
 
+.role-state-table {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid #eef2f7;
+  background: #f8fafc;
+}
+
+.role-state-axis {
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.role-state-axis:nth-child(odd) {
+  border-right: 1px solid #e5eaf2;
+}
+
+.role-state-axis:nth-child(n + 3) {
+  border-top: 1px solid #e5eaf2;
+}
+
+.role-state-axis__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 3px;
+  font-size: 11px;
+  line-height: 1.25;
+  color: #64748b;
+}
+
+.role-state-axis__head > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.role-state-axis__values {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 4px;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.role-state-axis__head strong {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.role-state-track {
+  height: 5px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.role-state-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.24s ease;
+}
+
+.role-state-delta {
+  min-width: 20px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  text-align: right;
+}
+
+.role-state-delta--up {
+  color: #16a34a;
+}
+
+.role-state-delta--down {
+  color: #dc2626;
+}
+
+.role-state-delta--flat {
+  color: #94a3b8;
+}
+
 .scene-role-toggle {
   width: 100%;
   margin-top: 8px;
@@ -1945,48 +1991,6 @@ onMounted(fetchSessionData)
 
 .scene-role-toggle:hover {
   background: #eff6ff;
-}
-
-.state-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.state-cell {
-  padding: 8px 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.state-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-  font-size: 12px;
-}
-
-.state-label {
-  color: #64748b;
-}
-
-.state-num {
-  font-size: 15px;
-  font-weight: 700;
-}
-
-.progress-track {
-  height: 5px;
-  border-radius: 999px;
-  background: #e2e8f0;
-  overflow: hidden;
-}
-
-.progress-fill {
-  height: 100%;
-  border-radius: inherit;
 }
 
 .fact-count {
@@ -2815,10 +2819,6 @@ onMounted(fetchSessionData)
 
   .panel-scroll {
     max-height: none;
-  }
-
-  .state-grid {
-    grid-template-columns: 1fr;
   }
 
   .msg-body {

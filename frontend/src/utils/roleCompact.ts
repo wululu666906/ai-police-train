@@ -40,6 +40,12 @@ const archetypeDefaultPreset: Record<string, OpeningPresetValue> = {
   醉酒失控型: 'intoxicated_chaotic',
   绝望封闭型: 'withdrawn',
   围观起哄型: 'confrontational',
+  创伤受害型: 'emotional_venting',
+  精神危机型: 'intoxicated_chaotic',
+  利益算计型: 'defensive_evasive',
+  权威敏感型: 'confrontational',
+  沉默恐惧型: 'withdrawn',
+  过度依赖型: 'emotional_venting',
 }
 
 export const trainingFocusOptions = [

@@ -37,7 +37,7 @@ fi
 echo "[4/6] 构建并启动容器..."
 docker compose up -d --build app
 
-WEB_PORT="${WEB_PORT:-5175}"
+WEB_PORT="${WEB_PORT:-5555}"
 
 echo "[5/6] 等待服务就绪..."
 for _ in $(seq 1 30); do

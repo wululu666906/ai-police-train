@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -130,3 +130,122 @@ class Message(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     session = relationship("TrainingSession", back_populates="messages")
+
+
+class TrainingClass(Base):
+    __tablename__ = "training_classes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(120), nullable=False)
+    description = Column(Text, nullable=True)
+    invite_code = Column(String(32), unique=True, index=True, nullable=False)
+    muted = Column(Boolean, default=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    members = relationship("ClassMembership", back_populates="classroom", cascade="all, delete-orphan")
+    assignments = relationship("TrainingAssignment", back_populates="classroom", cascade="all, delete-orphan")
+    announcements = relationship("ClassAnnouncement", back_populates="classroom", cascade="all, delete-orphan")
+
+
+class ClassMembership(Base):
+    __tablename__ = "class_memberships"
+    __table_args__ = (UniqueConstraint("class_id", "user_id", name="uq_class_membership_user"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    class_id = Column(Integer, ForeignKey("training_classes.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    role = Column(String(20), default="student")
+    status = Column(String(20), default="active")
+    joined_at = Column(DateTime, default=datetime.utcnow)
+
+    classroom = relationship("TrainingClass", back_populates="members")
+    user = relationship("User")
+
+
+class TrainingAssignment(Base):
+    __tablename__ = "training_assignments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    class_id = Column(Integer, ForeignKey("training_classes.id"), nullable=False)
+    title = Column(String(160), nullable=False)
+    instructions = Column(Text, nullable=True)
+    scoring_rule = Column(Text, nullable=True)
+    status = Column(String(20), default="published")
+    allow_late = Column(Boolean, default=False)
+    published_at = Column(DateTime, default=datetime.utcnow)
+    due_at = Column(DateTime, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    classroom = relationship("TrainingClass", back_populates="assignments")
+    cases = relationship("TrainingAssignmentCase", back_populates="assignment", cascade="all, delete-orphan")
+    submissions = relationship("AssignmentSubmission", back_populates="assignment", cascade="all, delete-orphan")
+
+
+class TrainingAssignmentCase(Base):
+    __tablename__ = "training_assignment_cases"
+    __table_args__ = (UniqueConstraint("assignment_id", "case_id", name="uq_assignment_case"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    assignment_id = Column(Integer, ForeignKey("training_assignments.id"), nullable=False)
+    case_id = Column(Integer, ForeignKey("cases.id"), nullable=False)
+    sort_order = Column(Integer, default=0)
+
+    assignment = relationship("TrainingAssignment", back_populates="cases")
+    case = relationship("Case")
+
+
+class AssignmentSubmission(Base):
+    __tablename__ = "assignment_submissions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    assignment_id = Column(Integer, ForeignKey("training_assignments.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    case_id = Column(Integer, ForeignKey("cases.id"), nullable=False)
+    scene_id = Column(Integer, ForeignKey("scenes.id"), nullable=True)
+    training_session_id = Column(Integer, ForeignKey("training_sessions.id"), nullable=True)
+    status = Column(String(20), default="in_progress")
+    score = Column(Integer, nullable=True)
+    evaluation_result = Column(Text, nullable=True)
+    submitted_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    assignment = relationship("TrainingAssignment", back_populates="submissions")
+    user = relationship("User")
+    case = relationship("Case")
+    scene = relationship("Scene")
+    training_session = relationship("TrainingSession")
+
+
+class AssignmentStudentOverride(Base):
+    __tablename__ = "assignment_student_overrides"
+    __table_args__ = (UniqueConstraint("assignment_id", "user_id", name="uq_assignment_student_override"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    assignment_id = Column(Integer, ForeignKey("training_assignments.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    allow_late = Column(Boolean, nullable=True)
+    due_at = Column(DateTime, nullable=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    assignment = relationship("TrainingAssignment")
+    user = relationship("User")
+
+
+class ClassAnnouncement(Base):
+    __tablename__ = "class_announcements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    class_id = Column(Integer, ForeignKey("training_classes.id"), nullable=False)
+    title = Column(String(160), nullable=False)
+    content = Column(Text, nullable=True)
+    category = Column(String(30), default="notice")
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    classroom = relationship("TrainingClass", back_populates="announcements")
+    creator = relationship("User")

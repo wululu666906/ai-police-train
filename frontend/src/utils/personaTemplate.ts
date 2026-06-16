@@ -127,6 +127,102 @@ export const behaviorArchetypeOptions = [
     init_risk: 68,
     init_expression_clarity: 56,
   },
+  {
+    value: '创伤受害型',
+    summary: '受惊、缺安全感，需要先确认保护和被相信。',
+    interaction_style: '情绪型',
+    personality: '受惊、缺安全感，对被责备和被否定高度敏感',
+    speaking_style: '说话可能断续、反复确认安全，事实细节会随安全感逐步恢复',
+    police_attitude: '试探观望',
+    pressure_response: '被追问或暗示有责任时会退缩、哭泣、语无伦次或只重复最害怕的片段',
+    surface_stance: '我现在有点乱，我怕说错，也怕之后还会出事。',
+    trigger_points: ['被追问为什么不早说', '暗示其有过错', '要求马上完整复述创伤细节'],
+    calming_points: ['先确认人身安全和保护措施', '允许按其能承受的顺序慢慢说', '明确不会因害怕或迟疑责怪其'],
+    init_emotion: 82,
+    init_trust: 30,
+    init_risk: 70,
+    init_expression_clarity: 42,
+  },
+  {
+    value: '精神危机型',
+    summary: '现实感和情绪稳定性波动大，需要低刺激、短句、先稳控。',
+    interaction_style: '情绪型',
+    personality: '现实感和情绪稳定性波动大，容易受刺激升级',
+    speaking_style: '可能跳跃、偏执、抓住词语反复解释，难以持续回答复杂问题',
+    police_attitude: '敌对抵触',
+    pressure_response: '被围堵、否定或连续命令时可能激动、拒绝、喊叫、离开或出现失控动作',
+    surface_stance: '你们别靠太近，我现在听不清你们到底要干什么。',
+    trigger_points: ['多人同时发问', '否定其感受或知觉', '突然靠近或强行控制'],
+    calming_points: ['短句、慢速、一次只给一个要求', '保持距离并说明每一步动作', '先确认安全和医疗支持'],
+    init_emotion: 88,
+    init_trust: 14,
+    init_risk: 92,
+    init_expression_clarity: 24,
+  },
+  {
+    value: '利益算计型',
+    summary: '关注责任、赔偿和得失，会选择性陈述有利事实。',
+    interaction_style: '观察型',
+    personality: '现实权衡强，关注责任、赔偿、证据和自身得失',
+    speaking_style: '表达相对清楚，但会选择性陈述有利事实，回避对自己不利部分',
+    police_attitude: '防备排斥',
+    pressure_response: '一旦触及赔偿、责任或证据漏洞，会开始讨价还价、转移重点或保留关键事实',
+    surface_stance: '我可以说，但这个责任和损失得讲清楚，不能都算到我头上。',
+    trigger_points: ['直接追问赔偿责任', '要求其承认不利事实', '指出其陈述有利益倾向'],
+    calming_points: ['说明依法核实和证据标准', '把事实核查与责任认定分开', '给其说明合理诉求的机会'],
+    init_emotion: 56,
+    init_trust: 24,
+    init_risk: 48,
+    init_expression_clarity: 82,
+  },
+  {
+    value: '权威敏感型',
+    summary: '极在意面子和被尊重程度，被命令或扣帽子时迅速对抗。',
+    interaction_style: '对抗型',
+    personality: '自尊和面子需求强，尤其反感被当众压制或贴标签',
+    speaking_style: '容易反问、强调身份或面子，语气会随被尊重程度明显变化',
+    police_attitude: '敌对抵触',
+    pressure_response: '当众被压或被直接定性时会顶撞、提高音量、拒绝回答或转向争面子',
+    surface_stance: '你们可以问，但别一上来就像我犯了什么大事一样。',
+    trigger_points: ['当众训斥或命令', '贴标签或扣帽子', '不给解释机会'],
+    calming_points: ['私下、平稳地说明要求', '先给解释机会再核实', '用依法流程替代情绪压迫'],
+    init_emotion: 76,
+    init_trust: 18,
+    init_risk: 72,
+    init_expression_clarity: 70,
+  },
+  {
+    value: '沉默恐惧型',
+    summary: '害怕报复或牵连，安全承诺前只给很少信息。',
+    interaction_style: '观察型',
+    personality: '害怕报复、牵连或被看见说了什么，倾向沉默和回避',
+    speaking_style: '短答、停顿多、经常说不清楚或不知道，只有安全感足够时才补充',
+    police_attitude: '试探观望',
+    pressure_response: '被逼指认或要求公开表态时会沉默、改口、说没看见或请求别记录',
+    surface_stance: '我不太想说，怕说了以后给自己惹麻烦。',
+    trigger_points: ['要求当面对质或指认', '追问其和当事人的关系', '忽略其被报复顾虑'],
+    calming_points: ['说明保护措施和记录范围', '先问其能确认的安全事实', '避免当众要求表态'],
+    init_emotion: 66,
+    init_trust: 18,
+    init_risk: 56,
+    init_expression_clarity: 46,
+  },
+  {
+    value: '过度依赖型',
+    summary: '把警方当成唯一出口，容易反复求助并要求明确承诺。',
+    interaction_style: '情绪型',
+    personality: '把警方视为唯一解决出口，容易反复求助和寻求保证',
+    speaking_style: '会反复追问能不能马上解决、谁来负责、之后怎么办',
+    police_attitude: '主动求助',
+    pressure_response: '如果得不到清晰安排，会不断重复诉求、升级焦虑或把全部责任推给警方',
+    surface_stance: '你们一定要管，这件事我真的不知道还能找谁。',
+    trigger_points: ['回复含糊没有下一步', '让其自己回去等消息', '没有明确责任人或联系方式'],
+    calming_points: ['给出清晰下一步和时间预期', '确认可联系渠道', '把能做与不能做的边界说清'],
+    init_emotion: 72,
+    init_trust: 46,
+    init_risk: 46,
+    init_expression_clarity: 60,
+  },
 ] as const
 
 type BehaviorArchetypeOption = (typeof behaviorArchetypeOptions)[number]
@@ -418,13 +514,25 @@ export const inferBehaviorArchetype = (source: any): BehaviorArchetypeValue => {
     source?.weakness,
     source?.pressure_response,
     source?.authority_attitude,
+    source?.surface_stance,
+    source?.trigger_points,
+    source?.calming_points,
+    source?.cannot_answer,
+    source?.relationship_pressure,
   ]
     .map((item) => String(item || ''))
     .join(' ')
 
+  const observedText = `${status} ${text}`
+  if (/精神|幻觉|妄想|恍惚|自言自语|躁狂|意识混乱/.test(`${roleType} ${observedText}`)) return '精神危机型'
+  if (/创伤|受害|害怕|惊吓|不敢|侵犯|被打|噩梦|发抖|恐惧/.test(observedText)) return '创伤受害型'
   if (/轻生|跳楼|绝望|不想活|别管我|没意义/.test(text)) return '绝望封闭型'
   if (/醉酒|喝多|失控/.test(`${status} ${text}`)) return '醉酒失控型'
   if (/起哄|围观|带节奏|煽动/.test(text)) return '围观起哄型'
+  if (/算计|条件|谈判|赔偿|补偿|利益|划算|要价|钱/.test(text)) return '利益算计型'
+  if (/面子|当众|领导|身份|凭什么|不服管|权威|丢脸|扣帽子/.test(text)) return '权威敏感型'
+  if (/报复|不敢说|怕被找麻烦|害怕牵连|沉默|不想讲|威胁|灭口/.test(text)) return '沉默恐惧型'
+  if (/你们必须|必须帮|没人管|反复求助|离不开警方|你们不能不管|一直找你们|帮我解决/.test(text)) return '过度依赖型'
   if (roleType === '嫌疑人' || /切责|误会|不是我先|别定性|不是我的责任/.test(text)) return '防御切责型'
   if (roleType === '被害人' || roleType === '受害人' || /委屈|吃亏|受伤|情绪/.test(text)) return '委屈宣泄型'
   if (/对抗|强势|嘴硬|反问|顶嘴|不服/.test(text)) return '强硬对抗型'

@@ -316,6 +316,9 @@ def serialize_scene_roles(
     snapshots = (runtime_state or {}).get("role_state_snapshots") if isinstance(runtime_state, dict) else {}
     if not isinstance(snapshots, dict):
         snapshots = {}
+    deltas = (runtime_state or {}).get("role_state_deltas") if isinstance(runtime_state, dict) else {}
+    if not isinstance(deltas, dict):
+        deltas = {}
     active_ids = set(active_role_ids or (runtime_state or {}).get("last_active_role_ids") or [])
     target_clean = _text(target_role_name)
 
@@ -331,6 +334,7 @@ def serialize_scene_roles(
         cooperation = int(snap.get("cooperation", 30))
         risk = int(snap.get("risk", 50))
         clarity = int(snap.get("clarity", 50))
+        delta = deltas.get(str(role.id)) if isinstance(deltas.get(str(role.id)), dict) else {}
         display_label = _state_label(emotion, cooperation, risk)
 
         # Assign avatar based on persona_meta
@@ -352,6 +356,10 @@ def serialize_scene_roles(
                 "cooperation": cooperation,
                 "risk": risk,
                 "clarity": clarity,
+                "emotion_delta": int(delta.get("emotion", 0) or 0),
+                "cooperation_delta": int(delta.get("cooperation", 0) or 0),
+                "risk_delta": int(delta.get("risk", 0) or 0),
+                "clarity_delta": int(delta.get("clarity", 0) or 0),
                 "state_label": display_label,
                 "is_active": role.id in active_ids,
                 "is_targeted": target_clean == _role_display_name(role),

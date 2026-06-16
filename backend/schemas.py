@@ -119,6 +119,10 @@ class SceneRoleBrief(BaseModel):
     cooperation: Optional[int] = None
     risk: Optional[int] = None
     clarity: Optional[int] = None
+    emotion_delta: int = 0
+    cooperation_delta: int = 0
+    risk_delta: int = 0
+    clarity_delta: int = 0
     state_label: Optional[str] = None
     truth_stage: Optional[str] = None
     is_active: bool = False
