@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 import database
@@ -22,9 +22,16 @@ from services.ai_service import (
     generate_dialogue,
 )
 from services.evaluation_service import evaluate_session
+from services.classroom_service import (
+    link_session_to_assignment,
+    sync_assignment_submission_for_session,
+    validate_assignment_training_access,
+)
+from services.case_knowledge_service import try_sync_case_to_knowledge
 from services.persona_engine import build_persona_profile
 from services.recommended_questions_service import (
     build_recommended_question_items,
+    filter_stale_missing_requirements_for_history,
     serialize_message_history,
 )
 from services.multi_role_service import serialize_scene_roles
@@ -187,9 +194,17 @@ def _build_session_guidance(
         (repair_text(message.content) for message in reversed(messages) if message.role == "user"),
         "",
     )
+    recent_message_payload = serialize_message_history(messages)
     stage_config = _get_stage_config(scene, session.current_stage or "", case_type=case_type)
     custom_prompts = list(stage_config.get("recommended_prompts") or []) if stage_config else []
     scene_kind = infer_session_scene_kind(scene, session)
+    effective_missing_requirements = filter_stale_missing_requirements_for_history(
+        stage_coverage.get("missing") or [],
+        recent_messages=recent_message_payload,
+        revealed_info=revealed_info,
+        last_user_message=last_user_message,
+        use_intake_flow=scene_kind == "intake",
+    )
     recommended_question_items = build_recommended_question_items(
         current_stage=session.current_stage or "",
         current_stage_goal=stage_goal,
@@ -206,12 +221,12 @@ def _build_session_guidance(
         if scene
         else [],
         revealed_info=revealed_info,
-        missing_requirements=stage_coverage.get("missing") or [],
+        missing_requirements=effective_missing_requirements,
         truth_stage=truth_stage,
         emotion=session_emotion,
         cooperation=state_snapshot["cooperation"],
         last_user_message=last_user_message,
-        recent_messages=serialize_message_history(messages),
+        recent_messages=recent_message_payload,
         custom_prompts=custom_prompts,
         use_llm=bool(last_user_message or any(message.role == "assistant" for message in messages)),
     )
@@ -224,8 +239,8 @@ def _build_session_guidance(
         risk=state_snapshot["risk"],
         clarity=state_snapshot["clarity"],
     )
-    if stage_coverage["missing"]:
-        missing_preview = "、".join(stage_coverage["missing"][:3])
+    if effective_missing_requirements:
+        missing_preview = "、".join(effective_missing_requirements[:3])
         if last_user_message.strip():
             communication_feedback["message"] = f"继续补齐这些关键项会更稳：{missing_preview}。"
         else:
@@ -292,6 +307,10 @@ def _trigger_auto_evaluation_if_needed(
     if result.get("auto_finished"):
         report = evaluate_session(db, session_id, user_id)
         if report and "error" not in report:
+            try:
+                sync_assignment_submission_for_session(db, session_id, user_id, report)
+            except Exception as error:
+                print(f"Assignment submission sync failed: {error}")
             result["evaluation_ready"] = True
         else:
             result["evaluation_ready"] = False
@@ -301,6 +320,7 @@ def _trigger_auto_evaluation_if_needed(
 @router.post("/start/{scene_id}", response_model=schemas.Session)
 def start_training(
     scene_id: int,
+    assignment_id: int | None = Query(default=None),
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
@@ -308,6 +328,8 @@ def start_training(
         scene = db.query(models.Scene).filter(models.Scene.id == scene_id).first()
         if not scene:
             raise HTTPException(status_code=404, detail="Training scene not found")
+        if assignment_id is not None:
+            validate_assignment_training_access(db, assignment_id, current_user, scene_id)
 
         latest_session = (
             db.query(models.TrainingSession)
@@ -319,10 +341,19 @@ def start_training(
             .first()
         )
         case = db.query(models.Case).filter(models.Case.id == scene.case_id).first()
+        if case:
+            try_sync_case_to_knowledge(case)
         role = resolve_scene_role(db, scene, case)
         if latest_session and latest_session.status == "active":
             ensure_opening_turn(db, latest_session, scene, case, role)
+            if assignment_id is not None:
+                link_session_to_assignment(db, assignment_id, current_user, latest_session, scene)
             db.commit()
+            return _serialize_session_response(latest_session, role, case, scene)
+        if latest_session and latest_session.status == "evaluating":
+            if assignment_id is not None:
+                link_session_to_assignment(db, assignment_id, current_user, latest_session, scene)
+                db.commit()
             return _serialize_session_response(latest_session, role, case, scene)
         stage_config = _get_stage_config(scene, "", case_type=_get_case_type(case))
         initial_runtime_state = load_runtime_state([])
@@ -342,6 +373,8 @@ def start_training(
         db.commit()
         db.refresh(new_session)
         ensure_opening_turn(db, new_session, scene, case, role)
+        if assignment_id is not None:
+            link_session_to_assignment(db, assignment_id, current_user, new_session, scene)
         db.commit()
         db.refresh(new_session)
         return _serialize_session_response(new_session, role, case, scene)
@@ -380,10 +413,9 @@ def training_chat(
         detail = result.get("communication_feedback", {}).get("message") or "训练环境暂时无法响应，请稍后重试"
         raise HTTPException(status_code=502, detail=detail)
 
-    if current_user.role != "admin":
-        result.pop("state_contract", None)
-        result.pop("last_postcheck", None)
-        result.pop("state_influence_metrics", None)
+    result.pop("state_contract", None)
+    result.pop("last_postcheck", None)
+    result.pop("state_influence_metrics", None)
 
     return _trigger_auto_evaluation_if_needed(db, session_id, current_user.id, result)
 
@@ -549,7 +581,7 @@ def finish_training(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    get_owned_session(db, session_id, current_user.id)
+    session = get_owned_session(db, session_id, current_user.id)
 
     user_message_count = (
         db.query(models.Message)
@@ -559,11 +591,21 @@ def finish_training(
     if user_message_count <= 0:
         raise HTTPException(status_code=400, detail="At least one valid round of dialogue is required before finishing")
 
+    if session.status == "active":
+        session.status = "evaluating"
+        db.commit()
+
     report = evaluate_session(db, session_id, current_user.id)
     if not report:
         raise HTTPException(status_code=404, detail="Session not found")
     if report.get("error"):
+        session.status = "active"
+        db.commit()
         raise HTTPException(status_code=502, detail=report["error"])
+    try:
+        sync_assignment_submission_for_session(db, session_id, current_user.id, report)
+    except Exception as error:
+        print(f"Assignment submission sync failed: {error}")
     return report
 
 
@@ -588,6 +630,10 @@ def re_evaluate_training(
         raise HTTPException(status_code=404, detail="Session not found")
     if report.get("error"):
         raise HTTPException(status_code=502, detail=report["error"])
+    try:
+        sync_assignment_submission_for_session(db, session.id, current_user.id, report)
+    except Exception as error:
+        print(f"Assignment submission sync failed: {error}")
     return report
 
 
@@ -599,6 +645,9 @@ def delete_training_session(
 ):
     session = get_owned_session(db, session_id, current_user.id)
 
+    db.query(models.AssignmentSubmission).filter(
+        models.AssignmentSubmission.training_session_id == session.id
+    ).delete(synchronize_session=False)
     db.query(models.Message).filter(models.Message.session_id == session.id).delete(synchronize_session=False)
     db.delete(session)
     db.commit()
@@ -622,6 +671,9 @@ def delete_active_training_sessions(
     session_ids = [session.id for session in active_sessions]
 
     if session_ids:
+        db.query(models.AssignmentSubmission).filter(
+            models.AssignmentSubmission.training_session_id.in_(session_ids)
+        ).delete(synchronize_session=False)
         db.query(models.Message).filter(models.Message.session_id.in_(session_ids)).delete(synchronize_session=False)
         db.query(models.TrainingSession).filter(models.TrainingSession.id.in_(session_ids)).delete(synchronize_session=False)
         db.commit()

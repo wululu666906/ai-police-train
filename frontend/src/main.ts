@@ -27,6 +27,7 @@ const routes = [
       { path: 'roles', component: () => import('./views/Roles.vue') },
       { path: 'roles/new', component: () => import('./views/RoleEdit.vue') },
       { path: 'roles/:id/edit', component: () => import('./views/RoleEdit.vue') },
+      { path: 'classes', component: () => import('./views/AdminClasses.vue') },
       { path: 'students', component: () => import('./views/Students.vue') },
       { path: 'students/:id', component: () => import('./views/StudentProfile.vue') },
       { path: 'profile', component: () => import('./views/Profile.vue') }
@@ -40,10 +41,12 @@ const routes = [
     meta: { requiresAuth: true, roles: ['student', 'admin'] },
     children: [
       { path: 'hall', component: () => import('./views/StudentHall.vue') },
+      { path: 'classes', component: () => import('./views/StudentClasses.vue') },
       { path: 'history', component: () => import('./views/StudentHistory.vue') },
       { path: 'evaluation', component: () => import('./views/StudentEvaluation.vue') }
     ]
   },
+  { path: '/student/history/:id/dialogue', component: () => import('./views/StudentDialogueRecord.vue'), meta: { requiresAuth: true, roles: ['student', 'admin'] } },
   { path: '/student/training/:id', component: () => import('./views/StudentTraining.vue'), meta: { requiresAuth: true, roles: ['student', 'admin'] } },
 ]
 

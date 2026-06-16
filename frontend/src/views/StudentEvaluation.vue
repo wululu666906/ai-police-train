@@ -23,7 +23,13 @@
         </div>
       </header>
 
-      <div class="report-layout">
+      <section v-if="isLegacyReport" class="card legacy-state">
+        <h2>旧版评估报告</h2>
+        <p>当前记录仍是旧版固定维度报告。系统现在只使用 Adaptive V1 评估制度，请重新评估后查看新版报告。</p>
+        <el-button type="primary" :loading="refreshing" @click="refreshEvaluation">重新评估</el-button>
+      </section>
+
+      <div v-else class="report-layout">
         <aside class="summary-panel">
           <section class="card summary-card score-card">
             <h2>综合评分</h2>
@@ -36,26 +42,34 @@
           </section>
 
           <section class="card summary-card">
-            <h2>能力短板 TOP3</h2>
-            <div v-for="item in weakestScoreItems" :key="item.dimension" class="weakness-row">
-              <span>{{ item.dimension }}</span>
-              <strong>{{ item.score }}/{{ item.full_score }}</strong>
+            <h2>权重构成</h2>
+            <div class="closure-row">
+              <span>通用能力</span>
+              <strong>{{ percent(weighting.common_share) }}</strong>
+            </div>
+            <div class="closure-row">
+              <span>场景考察点</span>
+              <strong>{{ percent(weighting.assessment_share) }}</strong>
+            </div>
+            <div class="closure-row">
+              <span>必考命中率</span>
+              <strong>{{ percent(assessmentCompletion.required_rate) }}</strong>
             </div>
           </section>
 
           <section class="card summary-card">
-            <h2>训练收尾</h2>
-            <div class="closure-row">
-              <span>会话结果</span>
-              <strong>{{ reportMeta.passLabel }}</strong>
-            </div>
+            <h2>评估校准</h2>
             <div class="closure-row">
               <span>考察点完成度</span>
               <strong>{{ reportMeta.assessmentRate }}</strong>
             </div>
             <div class="closure-row">
-              <span>阶段完成</span>
-              <strong>{{ reportMeta.stageProgress }}</strong>
+              <span>总分上限</span>
+              <strong>{{ scoreCapLabel }}</strong>
+            </div>
+            <div class="closure-row">
+              <span>红线提示</span>
+              <strong>{{ redFlags.length ? `${redFlags.length} 项` : '无' }}</strong>
             </div>
             <el-button style="width: 100%" plain :loading="refreshing" @click="refreshEvaluation">重新评估</el-button>
           </section>
@@ -68,47 +82,31 @@
           </header>
 
           <section class="report-section">
-            <h3>一、训练概述</h3>
-            <div class="overview-table">
-              <div><span>案件名称：</span><strong>{{ reportMeta.caseTitle }}</strong></div>
-              <div><span>完成时间：</span><strong>{{ reportMeta.finishedAt }}</strong></div>
-              <div><span>训练场景：</span><strong>{{ reportMeta.sceneName }}</strong></div>
-              <div><span>评估方式：</span><strong>系统自动评估</strong></div>
-              <div><span>训练时长：</span><strong>{{ reportMeta.duration }}</strong></div>
-              <div><span>评估人：</span><strong>系统评估</strong></div>
+            <h3>一、综合评分</h3>
+            <p class="report-text">
+              {{ studentScoreIntro }}
+            </p>
+            <div v-if="studentNoticeItems.length" class="notice-list">
+              <p v-for="item in studentNoticeItems" :key="item">{{ item }}</p>
             </div>
           </section>
 
           <section class="report-section">
-            <h3>二、总体评价</h3>
-            <p class="report-text">{{ overallComment }}</p>
-          </section>
+            <h3>二、能力指标结果</h3>
+            <div class="score-grid">
+              <article v-for="item in commonScoreItems" :key="item.dimension" class="score-item">
+                <div class="score-item__head">
+                  <strong>{{ item.dimension }}</strong>
+                  <span>{{ item.score }}/{{ item.full_score }} 分</span>
+                </div>
+                <div class="score-bar"><i :style="{ width: scoreWidth(item) }"></i></div>
+                <p>{{ item.reason || '该项已纳入通用能力评估。' }}</p>
+              </article>
+            </div>
 
-          <section class="report-section">
-            <h3>三、评分结果</h3>
-            <p class="report-text">
-              综合得分 {{ report.total_score ?? 0 }} 分（满分 100 分），评定等级为 {{ reportHeader.gradeLevel }}。
-              {{ scoreSummary }}
-            </p>
-          </section>
-
-          <section class="report-section">
-            <h3>四、各维度评估</h3>
-            <table class="report-table">
-              <tbody>
-                <tr v-for="(item, index) in scoreItems" :key="item.dimension">
-                  <td class="col-index">{{ Number(index) + 1 }}.</td>
-                  <td>{{ item.dimension }}</td>
-                  <td>{{ item.reason || '该维度已纳入系统综合评估。' }}</td>
-                  <td class="col-score">{{ item.score }}/{{ item.full_score }} 分</td>
-                </tr>
-              </tbody>
-            </table>
-          </section>
-
-          <section v-if="assessmentPointResults.length" class="report-section">
-            <h3>五、考察点完成情况</h3>
-            <div class="assessment-summary">
+            <div v-if="assessmentPointResults.length" class="assessment-block">
+              <h4>场景考察点</h4>
+              <div class="assessment-summary">
               <div>
                 <span>已命中</span>
                 <strong>{{ assessmentStats.hit }}</strong>
@@ -125,44 +123,83 @@
                 <span>完成度</span>
                 <strong>{{ reportMeta.assessmentRate }}</strong>
               </div>
-            </div>
-            <p class="report-text assessment-note">
-              系统已对 {{ assessmentStats.total }} 项考察点完成情况进行归并统计。为保持报告简洁，正文仅列出需要重点关注的未完成或部分完成事项。
-            </p>
-            <table v-if="keyAssessmentItems.length" class="report-table compact-table">
-              <tbody>
-                <tr v-for="item in keyAssessmentItems" :key="`${item.stage_name}-${item.id}-${item.label}`">
-                  <td>{{ item.label }}</td>
-                  <td>{{ item.stage_name || '综合阶段' }}</td>
-                  <td class="col-score">{{ statusLabel(item.status) }}</td>
-                </tr>
-              </tbody>
-            </table>
-            <p v-else class="all-clear-text">本次训练关键考察点均已达到要求。</p>
-            <details v-if="dedupedAssessmentPointResults.length > keyAssessmentItems.length" class="detail-collapse">
-              <summary>查看全部考察点明细（{{ dedupedAssessmentPointResults.length }} 项）</summary>
-              <table class="report-table compact-table">
+              </div>
+              <p class="report-text assessment-note">
+                系统已对 {{ assessmentStats.total }} 项考察点按数量、难度和必考属性动态分配分值。场景未配置的专项能力不会作为固定维度扣分。
+              </p>
+              <table class="report-table compact-table assessment-table">
+                <thead>
+                  <tr>
+                    <th>考察点</th>
+                    <th>难度</th>
+                    <th>属性</th>
+                    <th>状态</th>
+                    <th>权重</th>
+                    <th>得分</th>
+                  </tr>
+                </thead>
                 <tbody>
-                  <tr v-for="item in dedupedAssessmentPointResults" :key="`all-${item.stage_name}-${item.id}-${item.label}`">
-                    <td>{{ item.label }}</td>
-                    <td>{{ item.stage_name || '综合阶段' }}</td>
-                    <td class="col-score">{{ statusLabel(item.status) }}</td>
+                  <tr v-for="item in dedupedAssessmentPointResults" :key="assessmentPointKey(item)">
+                    <td>
+                      <strong>{{ item.label }}</strong>
+                      <p :title="assessmentPointContent(item)">{{ assessmentPointContent(item) }}</p>
+                    </td>
+                    <td>{{ item.difficulty_level || difficultyFromWeight(item.weight) }}</td>
+                    <td>{{ item.required ? '必考' : '选考' }}</td>
+                    <td>{{ statusLabel(item.status) }}</td>
+                    <td>{{ percent(item.score_share) }}</td>
+                    <td class="col-score">{{ item.weighted_score ?? item.score }}/{{ item.full_score ?? '-' }}</td>
                   </tr>
                 </tbody>
               </table>
-            </details>
+            </div>
           </section>
 
           <section class="report-section">
-            <h3>{{ assessmentPointResults.length ? '六' : '五' }}、改进建议</h3>
-            <ul class="report-list">
-              <li v-for="item in finalImprovementItems" :key="item">{{ item }}</li>
+            <h3>三、综合点评</h3>
+            <div class="commentary-box">
+              <p>{{ enhancedOverallComment }}</p>
+            </div>
+          </section>
+
+          <section class="report-section">
+            <h3>四、反馈建议</h3>
+            <ul class="report-list advice-list">
+              <li v-for="item in actionableAdviceItems" :key="item">{{ item }}</li>
             </ul>
           </section>
 
           <section class="report-section">
-            <h3>{{ assessmentPointResults.length ? '七' : '六' }}、综合点评</h3>
-            <p class="report-text">{{ report.suggestions || overallComment }}</p>
+            <h3>五、对话分析</h3>
+            <div v-if="deductionDialogueItems.length" class="dialogue-analysis-list">
+              <article v-for="item in deductionDialogueItems" :key="item.key" class="dialogue-analysis-card">
+                <div class="dialogue-analysis-card__utterance">
+                  <span>学员发言</span>
+                  <p>{{ item.utterance }}</p>
+                </div>
+                <div>
+                  <strong>问题说明</strong>
+                  <p>{{ item.reason }}</p>
+                </div>
+                <div>
+                  <strong>改进建议</strong>
+                  <p>{{ item.advice }}</p>
+                </div>
+              </article>
+            </div>
+            <p v-else class="all-clear-text">本次报告未识别到需要单独展开的扣分发言，可重点查看能力指标结果。</p>
+          </section>
+
+          <section class="report-section report-section--supplement">
+            <h3>六、训练概述</h3>
+            <div class="overview-table">
+              <div><span>案件名称：</span><strong>{{ reportMeta.caseTitle }}</strong></div>
+              <div><span>完成时间：</span><strong>{{ reportMeta.finishedAt }}</strong></div>
+              <div><span>训练场景：</span><strong>{{ reportMeta.sceneName }}</strong></div>
+              <div><span>评估方式：</span><strong>系统自动评估</strong></div>
+              <div><span>训练时长：</span><strong>{{ reportMeta.duration }}</strong></div>
+              <div><span>评估人：</span><strong>系统评估</strong></div>
+            </div>
           </section>
         </main>
       </div>
@@ -211,24 +248,95 @@ const safeParse = <T>(value: any, fallback: T): T => {
   }
 }
 
+const isAdaptiveReport = computed(() => report.value?.evaluation_meta?.scoring_version === 'adaptive_v1')
+const isLegacyReport = computed(() => {
+  if (!report.value) return false
+  if (isAdaptiveReport.value) return false
+  return Array.isArray(report.value?.scores) && report.value.scores.length > 0
+})
 const scoreItems = computed(() => (Array.isArray(report.value?.scores) ? report.value.scores : []))
+const commonScoreItems = computed(() => scoreItems.value.filter((item: any) => item?.group === 'common'))
 const improvementItems = computed(() => (Array.isArray(report.value?.improvements) ? report.value.improvements : []))
 const assessmentPointResults = computed(() =>
   Array.isArray(report.value?.assessment_point_results) ? report.value.assessment_point_results : [],
 )
+const normalizeAssessmentPointText = (value: any) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/（.*?）|\(.*?\)/g, '')
+    .split(/怎样算完成|具体要求|回放时|回放训练/)[0]
+    .replace(/[\s，。！？、；：“”‘’（）()《》【】[\]{}<>.,!?;:'"`~@#$%^&*\-_=+|\\/]+/g, '')
+
+const assessmentPointKey = (item: any) => {
+  const semantic = `${normalizeAssessmentPointText(item?.label)}__${normalizeAssessmentPointText(assessmentPointContent(item))}`
+  return `semantic:${semantic}`
+}
+
+const assessmentTextSimilarity = (left: string, right: string) => {
+  if (!left && !right) return 1
+  if (!left || !right) return 0
+  const leftSet = new Set(left.split(''))
+  const rightSet = new Set(right.split(''))
+  const intersection = [...leftSet].filter((char) => rightSet.has(char)).length
+  const union = new Set([...leftSet, ...rightSet]).size || 1
+  return intersection / union
+}
+
+const isSameAssessmentPoint = (left: any, right: any) => {
+  const leftId = String(left?.id || '').trim()
+  const rightId = String(right?.id || '').trim()
+  if (leftId && rightId && leftId === rightId) return true
+
+  const leftLabel = normalizeAssessmentPointText(left?.label)
+  const rightLabel = normalizeAssessmentPointText(right?.label)
+  if (!leftLabel || leftLabel !== rightLabel) return false
+
+  const leftContent = normalizeAssessmentPointText(assessmentPointContent(left))
+  const rightContent = normalizeAssessmentPointText(assessmentPointContent(right))
+  if (!leftContent || !rightContent) return true
+  if (leftContent.includes(rightContent) || rightContent.includes(leftContent)) return true
+  return assessmentTextSimilarity(leftContent, rightContent) >= 0.72
+}
+
+const assessmentPointQuality = (item: any) => {
+  let score = 0
+  if (normalizeAssessmentPointText(assessmentPointContent(item))) score += 4
+  if (Array.isArray(item?.keywords) && item.keywords.length) score += 2
+  if (String(item?.id || '').trim()) score += 1
+  if (item?.weight !== undefined && item?.weight !== null) score += 1
+  if (item?.required !== undefined && item?.required !== null) score += 1
+  return score
+}
+
+const mergeAssessmentPointForDisplay = (current: any, incoming: any, rank: Record<string, number>) => {
+  const preferred = assessmentPointQuality(incoming) > assessmentPointQuality(current) ? incoming : current
+  const other = preferred === incoming ? current : incoming
+  const bestStatusItem = (rank[incoming?.status] ?? 0) > (rank[current?.status] ?? 0) ? incoming : current
+  return {
+    ...other,
+    ...preferred,
+    status: bestStatusItem?.status,
+    score: bestStatusItem?.score ?? preferred?.score,
+    weighted_score: bestStatusItem?.weighted_score ?? preferred?.weighted_score,
+    evidence: Array.from(new Set([...(current?.evidence || []), ...(incoming?.evidence || [])])),
+  }
+}
+
 const dedupedAssessmentPointResults = computed(() => {
-  const rank: Record<string, number> = { miss: 0, partial: 1, hit: 2 }
-  const map = new Map<string, any>()
+  const rank: Record<string, number> = { miss: 0, missed: 0, partial: 1, hit: 2 }
+  const items: any[] = []
   for (const item of assessmentPointResults.value) {
     const label = String(item?.label || '').replace(/（.*?）|\(.*?\)/g, '').trim()
-    const stageName = String(item?.stage_name || '综合阶段').trim()
-    const key = `${label}__${stageName}`
-    const current = map.get(key)
-    if (!current || (rank[item?.status] ?? 0) < (rank[current?.status] ?? 0)) {
-      map.set(key, { ...item, label: label || item?.label || '未命名考察点', stage_name: stageName })
+    const normalizedItem = { ...item, label: label || item?.label || '未命名考察点' }
+    const index = items.findIndex((current) => isSameAssessmentPoint(current, normalizedItem))
+    if (index < 0) {
+      items.push(normalizedItem)
+    } else {
+      items[index] = mergeAssessmentPointForDisplay(items[index], normalizedItem, rank)
     }
   }
-  return Array.from(map.values())
+  return items
 })
 const assessmentStats = computed(() => {
   const items = dedupedAssessmentPointResults.value
@@ -237,14 +345,15 @@ const assessmentStats = computed(() => {
   const missed = items.filter((item: any) => item.status !== 'hit' && item.status !== 'partial').length
   return { total: items.length, hit, partial, missed }
 })
-const keyAssessmentItems = computed(() => {
-  const statusOrder: Record<string, number> = { miss: 0, partial: 1, hit: 2 }
-  return dedupedAssessmentPointResults.value
-    .filter((item: any) => item.status !== 'hit')
-    .sort((a: any, b: any) => (statusOrder[a.status] ?? 0) - (statusOrder[b.status] ?? 0))
-    .slice(0, 6)
-})
 const canResumeTraining = computed(() => sessionDetail.value?.status === 'active' && Number(sessionDetail.value?.id) > 0)
+const weighting = computed(() => report.value?.evaluation_meta?.weighting || {})
+const assessmentCompletion = computed(() => report.value?.evaluation_meta?.assessment_completion || {})
+const scoreCaps = computed(() => Array.isArray(report.value?.evaluation_meta?.score_caps?.caps) ? report.value.evaluation_meta.score_caps.caps : [])
+const redFlags = computed(() => Array.isArray(report.value?.evaluation_meta?.red_flags) ? report.value.evaluation_meta.red_flags : [])
+const scoreCapLabel = computed(() => {
+  const cap = Number(report.value?.evaluation_meta?.score_caps?.final_cap)
+  return Number.isFinite(cap) && cap < 100 ? `${cap} 分` : '无'
+})
 
 const reportHeader = computed(() => {
   const meta = report.value?.evaluation_meta?.report_header || {}
@@ -261,9 +370,6 @@ const reportMeta = computed(() => {
   const sceneName = meta.scene_name || sessionDetail.value?.scene_name
   const createdAt = sessionDetail.value?.created_at || meta.created_at
   const finishedAt = meta.finished_at || report.value?.evaluated_at || sessionDetail.value?.updated_at || createdAt
-  const hitCount = assessmentStats.value.hit
-  const partialCount = assessmentStats.value.partial
-  const totalCount = assessmentStats.value.total
   const score = Number(report.value?.total_score || 0)
   return {
     caseTitle: caseTitle || '未知案件',
@@ -272,8 +378,8 @@ const reportMeta = computed(() => {
     finishedAt: formatDateTime(finishedAt),
     reportNo: `PES-${formatReportNo(finishedAt)}-${String(sessionDetail.value?.id || getSessionId() || 0).padStart(4, '0')}`,
     passLabel: score >= 60 ? '满足' : '未满足',
-    assessmentRate: totalCount ? `${Math.round(((hitCount + partialCount * 0.5) / totalCount) * 100)}%` : '暂无数据',
-    stageProgress: totalCount ? `${hitCount + partialCount}/${totalCount}` : '暂无数据',
+    assessmentRate: percent(assessmentCompletion.value.weight_rate),
+    stageProgress: assessmentStats.value.total ? `${assessmentStats.value.hit + assessmentStats.value.partial}/${assessmentStats.value.total}` : '暂无数据',
   }
 })
 
@@ -283,27 +389,269 @@ const weakestScoreItems = computed(() =>
     .slice(0, 3),
 )
 
+const negativeReasonTerms = ['不足', '未能', '未及时', '未充分', '未有效', '缺少', '缺乏', '缺失', '没有', '不够', '忽略', '欠缺', '遗漏', '薄弱', '短板', '问题', '风险', '扣分', '仍需', '需要加强', '追问不足', '识别不及时', '未完成', '部分完成']
+const positiveReasonTerms = ['礼貌', '克制', '清晰', '较好', '能够', '已', '充分', '到位', '有效', '完整', '稳定', '未出现压迫', '未出现激化', '未出现明显']
+const weakLevelLabels = ['需改进', '不合格', '较弱', '薄弱', 'weak', 'poor', 'bad']
+
+const scoreRatio = (item: any) => Number(item?.score || 0) / Math.max(Number(item?.full_score || 1), 1)
+
+const removePositiveNegativePhrases = (value: string) =>
+  value
+    .replace(/未出现[^，。；、]*(压迫|激化|违规|明显问题|明显失误|对抗|抵触)/g, '')
+    .replace(/没有出现[^，。；、]*(压迫|激化|违规|明显问题|明显失误|对抗|抵触)/g, '')
+
+const hasNegativeReason = (value: any) => {
+  const text = removePositiveNegativePhrases(String(value || ''))
+  return negativeReasonTerms.some((term) => text.includes(term))
+}
+
+const isMostlyPositiveReason = (value: any) => {
+  const text = String(value || '')
+  if (!text) return false
+  return positiveReasonTerms.some((term) => text.includes(term)) && !hasNegativeReason(text)
+}
+
+const isIssueScoreItem = (item: any) => {
+  const ratio = scoreRatio(item)
+  const reason = String(item?.reason || '')
+  const level = String(item?.level || item?.grade || item?.status || '').toLowerCase()
+  if (Number(item?.score || 0) >= Number(item?.full_score || 0)) return false
+  if (isMostlyPositiveReason(reason)) return false
+  if (hasNegativeReason(reason)) return true
+  if (weakLevelLabels.some((label) => level.includes(label.toLowerCase()))) return true
+  return ratio <= 0.75
+}
+
+const weakCommonScoreItems = computed(() =>
+  commonScoreItems.value
+    .filter(isIssueScoreItem)
+    .sort((a: any, b: any) => scoreRatio(a) - scoreRatio(b)),
+)
+
+const weakAssessmentItems = computed(() =>
+  assessmentPointResults.value.filter((item: any) => item.status !== 'hit').slice(0, 5),
+)
+
+const studentMessages = computed(() =>
+  (Array.isArray(sessionDetail.value?.messages) ? sessionDetail.value.messages : [])
+    .filter((message: any) => message?.role === 'user' && String(message?.content || '').trim())
+    .map((message: any) => String(message.content || '').trim()),
+)
+
 const scoreSummary = computed(() => {
   const score = Number(report.value?.total_score || 0)
-  if (score >= 90) return '训练表现稳定，流程完整，能够较好完成关键事实查明和现场处置要求。'
-  if (score >= 75) return '训练基本达标，但在细节追问、证据固定或法律依据表达方面仍需继续巩固。'
-  if (score >= 60) return '训练达到基础要求，但关键环节存在遗漏，需要强化规范语言和闭环处置。'
-  return '训练未达到预期标准，需重点补强事实核查、证据意识、程序规范和风险控制能力。'
+  if (score >= 90) return '通用能力稳定，场景考察点覆盖充分，可进入更高难度训练。'
+  if (score >= 75) return '训练基本达标，仍需针对未命中考察点和薄弱通用能力继续巩固。'
+  if (score >= 60) return '训练达到基础要求，但关键考察点或闭环表达仍存在明显缺口。'
+  return '训练未达到预期标准，需先补齐必考点，再强化主动追问和处置收尾。'
+})
+
+const studentScoreIntro = computed(() => {
+  const score = Number(report.value?.total_score || 0)
+  const grade = reportHeader.value.gradeLevel
+  const result = score >= 60 ? '已达到本次训练的基础要求' : '暂未达到本次训练的预期要求'
+  const action = score >= 75
+    ? '建议继续巩固薄弱环节，提升处置完整度。'
+    : score >= 60
+      ? '建议重点复盘关键事实核查、主动追问和收尾表达。'
+      : '建议先补齐关键处置点，再强化主动追问和处置收尾。'
+  return `综合得分 ${score} 分（满分 100 分），评定等级为 ${grade}。本次训练${result}，${action}`
+})
+
+const formatStudentNotice = (value: any, type = '重点提醒') => {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const text = raw
+    .replace(/必考点\s*hit\s*率低于\s*\d+%?/gi, '必考处置点完成不足')
+    .replace(/hit\s*率/gi, '完成情况')
+    .replace(/总分上限\s*\d+\s*分/g, '')
+    .replace(/上限|校准|红线/g, '')
+    .replace(/[，,。；;：:]\s*$/g, '')
+  if (text.includes('人身风险') || text.includes('伤情') || text.includes('紧急')) {
+    return `${type}：${text}，后续应优先确认人员安全、伤情情况和危险是否仍在持续。`
+  }
+  if (text.includes('必考') || text.includes('完成不足')) {
+    return `${type}：${text}，后续需优先补齐关键问询和必要处置动作。`
+  }
+  return `${type}：${text}。`
+}
+
+const studentNoticeItems = computed(() => {
+  const items = [
+    ...scoreCaps.value.map((item: any) => formatStudentNotice(item?.reason, '重点提醒')),
+    ...redFlags.value.map((item: any) => formatStudentNotice(item?.label, '风险提醒')),
+  ].filter(Boolean)
+  return Array.from(new Set(items)).slice(0, 4)
 })
 
 const overallComment = computed(() => {
   const strengths = Array.isArray(report.value?.strengths) ? report.value.strengths : []
   const improvements = finalImprovementItems.value
   if (strengths.length || improvements.length) {
-    return `学员在本次训练中${strengths.length ? `表现出${strengths.join('、')}等优点` : '能够完成部分基础处置动作'}，但在${improvements.slice(0, 3).join('、')}等方面仍需加强。建议后续围绕接警核实、现场稳控、证据固定和依法告知开展针对性训练。`
+    return `学员在本次训练中${strengths.length ? `表现出${strengths.join('、')}等优点` : '能够完成部分基础处置动作'}，但在${improvements.slice(0, 3).join('、')}等方面仍需加强。建议后续按通用能力和本场景考察点逐项复训。`
   }
   return scoreSummary.value
+})
+
+const enhancedOverallComment = computed(() => {
+  const score = Number(report.value?.total_score || 0)
+  const strengths = Array.isArray(report.value?.strengths) ? report.value.strengths.filter(Boolean).slice(0, 3) : []
+  const weakDimensions = weakCommonScoreItems.value.map((item: any) => item.dimension).slice(0, 3)
+  const weakPoints = weakAssessmentItems.value.map((item: any) => item.label).filter(Boolean).slice(0, 3)
+  const findings = Array.isArray(report.value?.evaluation_meta?.rule_findings) ? report.value.evaluation_meta.rule_findings : []
+  const findingText = findings.map((item: any) => item?.message).filter(Boolean).slice(0, 2)
+
+  const performance = score >= 85
+    ? '本次训练整体表现较稳，能够较好完成场景推进和关键要求。'
+    : score >= 70
+      ? '本次训练整体达到基本要求，但处置链条中仍有若干关键环节不够充分。'
+      : score >= 60
+        ? '本次训练达到基础通过线，但关键事实核查、表达组织或闭环处置仍存在明显短板。'
+        : '本次训练未达到预期标准，学员需要先补齐场景必考点，再提升问询推进和处置收束质量。'
+
+  const strengthText = strengths.length
+    ? `主要优点是${strengths.join('；')}。`
+    : '本次训练可作为基础复盘样本，后续应重点提升稳定性和完整性。'
+  const lossText = [
+    weakDimensions.length ? `主要失分集中在${weakDimensions.join('、')}` : '',
+    weakPoints.length ? `场景考察点中${weakPoints.join('、')}完成不足` : '',
+    findingText.length ? findingText.join('；') : '',
+  ].filter(Boolean).join('；')
+  const direction = actionableAdviceItems.value.slice(0, 2).join('；')
+
+  return `${performance}${strengthText}${lossText ? `失分原因主要包括：${lossText}。` : ''}${direction ? `后续改进方向：${direction}` : '后续建议围绕薄弱能力项开展针对性复训。'}`
 })
 
 const finalImprovementItems = computed(() => {
   if (improvementItems.value.length) return improvementItems.value
   return weakestScoreItems.value.map((item: any) => `加强${item.dimension}训练，提升该环节处置质量。`)
 })
+
+const makeActionableAdvice = (text: string) => {
+  const value = String(text || '').trim()
+  if (!value) return ''
+  if (value.includes('情绪') || value.includes('安抚') || value.includes('抵触')) {
+    return '面对情绪激动或抵触对象时，应先表达理解并降低对抗感，再进入事实询问，例如先说明“我理解您现在着急，我们先确认安全和经过”。'
+  }
+  if (value.includes('地点') || value.includes('时间') || value.includes('身份') || value.includes('人物') || value.includes('关系')) {
+    return `围绕“${value.replace(/^必考点未完成：/, '')}”建立固定追问顺序，优先核实时间、地点、身份关系和事件经过，避免只停留在笼统问询。`
+  }
+  if (value.includes('风险') || value.includes('伤情') || value.includes('安全')) {
+    return '出现纠纷升级、伤情或安全隐患时，应先确认是否有人受伤、危险是否持续、是否需要增援或急救，再继续了解经过。'
+  }
+  if (value.includes('证据') || value.includes('现场') || value.includes('动作')) {
+    return '现场类训练中应同步体现证据意识，及时提示保护现场、固定客观材料，并说明下一步核查或处置动作。'
+  }
+  if (value.includes('闭环') || value.includes('收尾') || value.includes('总结')) {
+    return '结束前应复述已核实事实、确认双方诉求，并明确下一步处置安排，形成完整处置闭环。'
+  }
+  if (value.includes('追问') || value.includes('主动') || value.includes('逻辑')) {
+    return '每轮提问后应根据回答继续追问细节，按“事实确认-矛盾核实-风险判断-处置告知”的顺序推进。'
+  }
+  return value.length < 14 ? `针对“${value}”，请在下一轮训练中给出具体问法、处置动作和收尾确认。` : value
+}
+
+const actionableAdviceItems = computed(() => {
+  const rawItems = [
+    ...finalImprovementItems.value,
+    ...weakCommonScoreItems.value.map((item: any) => item.reason),
+    ...weakAssessmentItems.value.map((item: any) => item.feedback || item.content || item.label),
+  ]
+  const mapped = rawItems.map(makeActionableAdvice).filter(Boolean)
+  return Array.from(new Set(mapped)).slice(0, 6)
+})
+
+const stripSpeakerPrefix = (value: string) =>
+  String(value || '').replace(/^(学员|民警|用户|user)[:：]\s*/i, '').trim()
+
+const normalizeDialogueText = (value: string) =>
+  stripSpeakerPrefix(value)
+    .replace(/\s+/g, '')
+    .replace(/[，。！？、；：“”"'.…,.!?;:]/g, '')
+    .toLowerCase()
+
+const findUtteranceFromEvidence = (evidence: any[]) => {
+  const candidates = (Array.isArray(evidence) ? evidence : [])
+    .map((item) => stripSpeakerPrefix(String(item || '')))
+    .filter(Boolean)
+  for (const candidate of candidates) {
+    const matched = studentMessages.value.find((message: string) => message.includes(candidate) || candidate.includes(message))
+    if (matched) return matched
+    if (!candidate.startsWith('AI角色') && !candidate.startsWith('动作')) return candidate
+  }
+  return studentMessages.value[studentMessages.value.length - 1] || '未定位到具体学员发言'
+}
+
+const adviceForReason = (reason: string) => makeActionableAdvice(reason) || '建议将该问题改写为更具体、可执行的问法，并在下一轮训练中主动补齐。'
+
+const assessmentPointContent = (item: any) =>
+  String(
+    item?.content ||
+    item?.requirement ||
+    item?.description ||
+    item?.target ||
+    item?.assessment_target ||
+    item?.goal ||
+    '暂无考核目标',
+  ).trim()
+
+const deductionDialogueItems = computed(() => {
+  const items: Array<{ key: string; utterance: string; reason: string; advice: string }> = []
+  for (const score of weakCommonScoreItems.value) {
+    const reason = String(score.reason || `${score.dimension}存在不足。`)
+    if (!hasNegativeReason(reason) && scoreRatio(score) > 0.75) continue
+    items.push({
+      key: `score-${score.dimension}`,
+      utterance: findUtteranceFromEvidence(score.evidence || []),
+      reason,
+      advice: adviceForReason(reason),
+    })
+  }
+
+  for (const point of weakAssessmentItems.value) {
+    const label = String(point.label || '场景考察点')
+    const reason = point.status === 'partial'
+      ? `${label}仅部分完成：${point.feedback || point.content || '关键要素仍未补齐。'}`
+      : `${label}未有效完成：${point.feedback || point.content || '对话中未出现满足要求的问询或处置。'}`
+    items.push({
+      key: `point-${point.id || label}`,
+      utterance: findUtteranceFromEvidence(point.evidence || []),
+      reason,
+      advice: adviceForReason(`${label} ${reason}`),
+    })
+  }
+
+  const seenUtterances = new Set<string>()
+  const seenReasons = new Set<string>()
+  return items.filter((item) => {
+    const utteranceKey = normalizeDialogueText(item.utterance)
+    const reasonKey = normalizeDialogueText(item.reason).slice(0, 48)
+    if (!utteranceKey || utteranceKey === normalizeDialogueText('未定位到具体学员发言')) return false
+    if (seenUtterances.has(utteranceKey) || seenReasons.has(reasonKey)) return false
+    seenUtterances.add(utteranceKey)
+    seenReasons.add(reasonKey)
+    return true
+  }).slice(0, 6)
+})
+
+const percent = (value: any) => {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '暂无数据'
+  return `${Math.round(number * 100)}%`
+}
+
+const scoreWidth = (item: any) => {
+  const score = Number(item?.score || 0)
+  const fullScore = Math.max(Number(item?.full_score || 0), 1)
+  return `${Math.max(0, Math.min(100, Math.round((score / fullScore) * 100)))}%`
+}
+
+const difficultyFromWeight = (weight: any) => {
+  const value = Number(weight || 10)
+  if (value <= 10) return '低'
+  if (value >= 14) return '高'
+  return '中等'
+}
 
 const setEmptyState = (title: string, description: string) => {
   emptyState.value = { title, description }
@@ -476,6 +824,26 @@ onMounted(async () => {
 .empty-state span {
   font-size: 14px;
   color: #666;
+}
+
+.legacy-state {
+  display: grid;
+  gap: 12px;
+  max-width: 760px;
+  margin: 32px auto;
+  padding: 32px;
+}
+
+.legacy-state h2 {
+  margin: 0;
+  color: #111827;
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.legacy-state p {
+  margin: 0;
+  color: #334155;
 }
 
 .page-heading {
@@ -665,6 +1033,15 @@ onMounted(async () => {
   font-size: 15px;
 }
 
+.report-table th {
+  padding: 10px 12px;
+  border-bottom: 1px solid #cbd5e1;
+  color: #334155;
+  font-size: 13px;
+  text-align: left;
+  background: #f8fafc;
+}
+
 .report-table td {
   padding: 10px 12px;
   border-bottom: 1px solid #eef2f7;
@@ -731,6 +1108,168 @@ onMounted(async () => {
   line-height: 2;
 }
 
+.advice-list li + li {
+  margin-top: 8px;
+}
+
+.commentary-box {
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  padding: 16px 18px;
+  background: #f8fbff;
+}
+
+.commentary-box p {
+  margin: 0;
+  color: #0f172a;
+  font-size: 15px;
+  line-height: 2;
+  text-indent: 2em;
+}
+
+.assessment-block {
+  margin-top: 22px;
+}
+
+.assessment-block h4 {
+  margin: 0 0 12px;
+  color: #111827;
+  font-size: 17px;
+  font-weight: 900;
+}
+
+.dialogue-analysis-list {
+  display: grid;
+  gap: 14px;
+}
+
+.dialogue-analysis-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.dialogue-analysis-card__utterance {
+  border-left: 4px solid #165dff;
+  padding: 10px 12px;
+  border-radius: 0 8px 8px 0;
+  background: #f8fbff;
+}
+
+.dialogue-analysis-card span,
+.dialogue-analysis-card strong {
+  display: block;
+  margin-bottom: 5px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.dialogue-analysis-card p {
+  margin: 0;
+  color: #111827;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.report-section--supplement {
+  color: #475569;
+}
+
+.notice-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.notice-list p {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.score-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.score-item {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.score-item__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.score-item__head strong {
+  color: #111827;
+  font-weight: 900;
+}
+
+.score-item__head span {
+  color: #165dff;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.score-item p {
+  margin: 0;
+  color: #334155;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.score-bar {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5e7eb;
+}
+
+.score-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #165dff;
+}
+
+.evidence-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.evidence-list span {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #eef6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.evidence-list--table {
+  margin-top: 8px;
+}
+
 .assessment-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -767,6 +1306,56 @@ onMounted(async () => {
 .compact-table td {
   padding-top: 8px;
   padding-bottom: 8px;
+}
+
+.assessment-table th,
+.assessment-table td {
+  height: 92px;
+  overflow: hidden;
+}
+
+.assessment-table th:nth-child(1),
+.assessment-table td:nth-child(1) {
+  width: 42%;
+}
+
+.assessment-table th:nth-child(2),
+.assessment-table td:nth-child(2),
+.assessment-table th:nth-child(3),
+.assessment-table td:nth-child(3),
+.assessment-table th:nth-child(4),
+.assessment-table td:nth-child(4),
+.assessment-table th:nth-child(5),
+.assessment-table td:nth-child(5) {
+  width: 12%;
+  text-align: center;
+}
+
+.assessment-table th:nth-child(6),
+.assessment-table td:nth-child(6) {
+  width: 10%;
+  text-align: right;
+}
+
+.assessment-table td:first-child strong,
+.assessment-table td p {
+  display: -webkit-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+}
+
+.assessment-table td:first-child strong {
+  -webkit-line-clamp: 1;
+  color: #111827;
+}
+
+.assessment-table td p {
+  -webkit-line-clamp: 3;
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .all-clear-text {
@@ -837,7 +1426,8 @@ onMounted(async () => {
 
   .overview-table,
   .meta-strip,
-  .assessment-summary {
+  .assessment-summary,
+  .score-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -3,7 +3,7 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import and_, case, func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 import database
@@ -90,6 +90,7 @@ def get_student_cases(
             models.TrainingSession.id.label("session_id"),
             models.TrainingSession.scene_id.label("scene_id"),
             models.TrainingSession.status.label("status"),
+            models.TrainingSession.evaluation_result.label("evaluation_result"),
             func.coalesce(activity_subquery.c.message_count, 0).label("message_count"),
             func.coalesce(activity_subquery.c.user_message_count, 0).label("user_message_count"),
             func.coalesce(activity_subquery.c.assistant_message_count, 0).label("assistant_message_count"),
@@ -124,7 +125,7 @@ def get_student_cases(
     for row in session_rows:
         user_message_count = int(row.user_message_count or 0)
         assistant_message_count = int(row.assistant_message_count or 0)
-        is_empty_session = user_message_count == 0 and assistant_message_count == 0
+        is_empty_session = user_message_count == 0
 
         if is_empty_session:
             scene_stats[row.scene_id]["empty_session_count"] += 1
@@ -132,10 +133,24 @@ def get_student_cases(
             scene_stats[row.scene_id]["valid_train_count"] += 1
 
         if latest_session_id_by_scene.get(row.scene_id) == row.session_id:
+            evaluation_result = safe_json_loads(row.evaluation_result, {})
+            final_score = evaluation_result.get("total_score") if isinstance(evaluation_result, dict) else None
+            raw_status = str(row.status or "active").strip().lower()
+            if raw_status == "finished" and isinstance(evaluation_result, dict) and bool(evaluation_result):
+                training_status = "completed"
+            elif raw_status == "evaluating":
+                training_status = "evaluating"
+            elif raw_status == "active":
+                training_status = "in_progress"
+            else:
+                training_status = "not_started"
             latest_session_meta_by_scene[row.scene_id] = {
                 "status": row.status,
-                "active_session_id": row.session_id if row.status == "active" else None,
-                "active_session_is_empty": is_empty_session if row.status == "active" else False,
+                "training_status": training_status,
+                "active_session_id": row.session_id if raw_status in {"active", "evaluating"} else None,
+                "active_session_is_empty": is_empty_session if raw_status in {"active", "evaluating"} else False,
+                "finished_session_id": row.session_id if training_status == "completed" else None,
+                "final_score": final_score if training_status == "completed" else None,
             }
 
     results = []
@@ -159,9 +174,18 @@ def get_student_cases(
                         "name": repair_text(scene.name),
                         "difficulty": repair_text(scene.difficulty),
                         "description": repair_text(scene.description),
-                        "has_active_session": latest_session_meta_by_scene.get(scene.id, {}).get("status") == "active",
+                        "training_status": latest_session_meta_by_scene.get(scene.id, {}).get("training_status", "not_started"),
+                        "status_label": {
+                            "not_started": "未开始训练",
+                            "in_progress": "继续训练",
+                            "evaluating": "评估中",
+                            "completed": "已完成训练",
+                        }.get(latest_session_meta_by_scene.get(scene.id, {}).get("training_status", "not_started"), "未开始训练"),
+                        "has_active_session": latest_session_meta_by_scene.get(scene.id, {}).get("training_status") in {"in_progress", "evaluating"},
                         "active_session_id": latest_session_meta_by_scene.get(scene.id, {}).get("active_session_id"),
                         "active_session_is_empty": latest_session_meta_by_scene.get(scene.id, {}).get("active_session_is_empty", False),
+                        "finished_session_id": latest_session_meta_by_scene.get(scene.id, {}).get("finished_session_id"),
+                        "final_score": latest_session_meta_by_scene.get(scene.id, {}).get("final_score"),
                     }
                     for scene in case_scenes
                 ],
@@ -184,15 +208,12 @@ def get_student_history(
     page_size = min(max(page_size, 1), 50)
     offset = (page - 1) * page_size
     normalized_status = (status or "").strip().lower()
-    if normalized_status and normalized_status not in {"active", "finished"}:
+    if normalized_status and normalized_status not in {"active", "evaluating", "finished"}:
         raise HTTPException(status_code=400, detail="Unsupported history status filter")
 
     activity_subquery = build_message_activity_subquery(db)
 
-    is_empty_expr = and_(
-        func.coalesce(activity_subquery.c.user_message_count, 0) == 0,
-        func.coalesce(activity_subquery.c.assistant_message_count, 0) == 0,
-    )
+    is_empty_expr = func.coalesce(activity_subquery.c.user_message_count, 0) == 0
 
     base_query = (
         db.query(
@@ -221,6 +242,7 @@ def get_student_history(
     visible_query = base_query if include_empty else base_query.filter(~is_empty_expr)
     visible_non_empty_query = base_query.filter(~is_empty_expr)
     active_count = visible_non_empty_query.filter(models.TrainingSession.status == "active").count()
+    evaluating_count = visible_non_empty_query.filter(models.TrainingSession.status == "evaluating").count()
     finished_count = visible_non_empty_query.filter(models.TrainingSession.status == "finished").count()
 
     filtered_query = visible_query
@@ -262,7 +284,7 @@ def get_student_history(
                 "user_message_count": user_message_count,
                 "assistant_message_count": assistant_message_count,
                 "turn_count": user_message_count,
-                "is_empty_session": user_message_count == 0 and assistant_message_count == 0,
+                "is_empty_session": user_message_count == 0,
                 "revealed_info_count": revealed_info_count,
                 "final_emotion": row.final_emotion,
                 "final_trust": int((state_snapshot or {}).get("cooperation") or row.final_trust or 30),
@@ -284,8 +306,9 @@ def get_student_history(
         "has_more": page * page_size < total,
         "include_empty": include_empty,
         "status_filter": normalized_status or "all",
-        "visible_total_count": active_count + finished_count,
+        "visible_total_count": active_count + evaluating_count + finished_count,
         "active_count": active_count,
+        "evaluating_count": evaluating_count,
         "finished_count": finished_count,
         "hidden_empty_count": 0 if include_empty else empty_session_count,
         "empty_session_count": empty_session_count,

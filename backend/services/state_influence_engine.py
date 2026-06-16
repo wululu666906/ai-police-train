@@ -166,6 +166,74 @@ def _clamp_delta(value: Any, low: int | None = None, high: int | None = None) ->
     return max(low, min(high, numeric))
 
 
+def _persona_axis_modifiers(
+    momentum: dict[str, Any],
+    persona_profile: dict[str, Any] | None,
+) -> dict[str, int]:
+    persona_profile = persona_profile or {}
+    archetype = str(persona_profile.get("behavior_archetype") or "").strip()
+    tags = {str(item or "").strip() for item in (momentum.get("strategy_tags") or [])}
+    has_calm = bool(
+        tags.intersection({"soft_contact", "empathy_validation", "safety_reassurance", "procedural_explanation"})
+        or momentum.get("comfort_hits")
+    )
+    has_pressure = bool(
+        tags.intersection({"pressure", "hard_pressure", "labeling"})
+        or momentum.get("trigger_hits")
+        or str(momentum.get("pressure") or "") == "high"
+    )
+    has_process = bool(tags.intersection({"procedural_explanation", "fact_probe"}))
+    modifiers = {"emotion": 0, "cooperation": 0, "risk": 0, "clarity": 0}
+
+    if archetype == "创伤受害型":
+        if has_calm:
+            modifiers.update({"emotion": -3, "cooperation": 2, "risk": -3, "clarity": 2})
+        if has_pressure:
+            modifiers["emotion"] += 4
+            modifiers["cooperation"] -= 2
+            modifiers["risk"] += 3
+            modifiers["clarity"] -= 2
+    elif archetype == "精神危机型":
+        if has_calm:
+            modifiers.update({"emotion": -2, "cooperation": 1, "risk": -3, "clarity": 1})
+        if has_pressure:
+            modifiers["emotion"] += 5
+            modifiers["cooperation"] -= 3
+            modifiers["risk"] += 5
+            modifiers["clarity"] -= 3
+    elif archetype == "利益算计型":
+        if has_process:
+            modifiers.update({"cooperation": 2, "risk": -1, "clarity": 2})
+        if has_pressure:
+            modifiers["emotion"] += 2
+            modifiers["cooperation"] -= 3
+            modifiers["risk"] += 2
+    elif archetype == "权威敏感型":
+        if has_calm and not has_pressure:
+            modifiers.update({"emotion": -2, "cooperation": 2, "risk": -1})
+        if has_pressure:
+            modifiers["emotion"] += 4
+            modifiers["cooperation"] -= 5
+            modifiers["risk"] += 3
+    elif archetype == "沉默恐惧型":
+        if has_calm:
+            modifiers.update({"emotion": -2, "cooperation": 3, "risk": -3, "clarity": 2})
+        if has_pressure:
+            modifiers["emotion"] += 3
+            modifiers["cooperation"] -= 4
+            modifiers["risk"] += 2
+            modifiers["clarity"] -= 2
+    elif archetype == "过度依赖型":
+        if has_calm or has_process:
+            modifiers.update({"emotion": -3, "cooperation": 2, "risk": -2, "clarity": 2})
+        if tags.intersection({"too_short", "off_goal"}) and not has_process:
+            modifiers["emotion"] += 2
+            modifiers["cooperation"] -= 1
+            modifiers["risk"] += 1
+
+    return {axis: _clamp_delta(value, -6, 6) for axis, value in modifiers.items()}
+
+
 def compute_trigger_axis_deltas(
     user_message: str,
     recognized_actions: list[str] | None = None,
@@ -181,7 +249,16 @@ def compute_trigger_axis_deltas(
             deltas["clarity"] += int(rule.get("clarity", 0))
 
     for action in recognized_actions or []:
-        action_text = str(action or "").strip()
+        if isinstance(action, dict):
+            action_text = " ".join(
+                str(action.get(key) or "")
+                for key in ("label", "type", "name", "action", "id")
+            )
+            aliases = action.get("aliases")
+            if isinstance(aliases, list):
+                action_text = f"{action_text} {' '.join(str(item or '') for item in aliases)}"
+        else:
+            action_text = str(action or "").strip()
         for key, delta in _tables()["ACTION_DELTAS"].items():
             if key in action_text:
                 for axis, amount in delta.items():
@@ -196,18 +273,70 @@ def enrich_momentum_with_axis_deltas(
     momentum: dict[str, Any],
     user_message: str,
     recognized_actions: list[str] | None = None,
+    persona_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     enriched = dict(momentum or {})
     trigger = compute_trigger_axis_deltas(user_message, recognized_actions)
-    enriched["emotion_delta"] = _clamp_delta(int(enriched.get("emotion_delta", 0)) + trigger["emotion"])
+    persona_modifiers = _persona_axis_modifiers(enriched, persona_profile)
+    enriched["emotion_delta"] = _clamp_delta(
+        int(enriched.get("emotion_delta", 0)) + trigger["emotion"] + persona_modifiers["emotion"]
+    )
     enriched["cooperation_delta"] = _clamp_delta(
-        int(enriched.get("trust_delta", enriched.get("cooperation_delta", 0))) + trigger["cooperation"]
+        int(enriched.get("trust_delta", enriched.get("cooperation_delta", 0)))
+        + trigger["cooperation"]
+        + persona_modifiers["cooperation"]
     )
     enriched["trust_delta"] = enriched["cooperation_delta"]
-    enriched["risk_delta"] = _clamp_delta(int(enriched.get("risk_delta", 0)) + trigger["risk"])
-    enriched["clarity_delta"] = _clamp_delta(int(enriched.get("clarity_delta", 0)) + trigger["clarity"])
+    enriched["risk_delta"] = _clamp_delta(int(enriched.get("risk_delta", 0)) + trigger["risk"] + persona_modifiers["risk"])
+    enriched["clarity_delta"] = _clamp_delta(
+        int(enriched.get("clarity_delta", 0)) + trigger["clarity"] + persona_modifiers["clarity"]
+    )
     enriched["trigger_axis_deltas"] = trigger
+    enriched["persona_axis_modifiers"] = persona_modifiers
     return enriched
+
+
+def _deescalation_strength(momentum: dict[str, Any]) -> int:
+    tags = {str(item or "").strip() for item in (momentum.get("strategy_tags") or [])}
+    trigger = momentum.get("trigger_axis_deltas") if isinstance(momentum.get("trigger_axis_deltas"), dict) else {}
+    strength = 0
+    if tags.intersection({"soft_contact", "empathy_validation", "safety_reassurance", "procedural_explanation"}):
+        strength += 1
+    if momentum.get("rapport") == "warming":
+        strength += 1
+    if int(trigger.get("emotion", 0) or 0) <= -6 or int(momentum.get("emotion_delta", 0) or 0) <= -8:
+        strength += 1
+    if int(trigger.get("risk", 0) or 0) <= -6 or int(momentum.get("risk_delta", 0) or 0) <= -6:
+        strength += 1
+    if tags.intersection({"pressure", "hard_pressure", "labeling"}):
+        strength -= 2
+    if momentum.get("pressure") == "high" and strength < 3:
+        strength -= 1
+    return max(0, min(3, strength))
+
+
+def _apply_deescalation_floor(
+    axis: str,
+    *,
+    base: int,
+    target: int,
+    strength: int,
+) -> int:
+    if strength <= 0:
+        return target
+    if axis == "emotion" and base >= 65:
+        guaranteed_drop = (5, 8, 12)[strength - 1]
+        return min(target, base - guaranteed_drop)
+    if axis == "risk" and base >= 60:
+        guaranteed_drop = (4, 7, 10)[strength - 1]
+        return min(target, base - guaranteed_drop)
+    if axis == "cooperation" and base <= 70:
+        guaranteed_gain = (3, 5, 8)[strength - 1]
+        return max(target, base + guaranteed_gain)
+    if axis == "clarity" and base <= 70:
+        guaranteed_gain = (2, 3, 5)[strength - 1]
+        return max(target, base + guaranteed_gain)
+    return target
 
 
 def _match_combination(
@@ -241,8 +370,11 @@ def _match_combination(
 def build_state_contract(
     scores: dict[str, int],
     momentum: dict[str, Any] | None = None,
+    persona_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     momentum = momentum or {}
+    persona_profile = persona_profile or {}
+    archetype = str(persona_profile.get("behavior_archetype") or "").strip()
     emotion = clamp_score(scores.get("emotion"), 50)
     cooperation = clamp_score(scores.get("cooperation", scores.get("trust")), 30)
     risk = clamp_score(scores.get("risk"), 50)
@@ -337,6 +469,23 @@ def build_state_contract(
     elif rapport == "defensive":
         contract["disclosure_level"] = max(0.05, contract["disclosure_level"] - 0.1)
 
+    disclosure_caps = {
+        "防御切责型": (0.56, "即使被安抚，也优先给可核实的外围事实，不主动承担核心责任。"),
+        "强硬对抗型": (0.54, "态度缓和后可以回答具体问题，但仍会保留姿态，不突然完整交代。"),
+        "醉酒失控型": (0.42, "情绪下降也不代表逻辑完整，仍以短句、片段和边界管控为主。"),
+        "绝望封闭型": (0.48, "关系稳定后也只逐步表达牵挂和片段事实，不宜突然长篇自白。"),
+        "利益算计型": (0.52, "会选择性给出对自己有利或风险较低的信息，核心不利事实仍要被追问才松动。"),
+        "权威敏感型": (0.56, "被尊重后可有限配合，但仍会维护面子和自我解释，不直接全盘接受定性。"),
+        "沉默恐惧型": (0.46, "安全承诺出现前只给边缘信息；安抚后也要逐步问，不能突然完整指认。"),
+        "精神危机型": (0.36, "优先稳定和安全，事实披露必须片段化，避免长段清晰陈述。"),
+    }
+    if archetype in disclosure_caps:
+        cap, hint = disclosure_caps[archetype]
+        if rapport == "warming":
+            cap += 0.06
+        contract["disclosure_level"] = min(float(contract["disclosure_level"]), cap)
+        contract["role_boundary_hint"] = hint
+
     contract["disclosure_level"] = round(max(0.05, min(0.95, contract["disclosure_level"])), 2)
     contract["max_chars"] = max_chars_for_disclosure(contract["disclosure_level"])
     contract["strictness"] = contract_strictness(contract)
@@ -383,6 +532,8 @@ def format_state_contract_block(contract: dict[str, Any]) -> str:
         lines.append("- 允许打断、半句、重复核心不满")
     if int(contract.get("self_correction_min") or 0) > 0:
         lines.append(f"- 至少 {contract['self_correction_min']} 处口头自我纠正或改口")
+    if contract.get("role_boundary_hint"):
+        lines.append(f"- 人物边界：{contract['role_boundary_hint']}")
     return "\n".join(lines)
 
 
@@ -429,10 +580,21 @@ def blend_four_axis_state(
         "clarity": int(momentum.get("clarity_delta", 0)),
     }
 
+    deescalation_strength = _deescalation_strength(momentum)
     blended: dict[str, int] = {}
     for axis in ("emotion", "cooperation", "risk", "clarity"):
         target = proposed[axis] + deltas[axis]
+        target = _apply_deescalation_floor(
+            axis,
+            base=base[axis],
+            target=target,
+            strength=deescalation_strength,
+        )
         max_step = int(_tables()["MAX_DELTA_FROM_CURRENT"])
+        if deescalation_strength and axis in {"emotion", "risk"} and target < base[axis]:
+            max_step = max(max_step, 16)
+        if deescalation_strength and axis in {"cooperation", "clarity"} and target > base[axis]:
+            max_step = max(max_step, 14)
         step = _clamp_delta(target - base[axis], -max_step, max_step)
         blended[axis] = clamp_score(base[axis] + step, base[axis])
     return blended

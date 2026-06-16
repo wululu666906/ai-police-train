@@ -1,3 +1,4 @@
+import hashlib
 import os
 from typing import List, Optional
 from difflib import SequenceMatcher
@@ -11,6 +12,7 @@ BACKEND_DIR = os.path.dirname(SERVICES_DIR)
 _chroma_raw = os.getenv("CHROMA_DB_PATH", "chroma_db")
 CHROMA_DB_PATH = _chroma_raw if os.path.isabs(_chroma_raw) else os.path.join(BACKEND_DIR, _chroma_raw)
 COLLECTION_NAME = os.getenv("RAG_COLLECTION_NAME", "legal_knowledge_qwen")
+FALLBACK_EMBEDDING_DIMENSIONS = int(os.getenv("FALLBACK_EMBEDDING_DIMENSIONS", "1024"))
 
 
 class RAGService:
@@ -43,6 +45,41 @@ class RAGService:
                 f"model {get_embedding_model()}: {exc}"
             )
             raise
+
+    @staticmethod
+    def _fallback_embedding(text: str, dimensions: int = FALLBACK_EMBEDDING_DIMENSIONS) -> List[float]:
+        vector = [0.0] * dimensions
+        clean = str(text or "").strip()
+        if not clean:
+            vector[0] = 1.0
+            return vector
+
+        for token in clean.split():
+            digest = hashlib.sha256(token.encode("utf-8", errors="ignore")).digest()
+            index = int.from_bytes(digest[:4], "big") % dimensions
+            sign = 1.0 if digest[4] % 2 == 0 else -1.0
+            vector[index] += sign
+
+        if not any(vector):
+            for offset in range(0, min(len(clean), 256), 2):
+                digest = hashlib.sha256(clean[offset : offset + 2].encode("utf-8", errors="ignore")).digest()
+                index = int.from_bytes(digest[:4], "big") % dimensions
+                sign = 1.0 if digest[4] % 2 == 0 else -1.0
+                vector[index] += sign
+
+        norm = sum(value * value for value in vector) ** 0.5 or 1.0
+        return [value / norm for value in vector]
+
+    def _build_embeddings_or_fallback(self, texts: List[str]) -> List[List[float]]:
+        try:
+            return self._build_embeddings(texts)
+        except Exception as exc:
+            self.embedding_error = str(exc)
+            print(
+                "RAG upsert downgraded to deterministic fallback embeddings "
+                f"({FALLBACK_EMBEDDING_DIMENSIONS} dimensions)."
+            )
+            return [self._fallback_embedding(text) for text in texts]
 
     @staticmethod
     def _score_text_match(query: str, document: str) -> float:
@@ -117,6 +154,55 @@ class RAGService:
         )
         print(f"Added {len(texts)} documents to ChromaDB.")
         return ids
+
+    def upsert_documents(self, ids: List[str], texts: List[str], metadatas: List[dict] = None):
+        clean_rows = [
+            (str(item_id or "").strip(), str(text or "").strip(), metadata or {})
+            for item_id, text, metadata in zip(ids or [], texts or [], metadatas or [])
+            if str(item_id or "").strip() and str(text or "").strip()
+        ]
+        if not clean_rows:
+            return []
+
+        clean_ids = [row[0] for row in clean_rows]
+        clean_texts = [row[1] for row in clean_rows]
+        clean_metadatas = [row[2] for row in clean_rows]
+        embeddings = self._build_embeddings_or_fallback(clean_texts)
+        self.collection.upsert(
+            ids=clean_ids,
+            embeddings=embeddings,
+            documents=clean_texts,
+            metadatas=clean_metadatas,
+        )
+        print(f"Upserted {len(clean_texts)} documents to ChromaDB.")
+        return clean_ids
+
+    def delete_by_ids(self, ids: List[str]):
+        clean_ids = [str(item).strip() for item in ids or [] if str(item).strip()]
+        if clean_ids:
+            self.collection.delete(ids=clean_ids)
+
+    def get_documents_by_metadata(self, where: dict, limit: int | None = None) -> List[dict]:
+        kwargs = {"where": where, "include": ["documents", "metadatas"]}
+        if limit is not None:
+            kwargs["limit"] = limit
+        results = self.collection.get(**kwargs)
+        items: List[dict] = []
+        for index, item_id in enumerate(results.get("ids") or []):
+            metadata = (results.get("metadatas") or [{}])[index] or {}
+            content = (results.get("documents") or [""])[index] or ""
+            items.append(
+                {
+                    "id": item_id,
+                    "content": content,
+                    "source": metadata.get("source", "unknown"),
+                    "title": metadata.get("title") or self._default_title(content),
+                    "category": metadata.get("category") or "閫氱敤",
+                    "tags": self._normalize_tags(metadata.get("tags")),
+                    "metadata": metadata,
+                }
+            )
+        return items
 
     @staticmethod
     def _default_title(document: str) -> str:

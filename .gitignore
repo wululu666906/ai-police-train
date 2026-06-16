@@ -107,6 +107,9 @@ scripts/fix_edits_step1.py
 scripts/fix_parse.py
 scripts/replace_parse.py
 scripts/add_name_prompt.py
+scripts/do_push.py
+scripts/push_main.bat
+scripts/push_main.ps1
 
 # Word docs (design drafts)
 *.docx

@@ -29,6 +29,7 @@ DEFAULT_RUNTIME_STATE = {
         "clarity": 50,
     },
     "role_state_snapshots": {},
+    "role_state_deltas": {},
     "last_active_role_ids": [],
     "last_target_role_name": "",
     "state_influence_turn_log": [],
@@ -108,6 +109,36 @@ def _normalize_role_state_snapshots(value: Any) -> dict[str, dict[str, int]]:
     return snapshots
 
 
+def _clamp_delta(value: Any) -> int:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        numeric = 0
+    return max(-100, min(100, numeric))
+
+
+def _normalize_role_state_delta(value: Any) -> dict[str, int]:
+    value = value if isinstance(value, dict) else {}
+    return {
+        "emotion": _clamp_delta(value.get("emotion")),
+        "cooperation": _clamp_delta(value.get("cooperation")),
+        "risk": _clamp_delta(value.get("risk")),
+        "clarity": _clamp_delta(value.get("clarity")),
+    }
+
+
+def _normalize_role_state_deltas(value: Any) -> dict[str, dict[str, int]]:
+    if not isinstance(value, dict):
+        return {}
+    deltas: dict[str, dict[str, int]] = {}
+    for raw_key, raw_delta in value.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        deltas[key] = _normalize_role_state_delta(raw_delta)
+    return deltas
+
+
 def _normalize_role_id_list(value: Any) -> list[int]:
     result: list[int] = []
     seen: set[int] = set()
@@ -140,6 +171,7 @@ def load_runtime_state(raw_value: Any) -> dict[str, Any]:
     state["closure_summary"] = parsed.get("closure_summary") if isinstance(parsed.get("closure_summary"), dict) else {}
     state["state_snapshot"] = _normalize_state_snapshot(parsed.get("state_snapshot"))
     state["role_state_snapshots"] = _normalize_role_state_snapshots(parsed.get("role_state_snapshots"))
+    state["role_state_deltas"] = _normalize_role_state_deltas(parsed.get("role_state_deltas"))
     state["last_active_role_ids"] = _normalize_role_id_list(parsed.get("last_active_role_ids"))
     state["last_target_role_name"] = str(parsed.get("last_target_role_name") or "").strip()
     progress = parsed.get("assessment_progress")
@@ -167,6 +199,7 @@ def dump_runtime_state(state: dict[str, Any]) -> str:
         "closure_summary": (state or {}).get("closure_summary") or {},
         "state_snapshot": _normalize_state_snapshot((state or {}).get("state_snapshot")),
         "role_state_snapshots": _normalize_role_state_snapshots((state or {}).get("role_state_snapshots")),
+        "role_state_deltas": _normalize_role_state_deltas((state or {}).get("role_state_deltas")),
         "last_active_role_ids": _normalize_role_id_list((state or {}).get("last_active_role_ids")),
         "last_target_role_name": str((state or {}).get("last_target_role_name") or "").strip(),
     }

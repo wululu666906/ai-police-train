@@ -1,6 +1,8 @@
 import json
 import models
 import routers.training as training_router
+import services.ai_service as ai_service
+from services.training_runtime_service import dump_runtime_state, load_runtime_state
 
 
 class TestStartTraining:
@@ -102,6 +104,64 @@ class TestChat:
         )
         assert response.status_code == 502
         assert response.json()["detail"] == "当前系统响应异常，请稍后重试。"
+
+    def test_comforting_question_lowers_high_emotion_even_when_llm_keeps_it_high(
+        self,
+        client,
+        student_headers,
+        db_session,
+        monkeypatch,
+    ):
+        start_response = client.post("/training/start/1", headers=student_headers)
+        session_id = start_response.json()["id"]
+        session = db_session.query(models.TrainingSession).filter_by(id=session_id).first()
+        session.current_emotion = 86
+        session.current_trust = 35
+        runtime_state = load_runtime_state(session.revealed_info)
+        runtime_state["state_snapshot"] = {"cooperation": 35, "risk": 76, "clarity": 42}
+        session.revealed_info = dump_runtime_state(runtime_state)
+        db_session.commit()
+
+        monkeypatch.setattr(ai_service, "should_use_scene_conversation", lambda *args, **kwargs: False)
+
+        def fake_chat_completion(*args, **kwargs):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "response": "我还是很急，我现在就怕他们又打起来。",
+                                    "inner_thought": "还是紧张",
+                                    "updated_emotion": 88,
+                                    "updated_cooperation": 34,
+                                    "updated_risk": 78,
+                                    "updated_clarity": 42,
+                                    "new_fact_revealed": None,
+                                    "is_stage_completed": False,
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(ai_service, "create_json_chat_completion", fake_chat_completion)
+
+        response = client.post(
+            f"/training/chat/{session_id}",
+            json={"role": "user", "content": "你先别急，我理解你着急，民警已经在路上，你先到安全位置，我们一步一步处理。"},
+            headers=student_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["updated_emotion"] <= 78
+        assert data["updated_risk"] <= 69
+        assert data["updated_cooperation"] >= 40
+
+        client.request("DELETE", f"/training/session/{session_id}", headers=student_headers)
 
 
 class TestIntakeOpening:

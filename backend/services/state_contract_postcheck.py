@@ -58,14 +58,16 @@ def validate_response_against_contract(text: str, contract: dict[str, Any]) -> d
         issues.append("too_many_sentences_for_low_disclosure")
     if disclosure <= 0.35 and _TIMELINE_PATTERN.search(content):
         issues.append("timeline_forbidden_at_low_disclosure")
-    if primary in {"angry", "agitated", "fearful"} and len(content) > min(140, max_chars + 20):
+    if primary in {"angry", "agitated", "fearful"} and (
+        len(content) > min(140, max_chars + 20) or len(content) > 48 or sentence_count > max_sentences
+    ):
         issues.append("too_long_for_high_arousal")
     if float(contract.get("escalation_bias") or 0) >= 0.65 and len(content) > max_chars:
         issues.append("too_long_for_high_escalation")
     if primary in {"angry", "agitated"} and contract.get("interruption_allowed"):
         if not re.search(r"[？?！!]", content) and len(content) > 18:
             issues.append("missing_interrupt_markers")
-    if primary == "fearful" and not re.search(r"(不|没|怕|慌|记不清|不知道)", content):
+    if primary == "fearful" and not re.search(r"(不确定|不敢|害怕|怕|慌|记不清|不知道|怎么办)", content):
         issues.append("missing_fear_markers")
     if primary in {"cold", "guarded"} and disclosure <= 0.28 and len(content) > 48:
         issues.append("too_expansive_for_cold_guarded")
@@ -131,7 +133,7 @@ def _trim_to_contract(text: str, contract: dict[str, Any]) -> str:
     content = str(text or "").strip()
     if not content:
         return content
-    max_chars = int(contract.get("max_chars") or max_chars_for_disclosure(contract.get("disclosure_level")))
+    max_chars = int(contract.get("max_chars") or max_chars_for_disclosure(contract.get("disclosure_level") or 0.45))
     max_sentences = int(contract.get("max_sentences") or 3)
     parts = [part.strip() for part in re.split(r"([。！？!?…])", content) if part.strip()]
     if not parts:

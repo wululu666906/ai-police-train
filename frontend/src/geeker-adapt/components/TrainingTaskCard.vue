@@ -11,69 +11,56 @@
     <h3 class="task-title">{{ caseItem.title || '未命名案件' }}</h3>
     <p class="task-summary" :class="{ mle: !compact }">{{ summary }}</p>
 
-    <div class="task-meta-progress">
-      <div class="task-meta">
-        <span>难度：{{ difficulty }}</span>
-        <span>训练人数：{{ participantCount }}</span>
-      </div>
-
-      <div class="task-progress-block">
-        <template v-if="status === 'completed'">
-          <div class="score-row">
-            <span>最终得分</span>
-            <strong>{{ finalScore }}分</strong>
-          </div>
-          <el-progress :percentage="finalScore" :stroke-width="4" :show-text="false" color="#52c41a" />
-        </template>
-        <template v-else>
-          <div class="score-row">
-            <span>训练进度</span>
-            <strong>{{ progress }}%</strong>
-          </div>
-          <el-progress :percentage="progress" :stroke-width="4" :show-text="false" color="#0066ff" />
-        </template>
-      </div>
-    </div>
-
     <div class="scene-panel">
-      <template v-if="status === 'completed'">
-        <div v-for="scene in displayScenes" :key="scene.id" class="scene-row scene-row--done">
-          <span class="scene-name">{{ scene.name }}</span>
-          <span class="scene-status">已完成</span>
-        </div>
-        <el-button
-          size="small"
-          plain
-          class="detail-btn scene-panel-action"
-          :loading="loading"
-          :disabled="disabled"
-          @click="emit('view-detail')"
+        <div
+          v-for="scene in displayScenes"
+          :key="scene.id"
+          class="scene-row"
+          :class="`scene-row--${scene.training_status || 'not_started'}`"
         >
-          查看详情
-        </el-button>
-      </template>
-      <template v-else>
-        <div v-for="scene in displayScenes" :key="scene.id" class="scene-row">
           <span class="scene-name">{{ scene.name }}</span>
-          <el-button
-            type="primary"
-            size="small"
-            class="scene-btn"
-            :loading="loadingSceneId === scene.id"
-            :disabled="disabled"
-            @click="emit('start-scene', scene)"
-          >
-            {{ scene.has_active_session ? '继续训练' : '开始训练' }}
-          </el-button>
+          <span class="scene-status">{{ sceneStatusLabel(scene) }}</span>
+          <div class="scene-actions">
+            <template v-if="scene.training_status === 'completed'">
+              <el-button
+                size="small"
+                plain
+                class="scene-btn detail-btn"
+                :disabled="disabled"
+                @click="emit('view-review', scene)"
+              >
+                查看复盘
+              </el-button>
+              <el-button
+                type="primary"
+                size="small"
+                class="scene-btn"
+                :loading="loadingSceneId === scene.id"
+                :disabled="disabled"
+                @click="emit('start-scene', scene)"
+              >
+                重新训练
+              </el-button>
+            </template>
+            <el-button
+              v-else
+              type="primary"
+              size="small"
+              class="scene-btn"
+              :loading="loadingSceneId === scene.id"
+              :disabled="disabled || scene.training_status === 'evaluating'"
+              @click="emit('start-scene', scene)"
+            >
+              {{ sceneActionLabel(scene) }}
+            </el-button>
+          </div>
         </div>
-      </template>
     </div>
   </article>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { getMockFinalScore, getMockParticipantCount, getMockProgress } from '../../mocks/studentHallMock'
 
 export type TaskSceneItem = {
   id: number
@@ -81,6 +68,10 @@ export type TaskSceneItem = {
   difficulty?: string
   has_active_session?: boolean
   active_session_id?: number | null
+  finished_session_id?: number | null
+  final_score?: number | null
+  training_status?: 'not_started' | 'in_progress' | 'evaluating' | 'completed'
+  status_label?: string
 }
 
 export type TaskCaseItem = {
@@ -106,19 +97,11 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'start-scene': [scene: TaskSceneItem]
+  'view-review': [scene: TaskSceneItem]
   'view-detail': []
 }>()
 
-const primaryScene = computed(() => props.caseItem.scenes?.[0])
 const displayScenes = computed(() => (props.caseItem.scenes || []).slice(0, 3))
-
-const difficulty = computed(() => {
-  const raw = primaryScene.value?.difficulty || '中'
-  if (['简单', '低'].includes(raw)) return '低'
-  if (['中等'].includes(raw)) return '中'
-  if (['困难', '高'].includes(raw)) return '高'
-  return raw
-})
 
 const formattedDate = computed(() => {
   const raw = props.caseItem.created_at
@@ -136,12 +119,19 @@ const summary = computed(() => {
   return text.length > max ? `${text.slice(0, max)}...` : text
 })
 
-const participantCount = computed(() => getMockParticipantCount(props.caseItem.id))
-const progress = computed(() => {
-  const sessionId = primaryScene.value?.active_session_id
-  return getMockProgress(props.caseItem.id, sessionId)
-})
-const finalScore = computed(() => getMockFinalScore(props.caseItem.id))
+const sceneStatusLabel = (scene: TaskSceneItem) => {
+  if (scene.training_status === 'completed') return scene.final_score != null ? `已评分 ${scene.final_score}分` : '已完成训练'
+  if (scene.status_label) return scene.status_label
+  if (scene.training_status === 'evaluating') return '评估中'
+  if (scene.training_status === 'in_progress' || scene.has_active_session) return '可继续'
+  return '未开始训练'
+}
+
+const sceneActionLabel = (scene: TaskSceneItem) => {
+  if (scene.training_status === 'evaluating') return '评估中'
+  if (scene.training_status === 'in_progress' || scene.has_active_session) return '继续训练'
+  return '开始训练'
+}
 </script>
 
 <style scoped lang="scss">
@@ -247,43 +237,6 @@ const finalScore = computed(() => getMockFinalScore(props.caseItem.id))
   word-break: break-word;
 }
 
-.task-meta-progress {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 28px;
-  flex-shrink: 0;
-  overflow: hidden;
-}
-
-.task-meta {
-  display: flex;
-  gap: 10px;
-  font-size: 11px;
-  color: #6b7280;
-  flex-shrink: 0;
-}
-
-.task-progress-block {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.score-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 2px;
-  font-size: 11px;
-  color: #6b7280;
-
-  strong {
-    font-size: 12px;
-    color: #111827;
-  }
-}
-
 .scene-panel {
   flex: 1;
   min-height: 0;
@@ -308,19 +261,18 @@ const finalScore = computed(() => getMockFinalScore(props.caseItem.id))
   border: 1px solid #f1f5f9;
 }
 
-.scene-row--done {
-  .scene-status {
-    font-size: 11px;
-    color: #9ca3af;
-    flex-shrink: 0;
-  }
+.scene-status {
+  font-size: 11px;
+  color: #9ca3af;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
-.scene-panel-action {
+.scene-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex-shrink: 0;
-  height: 28px;
-  width: 100%;
-  font-size: 12px !important;
 }
 
 .scene-name {

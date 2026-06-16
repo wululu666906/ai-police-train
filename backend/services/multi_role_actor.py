@@ -7,6 +7,7 @@ import re
 from typing import Any, Optional
 
 import models
+from .case_knowledge_service import load_case_knowledge_bundle
 from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
 from .persona_engine import (
     analyze_dialogue_momentum,
@@ -27,6 +28,12 @@ from .canonical_facts_service import (
     merge_role_knows_facts,
 )
 from .dialogue_sanitize_service import sanitize_utterances
+from .human_reaction_engine import (
+    choose_role_reaction,
+    format_actor_reaction_block,
+    merge_reaction_delta,
+    reaction_preface,
+)
 from .multi_role_service import _build_history_block, _role_display_name
 
 ROLE_ACTOR_PROMPT = """
@@ -48,8 +55,14 @@ ROLE_ACTOR_PROMPT = """
 【本轮表现契约（必须严格遵守）】
 {state_contract_block}
 
+【真人化反应策略（必须体现）】
+{human_reaction_block}
+
 【案件基准事实（全角色必须一致，不得互相矛盾）】
 {canonical_facts_block}
+
+【案件库与角色剧本库】
+{case_knowledge_block}
 
 【你掌握的事实边界】
 已知：{knows_facts}
@@ -90,6 +103,8 @@ ROLE_ACTOR_PROMPT = """
 15. new_fact_revealed 只有在本轮确实新增了一条关键事实时才填写该事实文本，否则填 null。
 16. state_delta 是四个轴的变化量（范围-15 到 +15），不是绝对值；没有明显变化时写 0，不要整条不填。
 17. 注意：以下输出格式中的值为示例（delivery、数字等），请根据角色状态和本轮互动动态决定，不要照搬。只输出 JSON：
+18. 若【真人化反应策略】要求你回避、沉默、争执、转移或求保护，要通过自然口语表现出来；不要直接说“我是争执型/回避型”。
+19. 如果本轮已有人先发言，必须像听见了对方的话一样回应：同意、反驳、补充、纠正、沉默回避均可，但不能无视明显冲突。
 
 {{
   "utterances": [
@@ -335,6 +350,8 @@ def _rule_based_utterances(
     utterance_count: int,
     scene: Optional[models.Scene] = None,
     case: Optional[models.Case] = None,
+    reaction: Optional[dict[str, Any]] = None,
+    peer_utterances: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     name = _role_display_name(role)
     role_type = _text(getattr(role, "role_type", ""))
@@ -349,7 +366,17 @@ def _rule_based_utterances(
     people = _structured_items(case, "persons", "people", "人物", "相关人员")
     role_fact = _role_fact(role, case)
     voice = _role_voice(role)
+    reaction = reaction or {}
+    reaction_key = _text(reaction.get("key"))
     lines: list[str] = []
+    preface = reaction_preface(role, reaction, peer_utterances)
+    direct_fact_question = _contains_any(
+        text,
+        ("身份", "你是谁", "叫什么", "关系", "几点", "时间", "什么时候", "哪里", "地点", "位置", "在哪"),
+    )
+    should_preface = bool(peer_utterances) or participation == "interrupt" or not direct_fact_question
+    if preface and reaction_key != "sudden_cooperation" and should_preface:
+        _append_unique(lines, preface)
     if participation == "interrupt":
         _append_unique(lines, f"{name}，你等一下，事情不是那样！")
     if _contains_any(text, ("冷静", "别激动", "放松", "慢慢说")):
@@ -359,6 +386,14 @@ def _rule_based_utterances(
             _append_unique(lines, "我可以慢慢说，但他刚才确实动手了。")
         else:
             _append_unique(lines, "我配合，你问哪一段我说哪一段。")
+    if reaction_key == "sudden_cooperation" and preface:
+        _append_unique(lines, preface)
+    if reaction_key == "avoidant_silence" and len(lines) < utterance_count:
+        _append_unique(lines, "有些细节我真不敢乱说，你们别把我也卷进去。")
+    if reaction_key == "protective_fear" and len(lines) < utterance_count:
+        _append_unique(lines, "你们先保证我说完以后不会再被人找麻烦，我再慢慢讲。")
+    if reaction_key == "topic_shift_bargain" and len(lines) < utterance_count:
+        _append_unique(lines, "赔不赔、怎么处理总得有个说法吧，别光问谁对谁错。")
     if _contains_any(text, ("身份", "你是谁", "叫什么", "关系")):
         for line in _identity_reply(role, role_fact):
             _append_unique(lines, line)
@@ -401,10 +436,13 @@ def _rule_based_utterances(
     if not lines:
         _append_unique(lines, _vague_reply(role))
     lines = lines[:utterance_count]
+    base_delta = {"emotion": -2, "cooperation": 3, "risk": -1, "clarity": 2}
+    if reaction_key and reaction_key not in {"sudden_cooperation", "probing_observation"}:
+        base_delta = {"emotion": 0, "cooperation": 0, "risk": 0, "clarity": 0}
     return {
-        "utterances": [{"content": line, "delivery": "normal"} for line in lines],
+        "utterances": [{"content": line, "delivery": reaction.get("delivery") or "normal"} for line in lines],
         "inner_thought": "先稳住，看看警察怎么问。",
-        "state_delta": {"emotion": -2, "cooperation": 3, "risk": -1, "clarity": 2},
+        "state_delta": merge_reaction_delta(base_delta, reaction),
         "new_fact_revealed": None,
     }
 
@@ -454,6 +492,7 @@ def generate_role_dialogue(
     utterance_count = max(1, min(8, int(cast_entry.get("utterance_count") or 1)))
     profile = build_persona_profile(role, case, scene)
     script = build_role_script(role, case, scene, profile)
+    knowledge_bundle = load_case_knowledge_bundle(case, role)
     momentum = analyze_dialogue_momentum(
         user_text,
         profile,
@@ -461,10 +500,22 @@ def generate_role_dialogue(
         role_snapshot.get("cooperation", 30),
         role_snapshot.get("emotion", 50),
     )
-    momentum = enrich_momentum_with_axis_deltas(momentum, user_text, [])
-    state_contract = build_state_contract(role_snapshot, momentum)
+    momentum = enrich_momentum_with_axis_deltas(momentum, user_text, [], profile)
+    state_contract = build_state_contract(role_snapshot, momentum, profile)
     persona_block = format_persona_block(profile, script, {}, momentum)
     state_contract_block = format_state_contract_block(state_contract)
+    reaction = choose_role_reaction(
+        role=role,
+        role_snapshot=role_snapshot,
+        user_text=user_text,
+        scene_mood=_text(director_plan.get("scene_mood")) or _text(director_plan.get("scene_mood_shift")) or "stable",
+        persona_profile=profile,
+        cast_entry=cast_entry,
+        peer_utterances=peer_utterances or [],
+    )
+    if cast_entry.get("reaction_hint"):
+        reaction["director_hint"] = _text(cast_entry.get("reaction_hint"))
+    human_reaction_block = format_actor_reaction_block(reaction, peer_utterances or [])
     perspective_hint = _build_perspective_hint(
         role,
         user_text,
@@ -486,8 +537,10 @@ def generate_role_dialogue(
             user_text=user_text or "（学员沉默）",
             persona_block=persona_block,
             state_contract_block=state_contract_block,
+            human_reaction_block=human_reaction_block,
             perspective_hint=perspective_hint,
             canonical_facts_block=format_canonical_facts_block(case, scene),
+            case_knowledge_block=knowledge_bundle.get("knowledge_block") or "暂无案件知识库内容",
             knows_facts=merge_role_knows_facts(role, case),
             hidden_truths=_format_facts(getattr(role, "hidden_truths", [])),
             does_not_know=_format_facts(getattr(role, "does_not_know", [])),
@@ -519,19 +572,31 @@ def generate_role_dialogue(
                 output = {
                     "utterances": cleaned,
                     "inner_thought": _text(payload.get("inner_thought")) or "",
-                    "state_delta": {
-                        "emotion": _clamp_delta(delta.get("emotion")),
-                        "cooperation": _clamp_delta(delta.get("cooperation")),
-                        "risk": _clamp_delta(delta.get("risk")),
-                        "clarity": _clamp_delta(delta.get("clarity")),
-                    },
+                    "state_delta": merge_reaction_delta(
+                        {
+                            "emotion": _clamp_delta(delta.get("emotion")),
+                            "cooperation": _clamp_delta(delta.get("cooperation")),
+                            "risk": _clamp_delta(delta.get("risk")),
+                            "clarity": _clamp_delta(delta.get("clarity")),
+                        },
+                        reaction,
+                    ),
                     "new_fact_revealed": payload.get("new_fact_revealed"),
                 }
         except Exception:
             output = None
 
     if not output:
-        output = _rule_based_utterances(role, cast_entry, user_text, utterance_count, scene, case)
+        output = _rule_based_utterances(
+            role,
+            cast_entry,
+            user_text,
+            utterance_count,
+            scene,
+            case,
+            reaction=reaction,
+            peer_utterances=peer_utterances or [],
+        )
     else:
         output["utterances"] = sanitize_utterances(
             _sanitize_utterances_for_last_user(output.get("utterances") or [], user_text)
@@ -548,6 +613,10 @@ def generate_role_dialogue(
         "new_fact_revealed": output.get("new_fact_revealed"),
         "updated_snapshot": _apply_snapshot_delta(role_snapshot, output.get("state_delta") or {}),
         "state_contract": state_contract,
+        "reaction_type": reaction.get("key"),
+        "reaction_label": reaction.get("label"),
+        "reaction_types": reaction.get("keys") or [reaction.get("key")],
+        "reaction_labels": reaction.get("labels") or [reaction.get("label")],
     }
 
 

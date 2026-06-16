@@ -98,3 +98,38 @@ def test_run_director_without_llm_for_double_address():
     )
     names = [item["speaker_name"] for item in plan["cast_plan"]]
     assert names == ["孙桂兰", "周凯"]
+
+
+def test_public_multi_speaker_question_gets_human_scene_mood():
+    roles = [_Role(1, "赵阳"), _Role(2, "刘军")]
+    plan = run_director(
+        scene=_Scene(),
+        roles=roles,
+        history=[],
+        user_text="你们双方都说一下怎么回事",
+        current_stage="调解",
+        current_stage_goal="听取双方陈述",
+        role_snapshots={
+            "1": {"emotion": 78, "cooperation": 35, "risk": 60, "clarity": 65},
+            "2": {"emotion": 82, "cooperation": 20, "risk": 76, "clarity": 60},
+        },
+        use_llm=False,
+    )
+    assert len(plan["cast_plan"]) == 2
+    assert plan["scene_mood"] in {"tense", "chaotic", "edge_loss_control"}
+    assert plan["scene_mood_shift"] == "tense"
+
+
+def test_calm_scene_gets_deescalation_mood():
+    roles = [_Role(1, "赵阳"), _Role(2, "刘军")]
+    plan = run_director(
+        scene=_Scene(),
+        roles=roles,
+        history=[],
+        user_text="你们先冷静，分开一个一个慢慢说",
+        current_stage="现场控制",
+        current_stage_goal="控制现场",
+        use_llm=False,
+    )
+    assert plan["scene_mood"] == "deescalate"
+    assert plan["scene_mood_shift"] == "deescalate"

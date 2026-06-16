@@ -5,6 +5,12 @@ import database
 import models
 from routers.auth import require_admin_user
 from services.rag_service import rag_service
+from services.case_knowledge_service import (
+    build_case_knowledge_documents,
+    delete_case_from_knowledge,
+    sync_case_to_knowledge,
+    try_sync_case_to_knowledge,
+)
 from services.stage_config_service import normalize_stages
 import pydantic
 import schemas
@@ -78,6 +84,105 @@ def upload_knowledge(payload: dict = Body(...)):
         return {"message": "Knowledge indexed successfully", "ids": ids}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/cases")
+def list_case_knowledge(case_id: Optional[int] = None, db=Depends(database.get_db)):
+    """List case-library knowledge documents and role scripts.
+
+    The response includes persisted Chroma documents when present, and generated
+    database snapshots for cases that have not been synced yet. This keeps the
+    admin view useful during migration and after restoring a database backup.
+    """
+    try:
+        if case_id is not None:
+            cases = db.query(models.Case).filter(models.Case.id == case_id).all()
+            persisted = rag_service.get_documents_by_metadata({"case_id": str(case_id)})
+        else:
+            cases = db.query(models.Case).order_by(models.Case.id.asc()).all()
+            persisted = rag_service.get_documents_by_metadata({"source": "case_library"})
+
+        persisted_by_id = {item["id"]: item for item in persisted}
+        rows = []
+        seen_ids = set()
+        for case in cases:
+            for doc in build_case_knowledge_documents(case):
+                item = persisted_by_id.get(doc["id"])
+                metadata = (item or {}).get("metadata") or doc["metadata"]
+                rows.append(
+                    {
+                        "id": doc["id"],
+                        "content": (item or {}).get("content") or doc["content"],
+                        "source": metadata.get("source", "case_library"),
+                        "title": metadata.get("title") or doc["id"],
+                        "category": metadata.get("category") or "",
+                        "tags": rag_service._normalize_tags(metadata.get("tags")),
+                        "metadata": metadata,
+                        "case_id": str(case.id),
+                        "case_title": case.title or f"Case {case.id}",
+                        "doc_type": metadata.get("doc_type") or doc["metadata"].get("doc_type"),
+                        "role_id": metadata.get("role_id"),
+                        "role_name": metadata.get("role_name"),
+                        "in_knowledge": bool(item),
+                    }
+                )
+                seen_ids.add(doc["id"])
+
+        for item in persisted:
+            if item["id"] not in seen_ids:
+                metadata = item.get("metadata") or {}
+                rows.append(
+                    {
+                        **item,
+                        "case_id": metadata.get("case_id"),
+                        "case_title": metadata.get("case_title") or metadata.get("title"),
+                        "doc_type": metadata.get("doc_type"),
+                        "role_id": metadata.get("role_id"),
+                        "role_name": metadata.get("role_name"),
+                        "in_knowledge": True,
+                    }
+                )
+
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/cases/sync-all")
+def sync_all_case_knowledge(db=Depends(database.get_db)):
+    """Rebuild knowledge documents for every database case after migration/restore."""
+    cases = db.query(models.Case).order_by(models.Case.id.asc()).all()
+    results = []
+    for case in cases:
+        results.append(try_sync_case_to_knowledge(case))
+    return {
+        "total": len(results),
+        "succeeded": sum(1 for item in results if item.get("ok")),
+        "failed": sum(1 for item in results if not item.get("ok")),
+        "results": results,
+    }
+
+
+@router.post("/cases/{case_id}/sync")
+def sync_case_knowledge(case_id: int, db=Depends(database.get_db)):
+    """Rebuild one case's case-info and role-script knowledge documents."""
+    case = db.query(models.Case).filter(models.Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    try:
+        return sync_case_to_knowledge(case)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/cases/{case_id}")
+def delete_case_knowledge(case_id: int):
+    """Delete only the knowledge documents for a case; the database case stays intact."""
+    try:
+        return delete_case_from_knowledge(case_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.delete("/{item_id}")
 def delete_knowledge(item_id: str):

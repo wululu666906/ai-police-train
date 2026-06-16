@@ -1,4 +1,6 @@
 import json
+import re
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Tuple
 
 from sqlalchemy.orm import Session
@@ -11,13 +13,21 @@ from .role_resolver import resolve_scene_role
 from .stage_config_service import normalize_stages
 from .training_runtime_service import collect_stage_progress, load_runtime_state
 
-DIMENSIONS = [
-    ("执法语言规范性", 25),
-    ("执法流程完整性", 25),
-    ("法律依据正确性", 20),
-    ("情绪控制能力", 15),
-    ("信息获取效率", 15),
+SCORING_VERSION = "adaptive_v1"
+
+COMMUNICATION_DIMENSION = "沟通表达与执法语言"
+INQUIRY_DIMENSION = "主动询问与逻辑推进"
+SUMMARY_DIMENSION = "关键信息整理能力"
+CLOSURE_DIMENSION = "处置闭环意识"
+
+COMMON_DIMENSIONS = [
+    (COMMUNICATION_DIMENSION, "礼貌克制、身份立场清晰，避免压迫、诱导或激化。"),
+    (INQUIRY_DIMENSION, "主动提问、追问连贯，信息流由学员推动。"),
+    (SUMMARY_DIMENSION, "归纳时间、地点、人物、经过、诉求、矛盾点等已获信息。"),
+    (CLOSURE_DIMENSION, "阶段总结、下一步安排、确认反馈，避免草率结束。"),
 ]
+
+DIMENSIONS = [(name, 25) for name, _ in COMMON_DIMENSIONS]
 
 GRADE_LEVELS: List[Tuple[int, str]] = [
     (90, "卓越"),
@@ -27,9 +37,34 @@ GRADE_LEVELS: List[Tuple[int, str]] = [
     (0, "需改进"),
 ]
 
-ASSESSMENT_WEIGHTED_DIMENSIONS = {
-    "执法流程完整性": 0.55,
-    "信息获取效率": 0.45,
+COMMON_DIMENSION_FOCUS = {name: focus for name, focus in COMMON_DIMENSIONS}
+
+POINT_DIFFICULTY_FACTORS = {
+    "低": 0.75,
+    "简单": 0.75,
+    "中": 1.0,
+    "中等": 1.0,
+    "普通": 1.0,
+    "高": 1.25,
+    "困难": 1.25,
+}
+
+RED_FLAG_RULES = {
+    "coercive_language": {
+        "cap": 59,
+        "label": "明显威胁/侮辱/诱供",
+        "keywords": ["闭嘴", "老实点", "快说", "少废话", "废话", "给我老实交代", "别装了", "不说就", "收拾你", "铐起来"],
+    },
+    "ignored_emergency_risk": {
+        "cap": 59,
+        "label": "忽视紧急人身风险",
+        "keywords": ["流血", "昏迷", "刀", "持刀", "火", "煤气", "跳楼", "自杀", "爆炸", "重伤"],
+    },
+    "rights_violation": {
+        "cap": 69,
+        "label": "明显错误法律处置或侵犯权利",
+        "keywords": ["不用手续", "随便搜", "直接关起来", "必须认罪", "不让你联系", "不许请律师", "我说了算"],
+    },
 }
 
 _STATUS_RANK = {"hit": 3, "partial": 2, "missed": 1}
@@ -38,11 +73,11 @@ SCENE_RUBRICS = {
     "接警": [
         "优先确认地点、身份、伤情、风险和是否仍在持续。",
         "接警阶段要体现快速定位关键事实的能力，而不是泛泛安抚。",
-        "如果未核实时间、地点、伤情或现场风险，应在流程完整性和信息获取效率上扣分。",
+        "如果未核实时间、地点、伤情或现场风险，应在通用能力和对应考察点中体现不足。",
     ],
     "现场": [
         "要体现身份核实、现场保护、风险控制和基础证据意识。",
-        "如果只聊天不处置，或忽略现场动作，应在流程完整性和法律依据正确性上扣分。",
+        "如果只聊天不处置，或忽略现场动作，应在通用闭环意识和对应考察点中体现不足。",
         "若能兼顾情绪稳定、现场控制和事实摸排，可明显加分。",
     ],
     "审讯": [
@@ -57,14 +92,17 @@ SCENE_RUBRICS = {
 }
 
 EVALUATION_PROMPT_TEMPLATE = """
-你是一名严格、公正、专业的警务训练评估官，需要根据完整对话、动作执行和“考察点要求表”逐条核查结果给出结构化评分。
+你是一名严格、公正、专业的警务训练评估官，需要根据完整对话、动作执行和“考察点要求表”逐条核查结果给出结构化评估。
 
-评分维度（总分 100）：
-1. 执法语言规范性（25）
-2. 执法流程完整性（25）
-3. 法律依据正确性（20）
-4. 情绪控制能力（15）
-5. 信息获取效率（15）
+本系统使用 adaptive_v1 评分制度：总分由后端按“通用能力 + 动态考察点”确定性计算。你不要输出旧版固定维度评分。
+
+通用能力只评价以下 4 项：
+1. 沟通表达与执法语言：礼貌克制、身份立场清晰，避免压迫、诱导或激化。
+2. 主动询问与逻辑推进：主动提问、追问连贯，信息流由学员推动。
+3. 关键信息整理能力：归纳时间、地点、人物、经过、诉求、矛盾点等已获信息。
+4. 处置闭环意识：阶段总结、下一步安排、确认反馈，避免草率结束。
+
+场景专属能力全部通过考察点评价。例如接警场景不强制评价“证据固定”，除非考察点中明确配置了相关要求。
 
 场景信息（评估时应关注学员是否识别了人物的身份、诉求、顾虑和情绪触发点）：
 {scene_info}
@@ -87,22 +125,14 @@ EVALUATION_PROMPT_TEMPLATE = """
 参考知识：
 {knowledge_base}
 
-评分锚点（必须遵守，不得随意给高分）：
-- 90-100：关键流程完整、追问连续、无明显规范问题，且大部分必考点已覆盖。
-- 75-89：主体流程到位，但存在 1-2 项明显遗漏或表述不够规范。
-- 60-74：能维持基本沟通，但流程缺口较多，或必考点完成不足一半。
-- 40-59：仅完成少量基础动作，关键事实、风险或身份核实明显不足。
-- 0-39：有效轮次过少、对话偏离目标，或出现明显不规范/激化冲突表达。
-
-评分校准规则：
-- 考察点命中率与总分强相关：必考点命中率 < 35% 时总分上限不超过 58；命中率 < 55% 时不超过 70；命中率 < 75% 时不超过 82。
-- "执法流程完整性"和"信息获取效率"两个维度的得分受考察点完成率校准：完成率越低，这两个维度的得分上限越低。
-- 学员有效发言轮次 ≤ 1 轮时总分上限为 55；≤ 2 轮时上限为 68；≤ 3 轮时上限为 78。
+动态权重规则（由后端计算，你只需按事实评价）：
+- 通用能力固定 4 个评分单位。
+- 每个考察点按难度和 required 属性形成动态评分单位。
+- 学员有效发言轮次、必考点命中率和严重红线会触发总分上限。
 
 动作执行评估：
 - 训练日志中的"动作"行（以"动作："开头）代表学员完成的现场操作（如开启执法记录仪、拍照取证、分离双方等）。
-- 动作完成情况应纳入"执法流程完整性"评分：动作执行充分的学员应在该维度获得加分；关键动作未做的应扣分。
-- 如果对话历史中有明确的动作检查/验证动作完成的表述，应在 reason 中引用。
+- 动作只在相关考察点或通用闭环意识中作为证据引用，不作为旧固定维度评分。
 
 参考知识引用要求：
 - 评分时必须尽量引用"参考知识"中的条款作为法律依据，并在 reason 中明示（如"根据参考知识第X条…"）。
@@ -110,77 +140,30 @@ EVALUATION_PROMPT_TEMPLATE = """
 
 学员主动性判断（不要被 AI 角色牵着走）：
 - 区分"学员主动追问获知的信息"和"AI 角色主动告知的信息"。如果信息是 AI 角色主动交代而非学员问出的，不应作为学员的信息获取加分。
-- 学员的每个追问轮次应带来新增信息；如果多轮反复询问同一件事而无新进展，应在"信息获取效率"上扣分。
+- 学员的每个追问轮次应带来新增信息；如果多轮反复询问同一件事而无新进展，应在“主动询问与逻辑推进”中体现不足。
 - 判断依据：观察对话中谁在主导信息流动——学员提问→AI角色回答→学员追问问细节，这是主动；AI角色长篇陈述→学员仅应答，这是被动。
 
 输出要求：
-1. 每个维度都必须给出 score、full_score、reason；各维度 score 之和必须等于 total_score。
-2. reason 必须引用具体轮次、具体发言或具体动作，并说明扣分依据（如”学员第3轮未核实地点，扣 X 分”）。引用格式参考：「学员第N轮」或「动作：XXX」。
-3. assessment_check_results 必须与”考察点要求表”逐条对应，不得遗漏 id。判定 hit/partial/missed 时须结合对话原文和动作日志给出明确依据。
-4. strengths 是学员表现中的亮点（各 2-4 条），improvements 是具体存在不足的维度或动作（各 2-4 条），improvements 应直接指出缺了什么、哪一步没做到，而不是笼统建议。
-5. 不要因为 AI 角色说得多就高分，要看学员是否通过连续追问和动作推进拿到信息。
-6. 只输出合法 JSON。
-
-注意：以下输出模板中的 score、total_score、strengths、improvements、suggestions 均为占位示例，数值 20、80 等都是随意写的例子，可能与实际评分差异很大，请完全基于对话评分，不要被示例数值带偏。status 只能取 “hit”、”partial”、”missed” 三者之一，不得使用其他值。
-
-【重要】输出模板使用的是合法 JSON 格式，请使用英文双引号（”），不要使用中文引号（“ ”），否则解析会失败。
+1. common_reviews 必须覆盖 4 个通用能力，每项包含 dimension、level、reason、evidence。level 只能为 excellent/good/fair/weak。
+2. assessment_check_results 必须与“考察点要求表”逐条对应，不得遗漏 id。status 只能为 hit/partial/missed。
+3. evidence 必须引用具体学员发言、动作日志或“学员提问后紧邻 AI 回答”；不得把 AI 主动长篇交代直接算作学员主动得分。
+4. strengths 是学员表现亮点（2-4 条），improvements 是具体不足（2-4 条），suggestions 给出下一轮训练建议。
+5. 只输出合法 JSON。
 
 严格输出 JSON：
 {{
-  “scores”: [
-    {{
-      “dimension”: “执法语言规范性”,
-      “score”: 20,
-      “full_score”: 25,
-      “reason”: “学员第 2 轮使用了规范化告知话术，但第 5 轮出现轻微不当用语，扣 2 分”
-    }},
-    {{
-      “dimension”: “执法流程完整性”,
-      “score”: 18,
-      “full_score”: 25,
-      “reason”: “学员完成了身份核实和现场询问，但未落实现场保护措施，扣 5 分”
-    }},
-    {{
-      “dimension”: “法律依据正确性”,
-      “score”: 16,
-      “full_score”: 20,
-      “reason”: “学员引用了相关法律条款，但适用场景不完全匹配，扣 2 分”
-    }},
-    {{
-      “dimension”: “情绪控制能力”,
-      “score”: 13,
-      “full_score”: 15,
-      “reason”: “面对当事人激动情绪，学员保持了克制，未出现对抗性表达”
-    }},
-    {{
-      “dimension”: “信息获取效率”,
-      “score”: 11,
-      “full_score”: 15,
-      “reason”: “学员获取了地点和人员信息，但对关键时间线的追问不足，扣 2 分”
-    }}
+  "common_reviews": [
+    {{"dimension": "沟通表达与执法语言", "level": "good", "reason": "学员语气总体克制。", "evidence": ["学员: 请您先说明情况"]}},
+    {{"dimension": "主动询问与逻辑推进", "level": "fair", "reason": "追问不足。", "evidence": []}},
+    {{"dimension": "关键信息整理能力", "level": "fair", "reason": "未形成完整事实归纳。", "evidence": []}},
+    {{"dimension": "处置闭环意识", "level": "weak", "reason": "未说明下一步处置。", "evidence": []}}
   ],
-  “total_score”: 78,
-  “assessment_check_results”: [
-    {{
-      “id”: “ap_001”,
-      “label”: “核实报警人身份”,
-      “content”: “学员应主动询问报警人姓名、身份及与事件的关系”,
-      “status”: “hit”,
-      “evidence”: [“学员: 请问您怎么称呼？”, “学员: 您和当事人是什么关系？”],
-      “reason”: “学员在第 1 轮和第 3 轮分别核实了身份和关系，符合要求”
-    }},
-    {{
-      “id”: “ap_002”,
-      “label”: “确认现场风险”,
-      “content”: “学员应询问是否存在伤人、危险物品或需紧急救助的情况”,
-      “status”: “missed”,
-      “evidence”: [],
-      “reason”: “整段对话未涉及现场风险询问，判定未命中”
-    }}
+  "assessment_check_results": [
+    {{"id": "ap_001", "label": "核实报警人身份", "content": "学员应主动询问报警人姓名、身份及与事件的关系", "status": "hit", "evidence": ["学员: 请问您怎么称呼？"], "reason": "学员主动核实身份。"}}
   ],
-  “strengths”: [“学员在第 1 轮即主动表明身份并出示证件”, “整体提问语气规范、克制”],
-  “improvements”: [“学员未询问现场风险情况，存在安全隐患”, “对当事人前后陈述的矛盾缺乏追问”],
-  “suggestions”: “建议在后续训练中：(1) 每次处置前先系统梳理需要覆盖的必查要素清单；(2) 使用 SPORTS 框架（场景-人员-目标-风险-策略-收尾）组织问询顺序；(3) 对当事人陈述中的时间或逻辑矛盾及时追问压实。”
+  "strengths": ["表达较克制"],
+  "improvements": ["需要补齐关键事实追问"],
+  "suggestions": "建议按通用能力和本场景考察点逐项复训。"
 }}
 """
 
@@ -195,6 +178,127 @@ def _dedupe_strings(values: List[Any]) -> List[str]:
         seen.add(text)
         items.append(text)
     return items
+
+
+def _normalize_assessment_identity_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return re.sub(r"[\s，。！？、；：“”‘’（）()《》【】\[\]{}<>.,!?;:'\"`~@#$%^&*\-_=+|\\/]+", "", text)
+
+
+def _assessment_core_content(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"（.*?）|\(.*?\)", "", text)
+    text = re.split(r"怎样算完成|具体要求|回放时|回放训练", text, maxsplit=1)[0]
+    return text
+
+
+def _assessment_semantic_key(point: dict) -> str:
+    label = _normalize_assessment_identity_text(point.get("label"))
+    content = _normalize_assessment_identity_text(_assessment_core_content(point.get("content") or point.get("requirement") or point.get("description")))
+    if label and content:
+        return f"{label}__{content}"
+    return label or content
+
+
+def _assessment_identity_keys(point: dict) -> List[str]:
+    keys: List[str] = []
+    point_id = str(point.get("id") or "").strip()
+    semantic_key = _assessment_semantic_key(point)
+    if point_id:
+        keys.append(f"id:{point_id}")
+    if semantic_key:
+        keys.append(f"semantic:{semantic_key}")
+    return keys
+
+
+def _assessment_points_equivalent(left: dict, right: dict) -> bool:
+    left_id = str(left.get("id") or "").strip()
+    right_id = str(right.get("id") or "").strip()
+    if left_id and right_id and left_id == right_id:
+        return True
+
+    left_label = _normalize_assessment_identity_text(left.get("label"))
+    right_label = _normalize_assessment_identity_text(right.get("label"))
+    if not left_label or left_label != right_label:
+        return False
+
+    left_content = _normalize_assessment_identity_text(_assessment_core_content(left.get("content") or left.get("requirement") or left.get("description")))
+    right_content = _normalize_assessment_identity_text(_assessment_core_content(right.get("content") or right.get("requirement") or right.get("description")))
+    if not left_content or not right_content:
+        return True
+    if left_content in right_content or right_content in left_content:
+        return True
+    return SequenceMatcher(None, left_content, right_content).ratio() >= 0.72
+
+
+def _assessment_point_quality(point: dict) -> int:
+    score = 0
+    if str(point.get("content") or point.get("requirement") or point.get("description") or "").strip():
+        score += 4
+    if point.get("keywords"):
+        score += 2
+    if str(point.get("id") or "").strip():
+        score += 1
+    if point.get("weight") is not None:
+        score += 1
+    if point.get("required") is not None:
+        score += 1
+    if point.get("knowledge_refs"):
+        score += 1
+    return score
+
+
+def _best_point_status(*statuses: Any) -> str:
+    rank = {"miss": 1, "missed": 1, "partial": 2, "hit": 3}
+    best = "missed"
+    for status in statuses:
+        value = str(status or "").strip()
+        if rank.get(value, 0) > rank.get(best, 0):
+            best = "missed" if value == "miss" else value
+    return best
+
+
+def _merge_duplicate_assessment_points(current: dict, incoming: dict) -> dict:
+    preferred, other = (incoming, current) if _assessment_point_quality(incoming) > _assessment_point_quality(current) else (current, incoming)
+    merged = {**other, **preferred}
+    merged["id"] = str(preferred.get("id") or other.get("id") or "").strip()
+    merged["label"] = str(preferred.get("label") or other.get("label") or "未命名考察点").strip()
+    merged["content"] = str(preferred.get("content") or other.get("content") or "").strip()
+    merged["stage_name"] = str(preferred.get("stage_name") or other.get("stage_name") or "").strip()
+    merged["category"] = str(preferred.get("category") or other.get("category") or "procedure").strip() or "procedure"
+    merged["required"] = bool(preferred.get("required", other.get("required", True)))
+    merged["weight"] = max(1, int(preferred.get("weight") or other.get("weight") or 10))
+    merged["status"] = _best_point_status(current.get("status"), incoming.get("status"))
+    merged["score"] = _score_from_point_status(merged["status"], merged["weight"])
+    merged["evidence"] = _dedupe_strings((current.get("evidence") or []) + (incoming.get("evidence") or []))[:3]
+    merged["feedback"] = "；".join(_dedupe_strings([current.get("feedback"), incoming.get("feedback")]))
+    merged["knowledge_refs"] = _dedupe_strings((current.get("knowledge_refs") or []) + (incoming.get("knowledge_refs") or []))
+    return merged
+
+
+def dedupe_assessment_result_points(points: List[dict]) -> List[dict]:
+    deduped: List[dict] = []
+    key_to_index: Dict[str, int] = {}
+    for point in points or []:
+        if not isinstance(point, dict):
+            continue
+        keys = _assessment_identity_keys(point)
+        if not keys:
+            continue
+        matched_index = next((key_to_index[key] for key in keys if key in key_to_index), None)
+        if matched_index is None:
+            for index, existing in enumerate(deduped):
+                if _assessment_points_equivalent(existing, point):
+                    matched_index = index
+                    break
+        if matched_index is None:
+            key_to_index.update({key: len(deduped) for key in keys})
+            deduped.append(dict(point))
+            continue
+        deduped[matched_index] = _merge_duplicate_assessment_points(deduped[matched_index], point)
+        for key in _assessment_identity_keys(deduped[matched_index]):
+            key_to_index[key] = matched_index
+    return deduped
 
 
 def _extract_response_text(response: Any) -> str:
@@ -274,111 +378,109 @@ def build_rule_checks(scene: models.Scene, student_lines: List[str], role: Any) 
     joined = "\n".join(student_lines)
     findings: List[Dict[str, Any]] = []
     deductions = {
-        "执法语言规范性": 0,
-        "执法流程完整性": 0,
-        "法律依据正确性": 0,
-        "情绪控制能力": 0,
-        "信息获取效率": 0,
+        COMMUNICATION_DIMENSION: 0,
+        INQUIRY_DIMENSION: 0,
+        SUMMARY_DIMENSION: 0,
+        CLOSURE_DIMENSION: 0,
     }
 
     if len(student_lines) < 2:
         findings.append(
             {
                 "level": "major",
-                "dimension": "信息获取效率",
+                "dimension": INQUIRY_DIMENSION,
                 "message": "学员有效发言轮次过少，难以完成完整处置与信息收集。",
             }
         )
-        deductions["信息获取效率"] += 4
-        deductions["执法流程完整性"] += 3
+        deductions[INQUIRY_DIMENSION] += 4
+        deductions[CLOSURE_DIMENSION] += 3
 
     bad_phrases = ["闭嘴", "老实点", "快说", "少废话", "废话", "给我老实交代", "别装了"]
     if contains_any(joined, bad_phrases):
         findings.append(
             {
                 "level": "major",
-                "dimension": "执法语言规范性",
+                "dimension": COMMUNICATION_DIMENSION,
                 "message": "出现疑似不规范、带压迫性或激化冲突的表达。",
             }
         )
-        deductions["执法语言规范性"] += 8
-        deductions["情绪控制能力"] += 3
+        deductions[COMMUNICATION_DIMENSION] += 8
 
     if scene_type == "接警":
         if not contains_any(joined, ["哪里", "地址", "地点", "具体位置", "几号楼", "房间", "案发地点"]):
             findings.append(
                 {
                     "level": "major",
-                    "dimension": "执法流程完整性",
+                    "dimension": SUMMARY_DIMENSION,
                     "message": "接警阶段未明确确认案发地点。",
                 }
             )
-            deductions["执法流程完整性"] += 6
-            deductions["信息获取效率"] += 3
+            deductions[SUMMARY_DIMENSION] += 4
+            deductions[INQUIRY_DIMENSION] += 2
         if not contains_any(joined, ["什么时候", "几点", "刚刚", "时间"]):
             findings.append(
                 {
                     "level": "minor",
-                    "dimension": "信息获取效率",
+                    "dimension": SUMMARY_DIMENSION,
                     "message": "接警阶段未及时确认事件发生时间。",
                 }
             )
-            deductions["信息获取效率"] += 2
+            deductions[SUMMARY_DIMENSION] += 2
         if not contains_any(joined, ["受伤", "危险", "还在现场", "120", "是否安全"]):
             findings.append(
                 {
                     "level": "minor",
-                    "dimension": "法律依据正确性",
+                    "dimension": INQUIRY_DIMENSION,
                     "message": "接警阶段未充分确认现场风险和救助需求。",
                 }
             )
-            deductions["法律依据正确性"] += 3
+            deductions[INQUIRY_DIMENSION] += 2
 
     if scene_type == "现场":
         if not contains_any(joined, ["姓名", "你是谁", "和对方什么关系", "身份", "叫什么"]):
             findings.append(
                 {
                     "level": "minor",
-                    "dimension": "执法流程完整性",
+                    "dimension": SUMMARY_DIMENSION,
                     "message": "现场问询阶段未充分核实身份和人物关系。",
                 }
             )
-            deductions["执法流程完整性"] += 3
+            deductions[SUMMARY_DIMENSION] += 2
         if not contains_any(joined, ["现场", "不要破坏", "保持原状", "先别动", "证据"]):
             findings.append(
                 {
                     "level": "minor",
-                    "dimension": "法律依据正确性",
+                    "dimension": CLOSURE_DIMENSION,
                     "message": "现场处置中未体现明显的现场保护或证据意识。",
                 }
             )
-            deductions["法律依据正确性"] += 4
+            deductions[CLOSURE_DIMENSION] += 2
 
     if scene_type == "审讯":
         if not contains_any(joined, ["什么时候", "几点", "当时", "时间线", "案发时"]):
             findings.append(
                 {
                     "level": "major",
-                    "dimension": "执法流程完整性",
+                    "dimension": INQUIRY_DIMENSION,
                     "message": "审讯或讯问中未围绕案发时间线有效展开。",
                 }
             )
-            deductions["执法流程完整性"] += 5
+            deductions[INQUIRY_DIMENSION] += 4
         if not contains_any(joined, ["为什么", "动机", "关系", "证据", "监控", "不在场"]):
             findings.append(
                 {
                     "level": "minor",
-                    "dimension": "信息获取效率",
+                    "dimension": INQUIRY_DIMENSION,
                     "message": "审讯中对动机、证据或矛盾点追问不足。",
                 }
             )
-            deductions["信息获取效率"] += 3
+            deductions[INQUIRY_DIMENSION] += 3
 
     if role and not getattr(role, "name", ""):
         findings.append(
             {
                 "level": "minor",
-                "dimension": "执法流程完整性",
+                "dimension": CLOSURE_DIMENSION,
                 "message": "当前场景主对话角色信息异常，评估可能受限。",
             }
         )
@@ -442,130 +544,352 @@ def render_rule_summary(rule_checks: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def normalize_llm_report(report: Dict[str, Any]) -> Dict[str, Any]:
-    score_map = {item["dimension"]: item for item in report.get("scores", []) if "dimension" in item}
-    normalized_scores = []
-    total = 0
+def _level_ratio(level: Any) -> float:
+    return {
+        "excellent": 1.0,
+        "good": 0.85,
+        "fair": 0.65,
+        "weak": 0.4,
+    }.get(str(level or "").strip(), 0.65)
 
-    for dimension, full_score in DIMENSIONS:
-        item = score_map.get(dimension, {})
-        score = item.get("score", full_score)
-        reason = item.get("reason", "未提供明确理由。")
-        score = max(0, min(full_score, int(score)))
-        normalized_scores.append(
+
+def _ratio_level(ratio: float) -> str:
+    if ratio >= 0.9:
+        return "excellent"
+    if ratio >= 0.75:
+        return "good"
+    if ratio >= 0.55:
+        return "fair"
+    return "weak"
+
+
+def _round_score(value: float) -> int:
+    return max(0, min(100, int(round(value))))
+
+
+def _infer_point_difficulty(point: dict) -> Tuple[str, float]:
+    raw = str(point.get("difficulty") or point.get("difficulty_level") or "").strip()
+    if raw in POINT_DIFFICULTY_FACTORS:
+        return raw, POINT_DIFFICULTY_FACTORS[raw]
+    weight = max(1, int(point.get("weight") or 10))
+    if weight <= 10:
+        return "低", POINT_DIFFICULTY_FACTORS["低"]
+    if weight >= 14:
+        return "高", POINT_DIFFICULTY_FACTORS["高"]
+    return "中等", POINT_DIFFICULTY_FACTORS["中等"]
+
+
+def _point_unit(point: dict) -> float:
+    _, factor = _infer_point_difficulty(point)
+    required_factor = 1.15 if point.get("required", True) else 1.0
+    return round(factor * required_factor, 4)
+
+
+def calculate_adaptive_weighting(point_results: List[dict]) -> Dict[str, Any]:
+    points = dedupe_assessment_result_points([point for point in point_results if str(point.get("label") or "").strip()])
+    common_units = float(len(COMMON_DIMENSIONS))
+    point_units = sum(_infer_point_difficulty(point)[1] for point in points)
+    point_distribution_units = sum(_point_unit(point) for point in points)
+    if not points or point_units <= 0:
+        common_share = 1.0
+        assessment_share = 0.0
+    else:
+        raw_common_share = common_units / (common_units + point_units)
+        common_share = max(0.35, min(0.60, raw_common_share))
+        assessment_share = 1.0 - common_share
+
+    point_details = []
+    for point in points:
+        difficulty_level, difficulty_factor = _infer_point_difficulty(point)
+        unit = _point_unit(point)
+        share = (assessment_share * unit / point_distribution_units) if point_distribution_units > 0 else 0.0
+        point_details.append(
             {
-                "dimension": dimension,
-                "score": score,
-                "full_score": full_score,
-                "reason": reason,
+                "id": str(point.get("id") or "").strip(),
+                "label": str(point.get("label") or "").strip(),
+                "difficulty_level": difficulty_level,
+                "difficulty_factor": difficulty_factor,
+                "required": bool(point.get("required", True)),
+                "unit": unit,
+                "score_share": share,
+                "full_score": _round_score(share * 100),
             }
         )
-        total += score
 
-    report["scores"] = normalized_scores
-    report["total_score"] = total
-    report["strengths"] = report.get("strengths") or []
-    report["improvements"] = report.get("improvements") or []
-    report["suggestions"] = report.get("suggestions") or "建议继续结合规范话术、场景流程和追问技巧反复训练。"
-    return report
-
-
-def apply_rule_adjustments(report: Dict[str, Any], rule_checks: Dict[str, Any]) -> Dict[str, Any]:
-    deductions = rule_checks["deductions"]
-    for item in report["scores"]:
-        deduct = deductions.get(item["dimension"], 0)
-        if deduct > 0:
-            item["score"] = max(0, item["score"] - deduct)
-            item["reason"] = f"{item['reason']} 规则校验补充：额外扣减 {deduct} 分。"
-
-    report["total_score"] = sum(item["score"] for item in report["scores"])
-
-    if rule_checks["findings"]:
-        extra_improvements = [finding["message"] for finding in rule_checks["findings"]]
-        report["improvements"] = list(dict.fromkeys((report.get("improvements") or []) + extra_improvements))
-
-    if "evaluation_meta" not in report:
-        report["evaluation_meta"] = {}
-    report["evaluation_meta"]["rule_findings"] = rule_checks["findings"]
-    report["evaluation_meta"]["hybrid_mode"] = True
-    report["evaluation_meta"]["model"] = get_chat_model()
-    report["evaluation_meta"]["technique"] = ["RAG", "rule-based checks", "LLM structured scoring"]
-    return report
+    return {
+        "scoring_version": SCORING_VERSION,
+        "common_units": common_units,
+        "assessment_units": round(point_units, 4),
+        "assessment_distribution_units": round(point_distribution_units, 4),
+        "common_share": common_share,
+        "assessment_share": assessment_share,
+        "common_full_score": _round_score(common_share * 100),
+        "assessment_full_score": _round_score(assessment_share * 100),
+        "assessment_point_count": len(points),
+        "point_weights": point_details,
+    }
 
 
-def calibrate_report(report: Dict[str, Any], student_lines: List[str], scene_type: str) -> Dict[str, Any]:
-    turn_count = len(student_lines)
+def _assistant_after_user_evidence(msgs: List[models.Message]) -> List[str]:
+    evidence = []
+    previous_was_user = False
+    for msg in msgs:
+        role = str(getattr(msg, "role", "") or "")
+        content = str(getattr(msg, "content", "") or "").strip()
+        if role == "assistant" and previous_was_user and content:
+            evidence.append(f"AI角色: {content[:120]}")
+        previous_was_user = role == "user"
+    return evidence
+
+
+def _sample_evidence(items: List[str], limit: int = 2) -> List[str]:
+    return _dedupe_strings(items)[:limit]
+
+
+def _common_dimension_reviews(
+    llm_report: Dict[str, Any],
+    student_lines: List[str],
+    msgs: List[models.Message],
+    rule_checks: Dict[str, Any],
+) -> List[dict]:
     joined = "\n".join(student_lines)
+    user_evidence = [f"学员: {line[:120]}" for line in student_lines if str(line).strip()]
+    adjacent_ai_evidence = _assistant_after_user_evidence(msgs)
+    llm_reviews = {
+        str(item.get("dimension") or "").strip(): item
+        for item in (llm_report.get("common_reviews") or [])
+        if isinstance(item, dict)
+    }
+    deductions = rule_checks.get("deductions") or {}
 
-    total_cap = 100
+    seed = {
+        COMMUNICATION_DIMENSION: {
+            "ratio": 0.82 if contains_any(joined, ["请", "麻烦", "您", "说明", "是否", "你好"]) else 0.68,
+            "reason": "学员表达总体可控，未见明显激化表达。" if student_lines else "缺少有效学员表达，无法体现规范沟通。",
+            "evidence": _sample_evidence(user_evidence),
+        },
+        INQUIRY_DIMENSION: {
+            "ratio": min(0.9, 0.45 + len(student_lines) * 0.08),
+            "reason": "学员能够持续发问推进对话。" if len(student_lines) >= 4 else "学员追问轮次偏少，逻辑推进不足。",
+            "evidence": _sample_evidence(user_evidence),
+        },
+        SUMMARY_DIMENSION: {
+            "ratio": 0.78 if len(adjacent_ai_evidence) >= 2 else 0.6,
+            "reason": "学员通过提问获得了部分关键事实。" if adjacent_ai_evidence else "缺少由学员主动触发的关键信息证据。",
+            "evidence": _sample_evidence(user_evidence + adjacent_ai_evidence),
+        },
+        CLOSURE_DIMENSION: {
+            "ratio": 0.75 if contains_any(joined, ["下一步", "后续", "处理", "结束", "带回", "笔录", "移交"]) else 0.55,
+            "reason": "学员体现了后续处置或收尾安排。" if contains_any(joined, ["下一步", "后续", "处理", "结束", "带回", "笔录", "移交"]) else "未充分说明下一步安排或阶段收尾。",
+            "evidence": _sample_evidence(user_evidence),
+        },
+    }
+
+    reviews = []
+    for dimension, focus in COMMON_DIMENSIONS:
+        llm_item = llm_reviews.get(dimension) or {}
+        ratio = _level_ratio(llm_item.get("level")) if llm_item else seed[dimension]["ratio"]
+        deduct_ratio = min(0.35, float(deductions.get(dimension) or 0) / 25.0)
+        ratio = max(0.0, min(1.0, ratio - deduct_ratio))
+        reason = str(llm_item.get("reason") or seed[dimension]["reason"]).strip()
+        if deductions.get(dimension):
+            reason = f"{reason} 规则校验扣减 {deductions.get(dimension)} 分。"
+        evidence = _dedupe_strings((llm_item.get("evidence") or []) + seed[dimension]["evidence"])[:3]
+        reviews.append(
+            {
+                "dimension": dimension,
+                "focus": focus,
+                "level": _ratio_level(ratio),
+                "ratio": ratio,
+                "reason": reason,
+                "evidence": evidence,
+            }
+        )
+    return reviews
+
+
+def _detect_red_flags(student_lines: List[str]) -> List[dict]:
+    joined = "\n".join(student_lines)
+    flags = []
+    for key, rule in RED_FLAG_RULES.items():
+        hits = [keyword for keyword in rule["keywords"] if keyword in joined]
+        if hits:
+            flags.append(
+                {
+                    "key": key,
+                    "label": rule["label"],
+                    "cap": rule["cap"],
+                    "evidence": hits[:3],
+                }
+            )
+    return flags
+
+
+def _score_cap_summary(student_lines: List[str], point_results: List[dict], red_flags: List[dict]) -> Dict[str, Any]:
+    caps = []
+    turn_count = len(student_lines)
     if turn_count <= 1:
-        total_cap = 55
+        caps.append({"type": "turn_count", "cap": 55, "reason": "有效学员发言不超过 1 轮"})
     elif turn_count == 2:
-        total_cap = 68
+        caps.append({"type": "turn_count", "cap": 68, "reason": "有效学员发言不超过 2 轮"})
     elif turn_count == 3:
-        total_cap = 78
+        caps.append({"type": "turn_count", "cap": 78, "reason": "有效学员发言不超过 3 轮"})
 
-    if report["total_score"] > total_cap:
-        overflow = report["total_score"] - total_cap
-        for item in sorted(report["scores"], key=lambda x: x["score"], reverse=True):
-            if overflow <= 0:
-                break
-            reducible = min(max(item["score"] - max(0, item["full_score"] // 3), 0), overflow)
-            if reducible <= 0:
-                continue
-            item["score"] -= reducible
-            item["reason"] = f"{item['reason']} 训练轮次较少，综合评分已做上限校准。"
-            overflow -= reducible
-        report["total_score"] = sum(item["score"] for item in report["scores"])
+    required_points = [point for point in point_results if point.get("required", True)]
+    required_hit = [point for point in required_points if point.get("status") == "hit"]
+    required_rate = (len(required_hit) / len(required_points)) if required_points else 1.0
+    if required_rate < 0.35:
+        caps.append({"type": "required_rate", "cap": 58, "reason": "必考点 hit 率低于 35%"})
+    elif required_rate < 0.55:
+        caps.append({"type": "required_rate", "cap": 70, "reason": "必考点 hit 率低于 55%"})
+    elif required_rate < 0.75:
+        caps.append({"type": "required_rate", "cap": 82, "reason": "必考点 hit 率低于 75%"})
 
-    if len(report.get("strengths") or []) < 2:
-        strengths = report.get("strengths") or []
-        if contains_any(joined, ["请", "麻烦", "您", "说明", "有没有", "是否"]):
-            strengths.append("提问语气总体保持克制，具备基础执法沟通意识。")
-        if turn_count >= 2:
-            strengths.append("能够围绕现场情况继续追问，而不是完全停留在单句试探。")
-        report["strengths"] = list(dict.fromkeys(strengths))[:3]
+    for flag in red_flags:
+        caps.append({"type": "red_flag", "cap": int(flag.get("cap") or 100), "reason": flag.get("label")})
 
-    if len(report.get("improvements") or []) < 2:
-        improvements = report.get("improvements") or []
-        if scene_type == "接警":
-            improvements.append("接警阶段应优先锁定地点、时间、伤情和风险，再展开后续追问。")
-        elif scene_type == "现场":
-            improvements.append("现场问询时要同步兼顾身份核实、风险控制和证据保护。")
-        else:
-            improvements.append("后续问询应进一步围绕时间线、人物关系和矛盾点持续追问。")
-        if turn_count <= 2:
-            improvements.append("当前有效对话轮次偏少，建议至少完成数轮问答后再结束训练。")
-        report["improvements"] = list(dict.fromkeys(improvements))[:4]
-
-    if not report.get("suggestions") or len(str(report.get("suggestions")).strip()) < 12:
-        report["suggestions"] = "建议先按场景目标完成身份核实、关键事实确认和风险判断，再逐步扩大追问范围，减少无效发问。"
-
-    if "evaluation_meta" not in report:
-        report["evaluation_meta"] = {}
-    report["evaluation_meta"]["turn_count"] = turn_count
-    report["evaluation_meta"]["score_cap"] = total_cap
-    return report
+    final_cap = min([int(item["cap"]) for item in caps], default=100)
+    return {
+        "turn_count": turn_count,
+        "required_total": len(required_points),
+        "required_hit": len(required_hit),
+        "required_rate": required_rate,
+        "caps": caps,
+        "final_cap": final_cap,
+    }
 
 
-def build_fallback_report(raw_content: str, student_lines: List[str], scene_type: str) -> Dict[str, Any]:
-    report = normalize_llm_report(
-        {
-            "scores": [],
-            "strengths": [],
-            "improvements": [],
-            "suggestions": str(raw_content or "").strip()[:220] or "建议继续围绕时间线、身份核实和关键事实确认展开训练。",
-            "evaluation_meta": {
-                "llm_fallback": True,
-                "scene_type": scene_type,
-            },
+def build_adaptive_report(
+    llm_report: Dict[str, Any],
+    point_results: List[dict],
+    action_results: List[dict],
+    student_lines: List[str],
+    msgs: List[models.Message],
+    rule_checks: Dict[str, Any],
+    scene_type: str,
+) -> Dict[str, Any]:
+    point_results = dedupe_assessment_result_points(point_results)
+    weighting = calculate_adaptive_weighting(point_results)
+    common_reviews = _common_dimension_reviews(llm_report, student_lines, msgs, rule_checks)
+    common_full = weighting["common_full_score"]
+    common_each_full = common_full / max(1, len(common_reviews))
+
+    scores: List[dict] = []
+    running_total = 0
+    for review in common_reviews:
+        full_score = _round_score(common_each_full)
+        score = _round_score(full_score * float(review.get("ratio") or 0))
+        running_total += score
+        scores.append(
+            {
+                "dimension": review["dimension"],
+                "group": "common",
+                "score": score,
+                "full_score": full_score,
+                "reason": review["reason"],
+                "evidence": review["evidence"],
+                "level": review["level"],
+                "status": review["level"],
+            }
+        )
+
+    point_weight_map = {item["id"]: item for item in weighting.get("point_weights") or []}
+    enriched_points = []
+    for point in point_results:
+        point_id = str(point.get("id") or "").strip()
+        point_weight = point_weight_map.get(point_id) or {}
+        share = float(point_weight.get("score_share") or 0)
+        full_score = _round_score(share * 100)
+        status = str(point.get("status") or "missed")
+        ratio = 1.0 if status == "hit" else 0.5 if status == "partial" else 0.0
+        score = _round_score(full_score * ratio)
+        running_total += score
+        enriched = {
+            **point,
+            "difficulty_level": point_weight.get("difficulty_level") or _infer_point_difficulty(point)[0],
+            "difficulty_factor": point_weight.get("difficulty_factor") or _infer_point_difficulty(point)[1],
+            "score_share": share,
+            "weighted_score": score,
+            "full_score": full_score,
         }
-    )
-    report = calibrate_report(report, student_lines, scene_type)
-    report["evaluation_meta"]["llm_fallback"] = True
-    if str(raw_content or "").strip():
-        report["evaluation_meta"]["raw_summary"] = str(raw_content).strip()[:220]
-    return report
+        enriched_points.append(enriched)
+        scores.append(
+            {
+                "dimension": f"考察点：{point.get('label') or '未命名考察点'}",
+                "group": "assessment",
+                "score": score,
+                "full_score": full_score,
+                "reason": point.get("feedback") or _default_point_feedback(point),
+                "evidence": point.get("evidence") or [],
+                "level": status,
+                "status": status,
+                "assessment_point_id": point_id,
+                "difficulty_level": enriched["difficulty_level"],
+                "required": bool(point.get("required", True)),
+            }
+        )
+
+    red_flags = _detect_red_flags(student_lines)
+    cap_summary = _score_cap_summary(student_lines, enriched_points, red_flags)
+    uncapped_total = max(0, min(100, running_total))
+    total_score = min(uncapped_total, int(cap_summary["final_cap"]))
+    if total_score != uncapped_total:
+        scores = reconcile_dimension_scores({"scores": scores, "total_score": total_score}).get("scores") or scores
+
+    required_points = [point for point in enriched_points if point.get("required", True)]
+    all_hit = [point for point in enriched_points if point.get("status") == "hit"]
+    required_hit = [point for point in required_points if point.get("status") == "hit"]
+    total_weight = sum(max(1, int(point.get("weight") or 10)) for point in enriched_points)
+    earned_weight = sum(int(point.get("score") or 0) for point in enriched_points)
+
+    strengths = list(llm_report.get("strengths") or [])
+    improvements = list(llm_report.get("improvements") or [])
+    for point in enriched_points:
+        label = str(point.get("label") or "").strip()
+        if point.get("status") == "hit":
+            strengths.append(f"已覆盖考察点：{label}")
+        elif point.get("status") == "missed" and point.get("required", True):
+            improvements.append(f"必考点未完成：{label}")
+    for finding in rule_checks.get("findings") or []:
+        improvements.append(str(finding.get("message") or "").strip())
+
+    suggestions = str(llm_report.get("suggestions") or "").strip()
+    if len(suggestions) < 12:
+        suggestions = "建议按通用能力和本场景考察点逐项复训，先补齐必考点，再提升追问质量与收尾表达。"
+
+    return {
+        "scores": scores,
+        "total_score": total_score,
+        "uncapped_total_score": uncapped_total,
+        "grade_level": compute_grade_level(total_score),
+        "assessment_point_results": enriched_points,
+        "action_results": action_results,
+        "strengths": list(dict.fromkeys([item for item in strengths if str(item).strip()]))[:6],
+        "improvements": list(dict.fromkeys([item for item in improvements if str(item).strip()]))[:8],
+        "suggestions": suggestions,
+        "evaluation_meta": {
+            "scoring_version": SCORING_VERSION,
+            "scene_type": scene_type,
+            "weighting": weighting,
+            "score_caps": cap_summary,
+            "red_flags": red_flags,
+            "rule_findings": rule_checks.get("findings") or [],
+            "hybrid_mode": True,
+            "model": get_chat_model(),
+            "technique": ["RAG", "rule-based checks", "LLM structured review", "adaptive deterministic scoring"],
+            "assessment_completion": {
+                "required_total": len(required_points),
+                "required_hit": len(required_hit),
+                "required_rate": (len(required_hit) / len(required_points)) if required_points else 1.0,
+                "overall_total": len(enriched_points),
+                "overall_hit": len(all_hit),
+                "overall_rate": (len(all_hit) / len(enriched_points)) if enriched_points else 1.0,
+                "total_weight": total_weight,
+                "earned_weight": earned_weight,
+                "weight_rate": (earned_weight / total_weight) if total_weight else 1.0,
+            },
+        },
+    }
 
 
 def build_knowledge_hits(case: Any, scene: Any, scene_type: str, limit: int = 5, knowledge_refs: List[str] | None = None) -> List[str]:
@@ -648,9 +972,20 @@ def merge_assessment_point_results(
     llm_points: List[dict],
     requirement_rows: List[dict],
 ) -> List[dict]:
-    req_map = {str(row.get("id") or "").strip(): row for row in requirement_rows if str(row.get("id") or "").strip()}
-    runtime_map = {str(point.get("id") or "").strip(): point for point in runtime_points if str(point.get("id") or "").strip()}
-    llm_map = {str(point.get("id") or "").strip(): point for point in llm_points if str(point.get("id") or "").strip()}
+    def merge_by_id(points: List[dict]) -> Dict[str, dict]:
+        output: Dict[str, dict] = {}
+        for point in points or []:
+            if not isinstance(point, dict):
+                continue
+            point_id = str(point.get("id") or "").strip()
+            if not point_id:
+                continue
+            output[point_id] = _merge_duplicate_assessment_points(output[point_id], point) if point_id in output else dict(point)
+        return output
+
+    req_map = merge_by_id(requirement_rows)
+    runtime_map = merge_by_id(runtime_points)
+    llm_map = merge_by_id(llm_points)
     ordered_ids = [str(row.get("id") or "").strip() for row in requirement_rows if str(row.get("id") or "").strip()]
     for point_id in runtime_map:
         if point_id not in ordered_ids:
@@ -665,7 +1000,7 @@ def merge_assessment_point_results(
         llm_point = llm_map.get(point_id) or {}
         req_row = req_map.get(point_id) or {}
         label = str(runtime_point.get("label") or llm_point.get("label") or req_row.get("label") or "未命名考察点").strip()
-        weight = max(1, int(runtime_point.get("weight") or req_row.get("weight") or 10))
+        weight = max(1, int(req_row.get("weight") or runtime_point.get("weight") or 10))
         status = _resolve_point_status(runtime_point.get("status"), llm_point.get("status"))
         evidence = _dedupe_strings((runtime_point.get("evidence") or []) + (llm_point.get("evidence") or []))[:3]
         feedback = str(llm_point.get("reason") or llm_point.get("feedback") or runtime_point.get("feedback") or "").strip()
@@ -677,8 +1012,8 @@ def merge_assessment_point_results(
                 "label": label,
                 "content": str(req_row.get("content") or llm_point.get("content") or "").strip(),
                 "stage_name": str(runtime_point.get("stage_name") or req_row.get("stage_name") or llm_point.get("stage_name") or "").strip(),
-                "category": str(runtime_point.get("category") or "procedure").strip() or "procedure",
-                "required": bool(runtime_point.get("required", req_row.get("required", True))),
+                "category": str(req_row.get("category") or runtime_point.get("category") or "procedure").strip() or "procedure",
+                "required": bool(req_row.get("required", runtime_point.get("required", True))),
                 "weight": weight,
                 "status": status,
                 "score": _score_from_point_status(status, weight),
@@ -687,7 +1022,7 @@ def merge_assessment_point_results(
                 "knowledge_refs": _dedupe_strings(runtime_point.get("knowledge_refs") or req_row.get("knowledge_refs") or []),
             }
         )
-    return merged
+    return dedupe_assessment_result_points(merged)
 
 
 def reconcile_dimension_scores(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -720,68 +1055,6 @@ def reconcile_dimension_scores(report: Dict[str, Any]) -> Dict[str, Any]:
 
     report["scores"] = adjusted
     report["total_score"] = sum(int(item.get("score") or 0) for item in adjusted)
-    return report
-
-
-def apply_assessment_driven_scoring(report: Dict[str, Any], point_results: List[dict], action_results: List[dict]) -> Dict[str, Any]:
-    required_points = [p for p in point_results if str(p.get("label") or "").strip()]
-    required_hit = [p for p in required_points if p.get("status") == "hit"]
-    all_points = [p for p in point_results if str(p.get("label") or "").strip()]
-    all_hit = [p for p in all_points if p.get("status") == "hit"]
-
-    required_rate = (len(required_hit) / len(required_points)) if required_points else 1.0
-    overall_rate = (len(all_hit) / len(all_points)) if all_points else 1.0
-    total_weight = sum(max(1, int(p.get("weight") or 10)) for p in all_points)
-    earned_weight = sum(int(p.get("score") or 0) for p in all_points)
-    weight_rate = (earned_weight / total_weight) if total_weight else 1.0
-
-    cap = 100
-    bonus = 0
-    if required_rate < 0.35:
-        cap = 58
-    elif required_rate < 0.55:
-        cap = 70
-    elif required_rate < 0.75:
-        cap = 82
-
-    if required_rate >= 0.85 and overall_rate >= 0.75 and len(action_results) > 0:
-        bonus = 3
-    if required_rate >= 0.95 and overall_rate >= 0.85:
-        bonus = 5
-
-    for item in report.get("scores") or []:
-        dimension = item.get("dimension")
-        if dimension not in ASSESSMENT_WEIGHTED_DIMENSIONS:
-            continue
-        full_score = int(item.get("full_score") or 0)
-        ceiling = int(full_score * (0.25 + 0.75 * weight_rate) * (0.55 + 0.45 * required_rate))
-        ceiling = max(0, min(full_score, ceiling))
-        if int(item.get("score") or 0) > ceiling:
-            gap = int(item.get("score") or 0) - ceiling
-            item["score"] = ceiling
-            item["reason"] = (
-                f"{item.get('reason', '')} 考察点加权完成率 {weight_rate:.0%}，"
-                f"必考命中率 {required_rate:.0%}，本项上限校准扣减 {gap} 分。"
-            ).strip()
-
-    report["total_score"] = max(0, min(100, min(sum(int(item.get("score") or 0) for item in report.get("scores") or []), cap) + bonus))
-    report = reconcile_dimension_scores(report)
-
-    if "evaluation_meta" not in report:
-        report["evaluation_meta"] = {}
-    report["evaluation_meta"]["assessment_completion"] = {
-        "required_total": len(required_points),
-        "required_hit": len(required_hit),
-        "required_rate": required_rate,
-        "overall_total": len(all_points),
-        "overall_hit": len(all_hit),
-        "overall_rate": overall_rate,
-        "total_weight": total_weight,
-        "earned_weight": earned_weight,
-        "weight_rate": weight_rate,
-        "score_cap": cap,
-        "score_bonus": bonus,
-    }
     return report
 
 
@@ -852,8 +1125,10 @@ def _collect_structured_assessment(
                     "label": label or content[:18] or "未命名考察点",
                     "content": content,
                     "stage_name": stage_name or "",
+                    "category": str(point.get("category") or "procedure").strip() or "procedure",
                     "weight": max(1, int(point.get("weight", 10) or 10)),
                     "required": bool(point.get("required", True)),
+                    "keywords": point.get("keywords") or [],
                     "knowledge_refs": point.get("knowledge_refs") or [],
                 }
             )
@@ -883,8 +1158,23 @@ def _collect_structured_assessment(
             if isinstance(action, dict):
                 action_results.append({**action, "stage_name": stage_name or ""})
 
+    requirement_rows = dedupe_assessment_result_points(requirement_rows)
+    point_results = dedupe_assessment_result_points(point_results)
+    total_weight = sum(max(1, int(point.get("weight") or 10)) for point in point_results)
+    earned_weight = sum(int(point.get("score") or 0) for point in point_results)
+    satisfied = []
+    missing = []
+    for point in point_results:
+        label = str(point.get("label") or "").strip()
+        if not label:
+            continue
+        if point.get("status") == "hit":
+            satisfied.append(label)
+        elif point.get("status") != "partial":
+            missing.append(label)
+
     stored_progress = runtime_state.get("assessment_progress") or {}
-    if isinstance(stored_progress, dict):
+    if not point_results and isinstance(stored_progress, dict):
         stored_summary = stored_progress.get("summary") if isinstance(stored_progress.get("summary"), dict) else {}
         total_weight = max(total_weight, int(stored_summary.get("total_weight") or 0))
         earned_weight = max(earned_weight, int(stored_summary.get("earned_weight") or 0))
@@ -1045,21 +1335,30 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
         )
 
         raw_content = _extract_response_text(response)
-        report = extract_json_payload(raw_content)
-        if not isinstance(report, dict):
-            report = build_fallback_report(raw_content, student_lines, scene_type)
+        llm_report = extract_json_payload(raw_content)
+        if not isinstance(llm_report, dict):
+            llm_report = {
+                "common_reviews": [],
+                "assessment_check_results": [],
+                "strengths": [],
+                "improvements": [],
+                "suggestions": str(raw_content or "").strip()[:220],
+                "evaluation_meta": {"llm_fallback": True, "raw_summary": str(raw_content or "").strip()[:220]},
+            }
 
-        report = normalize_llm_report(report)
-        report = apply_rule_adjustments(report, rule_checks)
-        report = calibrate_report(report, student_lines, scene_type)
-        check_results = report.get("assessment_check_results") if isinstance(report.get("assessment_check_results"), list) else []
+        check_results = llm_report.get("assessment_check_results") if isinstance(llm_report.get("assessment_check_results"), list) else []
         knowledge_docs = _knowledge_index(structured_assessment["knowledge_ref_ids"])
         merged_points = merge_assessment_point_results(runtime_point_results, check_results, requirement_rows)
         merged_points = _attach_knowledge_titles(merged_points, knowledge_docs)
-        report["assessment_point_results"] = merged_points
-        report = _enrich_report_from_structured_evidence(report, merged_points, action_results)
-        report = apply_assessment_driven_scoring(report, merged_points, action_results)
-        report["action_results"] = action_results
+        report = build_adaptive_report(
+            llm_report,
+            merged_points,
+            action_results,
+            student_lines,
+            msgs,
+            rule_checks,
+            scene_type,
+        )
         report["closure_summary"] = structured_assessment["closure_summary"]
 
         if "evaluation_meta" not in report:
@@ -1067,6 +1366,10 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
         report["evaluation_meta"]["scene_type"] = scene_type
         report["evaluation_meta"]["knowledge_hits"] = knowledge
         report["evaluation_meta"]["stage_gap_summary"] = structured_assessment["stage_gap_summary"] or build_stage_gap_summary(scene, student_lines)
+        if isinstance(llm_report.get("evaluation_meta"), dict):
+            report["evaluation_meta"]["llm_fallback"] = bool(llm_report["evaluation_meta"].get("llm_fallback", False))
+            if llm_report["evaluation_meta"].get("raw_summary"):
+                report["evaluation_meta"]["raw_summary"] = llm_report["evaluation_meta"]["raw_summary"]
         report = finalize_evaluation_report(report, session, scene, case, student_lines)
 
         report_json = json.dumps(report, ensure_ascii=False)

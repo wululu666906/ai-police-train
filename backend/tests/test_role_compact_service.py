@@ -95,3 +95,18 @@ def test_migrate_structured_data_sets_compact_schema_version():
     payload, _ = migrate_structured_data_payload({"persons": [{"name": "王某", "behavior_archetype": "求助配合型"}]})
     assert payload["schema_version"] == "2026.06.compact-v1"
     assert "compact_person_fields" in payload
+
+
+def test_new_reaction_archetype_fills_runtime_persona_defaults():
+    payload, _ = migrate_structured_data_payload({"persons": [{"name": "赵某", "behavior_archetype": "创伤受害型"}]})
+    person = payload["persons"][0]
+
+    assert person["behavior_archetype"] == "创伤受害型"
+    assert person["trigger_points"]
+    assert person["calming_points"]
+    assert person["pressure_response"]
+    assert person["init_risk"] >= 50
+    assert person["init_expression_clarity"] <= 70
+    assert "relationship_pressure" in payload["compact_person_fields"]
+    assert "surface_stance" in payload["compact_person_fields"]
+    assert "pressure_response" in payload["compact_person_fields"]

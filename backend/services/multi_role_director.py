@@ -7,6 +7,7 @@ import re
 from typing import Any, Optional
 
 import models
+from .human_reaction_engine import build_director_human_context, scene_mood_shift
 from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
 from .multi_role_service import (
     _build_history_block,
@@ -29,6 +30,9 @@ DIRECTOR_ORCHESTRATION_PROMPT = """
 近期对话：
 {history_block}
 
+真人化现场判断：
+{human_context_block}
+
 编排规则：
 1. 判断本轮互动模式 interaction_mode：
    - address_named：学员点名某人
@@ -50,8 +54,10 @@ DIRECTOR_ORCHESTRATION_PROMPT = """
    - respond：简短回应确认
    - witness_account：以在场第三人称提供信息（非本人视角）
    - calm_down：表达平静、配合
-9. scene_mood_shift 可取：stable（平稳）/ tense（紧张升温）/ deescalate（缓和降温），反映本轮互动对现场氛围的影响方向。
-10. 利用 cast_summary 中各角色的情绪/配合度/风险数值辅助决策：情绪高且风险高者更容易插话或抢话；配合度低者不宜安排过多连续发言；清晰度低者台词宜短不宜长。
+9. scene_mood 可取：stable（平稳）/ tense（升温）/ deadlock（僵持）/ chaotic（混乱）/ deescalate（缓和）/ edge_loss_control（失控边缘）。
+10. scene_mood_shift 可取：stable（平稳）/ tense（紧张升温）/ deescalate（缓和降温），反映本轮互动对现场氛围的影响方向。
+11. 利用 cast_summary 和真人化现场判断辅助决策：情绪高且风险高者更容易插话或抢话；配合度低者更容易回避、反问或僵持；清晰度低者台词宜短、跳跃、需要民警控场。
+12. 每个 cast_plan 项增加 reaction_hint，写该角色本轮像真人一样的反应倾向，例如争执型、委屈倾诉型、防御否认型、回避沉默型、混乱失序型、求保护型、突然配合型。
 
 注意：以下输出格式中的值为示例，请根据实际场景动态决定，不要照搬。
 
@@ -65,9 +71,11 @@ DIRECTOR_ORCHESTRATION_PROMPT = """
       "participation": "primary_respond",
       "utterance_count": 2,
       "intent": "vent",
-      "trigger_reason": "被民警点名要求说明经过"
+      "trigger_reason": "被民警点名要求说明经过",
+      "reaction_hint": "委屈倾诉型"
     }}
   ],
+  "scene_mood": "tense",
   "scene_mood_shift": "tense"
 }}
 """
@@ -126,6 +134,7 @@ def _build_cast_entries(
                 "utterance_count": default_utterances,
                 "intent": "explain" if index == 0 else "respond",
                 "trigger_reason": "被民警点名或要求发言",
+                "reaction_hint": "争执型" if mode == "interrupt_chain" else "试探观察型",
             }
         )
     return entries
@@ -155,6 +164,8 @@ def _enforce_cast_plan(
         plan["interaction_mode"] = "address_named"
         plan["routing_summary"] = f"学员点名{'、'.join(_role_display_name(role) for role in speakers)}，安排两人发言。"
         plan["cast_plan"] = _build_cast_entries(speakers, mode="address_named")
+        plan.setdefault("scene_mood", "tense")
+        plan["scene_mood_shift"] = scene_mood_shift(plan.get("scene_mood") or "tense")
         return plan
 
     if len(addressed) == 1:
@@ -170,12 +181,16 @@ def _enforce_cast_plan(
             plan["interaction_mode"] = "address_named"
             plan["routing_summary"] = f"学员点名{_role_display_name(speaker)}，由其主回应。"
             plan["cast_plan"] = _build_cast_entries([speaker], mode="address_named")
+        plan.setdefault("scene_mood", "stable")
+        plan["scene_mood_shift"] = scene_mood_shift(plan.get("scene_mood") or "stable")
         return plan
 
     if len(roles) >= 2 and _multi_speaker_prompt(user_text):
         plan["interaction_mode"] = "public_question"
         plan["routing_summary"] = "向现场多人发问，安排两人依次回应。"
         plan["cast_plan"] = _build_cast_entries(roles[:2], mode="public_question")
+        plan.setdefault("scene_mood", "tense")
+        plan["scene_mood_shift"] = scene_mood_shift(plan.get("scene_mood") or "tense")
     return plan
 
 
@@ -186,6 +201,7 @@ def _rule_based_director_plan(
     target_role_name: Optional[str],
     *,
     addressed_off_scene: Optional[list[models.Role]] = None,
+    role_snapshots: Optional[dict[str, dict[str, int]]] = None,
 ) -> dict[str, Any]:
     off_scene = addressed_off_scene or []
     addressed = addressed_on_scene
@@ -198,11 +214,24 @@ def _rule_based_director_plan(
         mode = "address_named"
     elif _multi_speaker_prompt(user_text):
         mode = "interrupt_chain"
+    human_context = build_director_human_context(
+        roles=roles,
+        role_snapshots=role_snapshots or {},
+        user_text=user_text,
+        interaction_mode=mode,
+    )
+    scene_mood = human_context["scene_mood"]
 
     if off_scene and not addressed:
         witness = _pick_witness_responder(roles)
         if not witness:
-            return {"interaction_mode": "mixed", "routing_summary": "无可对话角色", "cast_plan": [], "scene_mood_shift": "stable"}
+            return {
+                "interaction_mode": "mixed",
+                "routing_summary": "无可对话角色",
+                "cast_plan": [],
+                "scene_mood": "stable",
+                "scene_mood_shift": "stable",
+            }
         missing = "、".join(_role_display_name(role) for role in off_scene)
         return {
             "interaction_mode": "supplement",
@@ -216,8 +245,10 @@ def _rule_based_director_plan(
                     "utterance_count": 3,
                     "intent": "witness_account",
                     "trigger_reason": f"学员问及未到场角色：{missing}",
+                    "reaction_hint": "回避沉默型",
                 }
             ],
+            "scene_mood": "stable",
             "scene_mood_shift": "stable",
             "addressed_targets": [_role_display_name(role) for role in off_scene],
             "addressing_warning": f"「{missing}」未勾选为本场景可对话角色，请在管理端「角色与文案」中勾选到场后再问。",
@@ -229,7 +260,8 @@ def _rule_based_director_plan(
             "interaction_mode": "address_named",
             "routing_summary": f"学员点名{'、'.join(_role_display_name(role) for role in speakers)}，安排两人发言。",
             "cast_plan": _build_cast_entries(speakers, mode="address_named"),
-            "scene_mood_shift": "stable",
+            "scene_mood": scene_mood,
+            "scene_mood_shift": scene_mood_shift(scene_mood),
             "addressed_targets": [_role_display_name(role) for role in speakers],
         }
 
@@ -244,7 +276,8 @@ def _rule_based_director_plan(
             "interaction_mode": mode,
             "routing_summary": "现场多人被问，安排两人依次回应。",
             "cast_plan": _build_cast_entries(roles[:2], mode=mode),
-            "scene_mood_shift": "tense" if mode == "interrupt_chain" else "stable",
+            "scene_mood": scene_mood,
+            "scene_mood_shift": scene_mood_shift(scene_mood),
             "addressed_targets": [_role_display_name(role) for role in roles[:2]],
         }
     elif roles and not detect_addressed_roles(user_text, roles):
@@ -262,6 +295,7 @@ def _rule_based_director_plan(
                 "utterance_count": utterance_count,
                 "intent": "explain",
                 "trigger_reason": "回应民警提问",
+                "reaction_hint": "委屈倾诉型" if mode == "public_question" else "试探观察型",
             }
         )
 
@@ -276,6 +310,7 @@ def _rule_based_director_plan(
                 "utterance_count": 1 if mode == "calm_scene" else 2,
                 "intent": "defend",
                 "trigger_reason": "插话或补充",
+                "reaction_hint": "突然配合型" if mode == "calm_scene" else "争执型",
             }
         )
 
@@ -283,7 +318,8 @@ def _rule_based_director_plan(
         "interaction_mode": mode,
         "routing_summary": "规则编排：优先回应被问角色，必要时第二人插话。",
         "cast_plan": cast_plan[:2],
-        "scene_mood_shift": "tense" if mode == "interrupt_chain" else "stable",
+        "scene_mood": scene_mood,
+        "scene_mood_shift": scene_mood_shift(scene_mood),
         "addressed_targets": [_role_display_name(role) for role in addressed] if addressed else [],
     }
 
@@ -315,6 +351,7 @@ def _normalize_cast_plan(raw_plan: Any, roles: list[models.Role]) -> list[dict[s
                 "utterance_count": _clamp_count(item.get("utterance_count"), 1),
                 "intent": _text(item.get("intent")) or "respond",
                 "trigger_reason": _text(item.get("trigger_reason")) or "现场对话需要",
+                "reaction_hint": _text(item.get("reaction_hint")) or "",
             }
         )
         if len(normalized) >= 2:
@@ -361,6 +398,12 @@ def run_director(
         hint += f"\n指定对象：{target_role_name}。"
 
     plan: Optional[dict[str, Any]] = None
+    human_context = build_director_human_context(
+        roles=roles,
+        role_snapshots=snapshots,
+        user_text=user_text,
+        interaction_mode="",
+    )
     if use_llm:
         prompt = DIRECTOR_ORCHESTRATION_PROMPT.format(
             user_text=user_text,
@@ -369,6 +412,7 @@ def run_director(
             current_stage_goal=current_stage_goal or "推进处置",
             cast_summary=_build_cast_summary(roles, snapshots),
             history_block=_build_history_block(history),
+            human_context_block=human_context["block"],
         ) + hint
         try:
             response = create_json_chat_completion(
@@ -386,7 +430,8 @@ def run_director(
                     "interaction_mode": _text(payload.get("interaction_mode")) or "mixed",
                     "routing_summary": _text(payload.get("routing_summary")) or "导演编排",
                     "cast_plan": cast_plan,
-                    "scene_mood_shift": _text(payload.get("scene_mood_shift")) or "stable",
+                    "scene_mood": _text(payload.get("scene_mood")) or human_context["scene_mood"],
+                    "scene_mood_shift": _text(payload.get("scene_mood_shift")) or human_context["scene_mood_shift"],
                 }
         except Exception:
             plan = None
@@ -398,6 +443,7 @@ def run_director(
             addressed,
             target_role_name,
             addressed_off_scene=off_scene,
+            role_snapshots=snapshots,
         )
 
     if not plan.get("cast_plan"):
@@ -407,10 +453,13 @@ def run_director(
             addressed,
             target_role_name,
             addressed_off_scene=off_scene,
+            role_snapshots=snapshots,
         )
         plan["cast_plan"] = fallback["cast_plan"]
 
     plan = _enforce_cast_plan(plan, addressed=addressed, roles=roles, user_text=user_text)
+    plan["scene_mood"] = _text(plan.get("scene_mood")) or human_context["scene_mood"]
+    plan["scene_mood_shift"] = _text(plan.get("scene_mood_shift")) or scene_mood_shift(plan["scene_mood"])
     plan["addressed_targets"] = addressed_targets
     if addressing_warning:
         plan["addressing_warning"] = addressing_warning

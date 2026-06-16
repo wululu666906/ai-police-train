@@ -148,3 +148,70 @@ def test_scene_engine_merges_multiple_utterances():
     assert len(merged["reply_turns"]) == 2
     assert merged["reply_turns"][0]["speaker_name"] == "张某"
     assert snapshots["1"]["cooperation"] == 32
+
+
+def test_actor_reacts_to_peer_utterance_like_argument():
+    suspect = _FakeRole(2, "刘军", "违法嫌疑人")
+    output = generate_role_dialogue(
+        role=suspect,
+        cast_entry={"participation": "interrupt", "utterance_count": 2, "intent": "defend"},
+        director_plan={"interaction_mode": "interrupt_chain", "scene_mood": "tense"},
+        scene=_FakeScene(),
+        case=_FakeCase(),
+        history=[],
+        user_text="你们双方都说一下怎么回事",
+        current_stage="调解",
+        role_snapshot={"emotion": 85, "cooperation": 18, "risk": 78, "clarity": 62},
+        peer_utterances=[
+            {
+                "speaker_name": "赵阳",
+                "utterances": [{"content": "就是刘军先动手打我的。"}],
+            }
+        ],
+        use_llm=False,
+    )
+    text = " ".join(item["content"] for item in output["utterances"])
+    assert output["reaction_type"] in {"argumentative_dispute", "provocative_challenge"}
+    assert "不是" in text or "认定" in text or "责任" in text
+    assert output["updated_snapshot"]["risk"] >= 78
+
+
+def test_actor_low_cooperation_witness_uses_avoidant_reaction():
+    witness = _FakeRole(3, "孙桂兰", "证人")
+    output = generate_role_dialogue(
+        role=witness,
+        cast_entry={"participation": "primary_respond", "utterance_count": 2, "intent": "witness_account"},
+        director_plan={"interaction_mode": "address_named", "scene_mood": "deadlock"},
+        scene=_FakeScene(),
+        case=_FakeCase(),
+        history=[],
+        user_text="孙桂兰，你看到什么就说什么",
+        current_stage="询问",
+        role_snapshot={"emotion": 45, "cooperation": 18, "risk": 45, "clarity": 70},
+        use_llm=False,
+    )
+    text = " ".join(item["content"] for item in output["utterances"])
+    assert output["reaction_type"] == "avoidant_silence"
+    assert "不敢" in text or "确定" in text or "掺和" in text
+
+
+def test_actor_can_have_multiple_reactions_in_one_turn():
+    suspect = _FakeRole(2, "刘军", "违法嫌疑人")
+    suspect.hidden_truths = '["先动手击打赵阳面部"]'
+    output = generate_role_dialogue(
+        role=suspect,
+        cast_entry={"participation": "primary_respond", "utterance_count": 3, "intent": "defend"},
+        director_plan={"interaction_mode": "address_named", "scene_mood": "deadlock"},
+        scene=_FakeScene(),
+        case=_FakeCase(),
+        history=[],
+        user_text="监控和伤情都在，你还想私了赔偿吗？这事会不会影响你家属？",
+        current_stage="询问",
+        role_snapshot={"emotion": 72, "cooperation": 18, "risk": 76, "clarity": 58},
+        use_llm=False,
+    )
+    reaction_types = output.get("reaction_types") or []
+    assert len(reaction_types) >= 2
+    assert "defensive_denial" in reaction_types
+    assert "topic_shift_bargain" in reaction_types
+    assert output["reaction_type"] == reaction_types[0]

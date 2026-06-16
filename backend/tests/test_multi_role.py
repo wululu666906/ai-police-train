@@ -1,6 +1,8 @@
 """Multi-role dialogue training tests."""
 
+import models
 from services import ai_service
+from services.training_runtime_service import dump_runtime_state, load_runtime_state
 
 
 def test_session_includes_scene_roles(client, student_headers):
@@ -14,6 +16,46 @@ def test_session_includes_scene_roles(client, student_headers):
     assert "张某" in names
     assert "李某" in names
     assert len(roles) >= 2
+
+    client.request("DELETE", f"/training/session/{session_id}", headers=student_headers)
+
+
+def test_session_scene_roles_include_per_role_state_deltas(client, student_headers, db_session):
+    start_response = client.post("/training/start/1", headers=student_headers)
+    session_id = start_response.json()["id"]
+    session = db_session.query(models.TrainingSession).filter_by(id=session_id).first()
+    zhang = db_session.query(models.Role).filter_by(name="张某").first()
+    li = db_session.query(models.Role).filter_by(name="李某").first()
+
+    runtime_state = load_runtime_state(session.revealed_info)
+    runtime_state["role_state_snapshots"] = {
+        str(zhang.id): {"emotion": 72, "cooperation": 43, "risk": 64, "clarity": 56},
+        str(li.id): {"emotion": 66, "cooperation": 24, "risk": 58, "clarity": 48},
+    }
+    runtime_state["role_state_deltas"] = {
+        str(zhang.id): {"emotion": -4, "cooperation": 3, "risk": -2, "clarity": 1},
+        str(li.id): {"emotion": 2, "cooperation": -5, "risk": 4, "clarity": -3},
+    }
+    runtime_state["last_active_role_ids"] = [li.id]
+    session.revealed_info = dump_runtime_state(runtime_state)
+    db_session.commit()
+
+    response = client.get(f"/training/session/{session_id}", headers=student_headers)
+    assert response.status_code == 200
+    roles = {item["name"]: item for item in response.json().get("scene_roles") or []}
+
+    assert roles["张某"]["emotion"] == 72
+    assert roles["张某"]["emotion_delta"] == -4
+    assert roles["张某"]["cooperation_delta"] == 3
+    assert roles["张某"]["risk_delta"] == -2
+    assert roles["张某"]["clarity_delta"] == 1
+    assert roles["李某"]["emotion_delta"] == 2
+    assert roles["李某"]["cooperation_delta"] == -5
+    assert roles["李某"]["risk_delta"] == 4
+    assert roles["李某"]["clarity_delta"] == -3
+    assert roles["李某"]["is_active"] is True
+
+    client.request("DELETE", f"/training/session/{session_id}", headers=student_headers)
 
 
 def test_chat_multi_role_reply_turns(client, student_headers, monkeypatch):
@@ -61,3 +103,5 @@ def test_chat_multi_role_reply_turns(client, student_headers, monkeypatch):
     speakers = {item.get("speaker_name") for item in turns}
     assert "张某" in speakers
     assert "李某" in speakers
+
+    client.request("DELETE", f"/training/session/{session_id}", headers=student_headers)

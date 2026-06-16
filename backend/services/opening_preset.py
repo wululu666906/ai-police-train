@@ -58,7 +58,25 @@ ARCHETYPE_DEFAULT_PRESET: dict[str, str] = {
     "醉酒失控型": "intoxicated_chaotic",
     "绝望封闭型": "withdrawn",
     "围观起哄型": "confrontational",
+    "创伤受害型": "emotional_venting",
+    "精神危机型": "intoxicated_chaotic",
+    "利益算计型": "defensive_evasive",
+    "权威敏感型": "confrontational",
+    "沉默恐惧型": "withdrawn",
+    "过度依赖型": "emotional_venting",
 }
+
+
+def _score(value: Any, default: int) -> int:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return default
+    try:
+        score = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(100, score))
 
 
 def infer_opening_preset(person: dict[str, Any] | None) -> str:
@@ -71,10 +89,10 @@ def infer_opening_preset(person: dict[str, Any] | None) -> str:
     if archetype in ARCHETYPE_DEFAULT_PRESET:
         return ARCHETYPE_DEFAULT_PRESET[archetype]
 
-    emotion = int(person.get("init_emotion") or 50)
-    trust = int(person.get("init_trust") or 30)
-    risk = int(person.get("init_risk") or 50)
-    clarity = int(person.get("init_expression_clarity") or person.get("init_clarity") or 52)
+    emotion = _score(person.get("init_emotion"), 50)
+    trust = _score(person.get("init_trust"), 30)
+    risk = _score(person.get("init_risk"), 50)
+    clarity = _score(person.get("init_expression_clarity") or person.get("init_clarity"), 52)
 
     if risk >= 80 and clarity <= 30:
         return "intoxicated_chaotic"

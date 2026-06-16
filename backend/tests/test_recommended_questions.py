@@ -1,8 +1,10 @@
 """Tests for contextual recommended question generation."""
 
 from services.recommended_questions_service import (
+    apply_stage_hit_rate_correction,
     build_recommended_question_items,
     build_recommended_questions,
+    filter_stale_missing_requirements_for_history,
 )
 
 
@@ -88,3 +90,117 @@ def test_followup_from_last_assistant_reply():
     )
     joined = " ".join(item["text"] for item in items)
     assert "动手" in joined or "在场" in joined or "具体" in joined
+
+
+def test_intake_moves_to_safety_after_incident_is_covered():
+    items = build_recommended_question_items(
+        scene_kind="intake",
+        current_stage="接警",
+        role_name="报警人",
+        missing_requirements=["具体情况", "事情经过"],
+        recent_messages=[
+            {"role": "assistant", "content": "我邻居在楼下跟人打起来了，我刚报的警。", "speaker_name": "报警人"},
+        ],
+        last_user_message="请你说一下现场具体什么情况，发生什么事了？",
+        use_llm=False,
+    )
+
+    texts = [item["text"] for item in items]
+    assert texts
+    assert any("安全" in text or "受伤" in text or "继续冲突" in text for text in texts[:2])
+    assert not any("具体情况" in text or "事情经过能再说详细" in text for text in texts[:2])
+
+
+def test_intake_moves_to_identity_after_time_location_and_safety():
+    items = build_recommended_question_items(
+        scene_kind="intake",
+        current_stage="接警",
+        role_name="报警人",
+        missing_requirements=["事情经过", "身份信息"],
+        recent_messages=[
+            {"role": "user", "content": "具体出了什么事？你现在安全吗？有没有人受伤？"},
+            {"role": "assistant", "content": "我安全，对方也没受伤，就是楼下两个人争吵推搡。", "speaker_name": "报警人"},
+            {"role": "user", "content": "你现在具体在哪里？事情大概几点发生的？"},
+            {"role": "assistant", "content": "在幸福小区3号楼门口，大概晚上8点半开始的。", "speaker_name": "报警人"},
+        ],
+        use_llm=False,
+    )
+
+    texts = [item["text"] for item in items]
+    assert texts
+    assert any("姓名" in text or "联系电话" in text or "联系方式" in text for text in texts[:2])
+    assert not any("经过" in text or "具体出了什么事" in text for text in texts[:2])
+
+
+def test_intake_moves_to_contact_after_core_facts_and_people():
+    items = build_recommended_question_items(
+        scene_kind="intake",
+        current_stage="接警",
+        role_name="报警人",
+        missing_requirements=["案件基本情况", "事发时间", "事发地点", "涉事人员"],
+        recent_messages=[
+            {"role": "user", "content": "具体出了什么事？现场有没有人受伤？"},
+            {"role": "assistant", "content": "楼下两个人因为停车吵起来了，没有人受伤。", "speaker_name": "报警人"},
+            {"role": "user", "content": "事情是什么时候发生的？具体地点在哪里？现场还有哪些人在？"},
+            {"role": "assistant", "content": "晚上8点半，在幸福小区3号楼门口，涉事双方都还在。", "speaker_name": "报警人"},
+        ],
+        use_llm=False,
+    )
+
+    texts = [item["text"] for item in items]
+    assert texts
+    assert any("姓名" in text or "联系电话" in text or "回拨" in text for text in texts[:2])
+    assert not any("经过" in text or "具体出了什么事" in text or "几点" in text or "位置" in text for text in texts[:2])
+
+
+def test_intake_closure_after_contact_and_dispatch_context():
+    items = build_recommended_question_items(
+        scene_kind="intake",
+        current_stage="接警",
+        role_name="报警人",
+        recent_messages=[
+            {"role": "user", "content": "具体出了什么事？有没有人受伤？具体地点在哪里？"},
+            {"role": "assistant", "content": "停车纠纷，没人受伤，在幸福小区3号楼门口。", "speaker_name": "报警人"},
+            {"role": "user", "content": "事情几点发生？现场还有哪些人？请报姓名和联系电话，方便回拨。"},
+            {"role": "assistant", "content": "晚上8点半，双方都在。我叫王某，电话13800000000。", "speaker_name": "报警人"},
+            {"role": "user", "content": "民警会到场处置，你先待在安全位置。"},
+            {"role": "assistant", "content": "好的，我在门口等。", "speaker_name": "报警人"},
+        ],
+        use_llm=False,
+    )
+
+    texts = [item["text"] for item in items]
+    assert texts
+    assert any("电话畅通" in text or "安全位置" in text or "别离开" in text for text in texts[:2])
+    assert not any("经过" in text or "具体出了什么事" in text or "几点" in text or "什么位置" in text for text in texts[:2])
+
+
+def test_history_filter_removes_covered_intake_process_gap():
+    missing = filter_stale_missing_requirements_for_history(
+        ["什么事/经过", "风险/伤情", "身份/关系"],
+        recent_messages=[
+            {"role": "assistant", "content": "楼下有人打起来了，我刚报警。", "speaker_name": "报警人"},
+        ],
+        last_user_message="请说一下具体什么情况，发生什么事了？",
+        use_intake_flow=True,
+    )
+
+    assert "什么事/经过" not in missing
+    assert "风险/伤情" in missing
+    assert "身份/关系" in missing
+
+
+def test_stage_hit_correction_uses_filtered_gaps_without_repeating_process():
+    missing = filter_stale_missing_requirements_for_history(
+        ["什么事/经过"],
+        recent_messages=[
+            {"role": "assistant", "content": "楼下有人打起来了，我刚报警。", "speaker_name": "报警人"},
+        ],
+        last_user_message="请说一下具体什么情况，发生什么事了？",
+        use_intake_flow=True,
+    )
+    items = [{"text": "你现在人安全吗？有没有人受伤？", "category": "安抚", "target_role_name": None}]
+
+    corrected = apply_stage_hit_rate_correction(items, satisfied=["什么事/经过"], missing=missing)
+
+    assert corrected[0]["text"] == "你现在人安全吗？有没有人受伤？"

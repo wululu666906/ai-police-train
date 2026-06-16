@@ -21,14 +21,19 @@ _TOPIC_RULES: list[tuple[str, tuple[str, ...]]] = [
     ("time", ("几点", "什么时候", "何时", "多久", "时间", "开始", "结束", "9点", "点钟", "上午", "下午", "晚上")),
     ("location", ("哪里", "位置", "地点", "在哪", "何处")),
     ("identity", ("身份", "姓名", "你是谁", "叫什么", "联系方式", "电话")),
+    ("contact", ("联系方式", "联系电话", "电话", "手机号", "回拨", "保持畅通")),
+    ("people", ("涉事", "当事人", "对方", "双方", "几个人", "多少人", "哪些人", "谁在场", "还有谁")),
     ("witness", ("证人", "目击", "在场", "还有谁", "谁看到")),
     ("injury", ("伤", "120", "急救", "昏迷", "出血", "意识", "外伤")),
     ("safety", ("危险", "安全", "撤离", "警戒")),
-    ("process", ("经过", "过程", "怎么回事", "顺序", "先后")),
+    ("dispatch", ("派警", "民警", "出警", "处置", "到场", "增援")),
+    ("process", ("经过", "过程", "怎么回事", "发生什么", "什么事", "什么情况", "具体情况", "顺序", "先后")),
     ("evidence", ("监控", "视频", "照片", "物证", "痕迹")),
     ("emotion", ("冷静", "别急", "慢慢", "安抚", "深呼吸")),
     ("mediation", ("调解", "协商", "双方", "对面")),
 ]
+
+_INTAKE_CORE_TOPICS = {"process", "time", "location", "people"}
 
 
 def _text(value: Any) -> str:
@@ -126,6 +131,95 @@ def _last_assistant_text(recent_messages: list[dict[str, Any]] | None) -> str:
         if _text(message.get("role")) == "assistant":
             return _text(message.get("content"))
     return ""
+
+
+def _user_messages(recent_messages: list[dict[str, Any]] | None, last_user_message: str = "") -> list[str]:
+    messages = [
+        _text(message.get("content"))
+        for message in recent_messages or []
+        if _text(message.get("role")) == "user" and _text(message.get("content"))
+    ]
+    latest = _text(last_user_message)
+    if latest and (not messages or messages[-1] != latest):
+        messages.append(latest)
+    return messages
+
+
+def _assistant_corpus(recent_messages: list[dict[str, Any]] | None) -> str:
+    return "\n".join(
+        _text(message.get("content"))
+        for message in recent_messages or []
+        if _text(message.get("role")) == "assistant" and _text(message.get("content"))
+    )
+
+
+def _infer_emotion_state(corpus: str, emotion: int) -> str:
+    text = _text(corpus)
+    if emotion >= 72 or any(token in text for token in ("害怕", "慌", "急死", "怎么办", "哭", "激动", "吓")):
+        return "high"
+    return "normal"
+
+
+def _intake_flow_step(covered_topics: set[str], intake_phases: set[str], corpus: str, emotion: int) -> str:
+    if "incident_nature" not in intake_phases and "process" not in covered_topics:
+        return "incident"
+    if "safety_check" not in intake_phases and not ({"safety", "injury"} & covered_topics):
+        return "risk"
+    if "location" not in intake_phases and "location" not in covered_topics:
+        return "location"
+    if "time" not in intake_phases and "time" not in covered_topics:
+        return "time"
+    if "people" not in covered_topics and "witness" not in covered_topics:
+        return "people"
+    if "contact" not in covered_topics:
+        return "contact"
+    if "risk_dispatch" not in intake_phases and "dispatch" not in covered_topics:
+        return "dispatch"
+    if _infer_emotion_state(corpus, emotion) == "high":
+        return "soothe"
+    return "closure"
+
+
+def _intake_flow_items(step: str, addressee: str) -> list[dict[str, Any]]:
+    mapping: dict[str, list[tuple[str, str]]] = {
+        "incident": [
+            ("您先别着急，我需要确认几个情况。具体出了什么事？", "安抚"),
+            ("现在事情还在发生吗？", "核实"),
+        ],
+        "risk": [
+            ("现场现在还有人在冲突吗？有没有人受伤？", "核实"),
+            ("对方还在现场吗？有没有持械或继续伤人的风险？", "核实"),
+        ],
+        "location": [
+            ("你现在具体在什么位置？门牌号能说一下吗？", "核实"),
+            ("事发地点和你现在的位置是同一个地方吗？", "核实"),
+        ],
+        "time": [
+            ("事情是什么时候发生的？现在还在持续吗？", "核实"),
+            ("从发生到你报警大概隔了多久？", "核实"),
+        ],
+        "people": [
+            ("现场现在还有哪些人在？涉事双方都在吗？", "核实"),
+            ("除了你，还有没有目击人或受伤的人？", "核实"),
+        ],
+        "contact": [
+            ("请报一下你的姓名和联系电话，方便回拨。", "核实"),
+            ("你和涉事人员是什么关系？", "核实"),
+        ],
+        "dispatch": [
+            ("你先待在安全位置，民警到场前别再靠近对方，可以吗？", "程序"),
+            ("现场情况有变化的话，能第一时间告诉我们吗？", "程序"),
+        ],
+        "soothe": [
+            ("你先深呼吸，我们一个问题一个问题来，好吗？", "安抚"),
+            ("你现在最担心的是什么？我先帮你稳住现场。", "安抚"),
+        ],
+        "closure": [
+            ("你保持电话畅通，民警到场前先别离开，可以吗？", "程序"),
+            ("如果对方靠近或情况升级，你能马上退到安全位置吗？", "程序"),
+        ],
+    }
+    return [_item(_prefix_addressee(text, addressee), category, addressee) for text, category in mapping.get(step, [])]
 
 
 def _role_names(scene_roles: list[dict[str, Any]] | None) -> list[str]:
@@ -274,6 +368,59 @@ def _missing_label_keywords(label: str) -> list[str]:
     return [label] if label else []
 
 
+def _is_missing_label_already_covered(label: str, covered_topics: set[str], intake_phases: set[str] | None = None) -> bool:
+    text = _text(label)
+    intake_phases = intake_phases or set()
+    if any(token in text for token in ("经过", "过程", "案情", "具体情况", "事件性质")):
+        return "process" in covered_topics or "incident_nature" in intake_phases or "details" in intake_phases
+    if any(token in text for token in ("时间", "几点")):
+        return "time" in covered_topics or "time" in intake_phases
+    if any(token in text for token in ("地点", "位置")):
+        return "location" in covered_topics or "location" in intake_phases
+    if any(token in text for token in ("身份", "姓名", "联系方式", "电话")):
+        return "identity" in covered_topics or "identity" in intake_phases
+    if any(token in text for token in ("风险", "安全", "伤情", "救助")):
+        return "safety" in covered_topics or "injury" in covered_topics or "safety_check" in intake_phases
+    return False
+
+
+def _filter_stale_missing_requirements(
+    missing_requirements: list[str] | None,
+    covered_topics: set[str],
+    intake_phases: set[str] | None = None,
+) -> list[str]:
+    return [
+        label
+        for label in (missing_requirements or [])
+        if not _is_missing_label_already_covered(label, covered_topics, intake_phases)
+    ]
+
+
+def filter_stale_missing_requirements_for_history(
+    missing_requirements: list[str] | None,
+    *,
+    recent_messages: list[dict[str, Any]] | None = None,
+    revealed_info: list[str] | None = None,
+    last_user_message: str = "",
+    use_intake_flow: bool = True,
+) -> list[str]:
+    corpus = _build_history_corpus(recent_messages, revealed_info, last_user_message)
+    covered_topics = _detect_topics(corpus)
+    intake_phases: set[str] = set()
+    if use_intake_flow:
+        try:
+            from .dialogue_sequence_service import detect_satisfied_phases
+
+            intake_phases = detect_satisfied_phases(
+                _user_messages(recent_messages, last_user_message),
+                revealed_info,
+                _assistant_corpus(recent_messages),
+            )
+        except Exception:
+            intake_phases = set()
+    return _filter_stale_missing_requirements(missing_requirements, covered_topics, intake_phases)
+
+
 def _question_covers_missing_label(text: str, label: str) -> bool:
     keywords = _missing_label_keywords(label)
     if not keywords:
@@ -353,6 +500,27 @@ def _intake_questions(addressee: str, *, has_dialogue: bool, has_assistant_openi
         _item(_prefix_addressee("你先别慌，你现在安全吗？有没有人受伤？", addressee), "安抚", addressee),
         _item(_prefix_addressee("你再把事情经过简单说一下。", addressee), "核实", addressee),
     ]
+
+
+def _intake_progress_questions(
+    addressee: str,
+    *,
+    recent_messages: list[dict[str, Any]] | None,
+    revealed_info: list[str] | None,
+    last_user_message: str = "",
+) -> tuple[list[dict[str, Any]], set[str]]:
+    try:
+        from .dialogue_sequence_service import detect_satisfied_phases
+
+        phases = detect_satisfied_phases(
+            _user_messages(recent_messages, last_user_message),
+            revealed_info,
+            _assistant_corpus(recent_messages),
+        )
+    except Exception:
+        phases = set()
+
+    return [], phases
 
 
 def _stage_questions(current_stage: str, addressee: str, scene_kind: str = "") -> list[dict[str, Any]]:
@@ -513,10 +681,28 @@ def build_recommended_question_items(
     has_dialogue = bool(recent_messages) or bool(last_user_message) or bool(last_assistant)
     has_assistant_opening = bool(last_assistant)
     resolved_scene_kind = _text(scene_kind) or ("intake" if "接警" in _text(scene_name) or "接警" in _text(current_stage) else "")
+    intake_progress_items: list[dict[str, Any]] = []
+    intake_phases: set[str] = set()
+    intake_step = ""
+    if resolved_scene_kind == "intake":
+        intake_progress_items, intake_phases = _intake_progress_questions(
+            addressee,
+            recent_messages=recent_messages,
+            revealed_info=revealed_info,
+            last_user_message=last_user_message,
+        )
+        intake_step = _intake_flow_step(covered_topics, intake_phases, corpus, emotion)
+        intake_progress_items = _intake_flow_items(intake_step, addressee)
+    effective_missing_requirements = _filter_stale_missing_requirements(
+        missing_requirements,
+        covered_topics,
+        intake_phases,
+    )
 
     items: list[dict[str, Any]] = []
     custom_items = _custom_prompt_items(custom_prompts, scene_roles)
     items.extend(custom_items)
+    items.extend(intake_progress_items)
 
     if use_llm and (last_assistant or last_user_message):
         llm_items = _try_llm_question_items(
@@ -527,7 +713,7 @@ def build_recommended_question_items(
             case_type=case_type,
             last_assistant=last_assistant,
             last_user_message=last_user_message,
-            missing_requirements=missing_requirements or [],
+            missing_requirements=effective_missing_requirements,
             scene_roles=scene_roles,
             covered_topics=covered_topics,
         )
@@ -539,20 +725,21 @@ def build_recommended_question_items(
     items.extend(_multi_role_questions(scene_roles, target_role_name))
     items.extend(_goal_to_dialogue_questions(current_stage_goal, addressee))
 
-    for label in (missing_requirements or [])[:3]:
+    for label in effective_missing_requirements[:3]:
         converted = _missing_to_dialogue(label, addressee)
         if converted:
             items.append(converted)
 
     items.extend(_case_type_questions(case_type, addressee))
     if resolved_scene_kind == "intake":
-        items.extend(
-            _intake_questions(
-                addressee,
-                has_dialogue=bool(last_user_message),
-                has_assistant_opening=has_assistant_opening,
+        if not intake_progress_items:
+            items.extend(
+                _intake_questions(
+                    addressee,
+                    has_dialogue=bool(last_user_message),
+                    has_assistant_opening=has_assistant_opening,
+                )
             )
-        )
     else:
         items.extend(_stage_questions(current_stage, addressee, resolved_scene_kind))
 
@@ -562,7 +749,7 @@ def build_recommended_question_items(
         items.append(_item(_prefix_addressee("现在双方情绪怎么样？能坐下来谈吗？", addressee), "调解", addressee))
 
     items.extend(_truth_stage_questions(truth_stage, emotion, addressee))
-    items = _prioritize_missing_items(items, missing_requirements, addressee)
+    items = _prioritize_missing_items(items, effective_missing_requirements, addressee)
 
     if not has_dialogue and resolved_scene_kind != "intake":
         items.insert(0, _item(_prefix_addressee("你好，我是到场民警，先说说发生了什么？", addressee), "核实", addressee))
@@ -579,7 +766,17 @@ def build_recommended_question_items(
         text = raw["text"]
         if _is_meta_question(text):
             continue
-        if _is_redundant(text, covered_topics):
+        q_topics = _question_topics(text)
+        if _is_redundant(text, covered_topics) and not (
+            resolved_scene_kind == "intake" and raw.get("category") in {"程序", "安抚"}
+        ):
+            continue
+        if (
+            resolved_scene_kind == "intake"
+            and intake_step in {"contact", "dispatch", "soothe", "closure"}
+            and q_topics
+            and q_topics.issubset(_INTAKE_CORE_TOPICS)
+        ):
             continue
         if not raw.get("target_role_name"):
             raw["target_role_name"] = _extract_role_from_text(text, scene_roles) or (_text(target_role_name) or None)
@@ -590,7 +787,7 @@ def build_recommended_question_items(
     if custom_items:
         custom_texts = {item["text"] for item in custom_items}
         cleaned = [item for item in custom_items] + [item for item in cleaned if item["text"] not in custom_texts]
-    cleaned = _apply_missing_first_correction(cleaned, missing_requirements, addressee)
+    cleaned = _apply_missing_first_correction(cleaned, effective_missing_requirements, addressee)
     if not cleaned:
         cleaned = [
             _item(_prefix_addressee("你把知道的情况按顺序说一下。", addressee), "追问", addressee),

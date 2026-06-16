@@ -131,42 +131,47 @@
               </div>
 
               <div class="history-row__actions">
-                <el-button
-                  v-if="record.status === 'finished'"
-                  size="small"
-                  type="primary"
-                  @click="router.push(`/student/evaluation?session_id=${record.id}`)"
+                <el-dropdown
+                  trigger="click"
+                  popper-class="history-action-dropdown"
+                  :disabled="isActionLocked(record.id)"
+                  @command="(command: string | number | object) => handleRecordAction(command, record)"
                 >
-                  查看报告
-                </el-button>
-                <el-button
-                  v-if="record.status === 'finished'"
-                  size="small"
-                  plain
-                  :loading="reEvaluatingId === record.id"
-                  :disabled="reEvaluatingId !== null"
-                  @click="reEvaluate(record.id)"
-                >
-                  重新评估
-                </el-button>
-                <el-button
-                  v-if="record.status !== 'finished'"
-                  size="small"
-                  type="primary"
-                  @click="continueTraining(record.id)"
-                >
-                  继续训练
-                </el-button>
-                <el-button
-                  size="small"
-                  plain
-                  :type="record.status === 'finished' ? 'default' : 'danger'"
-                  :loading="deletingId === record.id"
-                  :disabled="deletingId !== null || reEvaluatingId !== null"
-                  @click="deleteSession(record.id)"
-                >
-                  删除记录
-                </el-button>
+                  <button
+                    type="button"
+                    class="action-menu-trigger"
+                    :class="{ 'action-menu-trigger--loading': isActionLocked(record.id) }"
+                    :disabled="isActionLocked(record.id)"
+                  >
+                    <span>操作</span>
+                    <span v-if="isActionLocked(record.id)" class="action-loading-dot" aria-hidden="true"></span>
+                    <el-icon v-else><ArrowDown /></el-icon>
+                  </button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="dialogue">
+                        <el-icon><ChatLineRound /></el-icon>
+                        <span>查看对话</span>
+                      </el-dropdown-item>
+                      <el-dropdown-item v-if="record.status === 'finished'" command="report">
+                        <el-icon><Document /></el-icon>
+                        <span>查看报告</span>
+                      </el-dropdown-item>
+                      <el-dropdown-item v-if="record.status === 'finished'" command="reevaluate" :disabled="reEvaluatingId !== null">
+                        <el-icon><Refresh /></el-icon>
+                        <span>重新评估</span>
+                      </el-dropdown-item>
+                      <el-dropdown-item v-if="record.status !== 'finished'" command="continue">
+                        <el-icon><VideoPlay /></el-icon>
+                        <span>继续训练</span>
+                      </el-dropdown-item>
+                      <el-dropdown-item command="delete" divided :disabled="deletingId !== null || reEvaluatingId !== null" class="history-action-dropdown__danger">
+                        <el-icon><Delete /></el-icon>
+                        <span>删除记录</span>
+                      </el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
               </div>
             </article>
           </div>
@@ -191,6 +196,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
+import { ArrowDown, ChatLineRound, Delete, Document, Refresh, VideoPlay } from '@element-plus/icons-vue'
 import request from '../utils/request'
 import '../geeker-adapt/styles/student-hall.scss'
 
@@ -340,6 +346,42 @@ const reEvaluate = async (sessionId: number) => {
 
 const continueTraining = (sessionId: number) => {
   router.push(`/student/training/${sessionId}`)
+}
+
+const openDialogue = (sessionId: number) => {
+  if (!sessionId) return
+  router.push(`/student/history/${sessionId}/dialogue`)
+}
+
+const isActionLocked = (sessionId: number) => deletingId.value === sessionId || reEvaluatingId.value === sessionId
+
+const handleRecordAction = async (rawCommand: string | number | object, record: any) => {
+  if (!record?.id || isActionLocked(record.id)) return
+  const command = String(rawCommand)
+
+  if (command === 'dialogue') {
+    openDialogue(record.id)
+    return
+  }
+
+  if (command === 'report') {
+    router.push(`/student/evaluation?session_id=${record.id}`)
+    return
+  }
+
+  if (command === 'continue') {
+    continueTraining(record.id)
+    return
+  }
+
+  if (command === 'reevaluate') {
+    await reEvaluate(record.id)
+    return
+  }
+
+  if (command === 'delete') {
+    await deleteSession(record.id)
+  }
 }
 
 const deleteSession = async (sessionId: number) => {
@@ -572,34 +614,67 @@ onUnmounted(() => {
 }
 
 .history-table-card {
-  overflow: hidden;
+  --history-table-columns: minmax(320px, 2.2fr) minmax(118px, 0.85fr) minmax(150px, 1fr) minmax(360px, 1.7fr) minmax(118px, 0.72fr) minmax(96px, 0.6fr);
+  --history-table-gap: 16px;
+  --history-table-x: 24px;
+
+  overflow: visible;
   padding: 0;
   border-radius: 6px;
 }
 
-.history-table__head {
+.history-table__head,
+.history-row {
   display: grid;
-  grid-template-columns: 2.2fr 1fr 1.2fr 1.8fr 0.8fr 0.9fr;
-  gap: 16px;
+  grid-template-columns: var(--history-table-columns);
+  gap: var(--history-table-gap);
+  box-sizing: border-box;
+}
+
+.history-table__head {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   border-bottom: 1px solid #f3f4f6;
-  padding: 18px 24px 16px;
+  background: #fff;
+  padding: 18px var(--history-table-x) 16px;
   color: #111827;
   font-size: 13px;
   font-weight: 700;
 }
 
+.history-table__head > div {
+  min-width: 0;
+}
+
+.history-table__head > div:not(:first-child) {
+  text-align: center;
+}
+
+.history-table__head::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: -8px;
+  left: 0;
+  height: 8px;
+  pointer-events: none;
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
+}
+
 .history-table__body {
-  padding: 0 14px;
+  padding: 0;
 }
 
 .history-row {
-  display: grid;
-  grid-template-columns: 2.2fr 1fr 1.2fr 1.8fr 0.8fr 0.9fr;
-  gap: 16px;
   align-items: center;
   border-bottom: 1px solid #f3f4f6;
-  padding: 18px 10px;
+  padding: 18px var(--history-table-x);
   min-height: 140px;
+}
+
+.history-row > div {
+  min-width: 0;
 }
 
 .history-row__case-text {
@@ -748,16 +823,52 @@ onUnmounted(() => {
 }
 
 .history-row__actions {
-  min-width: 132px;
+  min-width: 96px;
+  align-items: center;
+  justify-content: center;
 }
 
-.history-row__actions :deep(.el-button) {
-  width: 132px;
-  height: 34px !important;
-  border-radius: var(--police-radius) !important;
-  font-size: 13px !important;
-  font-weight: 700 !important;
-  margin: 0 !important;
+.action-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 84px;
+  height: 38px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  color: #111827;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    color 0.18s ease;
+}
+
+.action-menu-trigger:hover:not(:disabled),
+.action-menu-trigger:focus-visible {
+  border-color: #bfdbfe;
+  color: #165dff;
+  box-shadow: 0 8px 18px rgba(22, 93, 255, 0.12);
+  outline: none;
+}
+
+.action-menu-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.action-loading-dot {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #bfdbfe;
+  border-top-color: #165dff;
+  border-radius: 50%;
+  animation: action-spin 0.8s linear infinite;
 }
 
 .history-table__footer {
@@ -836,9 +947,10 @@ onUnmounted(() => {
     flex-wrap: wrap;
   }
 
-  .history-table__head,
-  .history-row {
-    grid-template-columns: 2fr 0.9fr 1fr 1.6fr 0.7fr 0.8fr;
+  .history-table-card {
+    --history-table-columns: minmax(260px, 2fr) minmax(106px, 0.82fr) minmax(132px, 0.94fr) minmax(300px, 1.55fr) minmax(96px, 0.66fr) minmax(88px, 0.55fr);
+    --history-table-gap: 14px;
+    --history-table-x: 20px;
   }
 }
 
@@ -865,6 +977,10 @@ onUnmounted(() => {
     align-items: stretch;
     min-width: 0;
   }
+
+  .action-menu-trigger {
+    width: 100%;
+  }
 }
 
 @media (max-width: 768px) {
@@ -890,6 +1006,55 @@ onUnmounted(() => {
 
   .pager {
     justify-content: space-between;
+  }
+}
+
+:global(.history-action-dropdown) {
+  min-width: 132px !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 6px !important;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.13) !important;
+}
+
+:global(.history-action-dropdown .el-dropdown-menu) {
+  padding: 8px !important;
+}
+
+:global(.history-action-dropdown .el-dropdown-menu__item) {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-height: 38px !important;
+  border-radius: 5px !important;
+  padding: 0 10px !important;
+  color: #111827 !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+}
+
+:global(.history-action-dropdown .el-dropdown-menu__item:hover) {
+  background: #f8fafc !important;
+  color: #165dff !important;
+}
+
+:global(.history-action-dropdown .el-dropdown-menu__item .el-icon) {
+  margin-right: 0 !important;
+  font-size: 15px !important;
+}
+
+:global(.history-action-dropdown__danger),
+:global(.history-action-dropdown__danger .el-icon) {
+  color: #ef4444 !important;
+}
+
+:global(.history-action-dropdown__danger:hover) {
+  background: #fff1f2 !important;
+  color: #dc2626 !important;
+}
+
+@keyframes action-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 </style>
