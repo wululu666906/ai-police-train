@@ -16,6 +16,94 @@
     <!-- 主体 -->
     <template v-else>
 
+      <!-- ── 前置简报弹窗（进入训练前必须关闭） ── -->
+      <van-popup
+        v-model:show="showBriefing"
+        :close-on-click-overlay="false"
+        round
+        teleport="body"
+        class="briefing-popup"
+        :overlay-style="{ backgroundColor: 'rgba(0,0,0,0.82)' }"
+      >
+        <div class="briefing-card">
+          <div class="briefing-card__head">
+            <el-tag type="danger" effect="dark" size="small">实训简报</el-tag>
+            <span class="briefing-card__title">{{ video.title }}</span>
+          </div>
+
+          <!-- 简报内容 -->
+          <div class="briefing-card__body">
+            <div v-if="video.briefing" class="briefing-content">{{ video.briefing }}</div>
+            <div v-else class="briefing-default">
+              <p>本次训练为第一视角交互式实训，系统将在关键节点自动暂停并检测您的动作与话术。</p>
+              <p>完成全部节点后生成评估报告，请认真对待每个节点。</p>
+            </div>
+
+            <!-- 注意事项 -->
+            <div class="briefing-notices">
+              <div class="bn-item bn-item--warn">
+                <span class="bn-dot">!</span>
+                视频播放期间<strong>禁止拖动进度条</strong>，违规将被记录
+              </div>
+              <div class="bn-item bn-item--info">
+                <span class="bn-dot">i</span>
+                节点超时将自动触发扣分选项，请保持专注
+              </div>
+              <div class="bn-item bn-item--info">
+                <span class="bn-dot">i</span>
+                切换标签页等违规行为将被系统记录
+              </div>
+            </div>
+
+            <!-- 训练模式选择 -->
+            <div class="briefing-mode">
+              <div class="mode-label">训练模式</div>
+              <div class="mode-options">
+                <button
+                  class="mode-btn"
+                  :class="{ active: trainingMode === 'practice' }"
+                  @click="trainingMode = 'practice'"
+                >
+                  <div class="mode-btn__title">练习模式</div>
+                  <div class="mode-btn__desc">容错宽松，适合熟悉流程</div>
+                </button>
+                <button
+                  class="mode-btn mode-btn--exam"
+                  :class="{ active: trainingMode === 'exam' }"
+                  @click="trainingMode = 'exam'"
+                >
+                  <div class="mode-btn__title">考核模式</div>
+                  <div class="mode-btn__desc">严格评分，计入正式记录</div>
+                </button>
+              </div>
+            </div>
+
+            <!-- 节点概览 -->
+            <div v-if="video.nodes?.length" class="briefing-stats">
+              <div class="bs-item">
+                <span class="bs-num">{{ video.nodes.length }}</span>
+                <span class="bs-label">训练节点</span>
+              </div>
+              <div v-if="video.duration" class="bs-item">
+                <span class="bs-num">{{ formatTime(video.duration) }}</span>
+                <span class="bs-label">视频时长</span>
+              </div>
+              <div class="bs-item">
+                <span class="bs-num">{{ video.nodes.reduce((a, n) => a + n.score_weight, 0) }}</span>
+                <span class="bs-label">总分</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="briefing-card__foot">
+            <el-button @click="router.back()">取消</el-button>
+            <el-button type="primary" @click="confirmBriefing">
+              已了解，开始训练
+            </el-button>
+          </div>
+        </div>
+      </van-popup>
+
       <!-- 顶部状态栏 -->
       <div class="topbar">
         <el-button :icon="ArrowLeft" text class="topbar__back" @click="confirmExit">返回</el-button>
@@ -44,6 +132,7 @@
             preload="auto"
             @timeupdate="onTimeUpdate"
             @ended="onVideoEnded"
+            @seeking="onSeeking"
             @contextmenu.prevent
           />
 
@@ -79,9 +168,13 @@
                     <!-- 语音识别区 -->
                     <div class="speech-area">
                       <div class="speech-status" :class="speechStatus">
-                        <el-icon v-if="speechStatus === 'listening'"><Microphone /></el-icon>
-                        <el-icon v-else><Microphone /></el-icon>
+                        <span class="speech-dot" :class="`speech-dot--${speechStatus}`" />
+                        <el-icon><Microphone /></el-icon>
                         <span>{{ speechStatusLabel }}</span>
+                        <!-- listening 时的脉冲波形指示 -->
+                        <span v-if="speechStatus === 'listening'" class="speech-wave">
+                          <span /><span /><span /><span /><span />
+                        </span>
                       </div>
                       <div v-if="interimText || finalText" class="speech-transcript">
                         <span class="interim">{{ interimText }}</span>
@@ -119,6 +212,18 @@
                   <!-- 单选题 -->
                   <template v-else-if="currentNode.node_type === 'choice'">
                     <p class="node-instruction">{{ currentNode.node_config?.question }}</p>
+                    <!-- 题目限时进度条 -->
+                    <div v-if="choiceTimeLimit > 0" class="choice-timer">
+                      <el-progress
+                        :percentage="choiceTimePct"
+                        :stroke-width="4"
+                        :show-text="false"
+                        :color="choiceTimeLeft <= 5 ? '#ef4444' : '#3b82f6'"
+                      />
+                      <span class="choice-timer__text" :class="{ 'choice-timer__text--warn': choiceTimeLeft <= 5 }">
+                        {{ choiceTimeLeft }}s
+                      </span>
+                    </div>
                     <div class="choice-list">
                       <button
                         v-for="(opt, oi) in (currentNode.node_config?.options || [])"
@@ -144,8 +249,12 @@
                     <p class="node-instruction">{{ currentNode.prompt_content?.instruction }}</p>
                     <div class="speech-area">
                       <div class="speech-status" :class="speechStatus">
+                        <span class="speech-dot" :class="`speech-dot--${speechStatus}`" />
                         <el-icon><Microphone /></el-icon>
                         <span>{{ speechStatusLabel }}</span>
+                        <span v-if="speechStatus === 'listening'" class="speech-wave">
+                          <span /><span /><span /><span /><span />
+                        </span>
                       </div>
                       <div v-if="interimText || finalText" class="speech-transcript">
                         <span class="interim">{{ interimText }}</span>
@@ -306,6 +415,7 @@ interface VideoDetail {
   title: string
   video_url?: string
   video_type: string
+  briefing?: string
   nodes: VideoNode[]
   duration?: number
 }
@@ -342,6 +452,7 @@ const video = ref<VideoDetail | null>(null)
 const loading = ref(true)
 const sessionId = ref<number | null>(null)
 const trainingMode = ref<'practice' | 'exam'>('practice')
+const showBriefing = ref(false)   // 前置简报弹窗
 
 // ── 节点状态 ──
 const currentNodeIndex = ref(-1)
@@ -356,6 +467,12 @@ let countdownTimer: ReturnType<typeof setInterval> | null = null
 
 // ── 答题 ──
 const choiceSelected = ref<number | null>(null)
+const choiceTimeLimit = ref(0)    // 选择题限时（秒），0=不限时
+const choiceTimeLeft = ref(0)
+const choiceTimePct = computed(() =>
+  choiceTimeLimit.value > 0 ? Math.round((choiceTimeLeft.value / choiceTimeLimit.value) * 100) : 100
+)
+let choiceTimer: ReturnType<typeof setInterval> | null = null
 
 // ── 语音识别 ──
 const speechProvider = ref<SpeechRecognitionProvider | null>(null)
@@ -393,15 +510,22 @@ const nodeProgress = computed(() => {
 onMounted(async () => {
   await fetchVideo()
   if (video.value) {
-    await initSession()
+    // 显示简报弹窗，等用户确认后再初始化 Session
+    showBriefing.value = true
     await startCamera()
     setupVisibilityDetection()
   }
 })
 
+async function confirmBriefing() {
+  showBriefing.value = false
+  await initSession()
+}
+
 onUnmounted(() => {
   stopCamera()
   clearCountdown()
+  clearChoiceTimer()
   speechProvider.value?.stop()
   document.removeEventListener('visibilitychange', onVisibilityChange)
 })
@@ -479,8 +603,14 @@ async function onVisibilityChange() {
 }
 
 // ── 视频时间监听 ──
+// ── 禁止进度条拖拽 ──
+// 记录最后一次合法时间点（节点触发前）
+let lastAllowedTime = 0
+
 function onTimeUpdate() {
   if (!videoRef.value || !video.value?.nodes || nodeActive.value) return
+  // 更新合法时间点
+  lastAllowedTime = videoRef.value.currentTime
   const t = Math.floor(videoRef.value.currentTime)
   for (let i = 0; i < video.value.nodes.length; i++) {
     if (nodeStatuses.value[i] !== undefined) continue
@@ -488,6 +618,18 @@ function onTimeUpdate() {
       triggerNode(i)
       break
     }
+  }
+}
+
+function onSeeking() {
+  if (!videoRef.value) return
+  const current = videoRef.value.currentTime
+  // 只允许向前 seek 不超过 1 秒的误差（浏览器自身的缓冲行为），
+  // 或 seek 到比已播放位置更早（不允许跳过未完成节点）
+  if (current > lastAllowedTime + 1.5) {
+    // 强制回退到最后合法位置
+    videoRef.value.currentTime = lastAllowedTime
+    ElMessage.warning('训练进行中禁止拖动进度条')
   }
 }
 
@@ -520,6 +662,28 @@ function triggerNode(index: number) {
   const node = video.value!.nodes[index]
   countdown.value = node.timeout_seconds
   startCountdown()
+
+  // 如果是选择题且配置了题目限时，启动独立倒计时
+  clearChoiceTimer()
+  if (node.node_type === 'choice') {
+    const tl = Number(node.node_config?.time_limit ?? 0)
+    choiceTimeLimit.value = tl
+    if (tl > 0) {
+      choiceTimeLeft.value = tl
+      choiceTimer = setInterval(() => {
+        choiceTimeLeft.value--
+        if (choiceTimeLeft.value <= 0) {
+          clearChoiceTimer()
+          // 超时自动判定答错，按重试处理
+          nodeResult.value = 'fail'
+          nodeRetryCount.value++
+          ElMessage.warning('答题超时，请重新选择')
+        }
+      }, 1000)
+    }
+  } else {
+    choiceTimeLimit.value = 0
+  }
 }
 
 function startCountdown() {
@@ -536,6 +700,10 @@ function startCountdown() {
 
 function clearCountdown() {
   if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null }
+}
+
+function clearChoiceTimer() {
+  if (choiceTimer) { clearInterval(choiceTimer); choiceTimer = null }
 }
 
 // ── 语音识别 ──
@@ -581,6 +749,7 @@ async function submitNodeToBackend(
 
 function passNode(extra: Record<string, any> = {}) {
   clearCountdown()
+  clearChoiceTimer()
   stopSpeech()
   nodeResult.value = 'pass'
   nodeStatuses.value[currentNodeIndex.value] = 'pass'
@@ -595,6 +764,7 @@ function passNode(extra: Record<string, any> = {}) {
 
 async function skipNode(type: 'skip' | 'timeout' = 'skip') {
   clearCountdown()
+  clearChoiceTimer()
   stopSpeech()
   nodeStatuses.value[currentNodeIndex.value] = type
   await submitNodeToBackend(type)
@@ -915,6 +1085,58 @@ function resultLabel(r: string) {
 
   &.listening { color: #34d399; }
   &.error     { color: #f87171; }
+  &.processing { color: #fbbf24; }
+}
+
+/* 状态指示点 */
+.speech-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.2);
+
+  &--listening {
+    background: #34d399;
+    box-shadow: 0 0 0 0 rgba(52,211,153,0.5);
+    animation: pulse-dot 1.2s infinite;
+  }
+  &--error { background: #f87171; }
+  &--processing { background: #fbbf24; }
+}
+
+@keyframes pulse-dot {
+  0%   { box-shadow: 0 0 0 0 rgba(52,211,153,0.5); }
+  70%  { box-shadow: 0 0 0 6px rgba(52,211,153,0); }
+  100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+}
+
+/* 语音波形动效（5条竖线） */
+.speech-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 14px;
+  margin-left: 4px;
+
+  span {
+    display: inline-block;
+    width: 3px;
+    border-radius: 2px;
+    background: #34d399;
+    animation: wave-bar 0.8s ease-in-out infinite;
+
+    &:nth-child(1) { height: 4px;  animation-delay: 0s; }
+    &:nth-child(2) { height: 8px;  animation-delay: 0.1s; }
+    &:nth-child(3) { height: 12px; animation-delay: 0.2s; }
+    &:nth-child(4) { height: 8px;  animation-delay: 0.3s; }
+    &:nth-child(5) { height: 4px;  animation-delay: 0.4s; }
+  }
+}
+
+@keyframes wave-bar {
+  0%, 100% { transform: scaleY(1); }
+  50%       { transform: scaleY(1.8); }
 }
 
 .speech-transcript {
@@ -982,6 +1204,26 @@ function resultLabel(r: string) {
   font-size: 11px;
   font-weight: 700;
   flex-shrink: 0;
+}
+
+/* 选择题限时进度条 */
+.choice-timer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+
+  :deep(.el-progress) { flex: 1; }
+
+  &__text {
+    font-size: 12px;
+    font-weight: 700;
+    color: #94a3b8;
+    min-width: 28px;
+    text-align: right;
+
+    &--warn { color: #f87171; }
+  }
 }
 
 /* ── 超时提示栏 ── */
@@ -1258,4 +1500,189 @@ function resultLabel(r: string) {
 .result-fade-leave-active { transition: opacity 0.2s, transform 0.2s; }
 .result-fade-enter-from,
 .result-fade-leave-to     { opacity: 0; transform: translateY(4px); }
+
+/* ── 前置简报弹窗 ── */
+.briefing-popup {
+  width: min(540px, calc(100vw - 24px));
+  background: transparent;
+}
+
+.briefing-card {
+  background: #1e293b;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.1);
+  overflow: hidden;
+  color: #e2e8f0;
+
+  &__head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 18px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    background: rgba(255,255,255,0.03);
+  }
+
+  &__title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #f1f5f9;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__body {
+    padding: 16px 18px;
+    max-height: 65vh;
+    overflow-y: auto;
+  }
+
+  &__foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 12px 18px;
+    border-top: 1px solid rgba(255,255,255,0.07);
+    background: rgba(255,255,255,0.02);
+  }
+}
+
+.briefing-content {
+  font-size: 13px;
+  color: #cbd5e1;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 6px;
+  border-left: 3px solid #3b82f6;
+}
+
+.briefing-default {
+  font-size: 13px;
+  color: #94a3b8;
+  line-height: 1.8;
+  margin-bottom: 16px;
+
+  p { margin: 0 0 8px; }
+}
+
+.briefing-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 18px;
+}
+
+.bn-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.5;
+
+  &--warn { color: #fbbf24; }
+  &--info { color: #60a5fa; }
+}
+
+.bn-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top: 1px;
+
+  .bn-item--warn & { background: rgba(251,191,36,0.15); }
+  .bn-item--info & { background: rgba(96,165,250,0.12); }
+}
+
+.briefing-mode {
+  margin-bottom: 18px;
+}
+
+.mode-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(255,255,255,0.35);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 8px;
+}
+
+.mode-options {
+  display: flex;
+  gap: 10px;
+}
+
+.mode-btn {
+  flex: 1;
+  padding: 12px 14px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.03);
+  color: #94a3b8;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+
+  &:hover { border-color: rgba(59,130,246,0.5); background: rgba(59,130,246,0.07); }
+
+  &.active {
+    border-color: #3b82f6;
+    background: rgba(59,130,246,0.12);
+    color: #93c5fd;
+  }
+
+  &--exam:hover { border-color: rgba(239,68,68,0.5); background: rgba(239,68,68,0.07); }
+  &--exam.active { border-color: #ef4444; background: rgba(239,68,68,0.12); color: #fca5a5; }
+
+  &__title {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 3px;
+  }
+
+  &__desc {
+    font-size: 11px;
+    opacity: 0.7;
+  }
+}
+
+.briefing-stats {
+  display: flex;
+  gap: 16px;
+  padding: 12px 14px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+
+.bs-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+}
+
+.bs-num {
+  font-size: 20px;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.bs-label {
+  font-size: 11px;
+  color: rgba(255,255,255,0.35);
+}
 </style>

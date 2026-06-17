@@ -125,6 +125,14 @@ def ensure_video_schema_compatibility():
             models.VideoNodeResult.__table__,
         ):
             table.create(bind=database.engine, checkfirst=True)
+        # 为已存在的 training_videos 表补充 briefing 列
+        from sqlalchemy import inspect, text
+        inspector = inspect(database.engine)
+        if "training_videos" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("training_videos")}
+            with database.engine.begin() as conn:
+                if "briefing" not in cols:
+                    conn.execute(text("ALTER TABLE training_videos ADD COLUMN briefing TEXT"))
     except Exception as error:
         print(f"Video schema compatibility check failed: {error}")
 

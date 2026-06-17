@@ -270,6 +270,8 @@ class TrainingVideo(Base):
     file_size = Column(Integer, nullable=True)               # 文件大小（字节）
     case_id = Column(Integer, ForeignKey("cases.id"), nullable=True)   # 可选关联案件
     tags = Column(Text, default="[]")                        # JSON 字符串
+    # 训练前简报（案情背景、训练要点、评分规则等，富文本/纯文本均可）
+    briefing = Column(Text, nullable=True)
     # published=已发布，draft=草稿，archived=归档
     status = Column(String(20), default="draft")
     sort_order = Column(Integer, default=0)
@@ -281,8 +283,6 @@ class TrainingVideo(Base):
                          order_by="VideoNode.node_index")
     case = relationship("Case")
     uploader = relationship("User")
-
-
 class VideoNode(Base):
     """视频训练节点：在某个时间点暂停并触发考核"""
     __tablename__ = "video_nodes"

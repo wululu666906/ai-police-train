@@ -29,6 +29,7 @@ const routes = [
       { path: 'roles/:id/edit', component: () => import('./views/RoleEdit.vue') },
       { path: 'classes', component: () => import('./views/AdminClasses.vue') },
       { path: 'videos', component: () => import('./views/AdminVideoLibrary.vue') },
+      { path: 'video-sessions', component: () => import('./views/AdminVideoSessions.vue') },
       { path: 'students', component: () => import('./views/Students.vue') },
       { path: 'students/:id', component: () => import('./views/StudentProfile.vue') },
       { path: 'profile', component: () => import('./views/Profile.vue') }

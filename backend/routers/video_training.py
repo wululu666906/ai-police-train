@@ -430,3 +430,66 @@ def get_student_video_history(
         query = query.filter(models.VideoTrainingSession.video_id == video_id)
     sessions = query.order_by(models.VideoTrainingSession.created_at.desc()).limit(50).all()
     return [_serialize_session(s) for s in sessions]
+
+
+# ═════════════════════════════════════════════
+# 管理端：查看全量学员实训数据
+# ═════════════════════════════════════════════
+
+@router.get("/admin/sessions")
+def admin_list_sessions(
+    video_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """管理端：查看所有学员的视频实训记录（需 admin 权限）"""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="仅管理员可访问")
+
+    query = db.query(models.VideoTrainingSession)
+    if video_id:
+        query = query.filter(models.VideoTrainingSession.video_id == video_id)
+    if user_id:
+        query = query.filter(models.VideoTrainingSession.user_id == user_id)
+    if status:
+        query = query.filter(models.VideoTrainingSession.status == status)
+
+    total = query.count()
+    sessions = (
+        query.order_by(models.VideoTrainingSession.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    items = []
+    for s in sessions:
+        data = _serialize_session(s)
+        user = db.query(models.User).filter(models.User.id == s.user_id).first()
+        video = db.query(models.TrainingVideo).filter(models.TrainingVideo.id == s.video_id).first()
+        data["username"] = user.username if user else "—"
+        data["video_title"] = video.title if video else "—"
+        items.append(data)
+
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@router.get("/admin/sessions/{session_id}/report")
+def admin_get_session_report(
+    session_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """管理端：查看指定 Session 的评估报告"""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="仅管理员可访问")
+    session = db.query(models.VideoTrainingSession).filter(
+        models.VideoTrainingSession.id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session 不存在")
+    return _get_report(db, session)

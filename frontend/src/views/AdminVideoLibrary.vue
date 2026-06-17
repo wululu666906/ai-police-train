@@ -186,6 +186,14 @@
         <el-form-item label="视频简介">
           <el-input v-model="editTarget.description" type="textarea" :rows="3" />
         </el-form-item>
+        <el-form-item label="训练前简报">
+          <el-input
+            v-model="editTarget.briefing"
+            type="textarea"
+            :rows="5"
+            placeholder="学员进入训练前展示的案情背景、训练要点、评分规则等（支持换行）"
+          />
+        </el-form-item>
         <el-form-item label="标签">
           <el-input v-model="editTagsInput" placeholder="多个标签用逗号分隔" />
         </el-form-item>
@@ -217,6 +225,7 @@ interface VideoItem {
   id: number
   title: string
   description?: string
+  briefing?: string
   video_type: 'teaching' | 'interactive'
   video_url?: string
   thumbnail_url?: string
@@ -518,6 +527,7 @@ async function saveMeta() {
     await request.patch(`/videos/${editTarget.value.id}`, {
       title: editTarget.value.title,
       description: editTarget.value.description,
+      briefing: editTarget.value.briefing,
       video_type: editTarget.value.video_type,
       tags,
     })

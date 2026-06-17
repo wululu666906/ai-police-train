@@ -62,6 +62,7 @@ def _serialize_video(video: models.TrainingVideo, include_nodes: bool = False) -
         "id": video.id,
         "title": video.title,
         "description": video.description,
+        "briefing": video.briefing,
         "video_type": video.video_type,
         "video_url": _video_url(video.file_path),
         "thumbnail_url": _thumbnail_url(video.thumbnail_path),
@@ -305,7 +306,7 @@ def update_video_meta(
     if not video:
         raise HTTPException(status_code=404, detail="视频不存在")
 
-    allowed_fields = {"title", "description", "video_type", "status", "case_id", "tags", "sort_order", "duration"}
+    allowed_fields = {"title", "description", "briefing", "video_type", "status", "case_id", "tags", "sort_order", "duration"}
     for key, value in payload.items():
         if key not in allowed_fields:
             continue
