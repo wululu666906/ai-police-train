@@ -176,6 +176,7 @@ const sidebarCollapsed = ref(false)
 const navItems = [
   { name: 'dashboard', label: '数据总览', shortLabel: '总览', icon: 'bar-chart-o' },
   { name: 'cases', label: '案件剧本库', shortLabel: '案件', icon: 'orders-o' },
+  { name: 'videos', label: '视频素材库', shortLabel: '视频', icon: 'video-o' },
   { name: 'knowledge', label: '知识库管理', shortLabel: '知识', icon: 'cluster-o' },
   { name: 'roles', label: 'AI角色库', shortLabel: '角色', icon: 'friends-o' },
   { name: 'classes', label: '班级训练', shortLabel: '班级', icon: 'cluster-o' },
@@ -195,6 +196,7 @@ watch(
 
     if (val.includes('/dashboard')) active.value = 'dashboard'
     else if (val.includes('/cases')) active.value = 'cases'
+    else if (val.includes('/videos')) active.value = 'videos'
     else if (val.includes('/knowledge')) active.value = 'knowledge'
     else if (val.includes('/roles')) active.value = 'roles'
     else if (val.includes('/classes')) active.value = 'classes'

@@ -8,7 +8,7 @@ from sqlalchemy import inspect, text
 
 import database
 import models
-from routers import auth, cases, classes, dashboard, knowledge, speech, student, training
+from routers import auth, cases, classes, dashboard, knowledge, speech, student, training, videos, video_training
 
 # 不在启动时强制初始化数据库，因为项目已经提供 init_db.py。
 # models.Base.metadata.create_all(bind=database.engine)
@@ -116,6 +116,19 @@ def ensure_classroom_schema_compatibility():
         print(f"Classroom schema compatibility check failed: {error}")
 
 
+def ensure_video_schema_compatibility():
+    try:
+        for table in (
+            models.TrainingVideo.__table__,
+            models.VideoNode.__table__,
+            models.VideoTrainingSession.__table__,
+            models.VideoNodeResult.__table__,
+        ):
+            table.create(bind=database.engine, checkfirst=True)
+    except Exception as error:
+        print(f"Video schema compatibility check failed: {error}")
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 部署到云服务器时可改为真实域名白名单。
@@ -132,6 +145,8 @@ app.include_router(knowledge.router)
 app.include_router(student.router)
 app.include_router(speech.router)
 app.include_router(classes.router)
+app.include_router(videos.router)
+app.include_router(video_training.router)
 
 # 兼容 Docker 静态前端的 /api 前缀调用（frontend/.env.production 默认 VITE_API_URL=/api）
 app.include_router(auth.router, prefix="/api")
@@ -142,6 +157,8 @@ app.include_router(knowledge.router, prefix="/api")
 app.include_router(student.router, prefix="/api")
 app.include_router(speech.router, prefix="/api")
 app.include_router(classes.router, prefix="/api")
+app.include_router(videos.router, prefix="/api")
+app.include_router(video_training.router, prefix="/api")
 
 
 @app.get("/healthz")
@@ -157,6 +174,15 @@ def health_check_api():
 _avatars_dir = os.path.join(os.path.dirname(__file__), "static", "avatars")
 if os.path.exists(_avatars_dir):
     app.mount("/avatars", StaticFiles(directory=_avatars_dir), name="avatars")
+
+# 视频实训静态文件（上传后的视频/封面）
+_videos_dir = os.path.join(os.path.dirname(__file__), "static", "videos")
+os.makedirs(_videos_dir, exist_ok=True)
+app.mount("/static/videos", StaticFiles(directory=_videos_dir), name="videos_static")
+
+_thumbnails_dir = os.path.join(os.path.dirname(__file__), "static", "thumbnails")
+os.makedirs(_thumbnails_dir, exist_ok=True)
+app.mount("/static/thumbnails", StaticFiles(directory=_thumbnails_dir), name="thumbnails_static")
 
 frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 
@@ -201,6 +227,7 @@ def on_startup():
     ensure_message_schema_compatibility()
     ensure_role_schema_compatibility()
     ensure_classroom_schema_compatibility()
+    ensure_video_schema_compatibility()
     ensure_default_users()
 
 

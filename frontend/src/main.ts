@@ -28,6 +28,7 @@ const routes = [
       { path: 'roles/new', component: () => import('./views/RoleEdit.vue') },
       { path: 'roles/:id/edit', component: () => import('./views/RoleEdit.vue') },
       { path: 'classes', component: () => import('./views/AdminClasses.vue') },
+      { path: 'videos', component: () => import('./views/AdminVideoLibrary.vue') },
       { path: 'students', component: () => import('./views/Students.vue') },
       { path: 'students/:id', component: () => import('./views/StudentProfile.vue') },
       { path: 'profile', component: () => import('./views/Profile.vue') }
@@ -41,6 +42,7 @@ const routes = [
     meta: { requiresAuth: true, roles: ['student', 'admin'] },
     children: [
       { path: 'hall', component: () => import('./views/StudentHall.vue') },
+      { path: 'videos', component: () => import('./views/StudentVideoHall.vue') },
       { path: 'classes', component: () => import('./views/StudentClasses.vue') },
       { path: 'history', component: () => import('./views/StudentHistory.vue') },
       { path: 'evaluation', component: () => import('./views/StudentEvaluation.vue') }
@@ -48,6 +50,7 @@ const routes = [
   },
   { path: '/student/history/:id/dialogue', component: () => import('./views/StudentDialogueRecord.vue'), meta: { requiresAuth: true, roles: ['student', 'admin'] } },
   { path: '/student/training/:id', component: () => import('./views/StudentTraining.vue'), meta: { requiresAuth: true, roles: ['student', 'admin'] } },
+  { path: '/student/video-training/:id', component: () => import('./views/StudentVideoTraining.vue'), meta: { requiresAuth: true, roles: ['student', 'admin'] } },
 ]
 
 const router = createRouter({
@@ -92,7 +95,7 @@ app.use(Field).use(CellGroup).use(Form).use(Cell)
 app.use(Tabbar).use(TabbarItem)
 app.use(Loading).use(Circle).use(Progress).use(Popup).use(Dialog)
 app.use(Tag).use(Step).use(Steps).use(Slider)
-app.use(Divider).use(Image).use(Dialog).use(Switch)
+app.use(Divider).use(Image).use(Switch)
 
 setupStudentElementPlus(app)
 

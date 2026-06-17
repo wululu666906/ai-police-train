@@ -249,3 +249,125 @@ class ClassAnnouncement(Base):
 
     classroom = relationship("TrainingClass", back_populates="announcements")
     creator = relationship("User")
+
+
+# ─────────────────────────────────────────────
+# 视频实训模块（第一阶段）
+# ─────────────────────────────────────────────
+
+class TrainingVideo(Base):
+    """视频素材表：区分教学素材视频 / 交互式实训视频"""
+    __tablename__ = "training_videos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(120), nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    # teaching=教学素材（预习/复盘），interactive=交互式实训（含节点考核）
+    video_type = Column(String(20), nullable=False, default="teaching")
+    file_path = Column(String(500), nullable=False)          # 相对于 static/videos/ 的路径
+    thumbnail_path = Column(String(500), nullable=True)      # 封面图相对路径
+    duration = Column(Integer, nullable=True)                # 时长（秒）
+    file_size = Column(Integer, nullable=True)               # 文件大小（字节）
+    case_id = Column(Integer, ForeignKey("cases.id"), nullable=True)   # 可选关联案件
+    tags = Column(Text, default="[]")                        # JSON 字符串
+    # published=已发布，draft=草稿，archived=归档
+    status = Column(String(20), default="draft")
+    sort_order = Column(Integer, default=0)
+    uploaded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    nodes = relationship("VideoNode", back_populates="video", cascade="all, delete-orphan",
+                         order_by="VideoNode.node_index")
+    case = relationship("Case")
+    uploader = relationship("User")
+
+
+class VideoNode(Base):
+    """视频训练节点：在某个时间点暂停并触发考核"""
+    __tablename__ = "video_nodes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    video_id = Column(Integer, ForeignKey("training_videos.id"), nullable=False)
+    node_index = Column(Integer, nullable=False, default=0)  # 节点顺序
+    title = Column(String(100), nullable=True)               # 节点名称
+    trigger_time = Column(Integer, nullable=False, default=0) # 触发时间点（秒）
+    # auto_pause=自动暂停，light_motion=保留轻微动态
+    pause_mode = Column(String(20), default="auto_pause")
+    prompt_content = Column(Text, nullable=True)             # 弹窗提示内容（JSON）
+    timeout_seconds = Column(Integer, default=60)            # 超时阈值（秒）
+    retry_score_deduct = Column(Integer, default=5)          # 重试扣分
+    skip_score_deduct = Column(Integer, default=20)          # 跳过扣分
+    # auto=练习模式自动弹出，manual=考核模式手动取出
+    prop_mode = Column(String(20), default="auto")
+    # action=指令引导，judge=判断题，choice=单选题，voice_qa=语音问答
+    node_type = Column(String(20), default="action")
+    node_config = Column(Text, default="{}")                 # 题目/选项等扩展配置（JSON）
+    required_gesture = Column(String(50), nullable=True)     # 要求的手势类型
+    required_keywords = Column(Text, default="[]")           # 要求识别的语音关键词（JSON）
+    score_weight = Column(Integer, default=10)               # 本节点满分权重
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    video = relationship("TrainingVideo", back_populates="nodes")
+
+
+# ─────────────────────────────────────────────
+# 视频实训模块（第二阶段）
+# ─────────────────────────────────────────────
+
+class VideoTrainingSession(Base):
+    """视频实训 Session：跟踪学员的单次视频实训进度"""
+    __tablename__ = "video_training_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    video_id = Column(Integer, ForeignKey("training_videos.id"), nullable=False)
+    # practice=练习模式，exam=正式考核
+    mode = Column(String(20), default="practice")
+    # active=进行中，finished=已完成，abandoned=中途放弃
+    status = Column(String(20), default="active")
+    # 当前进行到哪个节点（0-based index）
+    current_node_index = Column(Integer, default=0)
+    # 总得分（完成后计算）
+    total_score = Column(Integer, nullable=True)
+    # 满分（所有节点 score_weight 之和）
+    full_score = Column(Integer, nullable=True)
+    # 每个节点的详细记录（JSON 数组）
+    node_records = Column(Text, default="[]")
+    # 违规记录（切屏、退出等）
+    violation_log = Column(Text, default="[]")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+    video = relationship("TrainingVideo")
+    node_results = relationship(
+        "VideoNodeResult",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="VideoNodeResult.node_index",
+    )
+
+
+class VideoNodeResult(Base):
+    """单个节点的判定结果"""
+    __tablename__ = "video_node_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("video_training_sessions.id"), nullable=False)
+    node_id = Column(Integer, ForeignKey("video_nodes.id"), nullable=False)
+    node_index = Column(Integer, nullable=False)
+    # pass=通过，skip=跳过，timeout=超时后跳过，fail=未通过（多次重试后放弃）
+    result = Column(String(20), nullable=False, default="pass")
+    retry_count = Column(Integer, default=0)        # 重试次数
+    time_used = Column(Integer, nullable=True)       # 实际用时（秒）
+    score_earned = Column(Integer, default=0)        # 本节点得分
+    score_deducted = Column(Integer, default=0)      # 本节点扣分
+    # 学员提交的答案（JSON）
+    answer_data = Column(Text, nullable=True)
+    # 语音识别结果
+    speech_transcript = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("VideoTrainingSession", back_populates="node_results")
+    node = relationship("VideoNode")

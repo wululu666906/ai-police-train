@@ -1,5 +1,5 @@
 <template>
-  <el-config-provider :locale="studentElementLocale">
+  <el-config-provider :locale="studentElementLocale" size="default">
     <div class="student-app">
       <div class="student-shell">
         <StudentSidebar />

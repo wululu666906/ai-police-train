@@ -42,6 +42,13 @@
 
   --el-header-border-color: #e5e7eb;
 
+  /* 统一字体大小基准，与 Tailwind base 的 16px 对齐 */
+  --el-font-size-base: 14px;
+
+  --el-font-size-small: 12px;
+
+  --el-font-size-large: 16px;
+
 
 
   font-family: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
