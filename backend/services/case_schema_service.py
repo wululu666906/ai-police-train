@@ -8,7 +8,9 @@ from .role_compact_service import expand_role_compact_to_person, person_to_role_
 SCHEMA_VERSION = "2026.06.compact-v1"
 
 PERSON_COMPACT_V1_FIELDS: tuple[str, ...] = (
+    "person_id",
     "name",
+    "aliases",
     "role_type",
     "status",
     "behavior_archetype",
@@ -151,6 +153,11 @@ def canonicalize_person_payload(
     mode = _as_text(scene_behavior_mode) or _as_text(source.get("scene_behavior_mode")) or "核查取证型"
     expanded = expand_role_compact_to_person(source, scene_behavior_mode=mode)
     canonical = copy.deepcopy(expanded)
+    if _as_text(source.get("person_id")):
+        canonical["person_id"] = _as_text(source.get("person_id"))
+    aliases = _as_text_list(source.get("aliases"))
+    if aliases:
+        canonical["aliases"] = aliases
     if _as_text(source.get("interaction_style")):
         canonical["interaction_style"] = _as_text(source.get("interaction_style"))
     if _as_text(source.get("personality")):

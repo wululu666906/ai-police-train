@@ -85,6 +85,8 @@ def ensure_role_schema_compatibility():
 
         role_columns = {column["name"] for column in inspector.get_columns("roles")}
         statements = []
+        if "person_id" not in role_columns:
+            statements.append("ALTER TABLE roles ADD COLUMN person_id VARCHAR(50)")
         if "interaction_style" not in role_columns:
             statements.append("ALTER TABLE roles ADD COLUMN interaction_style VARCHAR(20) DEFAULT '配合型'")
         if "persona_meta" not in role_columns:
@@ -127,7 +129,6 @@ def ensure_video_schema_compatibility():
             table.create(bind=database.engine, checkfirst=True)
     except Exception as error:
         print(f"Video schema compatibility check failed: {error}")
-
 
 app.add_middleware(
     CORSMiddleware,

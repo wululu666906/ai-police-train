@@ -50,7 +50,7 @@ class DocumentExtractionResult:
 
 class DocumentExtractService:
     MAX_FILE_SIZE = 20 * 1024 * 1024
-    ALLOWED_EXTENSIONS = {".pdf", ".docx", ".md"}
+    ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".markdown"}
     MIN_MEANINGFUL_DOCX_TEXT_CHARS = 30
     OCR_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
@@ -115,6 +115,27 @@ class DocumentExtractService:
         text = "\n".join(texts).strip()
         if not text:
             raise ValueError("当前版本不支持图片 OCR，请上传可复制文字版 PDF 或 DOCX")
+        return text
+
+    @staticmethod
+    def extract_plain_text(file_bytes: bytes | str) -> str:
+        if isinstance(file_bytes, str):
+            text = file_bytes
+            last_error = None
+        else:
+            last_error: Exception | None = None
+            for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+                try:
+                    text = file_bytes.decode(encoding)
+                    break
+                except UnicodeDecodeError as exc:
+                    last_error = exc
+            else:
+                raise ValueError("TXT 文档编码无法识别，请使用 UTF-8 或 GB18030 编码") from last_error
+
+        text = text.strip()
+        if not text:
+            raise ValueError("TXT 文档未提取到有效正文，请检查文件内容后重试")
         return text
 
     @staticmethod
@@ -330,7 +351,16 @@ class DocumentExtractService:
                 engine="pypdf",
                 blocks=[self._block("pdf_text", text, location="pdf", index=1)],
             )
-        if lower_name.endswith(".md"):
+        if lower_name.endswith(".txt"):
+            raw_text = self.extract_plain_text(file_bytes)
+            text = self.normalize_extracted_text(raw_text)
+            return DocumentExtractionResult(
+                text=text,
+                method="plain_text_extract",
+                engine="text-decoder",
+                blocks=[self._block("plain_text", text, location="txt", index=1)],
+            )
+        if lower_name.endswith(".md") or lower_name.endswith(".markdown"):
             raw_text = self.extract_markdown_text(file_bytes)
             text = self.normalize_extracted_text(raw_text)
             return DocumentExtractionResult(
@@ -339,7 +369,7 @@ class DocumentExtractService:
                 engine="markdown-normalizer",
                 blocks=[self._block("markdown_text", text, location="markdown", index=1)],
             )
-        raise ValueError("仅支持 PDF、DOCX、MD 文件")
+        raise ValueError("仅支持 PDF、DOCX、TXT、MD 文件")
 
     def extract_text(self, filename: str, file_bytes: bytes) -> str:
         result = self.recognize_file(filename, file_bytes)

@@ -64,6 +64,7 @@ ai_police*.zip
 frontend_dist_sync.tar.gz
 
 # Local-only / scratch
+.collect.txt
 backups/
 duiyou/
 scripts/_*
@@ -95,6 +96,8 @@ test.txt
 test2.txt
 test3.txt
 test_write.txt
+backend/package-lock.json
+frontend/*-verify.png
 scripts/edit*.json
 scripts/edits*.json
 scripts/esc_test*

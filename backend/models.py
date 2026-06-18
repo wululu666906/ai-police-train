@@ -54,6 +54,7 @@ class Role(Base):
     case_id = Column(Integer, ForeignKey("cases.id"))
     scene_id = Column(Integer, ForeignKey("scenes.id"), nullable=True)
     name = Column(String(50))
+    person_id = Column(String(50), nullable=True, index=True)
     role_type = Column(String(20))
     interaction_style = Column(String(20), default="配合型")
     personality = Column(Text)

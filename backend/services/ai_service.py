@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 import models
 from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
 from .case_knowledge_service import load_case_knowledge_bundle
+from .rag_service import RUNTIME_RETRIEVAL_LIBRARIES, rag_service
 from .persona_engine import (
     analyze_dialogue_momentum,
     build_persona_profile,
@@ -71,6 +72,9 @@ SYSTEM_PROMPT_TEMPLATE = """
 
 案件库与角色剧本库：
 {case_knowledge_block}
+
+知识库实时召回（法律法规 / SOP / 教学资料）：
+{retrieved_knowledge_block}
 
 角色画像：
 - 角色类型：{role_type}
@@ -1146,6 +1150,26 @@ def _run_training_turn(
     runtime_state["case_knowledge_doc_ids"] = [
         item.get("id") for item in knowledge_bundle.get("documents", []) if item.get("id")
     ]
+    retrieval_query = rag_service.build_retrieval_query(
+        prompt_text,
+        getattr(case, "case_type", "") if case else "",
+        getattr(case, "title", "") if case else "",
+        getattr(scene, "name", "") if scene else "",
+        current_stage,
+        current_stage_goal,
+        history=[getattr(message, "content", "") for message in history[-4:]],
+    )
+    retrieval_bundle = rag_service.build_context_block(
+        retrieval_query,
+        limit=5,
+        libraries=RUNTIME_RETRIEVAL_LIBRARIES,
+        max_chars=3600,
+    )
+    runtime_state["rag_retrieved_doc_ids"] = [
+        item.get("id") for item in retrieval_bundle.get("hits", []) if item.get("id")
+    ]
+    if retrieval_bundle.get("error"):
+        runtime_state["rag_error"] = retrieval_bundle.get("error")
     role_script = build_role_script(role, case, scene, persona_profile)
     session_memory = summarize_session_memory(history[-12:], revealed_info, current_stage_goal)
     persona_block = format_persona_block(persona_profile, role_script, recent_memory, momentum, dynamic_adjustment)
@@ -1213,6 +1237,7 @@ def _run_training_turn(
         report_time=fact_sheet.get("report_time", "未记录"),
         timeline=_build_timeline_text(structured),
         case_knowledge_block=knowledge_bundle.get("knowledge_block") or "暂无案件知识库内容",
+        retrieved_knowledge_block=retrieval_bundle.get("context_block") or "本轮未召回到可用法规、SOP或教学资料；继续依据案件事实和角色边界作答。",
         knows_facts=_format_list_block(getattr(role, "knows_facts", [])),
         does_not_know=_format_list_block(getattr(role, "does_not_know", [])),
         hidden_truths=_format_list_block(getattr(role, "hidden_truths", [])),

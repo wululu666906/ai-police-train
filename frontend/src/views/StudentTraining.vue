@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="training-page">
     <div v-if="isSessionBooting" class="training-status-panel">
       <van-loading color="#2563eb" vertical>正在加载训练会话...</van-loading>

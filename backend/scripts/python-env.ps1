@@ -53,11 +53,11 @@ function Test-PythonOk {
 
 function Get-BasePythonCandidates {
     return @(
+        "$env:USERPROFILE\anaconda3\envs\yolo8_vision\python.exe",
+        "C:\Users\Auraa\anaconda3\envs\yolo8_vision\python.exe",
         "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
         "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
         "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
-        "D:\APP\load\Miniconda3\python.exe",
-        "$env:USERPROFILE\anaconda3\envs\yolo8_vision\python.exe",
-        "C:\Users\Auraa\anaconda3\envs\yolo8_vision\python.exe"
+        "D:\APP\load\Miniconda3\python.exe"
     )
 }

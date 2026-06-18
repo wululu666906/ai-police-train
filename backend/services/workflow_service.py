@@ -107,20 +107,26 @@ BASE_PARSE_RESULT = {
     "parse_engine": "heuristic",
 }
 
-NAME_EXTRACTION_PROMPT = """你是公安警情训练平台的人物名称识别专家。
+NAME_EXTRACTION_PROMPT = """你是公安警情训练平台的人物名称识别专家。你的准确率直接影响训练系统的数据质量，误报一个非人名就会导致角色污染。
 
-任务：从以下案件文本中，找出所有**真实人物的姓名**，返回一个纯 JSON 字符串数组。
+任务：从以下案件文本中，找出所有**真实人物的完整姓名**，返回一个纯 JSON 字符串数组。
 
-核心规则（严格遵循）：
-1. 只提取2-4个汉字的真实人名（如：张三、李四、王小明、赵建国）。
-2. **绝对不能**把以下类型当作人名输出：
-   - 地名（如：某某村、东风路、向阳街、幸福小区、某小区、某村）
-   - 名词/抽象词（如：证言、陈述、供述、交代、案情、纠纷、口供、笔录）
-   - 物品名称（如：电动车、手机、菜刀、木棍、汽车、钱包）
-   - 角色称谓本身（如：嫌疑人、被害人、报警人、证人、邻居、家属、报警、报案）
-3. 同一人物只保留一个标准名称。如果文本中出现同一人的不同写法（如"张三供述"中的"张三"和"张三审讯"中的"张三"），只保留最简洁的标准名"张三"。
-4. 如果文本中没有任何明确的人名，返回空数组 []。
-5. 只输出一个合法的 JSON 数组，不要 markdown、解释或额外说明。
+核心规则（严格遵循，违者将导致系统故障）：
+1. 只提取2-4个汉字的真实完整人名（如：张三、李四、王小明、赵建国）。
+2. **绝对禁止**把以下任何类型当作人名输出，即使它们在文本中紧邻角色称谓或动词：
+   - 地名/地点（如：某某村、东风路、向阳街、幸福小区、某某庄、某某路、某某大厦、某某巷、某某街道、某某社区、某某镇、某某乡）
+   - 抽象名词/事件词（如：证言、陈述、供述、交代、案情、纠纷、口供、笔录、报警记录、报案材料、情况、材料、线索、证据）
+   - 物品名称（如：电动车、手机、菜刀、木棍、汽车、钱包、自行车、砖头、铁锹、钢管、绳索）
+   - 角色称谓/身份词（如：嫌疑人、犯罪嫌疑人、被害人、受害人、报警人、报案人、证人、邻居、家属、目击者、当事人、伤者、死者、对方、男子、女子、顾客、店员、保安、路人、同学、朋友、工友、老乡、房东、租客、乘客、司机、业主）
+   - 行为描述词（如：争吵、打架、受伤、逃离、抓捕、调解、询问、审讯、报案、报警、追赶、推搡、辱骂、威胁、敲诈、勒索、盗窃、抢劫、诈骗）
+   - 占位符名称（如：张某某、李某某、某某某、王某、赵某、刘某、陈某——只有姓氏加"某"的不算完整人名）
+   - 仅称谓+姓氏（如：老王、小张、大刘、李姐、王哥、赵叔——这些不是完整姓名）
+3. **姓名结构规则**：中国真实人名由「姓氏+名字」组成。确认提取的每个名字都以一个真实姓氏开头（如：王、李、张、刘、陈、杨、赵、黄、周、吴、徐、孙、马、胡、朱、郭、何、罗、高、林等）。如果无法确认，宁可漏过。
+4. 同一人物只保留一个标准名称。如果文本中出现同一人的不同写法（如"张三供述"和"张三（审讯）"），只保留最简洁的标准名"张三"。
+5. 如果姓名前后夹着身份、阶段、关系词或动词（如"证人张三""张三嫌疑人""张三称""张三说"），必须还原成纯人名"张三"。
+6. **自我验证**：在输出前，逐个检查候选名单中的每一项——问自己"这真的是一个真实人物的人名吗？还是地名/事件词/身份词？"如果不确定，移除它。
+7. **宁可漏过，绝不误报**：如果不确定某个词是否为真实人名（如只有姓氏加"某"：王某、李某），必须排除。如果文本中没有明确真实的人名，必须返回空数组 []。
+8. 只输出一个合法的 JSON 数组，不要 markdown、解释或额外说明。
 
 示例：
 输入："报警人张三称，其与邻居李四因纠纷发生冲突，李四手持木棍打伤张三。"
@@ -133,7 +139,28 @@ NAME_EXTRACTION_PROMPT = """你是公安警情训练平台的人物名称识别�
 输出：["王小花", "赵大龙"]
 
 输入："民警到场后，证言显示某某村的李某和王某因琐事发生口角。"
-输出：["李某", "王某"]
+输出：[]（李某、王某只有姓氏加"某"，不是明确完整人名）
+
+输入："报警人陈述称其在东风路被一名男子抢走手机。"
+输出：[]（没有明确人名）
+
+输入："嫌疑人张某因纠纷将被害人李某打伤，张某系某某村村民。"
+输出：[]（张某、李某只有姓氏加"某"，不是明确完整人名）
+
+输入："王小明与赵丽华因感情纠纷发生争吵，赵丽华将王小明电动车砸坏。"
+输出：["王小明", "赵丽华"]
+
+输入："在东风路发生纠纷，幸福小区的保安和业主因停车费问题争吵。"
+输出：[]（没有明确人名）
+
+输入："民警到达现场后发现店主张强与顾客刘芳因商品质量问题发生争执。"
+输出：["张强", "刘芳"]
+
+输入："伤者已被送医，死者身份待确认，现场证言已收集完毕。"
+输出：[]（"伤者""死者""证言"都不是人名）
+
+输入："老公王磊和老婆赵敏因家庭琐事发生争吵。"
+输出：["王磊", "赵敏"]
 """
 
 
@@ -166,6 +193,17 @@ persons 字段要求：
   init_emotion, init_trust, knows_facts, does_not_know, hidden_truths
 - 如果原文对人物说话特点、互动风格很明确，也可以补 interaction_style / personality / speaking_style，但这三项不是硬性必填。
 - name 只能写“纯人名”或明确身份称谓本身，不要把“称、表示、供述、位于、发现、与某某因纠纷”等后续案情一起带进名字字段。
+
+        - 【禁止用非人名代替】严禁将以下类型当作 name 输出：
+          - 地名（如：某某村、东风路、向阳街、幸福小区、某某庄、某某路）
+          - 抽象名词/事件词（如：证言、陈述、供述、纠纷、口供、笔录、报警记录）
+          - 物品名称（如：电动车、手机、菜刀、木棍、汽车、钱包）
+          - 角色称谓/身份词（如：嫌疑人、被害人、报警人、证人、邻居、目击者、男子、女子、当事人、伤者、死者）
+          - 行为描述词（如：争吵、打架、受伤、调解、询问、审讯）
+          - 占位符名称（如：张某某、李某某、王某、赵某——仅姓氏加"某"不算完整人名）
+        - name 必须是"姓氏+名字"结构的真实人名（如：王小明、张三、李四、赵建国），如果不确定是否为真实人名，宁可不输出。
+        - 同一人物在所有场景中必须使用完全相同的 name，不得因场景变化在名称中追加身份后缀（如写入"张三(审讯)"或"张三嫌疑人"是错误的；只能使用纯人名"张三"，身份写在 role_type 字段中）。
+
 - 如果文本足够支撑，就尽量把这些字段填具体，不要只写“待核实”。
 - behavior_archetype 优先从这些类型里选最接近的一种：求助配合型、委屈宣泄型、谨慎回避型、防御切责型、强硬对抗型、醉酒失控型、绝望封闭型、围观起哄型。
 - police_attitude 只写人物面对警方时的基本姿态，例如：主动求助、试探观望、防备排斥、敌对抵触。
@@ -210,6 +248,17 @@ persons 字段要求：
   init_emotion, init_trust, knows_facts, does_not_know, hidden_truths
 - 如果笔录里明确体现出说话方式、稳定性格底色或明显互动风格，也可以补 interaction_style / personality / speaking_style。
 - name 只能保留纯人名，不要输出“报警人李某称”“张某因”“王某和其妻子”等带后缀情节的长字符串。
+
+        - 【禁止用非人名代替】严禁将以下类型当作 name 输出：
+          - 地名（如：某某村、东风路、向阳街、幸福小区、某某庄、某某路）
+          - 抽象名词/事件词（如：证言、陈述、供述、纠纷、口供、笔录、报警记录）
+          - 物品名称（如：电动车、手机、菜刀、木棍、汽车、钱包）
+          - 角色称谓/身份词（如：嫌疑人、被害人、报警人、证人、邻居、目击者、男子、女子、当事人、伤者、死者）
+          - 行为描述词（如：争吵、打架、受伤、调解、询问、审讯）
+          - 占位符名称（如：张某某、李某某、王某、赵某——仅姓氏加"某"不算完整人名）
+        - name 必须是"姓氏+名字"结构的真实人名（如：王小明、张三、李四、赵建国），如果不确定是否为真实人名，宁可不输出。
+        - 同一人物在所有场景中必须使用完全相同的 name，不得因场景变化在名称中追加身份后缀（如写入"张三(审讯)"或"张三嫌疑人"是错误的；只能使用纯人名"张三"，身份写在 role_type 字段中）。
+
 - 如果笔录里体现出其回避、护短、怕牵连、怕处罚、怕家属知道、怕赔偿、怕失面子等倾向，要尽量体现在 behavior_archetype / police_attitude / current_goal / core_concern / trigger_points / calming_points 这些字段里。
 - 所有内容都必须有文本依据，不能为了戏剧性乱补剧情。
 
@@ -549,7 +598,9 @@ class WorkflowService:
         compact_fields = normalize_compact_persona_fields(person)
         scene_behavior_mode = str(compact_fields.get("scene_behavior_mode") or person.get("scene_behavior_mode") or "核查取证型").strip() or "核查取证型"
         cleaned = {
+            "person_id": str(person.get("person_id") or "").strip(),
             "name": WorkflowService._normalize_person_name(person.get("name")) or "未明确",
+            "aliases": person.get("aliases") if isinstance(person.get("aliases"), list) else [],
             "role": str(person.get("role") or "相关人员").strip(),
             "role_type": str(person.get("role_type") or WorkflowService._guess_role_type(person.get("role"))).strip() or "相关人员",
             "interaction_style": str(person.get("interaction_style") or inferred_defaults["interaction_style"]).strip() or inferred_defaults["interaction_style"],
@@ -611,12 +662,146 @@ class WorkflowService:
         return canonical_cleaned
 
     @staticmethod
+    def _merge_person_record(target: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+        for key, value in source.items():
+            if value in (None, ""):
+                continue
+            if isinstance(value, list):
+                existing = target.get(key) if isinstance(target.get(key), list) else []
+                merged = list(existing)
+                for item in value:
+                    if item not in merged:
+                        merged.append(item)
+                target[key] = merged
+                continue
+            if key == "role_type" and target.get(key) in {"", None, "相关人员"} and value:
+                target[key] = value
+                continue
+            if target.get(key) in (None, ""):
+                target[key] = value
+        return target
+
+    def standardize_person_records(self, persons: Any) -> list[dict[str, Any]]:
+        if not isinstance(persons, list):
+            return []
+        standardized: list[dict[str, Any]] = []
+        by_name: dict[str, dict[str, Any]] = {}
+        next_index = 1
+        for item in persons:
+            if not isinstance(item, dict):
+                continue
+            cleaned = self._clean_person(item)
+            name = str(cleaned.get("name") or "").strip()
+            if not name or not self._is_valid_person_name(name):
+                continue
+            raw_name = str(item.get("name") or "").strip()
+            aliases = cleaned.get("aliases") if isinstance(cleaned.get("aliases"), list) else []
+            if raw_name and raw_name != name and raw_name not in aliases:
+                aliases = [*aliases, raw_name]
+            cleaned["aliases"] = aliases
+            if name in by_name:
+                self._merge_person_record(by_name[name], cleaned)
+                continue
+            if not str(cleaned.get("person_id") or "").strip():
+                cleaned["person_id"] = f"P{next_index:03d}"
+            next_index += 1
+            by_name[name] = cleaned
+            standardized.append(cleaned)
+        return standardized
+
+    def canonicalize_role_names(self, roles: Any, persons: Any) -> list[str]:
+        if isinstance(roles, str):
+            source_roles = [roles]
+        elif isinstance(roles, list):
+            source_roles = roles
+        else:
+            source_roles = []
+        if not source_roles or not isinstance(persons, list):
+            return []
+
+        name_map: dict[str, str] = {}
+        for person in persons:
+            if not isinstance(person, dict):
+                continue
+            canonical_name = str(person.get("name") or "").strip()
+            if not canonical_name:
+                continue
+            name_map[canonical_name] = canonical_name
+            for alias in person.get("aliases") or []:
+                alias_text = str(alias or "").strip()
+                if alias_text:
+                    name_map[alias_text] = canonical_name
+
+        result: list[str] = []
+        for role in source_roles:
+            raw_name = str(role or "").strip()
+            if not raw_name:
+                continue
+            normalized_name = self._normalize_person_name(raw_name) or raw_name
+            canonical_name = name_map.get(raw_name) or name_map.get(normalized_name)
+            if canonical_name and canonical_name not in result:
+                result.append(canonical_name)
+        return result
+
+    def canonicalize_role_name(self, role: Any, persons: Any) -> str:
+        names = self.canonicalize_role_names([role], persons)
+        return names[0] if names else ""
+
+    # Most common Chinese surnames (~150) for name validation
+    COMMON_SURNAMES = frozenset({
+        "王", "李", "张", "刘", "陈", "杨", "赵", "黄", "周", "吴",
+        "徐", "孙", "马", "胡", "朱", "郭", "何", "罗", "高", "林",
+        "梁", "宋", "郑", "谢", "韩", "唐", "冯", "于", "董", "萧",
+        "程", "曹", "袁", "邓", "许", "傅", "沈", "曾", "彭", "吕",
+        "苏", "卢", "蒋", "蔡", "贾", "丁", "魏", "薛", "叶", "阎",
+        "余", "潘", "杜", "戴", "夏", "钟", "汪", "田", "任", "姜",
+        "范", "方", "石", "姚", "谭", "廖", "邹", "熊", "金", "陆",
+        "郝", "孔", "白", "崔", "康", "毛", "邱", "秦", "江", "史",
+        "顾", "侯", "邵", "孟", "龙", "万", "段", "漕", "钱", "汤",
+        "尹", "黎", "易", "常", "武", "乔", "贺", "赖", "龚", "文",
+        "庞", "樊", "殷", "施", "陶", "洪", "翟", "安", "颜", "倪",
+        "严", "牛", "温", "芦", "季", "俞", "章", "鲁", "葛", "伍",
+        "韦", "申", "尤", "毕", "聂", "丛", "焦", "向", "柳", "邢",
+        "岳", "齐", "欧", "祝", "尚", "梅", "莫", "佘", "牟", "练",
+    })
+
+    # Names that are not real person names (role labels, objects, places, events)
+    BAD_TOKENS = frozenset({
+        "男子", "女子", "男人", "女人", "对方", "一名", "一位", "民警", "警方", "警察",
+        "嫌疑人", "犯罪嫌疑人", "被害人", "受害人", "报警人", "报案人", "证言", "陈述",
+        "供述", "交代", "笔录", "口供", "某某", "目击者", "家属", "邻居", "当事人",
+        "伤者", "死者", "纠纷", "冲突", "争吵", "警情", "案情", "案件", "现场",
+        "报警记录", "报案材料", "询问记录", "调解记录", "情况", "材料",
+        "线索", "证据", "监控", "录像", "视频", "照片",
+        "电动车", "手机", "菜刀", "木棍", "汽车", "钱包", "自行车",
+        "店长", "顾客", "店员", "保安", "路人", "同学", "朋友",
+        "工友", "老乡", "房东", "租客", "乘客", "司机", "业主",
+        "物业", "领导", "同事", "网友", "男方", "女方", "双方",
+        "询问", "审讯", "调解", "抓捕", "调查", "侦查",
+        "某某村", "某某路", "某某街",
+        "打伤", "刺伤", "砍伤", "烧伤", "砸伤", "撞伤",
+    })
+
+    @staticmethod
     def _is_valid_person_name(name: str) -> bool:
         clean = WorkflowService._normalize_person_name(name)
-        if not re.fullmatch(r"[\u4e00-\u9fa5]{2,4}", clean):
+        if not clean or not re.fullmatch(r"[\u4e00-\u9fa5]{2,4}", clean):
             return False
-        bad_tokens = {"男子", "女子", "对方", "一名", "民警", "嫌疑人", "被害人", "受害人", "报警人", "报案人", "证言", "陈述", "供述", "笔录", "口供", "某某"}
-        return clean not in bad_tokens
+        # Reject known non-person tokens
+        if clean in WorkflowService.BAD_TOKENS:
+            return False
+        # Reject names ending with location/place suffixes
+        place_suffixes = ("村", "路", "街", "镇", "乡", "县", "区", "市", "省", "巷", "号", "院", "所", "站", "店", "楼", "室", "桥", "路口", "小区", "学校", "医院", "商场", "广场", "仓库", "大厦", "花园", "公寓")
+        if any(clean.endswith(suffix) for suffix in place_suffixes):
+            return False
+        # Reject names starting with ambiguous prefix characters
+        place_prefixes = ("某", "该", "本", "各", "全", "原", "被", "涉")
+        if clean[0] in place_prefixes:
+            return False
+        # Surname validation: first character must be a known Chinese surname
+        if clean[0] not in WorkflowService.COMMON_SURNAMES:
+            return False
+        return True
 
     @staticmethod
     def _normalize_person_name(name: Any) -> str:
@@ -631,6 +816,7 @@ class WorkflowService:
             clean,
         ).strip()
         clean = re.sub(r"(?:称|说|表示|反映|供述|陈述|介绍|联系|发现|报警|报案|哭诉|求助|证言|口供|笔录|交代|讲述|回忆|证实)$", "", clean).strip()
+        clean = re.sub(r"(?:嫌疑人|犯罪嫌疑人|证人|报警人|报案人|被害人|受害人|当事人|家属|邻居|目击者|伤者|死者)$", "", clean).strip()
 
         prefix_match = re.match(r"^([\u4e00-\u9fa5]{2,4})(?=称|说|表示|反映|供述|陈述|介绍|与|和|因|于|在|被|将|把|向|对|及|并|后|时|处|，|。|、|：|:|$)", clean)
         if prefix_match:
@@ -1045,7 +1231,7 @@ class WorkflowService:
             pass
         return []
 
-    def _normalize_parsed_case(self, text: str, payload: dict[str, Any], source_mode: str, source_meta: dict[str, Any] | None) -> dict[str, Any]:
+    def _normalize_parsed_case(self, text: str, payload: dict[str, Any], source_mode: str, source_meta: dict[str, Any] | None, allowed_names: list[str] | None = None) -> dict[str, Any]:
         result = self._default_parse_result(text, "笔录" if source_mode == "transcript_file" else "普通案件文本")
         result.update(payload or {})
         result["case_name"] = str(result.get("case_name") or self._extract_case_name(text)).strip() or "未命名案件"
@@ -1075,8 +1261,7 @@ class WorkflowService:
         }
 
         raw_persons = self._safe_json_loads(result.get("persons"), [])
-        persons = [self._clean_person(item) for item in raw_persons if isinstance(item, dict)] if isinstance(raw_persons, list) else []
-        persons = [person for person in persons if self._is_valid_person_name(person.get("name"))]
+        persons = self.standardize_person_records(raw_persons)
         extracted_persons = self._extract_persons_from_text(text)
         if not persons:
             persons = extracted_persons
@@ -1095,6 +1280,15 @@ class WorkflowService:
                     merged[person["name"]] = person
             persons = list(merged.values())
         persons = [person for person in persons if person.get("name") != "未明确"]
+
+        # Strict post-processing: filter persons against pre-extracted allowed_names
+        if allowed_names:
+            allowed_set = set(allowed_names)
+            before_count = len(persons)
+            persons = [person for person in persons if person.get("name") in allowed_set]
+            if len(persons) < before_count:
+                self._append_warning(result, f"AI 解析生成了 {before_count - len(persons)} 个不在预提取名单中的人物，已自动过滤（仅保留预提取名单中的人物）。")
+
         result["persons"] = persons
 
         if not result["fact_sheet"]["timeline"]:
@@ -1225,16 +1419,68 @@ class WorkflowService:
         return normalized
 
     def parse_case_text(self, text: str, source_mode: str = "plain_case", source_meta: dict[str, Any] | None = None):
-        # Step 1: Pre-extract character names for accurate constraint
+        text = str(text or "").strip()
+        if not text:
+            raise ValueError("案件文本为空，无法解析")
+
+        def _safe_heuristic(reason: str) -> dict[str, Any]:
+            try:
+                fallback = self._heuristic_parse_case(text, source_mode, source_meta)
+            except Exception as fallback_exc:
+                fallback = self._default_parse_result(text, "笔录" if source_mode == "transcript_file" else "普通案件文本")
+                fallback.update(
+                    {
+                        "case_name": self._extract_case_name(text),
+                        "case_background": self._compose_case_background(
+                            text,
+                            case_type="其他",
+                            fact_sheet={"case_time": "未明确", "case_location": "未明确", "report_time": "未明确"},
+                            persons=[],
+                        ),
+                        "full_narrative": text[:4000],
+                        "rawText": text,
+                        "original_content": text,
+                        "source_mode": source_mode,
+                        "parse_engine": "heuristic",
+                    }
+                )
+                if source_meta:
+                    fallback["source_file_name"] = source_meta.get("name")
+                    fallback["source_file_type"] = source_meta.get("type")
+                    fallback["source_file_size"] = source_meta.get("size")
+                    fallback["extracted_text_preview"] = text[:500]
+                self._append_warning(fallback, f"规则兜底解析也遇到异常，已返回最小可复核结果：{fallback_exc}")
+            self._append_warning(fallback, reason)
+            fallback["parse_engine"] = "heuristic"
+            return fallback
+
+        # Step 1: Pre-extract character names via LLM for accurate constraint
         extracted_names = self.extract_case_person_names(text)
+        # Step 1b: Also extract via regex as supplement for maximum coverage
+        regex_persons = self._extract_persons_from_text(text)
+        regex_names = set()
+        for p in regex_persons:
+            n = WorkflowService._normalize_person_name(p.get("name"))
+            if n and WorkflowService._is_valid_person_name(n):
+                regex_names.add(n)
+        # Merge LLM + regex names (deduplicated)
+        all_allowed_names = list(dict.fromkeys(extracted_names + list(regex_names)))
         # Step 2: Build name constraint for the prompt
         name_constraint = ""
-        if extracted_names:
+        if all_allowed_names:
             name_constraint = (
                 "\n\n【已在文本中识别到以下角色名】"
-                + json.dumps(extracted_names, ensure_ascii=False)
-                + "\npersons 中每个条目的 name 字段必须严格从该名单中选取，不得编造不在名单中的新名字。"
+                + json.dumps(all_allowed_names, ensure_ascii=False)
+                + "\n【强制规则】persons 中每个条目的 name 字段必须严格从该名单中选取，不得编造不在名单中的新名字。"
+                + "name 只能是纯人名，不得追加「嫌疑人/证人/审讯阶段/现场阶段」等身份或场景后缀。"
+                + "角色身份只能写入 role_type，场景状态只能写入场景或阶段字段，不得污染 name。"
                 + "所有场景中同一角色必须使用完全相同的 name 作为标识。"
+                + "\n如果原文中没有明确的人名出现在上述名单中，persons 必须返回空数组 []。"
+            )
+        else:
+            name_constraint = (
+                "\n\n【强制规则】本文本中未识别到明确的人名，persons 字段必须返回空数组 []。"
+                + "严禁将地名、抽象名词、物品名、角色称谓当作人名输出。"
             )
         base_prompt = TRANSCRIPT_PARSE_PROMPT if source_mode == "transcript_file" else PARSE_PROMPT
         prompt = base_prompt + name_constraint
@@ -1254,16 +1500,12 @@ class WorkflowService:
             response = create_json_chat_completion(messages=messages, model=get_chat_model(), temperature=0.2, max_tokens=4000)
             payload = self._safe_json_loads(extract_message_text(response), {})
             if isinstance(payload, dict) and payload:
-                result = self._normalize_parsed_case(text, payload, source_mode, source_meta)
+                result = self._normalize_parsed_case(text, payload, source_mode, source_meta, allowed_names=all_allowed_names if all_allowed_names else None)
                 result["parse_engine"] = "ai"
                 return result
         except Exception as exc:
-            fallback = self._heuristic_parse_case(text, source_mode, source_meta)
-            self._append_warning(fallback, f"DeepSeek AI 解析调用失败，已进入规则兜底：{exc}")
-            return fallback
-        fallback = self._heuristic_parse_case(text, source_mode, source_meta)
-        self._append_warning(fallback, "DeepSeek AI 解析未返回可用 JSON，已进入规则兜底。")
-        return fallback
+            return _safe_heuristic(f"DeepSeek AI 解析调用失败，已进入规则兜底：{exc}")
+        return _safe_heuristic("DeepSeek AI 解析未返回可用 JSON，已进入规则兜底。")
 
     def _pick_scene_roles(self, case_info: dict[str, Any], preferred_types: list[str], limit: int = 3) -> list[str]:
         selected = []

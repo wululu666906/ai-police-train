@@ -1443,9 +1443,9 @@ const handleFileChange = (event: Event) => {
   if (!file) return
 
   const lowerName = file.name.toLowerCase()
-  if (!['.pdf', '.docx', '.md'].some((ext) => lowerName.endsWith(ext))) {
+  if (!['.pdf', '.docx', '.txt', '.md', '.markdown'].some((ext) => lowerName.endsWith(ext))) {
     fileParseStatus.value = 'error'
-    showToast('仅支持 PDF、DOCX、MD 文件')
+    showToast('仅支持 PDF、DOCX、TXT、MD 文件')
     target.value = ''
     return
   }
@@ -1498,9 +1498,9 @@ const startParsing = async () => {
     }
     if (!form.caseType) form.caseType = res.case_type || ''
     form.caseTypeGroup = getCaseTypeGroup(form.caseType)
-  } catch {
+  } catch (error: any) {
     if (importMode.value === 'transcript_file') fileParseStatus.value = 'error'
-    showToast('AI 解析失败')
+    showToast(getApiErrorDetail(error, 'AI 解析失败'))
     throw new Error('parse-failed')
   } finally {
     parsing.value = false

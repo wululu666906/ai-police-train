@@ -42,19 +42,22 @@
 
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, Clock, Files, Grid, Medal, Reading, Setting, VideoPlay } from '@element-plus/icons-vue'
+import { Aim, ArrowDown, Clock, Files, Grid, Medal, Reading, Setting, VideoPlay } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 
-const menuItems = [
+const rawMenuItems = [
   { key: 'hall', label: '训练大厅', icon: Grid, path: '/student/hall', disabled: false },
   { key: 'videos', label: '视频实训', icon: VideoPlay, path: '/student/videos', disabled: false },
+  { key: 'face-demo', label: '人脸核验', icon: Aim, path: '/student/face-demo', disabled: false },
   { key: 'tasks', label: '班级作业', icon: Files, path: '/student/classes', disabled: false },
   { key: 'history', label: '训练历史', icon: Clock, path: '/student/history', disabled: false },
   { key: 'knowledge', label: '个人知识库', icon: Reading, path: '', disabled: true },
   { key: 'settings', label: '系统设置', icon: Setting, path: '', disabled: true, hasChildren: true },
 ]
+
+const menuItems = rawMenuItems.filter((item) => !['videos', 'face-demo'].includes(item.key))
 
 const isActive = (path?: string) => Boolean(path && (route.path === path || route.path.startsWith(`${path}/`)))
 

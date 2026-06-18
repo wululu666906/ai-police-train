@@ -92,6 +92,62 @@ def test_clean_person_maps_legacy_template_into_minimal_fields():
     assert person["persona_template_version"] == "minimal_v3"
 
 
+def test_person_name_standardization_strips_role_and_scene_suffixes():
+    payload = {
+        "case_name": "邻里纠纷",
+        "case_type": "其他",
+        "persons": [
+            {"name": "张三（审讯阶段）", "role_type": "嫌疑人", "knows_facts": ["承认到过现场"]},
+            {"name": "张三嫌疑人", "role_type": "嫌疑人", "hidden_truths": ["不愿说明动手细节"]},
+            {"name": "证人张三", "role_type": "证人", "does_not_know": ["不清楚报警时间"]},
+            {"name": "幸福小区", "role_type": "相关人员"},
+            {"name": "口供", "role_type": "相关人员"},
+        ],
+    }
+
+    result = workflow_service._normalize_parsed_case(
+        "报警人李四称，张三在幸福小区与其发生争执。证人张三表示只看到争吵。",
+        payload,
+        "plain_case",
+        None,
+    )
+
+    names = [person["name"] for person in result["persons"]]
+    assert "张三" in names
+    assert "张三嫌疑人" not in names
+    assert "证人张三" not in names
+    assert "幸福小区" not in names
+    assert "口供" not in names
+
+    zhang = next(person for person in result["persons"] if person["name"] == "张三")
+    assert zhang["person_id"] == "P001"
+    assert zhang["role_type"] in {"嫌疑人", "证人"}
+    assert "承认到过现场" in zhang["knows_facts"]
+    assert "不愿说明动手细节" in zhang["hidden_truths"]
+
+
+def test_scene_role_names_are_locked_to_case_person_names():
+    case_info = {
+        "persons": [
+            {"person_id": "P001", "name": "张三", "aliases": ["张三嫌疑人"], "status": "正常"},
+            {"person_id": "P002", "name": "李四", "status": "正常"},
+        ]
+    }
+    payload = {
+        "scenes": [
+            {
+                "scene_name": "重点询问",
+                "roles": ["张三（审讯阶段）", "证人李四", "幸福小区"],
+                "stages": [{"stage_name": "核实身份", "stage_goal": "核实到场人员身份。"}],
+            }
+        ]
+    }
+
+    result = workflow_service._normalize_scenes(case_info, payload)
+
+    assert result["scenes"][0]["roles"] == ["张三", "李四"]
+
+
 def test_role_archetype_block_uses_compact_persona_signals():
     role = SimpleNamespace(role_type="嫌疑人", interaction_style="观察型", weakness="最怕孩子被牵连")
     scene = SimpleNamespace(name="现场调查")

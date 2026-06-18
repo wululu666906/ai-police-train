@@ -318,40 +318,205 @@
 
     <van-popup v-model:show="showSubmissionPopup" teleport="body" :style="{ width: 'min(920px, 96vw)', maxHeight: '92vh', borderRadius: '12px', overflow: 'hidden' }">
       <div class="submission-panel">
-        <header>
+        <header class="submission-panel__header">
           <div>
             <h3>提交详情</h3>
-            <p v-if="submissionDetail">{{ submissionDetail.student.username }} · {{ submissionDetail.case.title }} · {{ submissionDetail.scene.name }}</p>
+            <p v-if="submissionDetail">{{ submissionMetaText }}</p>
           </div>
-          <van-icon name="cross" @click="showSubmissionPopup = false" />
+          <div class="submission-panel__header-actions">
+            <van-button
+              v-if="hasEvaluationReport"
+              plain
+              size="small"
+              class="!rounded-[6px] !border-slate-200 !text-slate-600"
+              @click="showEvaluationPopup = true"
+            >
+              查看完整版
+            </van-button>
+            <van-icon name="cross" @click="closeSubmissionPopup" />
+          </div>
         </header>
         <div v-if="loadingSubmission" class="state-card state-card--flat">
           <el-skeleton :rows="8" animated />
         </div>
         <div v-else-if="submissionDetail" class="submission-body">
-          <aside>
-            <div class="score-box">
-              <span>系统评分</span>
-              <strong>{{ submissionDetail.submission.score ?? '--' }}</strong>
-            </div>
-            <p>提交时间：{{ formatDateTime(submissionDetail.submission.submitted_at) }}</p>
-            <p>状态：{{ reviewStatusLabel(submissionDetail.submission.status) }}</p>
-          </aside>
-          <main>
-            <section>
-              <h4>对话记录</h4>
-              <div class="message-list">
-                <div v-for="message in submissionDetail.messages" :key="message.id" class="message-item" :class="`message-item--${message.role}`">
-                  <span>{{ message.speaker_name || roleLabel(message.role) }}</span>
-                  <p>{{ message.content }}</p>
+          <aside class="submission-summary">
+            <section class="submission-card submission-card--score">
+              <div class="submission-card__head">
+                <span>综合得分</span>
+                <strong>{{ submissionSummary.totalScore }}</strong>
+              </div>
+              <div class="submission-score-meta">
+                <span class="submission-score-meta__grade" :class="`grade-${submissionSummary.gradeClass}`">
+                  {{ submissionSummary.gradeText }}
+                </span>
+                <span class="submission-score-meta__desc">{{ submissionSummary.scoreDesc }}</span>
+              </div>
+              <div class="submission-score-stats">
+                <div>
+                  <span>提交时间</span>
+                  <strong>{{ formatDateTime(submissionDetail.submission.submitted_at) }}</strong>
+                </div>
+                <div>
+                  <span>完成率</span>
+                  <strong>{{ submissionSummary.assessmentRateText }}</strong>
+                </div>
+                <div>
+                  <span>状态</span>
+                  <strong>{{ reviewStatusLabel(submissionDetail.submission.status) }}</strong>
+                </div>
+              </div>
+              <div class="submission-score-dimensions">
+                <div v-for="item in displayedCommonReviewItems" :key="item.dimension" class="dimension-row">
+                  <span>{{ item.dimension }}</span>
+                  <strong>{{ item.score }}/{{ item.full_score }}</strong>
                 </div>
               </div>
             </section>
-            <section>
-              <h4>AI评估报告</h4>
-              <pre>{{ formatEvaluation(submissionDetail.submission.evaluation_result || submissionDetail.session.evaluation_result) }}</pre>
+
+            <section class="submission-card submission-card--points">
+              <div class="submission-card__head">
+                <span>考察点完成情况</span>
+                <strong>{{ assessmentPointItems.length }} 项</strong>
+              </div>
+              <div class="assessment-list">
+                <article v-for="item in assessmentPointItems" :key="assessmentPointKey(item)" class="assessment-list__item">
+                  <div class="assessment-list__head">
+                    <strong>{{ item.label || item.content || '未命名考察点' }}</strong>
+                    <span class="status-pill" :class="`status-pill--${item.status}`">
+                      {{ assessmentPointStatusLabel(item.status) }}
+                    </span>
+                  </div>
+                  <div class="assessment-list__meta">
+                    <span>{{ item.stage_name || '通用' }}</span>
+                    <span>{{ assessmentCompletionLabel(item) }}</span>
+                  </div>
+                </article>
+                <div v-if="!assessmentPointItems.length" class="submission-empty-inline">暂无考察点结果</div>
+              </div>
             </section>
+
+            <section class="submission-card submission-card--comment">
+              <div class="submission-card__head">
+                <span>综合点评</span>
+                <van-button
+                  v-if="commentHasMore"
+                  plain
+                  size="small"
+                  class="!rounded-[6px] !border-slate-200 !text-slate-600"
+                  @click="showEvaluationPopup = true"
+                >
+                  查看完整版
+                </van-button>
+              </div>
+              <div class="comment-preview">
+                <p v-for="(line, index) in commentPreviewLines" :key="`comment-${index}`">{{ line }}</p>
+                <p v-if="!commentPreviewLines.length" class="submission-empty-inline">暂无综合点评</p>
+                <button v-if="commentHasMore" type="button" class="link-button" @click="showEvaluationPopup = true">
+                  展开查看完整内容
+                </button>
+              </div>
+            </section>
+          </aside>
+
+          <main class="submission-dialogue">
+            <div class="submission-dialogue__head">
+              <div>
+                <h4>对话记录</h4>
+                <p>学员与 AI 角色完整对话记录，可滚动浏览全部训练过程。</p>
+              </div>
+              <div class="submission-dialogue__meta">
+                <span>共 {{ submissionMessages.length }} 条</span>
+                <span>{{ formatDateTime(submissionDetail.session.created_at) }}</span>
+              </div>
+            </div>
+
+            <div class="dialogue-timeline">
+              <div v-if="!submissionMessages.length" class="submission-empty-state">
+                <van-icon name="chat-o" size="42" color="#cbd5e1" />
+                <strong>暂无对话记录</strong>
+                <span>当前提交没有可展示的聊天内容。</span>
+              </div>
+
+              <template v-for="(message, index) in submissionMessages" :key="message.key">
+                <div v-if="shouldShowDateDivider(index)" class="timeline-divider">
+                  <span>{{ formatDateDivider(message.createdAt) }}</span>
+                </div>
+
+                <article class="timeline-message" :class="`timeline-message--${message.displayRole}`">
+                  <div class="timeline-message__avatar" :class="`timeline-message__avatar--${message.displayRole}`">
+                    {{ getMessageAvatarText(message) }}
+                  </div>
+                  <div class="timeline-message__body">
+                    <div class="timeline-message__head">
+                      <strong>{{ message.speakerName }}</strong>
+                      <time>{{ formatMessageClock(message.createdAt) }}</time>
+                    </div>
+                    <div class="timeline-message__label">{{ roleLabel(message.originalRole) }}</div>
+                    <div class="timeline-message__bubble">{{ message.content }}</div>
+                  </div>
+                </article>
+              </template>
+            </div>
           </main>
+        </div>
+      </div>
+    </van-popup>
+
+    <van-popup v-model:show="showEvaluationPopup" teleport="body" :style="evaluationPopupStyle">
+      <div class="evaluation-panel">
+        <header class="evaluation-panel__header">
+          <div>
+            <h3>综合点评完整版</h3>
+            <p v-if="submissionDetail">{{ submissionMetaText }}</p>
+          </div>
+          <van-icon name="cross" @click="showEvaluationPopup = false" />
+        </header>
+
+        <div class="evaluation-panel__summary">
+          <div>
+            <span>总分</span>
+            <strong>{{ submissionSummary.totalScore }}</strong>
+          </div>
+          <div>
+            <span>等级</span>
+            <strong>{{ submissionSummary.gradeText }}</strong>
+          </div>
+          <div>
+            <span>考察点</span>
+            <strong>{{ assessmentPointItems.length }}</strong>
+          </div>
+          <div>
+            <span>完成率</span>
+            <strong>{{ submissionSummary.assessmentRateText }}</strong>
+          </div>
+        </div>
+
+        <div class="evaluation-panel__body">
+          <section class="evaluation-panel__block">
+            <h4>完整点评</h4>
+            <p v-for="(line, index) in commentLines" :key="`full-comment-${index}`">{{ line }}</p>
+            <p v-if="!commentLines.length">暂无点评内容</p>
+          </section>
+          <section class="evaluation-panel__block">
+            <h4>亮点与不足</h4>
+            <div class="evaluation-panel__columns">
+              <div>
+                <span>亮点</span>
+                <p v-if="strengthItems.length">{{ strengthItems.join('；') }}</p>
+                <p v-else>暂无亮点摘要</p>
+              </div>
+              <div>
+                <span>不足</span>
+                <p v-if="improvementItems.length">{{ improvementItems.join('；') }}</p>
+                <p v-else>暂无不足摘要</p>
+              </div>
+              <div>
+                <span>建议</span>
+                <p>{{ suggestionText || '暂无复训建议' }}</p>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
     </van-popup>
@@ -386,6 +551,7 @@ const showStudentPopup = ref(false)
 const showAnnouncementPopup = ref(false)
 const showAssignmentPopup = ref(false)
 const showSubmissionPopup = ref(false)
+const showEvaluationPopup = ref(false)
 
 const classForm = reactive({ name: '', description: '' })
 const studentForm = reactive({ usernames: '' })
@@ -401,6 +567,13 @@ const assignmentForm = reactive({
 
 const popupStyle = {
   width: 'min(560px, 96vw)',
+  borderRadius: '12px',
+  overflow: 'hidden',
+}
+
+const evaluationPopupStyle = {
+  width: 'min(760px, 96vw)',
+  maxHeight: '88vh',
   borderRadius: '12px',
   overflow: 'hidden',
 }
@@ -632,6 +805,252 @@ const openSubmission = async (row: any) => {
   }
 }
 
+const closeSubmissionPopup = () => {
+  showSubmissionPopup.value = false
+  showEvaluationPopup.value = false
+}
+
+const safeParseJson = <T>(value: any, fallback: T): T => {
+  if (value === null || value === undefined || value === '') return fallback
+  if (typeof value !== 'string') return value as T
+  try {
+    return JSON.parse(value) as T
+  } catch {
+    return fallback
+  }
+}
+
+const evaluationReport = computed<Record<string, any> | null>(() => {
+  const raw = submissionDetail.value?.submission?.evaluation_result ?? submissionDetail.value?.session?.evaluation_result
+  const parsed = safeParseJson(raw, null)
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, any> : null
+})
+
+const hasEvaluationReport = computed(() => !!evaluationReport.value)
+
+const submissionMetaText = computed(() => {
+  if (!submissionDetail.value) return ''
+  return [
+    submissionDetail.value?.student?.username || '未知学员',
+    submissionDetail.value?.case?.title || '未命名案件',
+    submissionDetail.value?.scene?.name || '训练场景',
+  ].join(' · ')
+})
+
+const getLevel = (score: number) => {
+  if (score >= 90) return '卓越'
+  if (score >= 80) return '优秀'
+  if (score >= 70) return '良好'
+  if (score >= 60) return '合格'
+  return '需改进'
+}
+
+const getGradeClass = (score: number) => {
+  if (score >= 80) return 'pass'
+  if (score >= 60) return 'ok'
+  return 'fail'
+}
+
+const getScoreDesc = (score: number) => {
+  if (score >= 90) return '表现稳定，关键能力覆盖充分'
+  if (score >= 75) return '基本达标，仍需巩固薄弱环节'
+  if (score >= 60) return '达到基础要求，关键点仍需补齐'
+  return '未达预期，需要优先复训'
+}
+
+const percentText = (value: any) => {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '暂无'
+  return `${Math.round(number * 100)}%`
+}
+
+const submissionSummary = computed(() => {
+  const report = evaluationReport.value || {}
+  const score = Number(
+    report.total_score ??
+    report.evaluation_meta?.report_header?.total_score ??
+    submissionDetail.value?.submission?.score ??
+    0,
+  )
+  const safeScore = Number.isFinite(score) ? Math.max(0, Math.min(100, Math.round(score))) : 0
+  const completion = report.evaluation_meta?.assessment_completion || {}
+  return {
+    totalScore: hasEvaluationReport.value ? safeScore : (submissionDetail.value?.submission?.score ?? '--'),
+    gradeText: report.grade_level || report.evaluation_meta?.report_header?.grade_level || getLevel(safeScore),
+    gradeClass: getGradeClass(safeScore),
+    scoreDesc: getScoreDesc(safeScore),
+    assessmentRateText: percentText(completion.weight_rate ?? completion.overall_rate ?? completion.required_rate),
+  }
+})
+
+const displayedCommonReviewItems = computed(() => {
+  const scores = Array.isArray(evaluationReport.value?.scores) ? evaluationReport.value?.scores : []
+  return scores
+    .filter((item: any) => item?.group !== 'assessment')
+    .map((item: any) => ({
+      ...item,
+      dimension: String(item?.dimension || '能力维度').replace(/^考察点[:：]/, ''),
+      score: Math.round(Number(item?.score || 0)),
+      full_score: Math.round(Number(item?.full_score || 100)),
+    }))
+    .slice(0, 4)
+})
+
+const assessmentPointItems = computed(() => {
+  const points = Array.isArray(evaluationReport.value?.assessment_point_results)
+    ? evaluationReport.value?.assessment_point_results
+    : []
+  return points.map((item: any, index: number) => ({
+    ...item,
+    id: item?.id || `point-${index}`,
+    label: String(item?.label || item?.content || `考察点 ${index + 1}`).trim(),
+    status: normalizeAssessmentStatus(item?.status),
+  }))
+})
+
+const assessmentPointKey = (item: any) => `${item?.id || ''}-${item?.label || ''}-${item?.status || ''}`
+
+const normalizeAssessmentStatus = (status: any) => {
+  const value = String(status || '').trim()
+  if (value === 'hit') return 'hit'
+  if (value === 'partial') return 'partial'
+  return 'missed'
+}
+
+const assessmentPointStatusLabel = (status: string) => {
+  if (status === 'hit') return '已命中'
+  if (status === 'partial') return '部分命中'
+  return '未命中'
+}
+
+const assessmentCompletionLabel = (item: any) => {
+  const score = Number(item?.weighted_score ?? item?.score)
+  const fullScore = Number(item?.full_score ?? item?.weight)
+  if (Number.isFinite(score) && Number.isFinite(fullScore) && fullScore > 0) {
+    return `${Math.round(score)}/${Math.round(fullScore)}`
+  }
+  return assessmentPointStatusLabel(item?.status)
+}
+
+const strengthItems = computed(() =>
+  Array.isArray(evaluationReport.value?.strengths)
+    ? evaluationReport.value.strengths.map((item: any) => String(item || '').trim()).filter(Boolean)
+    : [],
+)
+
+const improvementItems = computed(() =>
+  Array.isArray(evaluationReport.value?.improvements)
+    ? evaluationReport.value.improvements.map((item: any) => String(item || '').trim()).filter(Boolean)
+    : [],
+)
+
+const suggestionText = computed(() => String(evaluationReport.value?.suggestions || '').trim())
+
+const commentText = computed(() => {
+  const report = evaluationReport.value || {}
+  const sections = [
+    strengthItems.value.length ? `亮点：${strengthItems.value.join('；')}` : '',
+    improvementItems.value.length ? `不足：${improvementItems.value.join('；')}` : '',
+    suggestionText.value ? `建议：${suggestionText.value}` : '',
+  ].filter(Boolean)
+  if (sections.length) return sections.join('\n')
+  if (report.error) return `评估生成异常：${report.error}`
+  return ''
+})
+
+const commentLines = computed(() =>
+  commentText.value
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean),
+)
+
+const commentPreviewLines = computed(() => {
+  if (!commentText.value) return []
+  const lines = commentLines.value
+  if (lines.length >= 3) return lines.slice(0, 3)
+  const singleText = lines.join('')
+  if (singleText.length > 150) return [`${singleText.slice(0, 150)}...`]
+  return lines
+})
+
+const commentHasMore = computed(() => {
+  const lines = commentLines.value
+  return lines.length > 3 || commentText.value.length > 150
+})
+
+const submissionMessages = computed(() => {
+  const messages = Array.isArray(submissionDetail.value?.messages) ? submissionDetail.value.messages : []
+  return messages
+    .map((message: any, index: number) => {
+      const content = String(message?.content || '').trim()
+      if (!content) return null
+      const originalRole = String(message?.role || '')
+      const displayRole = originalRole === 'user' || originalRole === 'human'
+        ? 'human'
+        : originalRole === 'system'
+          ? 'system'
+          : 'assistant'
+      return {
+        key: `${message?.id || index}-${displayRole}`,
+        id: Number(message?.id || index),
+        originalRole,
+        displayRole,
+        content,
+        speakerName: String(message?.speaker_name || roleLabel(originalRole)).trim(),
+        createdAt: message?.created_at,
+      }
+    })
+    .filter(Boolean) as Array<{
+      key: string
+      id: number
+      originalRole: string
+      displayRole: 'human' | 'assistant' | 'system'
+      content: string
+      speakerName: string
+      createdAt?: string
+    }>
+})
+
+const parseDate = (value?: string) => {
+  if (!value) return null
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+const pad = (value: number) => String(value).padStart(2, '0')
+
+const formatDateKey = (value?: string) => {
+  const date = parseDate(value)
+  if (!date) return ''
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+const shouldShowDateDivider = (index: number) => {
+  const current = submissionMessages.value[index]
+  if (!current?.createdAt) return index === 0
+  if (index === 0) return true
+  return formatDateKey(current.createdAt) !== formatDateKey(submissionMessages.value[index - 1]?.createdAt)
+}
+
+const formatDateDivider = (value?: string) => {
+  const date = parseDate(value)
+  if (!date) return '训练过程'
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+const formatMessageClock = (value?: string) => {
+  const date = parseDate(value)
+  if (!date) return '--:--'
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+const getMessageAvatarText = (message: any) => {
+  if (message.displayRole === 'human') return '学'
+  if (message.displayRole === 'system') return '系'
+  return String(message.speakerName || 'AI').slice(0, 1)
+}
+
 const copyInviteCode = async () => {
   const code = selectedClass.value?.invite_code || classDetail.value?.classroom?.invite_code
   if (!code) return
@@ -669,11 +1088,6 @@ const roleLabel = (role: string) => {
   if (role === 'assistant' || role === 'ai') return 'AI角色'
   if (role === 'action') return '训练动作'
   return role || '系统'
-}
-
-const formatEvaluation = (value: any) => {
-  if (!value) return '暂无评估报告'
-  return JSON.stringify(value, null, 2)
 }
 
 const toDatetimeInput = (value: any) => {
@@ -1092,108 +1506,536 @@ onMounted(async () => {
 
 .submission-panel {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   max-height: 92vh;
   background: #fff;
 }
 
-.submission-panel header {
+.submission-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 16px 18px;
+  border-bottom: 1px solid #eef2f7;
 }
 
-.submission-panel header p {
+.submission-panel__header p {
   margin: 4px 0 0;
   color: #64748b;
   font-size: 13px;
 }
 
-.submission-body {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: 18px;
-  overflow: auto;
-  padding: 18px;
+.submission-panel__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.submission-body aside {
-  border: 1px solid #eef2f7;
-  border-radius: 8px;
-  padding: 14px;
-  height: fit-content;
+.submission-body {
+  display: grid;
+  grid-template-columns: 296px minmax(0, 1fr);
+  gap: 18px;
+  min-height: 0;
+  height: min(740px, calc(92vh - 68px));
+  overflow: hidden;
+  padding: 18px;
   background: #f8fafc;
 }
 
-.score-box {
+.submission-summary {
   display: grid;
-  gap: 6px;
-  margin-bottom: 12px;
+  grid-template-rows: repeat(3, 1fr);
+  gap: 12px;
+  min-height: 0;
 }
 
-.score-box span,
-.submission-body aside p {
-  margin: 0 0 8px;
+.submission-card {
+  border: 1px solid #eef2f7;
+  border-radius: 8px;
+  padding: 14px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
+}
+
+.submission-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.submission-card__head span {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.submission-card__head strong {
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.submission-card--score .submission-card__head strong {
+  color: #dc2626;
+  font-size: 48px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.submission-score-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.submission-score-meta__grade {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  border-radius: 999px;
+  padding: 0 10px;
+  background: #fee2e2;
+  color: #dc2626;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.submission-score-meta__grade.grade-pass {
+  background: #dcfce7;
+  color: #047857;
+}
+
+.submission-score-meta__grade.grade-ok {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.submission-score-meta__desc {
+  min-width: 0;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.submission-score-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.submission-score-stats div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 8px;
+}
+
+.submission-score-stats span,
+.assessment-list__meta,
+.timeline-message__label {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.submission-score-stats strong {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.submission-score-dimensions {
+  display: grid;
+  gap: 7px;
+}
+
+.dimension-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dimension-row span {
+  min-width: 0;
+  overflow: hidden;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dimension-row strong {
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.assessment-list {
+  display: grid;
+  gap: 8px;
+  height: calc(100% - 32px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.assessment-list__item {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #eef2f7;
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: #fbfdff;
+}
+
+.assessment-list__head,
+.assessment-list__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.assessment-list__head strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-pill {
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #fee2e2;
+  color: #dc2626;
+  font-size: 11px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.status-pill--hit {
+  background: #dcfce7;
+  color: #047857;
+}
+
+.status-pill--partial {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.comment-preview {
+  height: calc(100% - 32px);
+  overflow: hidden;
+}
+
+.comment-preview p {
+  display: -webkit-box;
+  margin: 0 0 10px;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.7;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.link-button {
+  border: none;
+  background: transparent;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.submission-dialogue {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  border: 1px solid #eef2f7;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
+}
+
+.submission-dialogue__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.submission-dialogue__head h4 {
+  margin: 0 0 4px;
+  color: #0f172a;
+  font-size: 17px;
+  font-weight: 900;
+}
+
+.submission-dialogue__head p {
+  margin: 0;
   color: #64748b;
   font-size: 13px;
 }
 
-.score-box strong {
-  color: #dc2626;
-  font-size: 42px;
-  line-height: 1;
+.submission-dialogue__meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
-.submission-body main {
+.submission-dialogue__meta span {
+  border-radius: 999px;
+  background: #f1f5f9;
+  padding: 4px 9px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.dialogue-timeline {
   display: grid;
-  gap: 16px;
+  align-content: start;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px;
 }
 
-.submission-body h4 {
+.timeline-divider {
+  display: flex;
+  justify-content: center;
+}
+
+.timeline-divider span {
+  border-radius: 999px;
+  background: #e2e8f0;
+  padding: 4px 10px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.timeline-message {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.timeline-message__avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #475569;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.timeline-message__avatar--human {
+  background: #1d4ed8;
+}
+
+.timeline-message__avatar--system {
+  background: #64748b;
+}
+
+.timeline-message__body {
+  min-width: 0;
+}
+
+.timeline-message__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.timeline-message__head strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-message__head time {
+  color: #94a3b8;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.timeline-message__bubble {
+  margin-top: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 11px 12px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.timeline-message--human .timeline-message__bubble {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.timeline-message--system .timeline-message__bubble {
+  background: #f8fafc;
+  color: #475569;
+}
+
+.submission-empty-inline {
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.submission-empty-state {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  min-height: 260px;
+  color: #94a3b8;
+  text-align: center;
+}
+
+.submission-empty-state strong {
+  color: #475569;
+}
+
+.evaluation-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  max-height: 88vh;
+  background: #fff;
+}
+
+.evaluation-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.evaluation-panel__header h3 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.evaluation-panel__header p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.evaluation-panel__summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 14px 18px;
+  background: #f8fafc;
+}
+
+.evaluation-panel__summary div {
+  display: grid;
+  gap: 4px;
+  border: 1px solid #eef2f7;
+  border-radius: 7px;
+  background: #fff;
+  padding: 10px;
+}
+
+.evaluation-panel__summary span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.evaluation-panel__summary strong {
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.evaluation-panel__body {
+  display: grid;
+  gap: 14px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px;
+}
+
+.evaluation-panel__block {
+  border: 1px solid #eef2f7;
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: #fff;
+}
+
+.evaluation-panel__block h4 {
   margin: 0 0 10px;
   color: #0f172a;
   font-size: 15px;
   font-weight: 900;
 }
 
-.message-list {
-  display: grid;
-  gap: 8px;
-}
-
-.message-item {
-  border: 1px solid #eef2f7;
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: #fff;
-}
-
-.message-item--user {
-  border-color: #bfdbfe;
-  background: #eff6ff;
-}
-
-.message-item span {
+.evaluation-panel__block p {
+  margin: 0 0 8px;
   color: #334155;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.evaluation-panel__columns {
+  display: grid;
+  gap: 10px;
+}
+
+.evaluation-panel__columns div {
+  display: grid;
+  gap: 4px;
+}
+
+.evaluation-panel__columns span {
+  color: #1d4ed8;
   font-size: 12px;
   font-weight: 900;
-}
-
-.message-item p {
-  margin: 5px 0 0;
-  color: #0f172a;
-  font-size: 14px;
-  line-height: 1.7;
-}
-
-pre {
-  max-height: 360px;
-  overflow: auto;
-  border: 1px solid #eef2f7;
-  border-radius: 8px;
-  background: #0f172a;
-  padding: 14px;
-  color: #e5e7eb;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
 }
 
 .state-card--flat {

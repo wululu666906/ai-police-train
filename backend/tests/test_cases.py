@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import models
 from docx import Document
+from services.evaluation_service import COMMON_DIMENSIONS
 from services.workflow_service import workflow_service
 
 
@@ -484,6 +485,48 @@ class TestCasesFullCreate:
         assert any(link.is_primary for link in scene_role_links)
         assert structured.get("scene_role_map")
 
+    def test_full_create_standardizes_person_names_and_scene_roles(self, client, admin_headers, db_session):
+        response = client.post(
+            "/cases/full-create",
+            json={
+                "case": {
+                    "case_name": "姓名标准化测试",
+                    "case_type": "其他",
+                    "case_background": "报警人李四称张三在幸福小区与其发生争执。",
+                    "original_content": "报警人李四称，张三在幸福小区与其发生争执。证人张三表示只看到争吵。",
+                    "persons": [
+                        {"name": "张三（审讯阶段）", "role_type": "嫌疑人", "status": "正常"},
+                        {"name": "张三嫌疑人", "role_type": "嫌疑人", "status": "正常"},
+                        {"name": "幸福小区", "role_type": "相关人员", "status": "正常"},
+                        {"name": "口供", "role_type": "相关人员", "status": "正常"},
+                    ],
+                },
+                "scenes": [
+                    {
+                        "scene_name": "重点询问",
+                        "scene_description": "测试场景",
+                        "difficulty": "中等",
+                        "roles": ["张三嫌疑人", "幸福小区"],
+                        "primary_role_name": "张三（审讯阶段）",
+                        "stages": [{"stage_name": "核实身份", "stage_goal": "核实人员身份。"}],
+                    }
+                ],
+            },
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 200
+        created = response.json()
+        db_case = db_session.query(models.Case).filter(models.Case.id == created["id"]).first()
+        structured = json.loads(db_case.structured_data or "{}")
+        assert [person["name"] for person in structured["persons"]] == ["张三"]
+        assert structured["persons"][0]["person_id"] == "P001"
+        assert structured["scene_role_map"]["重点询问"]["role_names"] == ["张三"]
+        assert structured["scene_role_map"]["重点询问"]["primary_role_name"] == "张三"
+
+        db_roles = db_session.query(models.Role).filter(models.Role.case_id == db_case.id).all()
+        assert [role.name for role in db_roles] == ["张三"]
+
 
 class TestCasesTrainingFlow:
     def test_admin_created_case_can_be_used_by_student_training_flow(self, client, admin_headers, db_session):
@@ -543,4 +586,8 @@ class TestCasesTrainingFlow:
         assert finish_response.status_code == 200
         report = finish_response.json()
         assert "total_score" in report
-        assert len(report["scores"]) == 5
+        score_groups = {item.get("group") for item in report["scores"]}
+        common_dimensions = {name for name, _ in COMMON_DIMENSIONS}
+        report_dimensions = {item.get("dimension") for item in report["scores"]}
+        assert common_dimensions.issubset(report_dimensions)
+        assert "assessment" in score_groups

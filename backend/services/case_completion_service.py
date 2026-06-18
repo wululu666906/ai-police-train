@@ -279,12 +279,14 @@ def _merge_case_info(
 
     new_persons = completed.get("persons")
     if isinstance(new_persons, list) and new_persons:
+        new_persons = workflow_service.standardize_person_records(new_persons)
         if mode == "fill_gaps" and isinstance(base.get("persons"), list) and base.get("persons"):
-            by_name = {str(item.get("name") or "").strip(): item for item in base["persons"] if isinstance(item, dict)}
+            existing_persons = workflow_service.standardize_person_records(base.get("persons"))
+            by_name = {str(item.get("name") or "").strip(): item for item in existing_persons if isinstance(item, dict)}
             for person in new_persons:
                 if not isinstance(person, dict):
                     continue
-                name = str(person.get("name") or "").strip()
+                name = workflow_service._normalize_person_name(person.get("name"))
                 if not name:
                     continue
                 if name not in by_name:
@@ -303,6 +305,17 @@ def _merge_case_info(
         else:
             base["persons"] = new_persons
             filled.append("persons")
+    elif isinstance(base.get("persons"), list):
+        base["persons"] = workflow_service.standardize_person_records(base.get("persons"))
+
+    if isinstance(base.get("scenes"), list) and isinstance(base.get("persons"), list):
+        for scene in base["scenes"]:
+            if not isinstance(scene, dict):
+                continue
+            roles = scene.get("roles") or scene.get("role_names")
+            canonical_roles = workflow_service.canonicalize_role_names(roles, base["persons"])
+            if canonical_roles:
+                scene["roles"] = canonical_roles
 
     return base, filled
 
@@ -329,6 +342,8 @@ def complete_case_information(
             "\n\n【已在文本中识别到以下角色名】"
             + json.dumps(extracted_names, ensure_ascii=False)
             + "\npersons 中 name 必须严格从该名单选取，不得编造不在名单中的新名字。"
+            + "name 只能是纯人名，不得追加“嫌疑人/证人/审讯阶段/现场阶段”等身份或场景后缀。"
+            + "角色身份只能写入 role_type，场景状态只能写入场景或阶段字段，不得污染 name。"
             + "同一角色在不同场景中必须使用完全相同的 name。"
         )
 

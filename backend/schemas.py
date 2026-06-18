@@ -1,11 +1,12 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, ConfigDict
 
 
 class RoleBase(BaseModel):
     name: str
+    person_id: Optional[str] = None
     role_type: str = "相关人员"
     interaction_style: str = "配合型"
     personality: str
@@ -76,7 +77,13 @@ class KnowledgeItemBase(BaseModel):
     source: Optional[str] = "manual"
     title: Optional[str] = "未命名知识"
     category: Optional[str] = "通用"
+    library: Optional[str] = "general"
     tags: List[str] = []
+    source_id: Optional[str] = None
+    chunk_index: Optional[int] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
 
 
 class KnowledgeItemCreate(KnowledgeItemBase):

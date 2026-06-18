@@ -15,9 +15,11 @@ import paramiko
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST = os.environ.get("DEPLOY_HOST", "")
-USER = os.environ.get("DEPLOY_USER", "ubuntu")
+USER = os.environ.get("DEPLOY_USER", "panglihao")
 PASSWORD = os.environ.get("DEPLOY_PASSWORD", "")
+PORT = int(os.environ.get("DEPLOY_PORT", "5175"))
 REMOTE_DIR = os.environ.get("DEPLOY_DIR", "/opt/ai-police-sim")
+DEFAULT_NODE = Path.home() / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node" / "bin" / "node.exe"
 
 SKIP_DIRS = {
     ".git", "node_modules", "venv", ".venv", "__pycache__", ".pytest_cache",
@@ -30,12 +32,20 @@ SKIP_FILES = {".env", ".db", ".sqlite3", ".pyc", ".zip", ".log"}
 def build_frontend() -> None:
     print("Building frontend (VITE_API_URL=/api)...")
     env = {**dict(__import__("os").environ), "VITE_API_URL": "/api"}
+    vite_js = ROOT / "frontend" / "node_modules" / "vite" / "bin" / "vite.js"
+    node_exe = Path(os.environ.get("NODE_EXE", str(DEFAULT_NODE)))
+    if node_exe.exists() and vite_js.exists():
+        cmd = [str(node_exe), str(vite_js), "build"]
+        use_shell = False
+    else:
+        cmd = ["npm", "run", "build"]
+        use_shell = True
     subprocess.run(
-        ["npm", "run", "build"],
+        cmd,
         cwd=ROOT / "frontend",
         env=env,
         check=True,
-        shell=True,
+        shell=use_shell,
     )
     dist = ROOT / "frontend" / "dist" / "index.html"
     if not dist.exists():
@@ -191,8 +201,29 @@ sudo systemctl is-active nginx
 def require_deploy_credentials() -> None:
     if not HOST or not PASSWORD:
         raise SystemExit(
-            "Set DEPLOY_HOST and DEPLOY_PASSWORD (optional: DEPLOY_USER, DEPLOY_DIR) before running."
+            "Set DEPLOY_HOST and DEPLOY_PASSWORD (optional: DEPLOY_USER, DEPLOY_PORT, DEPLOY_DIR) before running."
         )
+
+
+def remote_home_dir(client: paramiko.SSHClient) -> str:
+    _, stdout, _ = client.exec_command("printf %s \"$HOME\"")
+    value = stdout.read().decode("utf-8", errors="replace").strip()
+    return value or f"/home/{USER}"
+
+
+def build_supervisor_backend_conf(remote_home: str) -> str:
+    return f"""[program:ai-police-backend]
+directory={REMOTE_DIR}/backend
+command={REMOTE_DIR}/backend/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8001
+autostart=true
+autorestart=true
+startsecs=5
+stopwaitsecs=10
+user={USER}
+stdout_logfile=/var/log/ai-police-sim/backend.out.log
+stderr_logfile=/var/log/ai-police-sim/backend.err.log
+environment=HOME="{remote_home}",PATH="{REMOTE_DIR}/backend/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+"""
 
 
 def main() -> int:
@@ -209,16 +240,19 @@ def main() -> int:
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(HOST, username=USER, password=PASSWORD, timeout=30)
+    client.connect(HOST, port=PORT, username=USER, password=PASSWORD, timeout=30)
     safe_print(f"Connected to {HOST}")
+    remote_home = remote_home_dir(client)
 
-    run_remote(client, "docker compose -f /home/ubuntu/ai-police-platform/app_src/docker-compose.yml down 2>/dev/null || true")
+    run_remote(client, f"docker compose -f {remote_home}/ai-police-platform/app_src/docker-compose.yml down 2>/dev/null || true")
     run_remote(client, "sudo pkill -f 'uvicorn main:app' 2>/dev/null || true")
 
     sftp = client.open_sftp()
-    with sftp.file("/home/ubuntu/ai_police_deploy.zip", "wb") as f:
+    with sftp.file(f"{remote_home}/ai_police_deploy.zip", "wb") as f:
         f.write(payload)
     sftp.close()
+
+    supervisor_conf_b64 = base64.b64encode(build_supervisor_backend_conf(remote_home).encode()).decode()
 
     setup = f"""
 set -euo pipefail
@@ -228,8 +262,8 @@ sudo apt-get install -y python3 python3-venv python3-pip nginx unzip supervisor 
 
 sudo rm -rf {REMOTE_DIR}
 sudo mkdir -p {REMOTE_DIR}
-sudo unzip -o /home/ubuntu/ai_police_deploy.zip -d {REMOTE_DIR}
-sudo chown -R ubuntu:ubuntu {REMOTE_DIR}
+sudo unzip -o {remote_home}/ai_police_deploy.zip -d {REMOTE_DIR}
+sudo chown -R {USER}:{USER} {REMOTE_DIR}
 
 cd {REMOTE_DIR}
 find scripts -name '*.sh' -exec sed -i 's/\\r$//' {{}} +
@@ -240,7 +274,7 @@ echo '{env_b64}' | base64 -d > {REMOTE_DIR}/backend/.env
 chmod 600 {REMOTE_DIR}/backend/.env
 
 sudo mkdir -p /var/log/ai-police-sim
-sudo chown ubuntu:ubuntu /var/log/ai-police-sim
+sudo chown {USER}:{USER} /var/log/ai-police-sim
 
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo rm -f /etc/nginx/sites-enabled/ai-police-sim 2>/dev/null || true
@@ -272,7 +306,7 @@ sudo systemctl restart nginx
 
 sudo rm -f /etc/supervisor/conf.d/ai-police-nginx.conf 2>/dev/null || true
 
-sudo cp {REMOTE_DIR}/deploy/supervisor/ai-police-backend.conf /etc/supervisor/conf.d/ai-police-backend.conf
+echo '{supervisor_conf_b64}' | base64 -d | sudo tee /etc/supervisor/conf.d/ai-police-backend.conf >/dev/null
 sudo supervisorctl reread
 sudo supervisorctl update
 sudo supervisorctl restart ai-police-backend || sudo supervisorctl start ai-police-backend
@@ -385,7 +419,7 @@ server {{
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(HOST, username=USER, password=PASSWORD, timeout=30)
+    client.connect(HOST, port=PORT, username=USER, password=PASSWORD, timeout=30)
     safe_print(f"Connected to {HOST} — requesting Let's Encrypt IP certificate")
 
     issue = f"""
@@ -480,7 +514,7 @@ def enable_https_only() -> int:
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(HOST, username=USER, password=PASSWORD, timeout=30)
+    client.connect(HOST, port=PORT, username=USER, password=PASSWORD, timeout=30)
     safe_print(f"Connected to {HOST} — enabling HTTPS")
 
     setup = f"""

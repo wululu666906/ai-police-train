@@ -1,0 +1,14 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# 先安装依赖（利用 Docker 缓存层）
+COPY package*.json ./
+RUN npm ci
+
+# 开发时源码通过 volume 挂载覆盖，此处仅为占位
+COPY . .
+
+EXPOSE 5556
+
+CMD ["npx", "vite", "--host", "0.0.0.0", "--port", "5556", "--strictPort"]

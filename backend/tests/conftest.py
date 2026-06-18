@@ -38,6 +38,8 @@ def _remove_test_db():
         os.remove(TEST_DB_PATH)
     except FileNotFoundError:
         pass
+    except PermissionError:
+        pass
 
 
 @pytest.fixture(autouse=True)
@@ -67,6 +69,7 @@ def mock_llm_provider():
 
 def _populate_test_db():
     _remove_test_db()
+    models.Base.metadata.drop_all(bind=_db_engine)
     models.Base.metadata.create_all(bind=_db_engine)
 
     db = SessionLocal()

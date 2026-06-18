@@ -1,0 +1,56 @@
+# 开发模式（热重载）：docker compose -f docker-compose.dev.yml up -d --build
+# 后端热重载：修改 backend/ 下 .py 文件后 uvicorn 自动重启
+# 前端 HMR：修改 frontend/ 下 .vue/.ts 文件后浏览器自动更新
+# 访问 http://127.0.0.1:5556（前端 dev server，自动代理 API 到后端）
+# 后端 API 直连 http://127.0.0.1:8000
+
+services:
+  backend-dev:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: ai-police-sim:backend-dev
+    container_name: ai_police_backend_dev
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: sqlite:///data/ai_police.db
+      CHROMA_DB_PATH: data/chroma_db
+      PORT: "8000"
+    ports:
+      - "8000:8000"
+    volumes:
+      # 挂载源码实现热重载（替换镜像内 /app 源码，pip 依赖保留在系统路径）
+      - ./backend:/app
+      - ./data:/app/data
+    command: >
+      sh -c "
+        python init_db.py &&
+        exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      "
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  frontend-dev:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    image: ai-police-sim:frontend-dev
+    container_name: ai_police_frontend_dev
+    ports:
+      - "5556:5556"
+    volumes:
+      # 挂载源码（排除 node_modules，由镜像内预装依赖提供服务）
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_DEV_PROXY_TARGET=http://backend-dev:8000
+    depends_on:
+      backend-dev:
+        condition: service_started
+    restart: unless-stopped

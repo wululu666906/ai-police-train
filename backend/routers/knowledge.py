@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, Body, File, Form, UploadFile
 from typing import List, Optional
 
 import database
 import models
 from routers.auth import require_admin_user
-from services.rag_service import rag_service
+from services.document_extract_service import document_extract_service
+from services.rag_service import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE, RUNTIME_RETRIEVAL_LIBRARIES, rag_service
 from services.case_knowledge_service import (
     build_case_knowledge_documents,
     delete_case_from_knowledge,
@@ -55,7 +56,13 @@ def list_knowledge(limit: int = 50, offset: int = 0, db=Depends(database.get_db)
                     source=item["source"],
                     title=item["title"],
                     category=item["category"],
+                    library=item.get("library") or "general",
                     tags=item["tags"],
+                    source_id=(item.get("metadata") or {}).get("source_id"),
+                    chunk_index=(item.get("metadata") or {}).get("chunk_index"),
+                    created_at=(item.get("metadata") or {}).get("created_at"),
+                    updated_at=(item.get("metadata") or {}).get("updated_at"),
+                    metadata=item.get("metadata") or {},
                     referenced_by_count=len(references),
                     referenced_by=references,
                 )
@@ -65,25 +72,158 @@ def list_knowledge(limit: int = 50, offset: int = 0, db=Depends(database.get_db)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.get("/stats")
+def get_knowledge_stats():
+    """返回各知识库分类的入库与检索状态。"""
+    try:
+        return rag_service.get_library_stats()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/sources")
+def list_knowledge_sources(library: Optional[str] = None):
+    """按 source_id 聚合文档源，供管理端展示文件/手工录入来源。"""
+    try:
+        return rag_service.get_sources(library=library)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/sources/{source_id:path}")
+def get_knowledge_source(source_id: str):
+    """返回单个文档源及其知识片段详情。"""
+    try:
+        rows = rag_service.get_sources(source_id=source_id, include_chunks=True)
+        if not rows:
+            raise HTTPException(status_code=404, detail="Knowledge source not found")
+        return rows[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.delete("/sources/{source_id:path}")
+def delete_knowledge_source(source_id: str):
+    """按文档源删除其下所有知识片段。"""
+    try:
+        result = rag_service.delete_by_source_id(source_id)
+        if not result.get("deleted_ids"):
+            raise HTTPException(status_code=404, detail="Knowledge source not found")
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 @router.post("/upload")
 def upload_knowledge(payload: dict = Body(...)):
     """上传并索引新的知识文本"""
-    text = payload.get("text")
-    source = payload.get("source", "manual_upload")
-    title = payload.get("title") or rag_service._default_title(text)
-    category = payload.get("category") or "通用"
+    text = str(payload.get("text") or "").strip()
+    source = str(payload.get("source") or "manual_upload").strip()
+    title = str(payload.get("title") or "").strip() or rag_service._default_title(text)
+    category = str(payload.get("category") or "通用").strip()
+    library = str(payload.get("library") or "").strip()
     tags = rag_service._normalize_tags(payload.get("tags"))
+    chunk_size = int(payload.get("chunk_size") or DEFAULT_CHUNK_SIZE)
+    overlap = int(payload.get("overlap") or DEFAULT_CHUNK_OVERLAP)
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
     
     try:
-        ids = rag_service.add_documents(
-            [text],
-            metadatas=[{"source": source, "title": title, "category": category, "tags": tags}],
+        result = rag_service.ingest_text(
+            text,
+            title=title,
+            source=source,
+            category=category,
+            tags=tags,
+            library=library,
+            chunk_size=chunk_size,
+            overlap=overlap,
         )
-        return {"message": "Knowledge indexed successfully", "ids": ids}
+        return {"message": "Knowledge indexed successfully", **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/upload-file")
+async def upload_knowledge_file(
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    category: str = Form("通用"),
+    source: str = Form("file_upload"),
+    library: str = Form(""),
+    tags: str = Form(""),
+    chunk_size: int = Form(DEFAULT_CHUNK_SIZE),
+    overlap: int = Form(DEFAULT_CHUNK_OVERLAP),
+):
+    """上传 PDF/DOCX/TXT/Markdown 文档，解析、切片并写入向量库。"""
+    filename = file.filename or ""
+    extension = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if extension not in document_extract_service.ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="仅支持 PDF、DOCX、TXT、Markdown 文件")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="上传文件为空，请重新选择文件")
+    if len(file_bytes) > document_extract_service.MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="文件大小不能超过 20MB")
+
+    try:
+        extraction = document_extract_service.recognize_file(filename, file_bytes)
+        result = rag_service.ingest_text(
+            extraction.text,
+            title=title.strip() or filename,
+            source=source.strip() or "file_upload",
+            category=category.strip() or "通用",
+            tags=tags,
+            library=library,
+            extra_metadata={
+                "filename": filename,
+                "file_type": extension.lstrip("."),
+                "extract_method": extraction.method,
+                "extract_engine": extraction.engine,
+            },
+            chunk_size=chunk_size,
+            overlap=overlap,
+        )
+        return {
+            "message": "Knowledge file indexed successfully",
+            **result,
+            "filename": filename,
+            "extracted_chars": len(extraction.text),
+            "warnings": extraction.warnings,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"知识库文件入库失败: {exc}") from exc
+
+
+@router.post("/search")
+def search_knowledge(payload: dict = Body(...)):
+    query = str(payload.get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    limit = int(payload.get("limit") or 5)
+    libraries = payload.get("libraries")
+    if isinstance(libraries, str):
+        libraries = [item.strip() for item in libraries.split(",") if item.strip()]
+    if not isinstance(libraries, list):
+        libraries = []
+    try:
+        hits = rag_service.search_items(query, limit=limit, libraries=libraries)
+        return {
+            "query": query,
+            "libraries": libraries or RUNTIME_RETRIEVAL_LIBRARIES,
+            "hits": hits,
+            "count": len(hits),
+            "embedding_error": rag_service.embedding_error,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/cases")

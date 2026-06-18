@@ -9,6 +9,7 @@ from typing import Any, Optional
 import models
 from .case_knowledge_service import load_case_knowledge_bundle
 from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
+from .rag_service import RUNTIME_RETRIEVAL_LIBRARIES, rag_service
 from .persona_engine import (
     analyze_dialogue_momentum,
     build_persona_profile,
@@ -63,6 +64,9 @@ ROLE_ACTOR_PROMPT = """
 
 【案件库与角色剧本库】
 {case_knowledge_block}
+
+【知识库实时召回（法律法规 / SOP / 教学资料）】
+{retrieved_knowledge_block}
 
 【你掌握的事实边界】
 已知：{knows_facts}
@@ -493,6 +497,20 @@ def generate_role_dialogue(
     profile = build_persona_profile(role, case, scene)
     script = build_role_script(role, case, scene, profile)
     knowledge_bundle = load_case_knowledge_bundle(case, role)
+    retrieval_query = rag_service.build_retrieval_query(
+        user_text,
+        getattr(case, "case_type", "") if case else "",
+        getattr(case, "title", "") if case else "",
+        getattr(scene, "name", "") if scene else "",
+        current_stage,
+        history=[getattr(message, "content", "") for message in history[-4:]],
+    )
+    retrieval_bundle = rag_service.build_context_block(
+        retrieval_query,
+        limit=4,
+        libraries=RUNTIME_RETRIEVAL_LIBRARIES,
+        max_chars=2800,
+    )
     momentum = analyze_dialogue_momentum(
         user_text,
         profile,
@@ -541,6 +559,7 @@ def generate_role_dialogue(
             perspective_hint=perspective_hint,
             canonical_facts_block=format_canonical_facts_block(case, scene),
             case_knowledge_block=knowledge_bundle.get("knowledge_block") or "暂无案件知识库内容",
+            retrieved_knowledge_block=retrieval_bundle.get("context_block") or "本轮未召回到可用法规、SOP或教学资料。",
             knows_facts=merge_role_knows_facts(role, case),
             hidden_truths=_format_facts(getattr(role, "hidden_truths", [])),
             does_not_know=_format_facts(getattr(role, "does_not_know", [])),

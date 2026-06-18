@@ -10,6 +10,8 @@ import App from './App.vue'
 import { setupStudentElementPlus } from './geeker-adapt/setupElementPlus'
 import { clearAuth, getStoredRole, isLoggedIn, resetLoginRedirectState } from './utils/auth'
 
+const hiddenRoutePrefixes = ['/admin/videos', '/student/videos', '/student/face-demo', '/student/video-training']
+
 // 配置路由
 const routes = [
   { path: '/login', component: () => import('./views/Login.vue'), meta: { guestOnly: true } },
@@ -31,6 +33,7 @@ const routes = [
       { path: 'videos', component: () => import('./views/AdminVideoLibrary.vue') },
       { path: 'students', component: () => import('./views/Students.vue') },
       { path: 'students/:id', component: () => import('./views/StudentProfile.vue') },
+      { path: 'face-demo', component: () => import('./views/FaceRecognitionDemo.vue') },
       { path: 'profile', component: () => import('./views/Profile.vue') }
     ]
   },
@@ -43,6 +46,7 @@ const routes = [
     children: [
       { path: 'hall', component: () => import('./views/StudentHall.vue') },
       { path: 'videos', component: () => import('./views/StudentVideoHall.vue') },
+      { path: 'face-demo', component: () => import('./views/FaceRecognitionDemo.vue') },
       { path: 'classes', component: () => import('./views/StudentClasses.vue') },
       { path: 'history', component: () => import('./views/StudentHistory.vue') },
       { path: 'evaluation', component: () => import('./views/StudentEvaluation.vue') }
@@ -66,6 +70,11 @@ router.beforeEach((to) => {
   const token = localStorage.getItem('token')
   const role = getStoredRole()
   const requiredRoles = to.meta.roles as string[] | undefined
+
+  if (hiddenRoutePrefixes.some((prefix) => to.path === prefix || to.path.startsWith(`${prefix}/`))) {
+    if (role === 'student') return '/student/hall'
+    return '/admin/dashboard'
+  }
 
   if (to.meta.guestOnly && token) {
     return role === 'student' ? '/student/hall' : '/admin/dashboard'

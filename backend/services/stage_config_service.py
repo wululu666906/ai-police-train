@@ -197,7 +197,7 @@ def infer_assessment_point_content(label: str, *, category: str = "procedure") -
         )
 
     return (
-        f"学员在训练对话或现场处置中应做到：{text}。\n"
+        f"学员应完成：{text}。\n"
         f"具体要求：{detail}\n"
         f"{_assessment_pass_criteria_tail(text, category=category)}"
     )

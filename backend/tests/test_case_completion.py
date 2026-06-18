@@ -47,6 +47,35 @@ def test_merge_fill_gaps_preserves_existing_title(monkeypatch):
     assert "李某" in result["case_info"]["case_background"]
 
 
+def test_merge_case_info_standardizes_completed_person_names_and_scene_roles():
+    merged, filled = case_completion_service._merge_case_info(
+        {
+            "persons": [
+                {"name": "张三", "role_type": "嫌疑人", "status": "正常"},
+            ],
+            "scenes": [
+                {"scene_name": "重点询问", "roles": ["张三（审讯阶段）"]},
+            ],
+        },
+        {
+            "persons": [
+                {"name": "张三嫌疑人", "role_type": "嫌疑人", "hidden_truths": ["不愿说明动手细节"]},
+                {"name": "幸福小区", "role_type": "相关人员"},
+            ],
+            "scenes": [
+                {"scene_name": "重点询问", "roles": ["张三嫌疑人", "幸福小区"]},
+            ],
+        },
+        mode="fill_gaps",
+    )
+
+    assert [person["name"] for person in merged["persons"]] == ["张三"]
+    assert merged["persons"][0]["person_id"] == "P001"
+    assert "不愿说明动手细节" in merged["persons"][0]["hidden_truths"]
+    assert merged["scenes"][0]["roles"] == ["张三"]
+    assert any(path.startswith("persons[张三]") for path in filled)
+
+
 def test_heuristic_parse_extracts_background_timeline_and_relationships():
     text = (
         "2024年1月1日20时许，报警人张某称在幸福小区南门与邻居李某因停车问题发生争吵。"

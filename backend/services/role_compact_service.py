@@ -128,7 +128,9 @@ def expand_role_compact_to_person(
     boundary_secondary = _as_text_list(compact.get("boundary_secondary"), limit=6)
 
     person: dict[str, Any] = {
+        "person_id": _as_text(compact.get("person_id")),
         "name": _as_text(compact.get("name")),
+        "aliases": _as_text_list(compact.get("aliases")),
         "role_type": _as_text(compact.get("role_type")) or "相关人员",
         "status": _as_text(compact.get("status")) or "正常",
         "behavior_archetype": archetype,

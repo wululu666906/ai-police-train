@@ -173,7 +173,7 @@ const active = ref('dashboard')
 const menuOpen = ref(false)
 const sidebarCollapsed = ref(false)
 
-const navItems = [
+const rawNavItems = [
   { name: 'dashboard', label: '数据总览', shortLabel: '总览', icon: 'bar-chart-o' },
   { name: 'cases', label: '案件剧本库', shortLabel: '案件', icon: 'orders-o' },
   { name: 'videos', label: '视频素材库', shortLabel: '视频', icon: 'video-o' },
@@ -183,6 +183,8 @@ const navItems = [
   { name: 'students', label: '学员账号', shortLabel: '账号', icon: 'contact-o' },
   { name: 'profile', label: '个人中心', shortLabel: '我的', icon: 'user-o' },
 ]
+
+const navItems = rawNavItems.filter((item) => item.name !== 'videos')
 
 const username = computed(() => localStorage.getItem('username') || '管理员')
 const roleLabel = computed(() => (localStorage.getItem('role') === 'admin' ? '管理员账号' : '学员账号'))

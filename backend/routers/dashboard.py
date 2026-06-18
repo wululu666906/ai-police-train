@@ -9,19 +9,26 @@ from sqlalchemy.orm import Session
 import database
 import models
 from routers.auth import require_admin_user
+from services.rag_service import rag_service
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"], dependencies=[Depends(require_admin_user)])
 
 
 def _get_rag_count() -> int:
     try:
+        current_count = rag_service.collection.count()
+        if current_count:
+            return current_count
         if not os.path.exists("./chroma_db"):
             return 0
         import chromadb
 
         client = chromadb.PersistentClient(path="./chroma_db")
-        collection = client.get_or_create_collection(name="legal_knowledge")
-        return collection.count()
+        try:
+            collection = client.get_collection("legal_knowledge")
+            return collection.count()
+        except Exception:
+            return 0
     except Exception as error:
         print(f"RAG stats error: {error}")
         return 0
