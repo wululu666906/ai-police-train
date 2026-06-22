@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import models
 from docx import Document
+from PIL import Image, ImageDraw
 from services.evaluation_service import COMMON_DIMENSIONS
 from services.workflow_service import workflow_service
 
@@ -251,6 +252,63 @@ class TestCasesRoles:
         assert data["source_file_size"] > 0
         assert "仓库命案记录" in data["extracted_text_preview"]
         assert data["case_type"] == "故意杀人"
+
+    def test_parse_file_falls_back_to_rules_when_ai_parser_fails(self, client, admin_headers, monkeypatch):
+        def broken_ai_parse(*args, **kwargs):
+            raise RuntimeError("mock ai parser failure")
+
+        monkeypatch.setattr(workflow_service, "parse_case_text", broken_ai_parse)
+
+        markdown_content = (
+            "# 仓库命案记录\n\n"
+            "2026年5月1日21时许，报警人李娟称在XX路东段废弃仓库发现一名男子倒地。\n"
+            "经调查，嫌疑人张磊与被害人王浩因债务纠纷发生冲突，现场有血迹和监控。"
+        )
+
+        response = client.post(
+            "/cases/parse-file",
+            files={"file": ("case.md", markdown_content.encode("utf-8"), "text/markdown")},
+            data={"source_mode": "transcript_file"},
+            headers=admin_headers,
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["parse_engine"] == "heuristic"
+        assert data["source_file_name"] == "case.md"
+        assert data["ocr_method"] == "markdown_text_extract"
+        assert data["ocr_engine"] == "markdown-normalizer"
+        assert "mock ai parser failure" in "\n".join(data["parse_warnings"])
+        assert "仓库命案记录" in data["extracted_text_full"]
+
+    def test_parse_scanned_pdf_uses_page_ocr(self, client, admin_headers, monkeypatch):
+        from services.document_extract_service import document_extract_service
+
+        def fake_ocr_image_bytes(_image_bytes: bytes, *, image_name: str):
+            assert image_name.startswith("pdf-page-")
+            return "2026年5月1日21时许，报警人李娟称在XX路东段废弃仓库发现一名男子倒地。", []
+
+        monkeypatch.setattr(document_extract_service, "_ocr_image_bytes", fake_ocr_image_bytes)
+
+        image = Image.new("RGB", (500, 220), "white")
+        draw = ImageDraw.Draw(image)
+        draw.text((20, 80), "scanned case image", fill="black")
+        buffer = BytesIO()
+        image.save(buffer, format="PDF")
+
+        response = client.post(
+            "/cases/parse-file",
+            files={"file": ("scan.pdf", buffer.getvalue(), "application/pdf")},
+            data={"source_mode": "transcript_file"},
+            headers=admin_headers,
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["ocr_method"] == "pdf_page_ocr"
+        assert data["ocr_engine"] == "pypdfium2+paddleocr"
+        assert data["parse_engine"] in {"ai", "heuristic"}
+        assert "【PDF OCR识别结果】" in data["extracted_text_full"]
 
     def test_parse_file_includes_ocr_metadata(self, client, admin_headers):
         document = Document()

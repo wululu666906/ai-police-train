@@ -176,6 +176,16 @@
     </aside>
 
     <div class="chat-area">
+      <TrainingFaceGuard
+        v-if="sessionId"
+        ref="faceGuardRef"
+        class="training-face-guard"
+        :session-id="sessionId"
+        :mode="faceVerified ? 'monitor' : 'gate'"
+        @verified="handleFaceVerified"
+        @failed="handleFaceFailed"
+        @terminated="handleFaceTerminated"
+      />
       <div v-if="routingSummary || addressingWarning" class="scene-session-bar">
         <span class="scene-session-bar__title">场景会话</span>
         <span v-if="routingSummary" class="scene-session-bar__hint">{{ routingSummary }}</span>
@@ -264,9 +274,10 @@
         <TrainingInputBar
           v-model="inputMessage"
           :loading="isLoading"
-          :disabled="isLoading"
+          :disabled="isLoading || !faceVerified || faceTerminated"
           @send="sendMessage()"
           @voice-send="sendVoiceMessage"
+          @voice-event="recordVoiceMetric"
         />
       </div>
     </div>
@@ -352,12 +363,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showLoadingToast, showToast } from 'vant'
 import request from '../utils/request'
 import TrainingInputBar from '../components/TrainingInputBar.vue'
 import RoleSpeakingAvatar from '../components/RoleSpeakingAvatar.vue'
+import TrainingFaceGuard from '../components/TrainingFaceGuard.vue'
 
 const AVATAR_PALETTE = [
   '#4F46E5', '#0891B2', '#059669', '#D97706', '#DC2626',
@@ -376,7 +388,7 @@ function getAvatarBg(avatarId?: number | null): string {
 const route = useRoute()
 const router = useRouter()
 
-const sessionId = ref(route.params.id)
+const sessionId = ref(String(route.params.id || ''))
 const inputMessage = ref('')
 const isLoading = ref(false)
 const isSessionBooting = ref(true)
@@ -386,6 +398,10 @@ const speakingRoleName = ref('')
 const showCaseBrief = ref(false)
 const suppressedBriefThisSession = ref(false)
 const isReturningToHall = ref(false)
+const faceVerified = ref(false)
+const faceTerminated = ref(false)
+const faceGuardRef = ref<InstanceType<typeof TrainingFaceGuard> | null>(null)
+let multimodalFrameTimer: number | null = null
 
 const caseInfo = reactive({
   title: '加载中...',
@@ -906,6 +922,14 @@ const sendVoiceMessage = (transcript: string) => {
 const sendMessage = async (content?: string, inputSource: 'voice' | 'text' = 'text') => {
   const msg = String(content ?? inputMessage.value).trim()
   if (!msg || isLoading.value) return
+  if (faceTerminated.value) {
+    showToast('人脸异常次数已达上限，本次训练已中断')
+    return
+  }
+  if (!faceVerified.value) {
+    showToast('请先完成人脸身份验证')
+    return
+  }
 
   syncTargetFromMessage(msg)
   const pendingId = Date.now()
@@ -986,6 +1010,73 @@ const finishTraining = async () => {
   }
 }
 
+const stopMultimodalSampling = () => {
+  if (multimodalFrameTimer != null) {
+    window.clearInterval(multimodalFrameTimer)
+    multimodalFrameTimer = null
+  }
+}
+
+const postMultimodalFrame = async () => {
+  if (!faceVerified.value || faceTerminated.value || !sessionId.value) return
+  const frame = faceGuardRef.value?.captureMultimodalFrame?.()
+  if (!frame) return
+  try {
+    const res: any = await request.post(`/multimodal/session/${sessionId.value}/frame`, { frame }, { _skipErrorToast: true } as any)
+    const detected = Boolean(res?.face?.present)
+    if (!detected) return
+  } catch {
+    // Multimodal analysis is an enhancement layer and must not interrupt training.
+  }
+}
+
+const startMultimodalSampling = () => {
+  if (multimodalFrameTimer != null || !sessionId.value) return
+  void postMultimodalFrame()
+  multimodalFrameTimer = window.setInterval(() => {
+    void postMultimodalFrame()
+  }, 3000)
+}
+
+const recordVoiceMetric = (payload: {
+  event_type: string
+  transcript?: string
+  duration_ms?: number
+  audio_level?: number
+  repeated?: boolean
+}) => {
+  if (!sessionId.value) return
+  void request.post(`/multimodal/session/${sessionId.value}/voice-event`, payload, { _skipErrorToast: true } as any).catch(() => {
+    // Voice metrics are best-effort and should not block the conversation loop.
+  })
+}
+
+const handleFaceVerified = () => {
+  if (!faceVerified.value) {
+    showToast({ type: 'success', message: '身份验证通过，可以开始训练' })
+  }
+  faceVerified.value = true
+  faceTerminated.value = false
+  startMultimodalSampling()
+}
+
+const handleFaceFailed = (message: string) => {
+  if (!faceVerified.value && message) {
+    showToast(message)
+  }
+}
+
+const handleFaceTerminated = (payload?: any) => {
+  faceVerified.value = false
+  faceTerminated.value = true
+  stopMultimodalSampling()
+  const maxFailures = Number(payload?.max_failures || 5)
+  showToast(`人脸异常连续达到 ${maxFailures} 次，训练已自动中断`)
+  setTimeout(() => {
+    router.replace(`/student/evaluation?session_id=${sessionId.value}`)
+  }, 900)
+}
+
 const getDifficultyColor = (diff: string) => {
   const normalized = normalizeDifficulty(diff)
   if (normalized === '低') return '#00B42A'
@@ -1003,6 +1094,7 @@ const scrollToBottom = () => {
 }
 
 onMounted(fetchSessionData)
+onBeforeUnmount(stopMultimodalSampling)
 </script>
 
 <style scoped>
@@ -2622,9 +2714,26 @@ onMounted(fetchSessionData)
 }
 
 .chat-area {
+  position: relative;
   flex: 1;
   min-width: 0;
   background: #f0f4f8;
+}
+
+.training-face-guard {
+  margin: 14px 18px 10px;
+  flex-shrink: 0;
+}
+
+.training-face-guard.face-guard--monitor {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  z-index: 5;
+  width: 260px;
+  height: 112px;
+  margin: 0;
+  overflow: hidden;
 }
 
 .scene-session-bar {

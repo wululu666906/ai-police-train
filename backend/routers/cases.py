@@ -790,7 +790,7 @@ def parse_case(payload: dict = Body(...)):
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
     try:
-        return workflow_service.parse_case_text(text, source_mode=source_mode)
+        return workflow_service.parse_case_text_with_rule_fallback(text, source_mode=source_mode)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI parsing failed: {exc}") from exc
 
@@ -820,7 +820,7 @@ async def parse_case_file(
         raise HTTPException(status_code=500, detail=f"文件解析失败: {exc}") from exc
 
     try:
-        result = workflow_service.parse_case_text(
+        result = workflow_service.parse_case_text_with_rule_fallback(
             extracted_text,
             source_mode=source_mode or "transcript_file",
             source_meta=extraction.as_source_meta(name=filename, extension=extension, size=len(file_bytes)),

@@ -2703,9 +2703,9 @@ const startParsing = async () => {
     }
     if (!form.caseType) form.caseType = res.case_type || ''
     form.caseTypeGroup = getCaseTypeGroup(form.caseType)
-  } catch {
+  } catch (error: any) {
     if (importMode.value === 'transcript_file') fileParseStatus.value = 'error'
-    showToast('AI 解析失败')
+    showToast(getApiErrorDetail(error, 'AI 解析失败'))
     throw new Error('parse-failed')
   } finally {
     parsing.value = false

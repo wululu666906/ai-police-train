@@ -8,7 +8,7 @@ from sqlalchemy import inspect, text
 
 import database
 import models
-from routers import auth, cases, classes, dashboard, knowledge, speech, student, training, videos, video_training
+from routers import auth, cases, classes, dashboard, face, knowledge, multimodal, speech, student, training, videos, video_training
 
 # 不在启动时强制初始化数据库，因为项目已经提供 init_db.py。
 # models.Base.metadata.create_all(bind=database.engine)
@@ -130,6 +130,52 @@ def ensure_video_schema_compatibility():
     except Exception as error:
         print(f"Video schema compatibility check failed: {error}")
 
+
+def ensure_face_schema_compatibility():
+    try:
+        for table in (
+            models.FaceProfile.__table__,
+            models.FaceVerificationEvent.__table__,
+        ):
+            table.create(bind=database.engine, checkfirst=True)
+
+        inspector = inspect(database.engine)
+        table_columns = {
+            table_name: {column["name"] for column in inspector.get_columns(table_name)}
+            for table_name in ("face_profiles", "face_verification_events")
+            if table_name in inspector.get_table_names()
+        }
+        statements = []
+        profile_columns = table_columns.get("face_profiles", set())
+        for column_name in ("embeddings_json", "sample_images_json", "quality_json"):
+            if column_name not in profile_columns:
+                statements.append(f"ALTER TABLE face_profiles ADD COLUMN {column_name} TEXT")
+
+        event_columns = table_columns.get("face_verification_events", set())
+        event_text_columns = ("reason_code", "quality_json", "liveness_json", "abnormal_level")
+        for column_name in event_text_columns:
+            if column_name not in event_columns:
+                column_type = "VARCHAR(60)" if column_name == "reason_code" else ("VARCHAR(20)" if column_name == "abnormal_level" else "TEXT")
+                statements.append(f"ALTER TABLE face_verification_events ADD COLUMN {column_name} {column_type}")
+
+        if statements:
+            with database.engine.begin() as connection:
+                for statement in statements:
+                    connection.execute(text(statement))
+    except Exception as error:
+        print(f"Face schema compatibility check failed: {error}")
+
+
+def ensure_multimodal_schema_compatibility():
+    try:
+        for table in (
+            models.MultimodalSessionMetric.__table__,
+            models.MultimodalEvent.__table__,
+        ):
+            table.create(bind=database.engine, checkfirst=True)
+    except Exception as error:
+        print(f"Multimodal schema compatibility check failed: {error}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 部署到云服务器时可改为真实域名白名单。
@@ -148,6 +194,8 @@ app.include_router(speech.router)
 app.include_router(classes.router)
 app.include_router(videos.router)
 app.include_router(video_training.router)
+app.include_router(face.router)
+app.include_router(multimodal.router)
 
 # 兼容 Docker 静态前端的 /api 前缀调用（frontend/.env.production 默认 VITE_API_URL=/api）
 app.include_router(auth.router, prefix="/api")
@@ -160,6 +208,8 @@ app.include_router(speech.router, prefix="/api")
 app.include_router(classes.router, prefix="/api")
 app.include_router(videos.router, prefix="/api")
 app.include_router(video_training.router, prefix="/api")
+app.include_router(face.router, prefix="/api")
+app.include_router(multimodal.router, prefix="/api")
 
 
 @app.get("/healthz")
@@ -184,6 +234,10 @@ app.mount("/static/videos", StaticFiles(directory=_videos_dir), name="videos_sta
 _thumbnails_dir = os.path.join(os.path.dirname(__file__), "static", "thumbnails")
 os.makedirs(_thumbnails_dir, exist_ok=True)
 app.mount("/static/thumbnails", StaticFiles(directory=_thumbnails_dir), name="thumbnails_static")
+
+_face_profiles_dir = os.path.join(os.path.dirname(__file__), "static", "face_profiles")
+os.makedirs(_face_profiles_dir, exist_ok=True)
+app.mount("/static/face-profiles", StaticFiles(directory=_face_profiles_dir), name="face_profiles_static")
 
 frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 
@@ -229,6 +283,8 @@ def on_startup():
     ensure_role_schema_compatibility()
     ensure_classroom_schema_compatibility()
     ensure_video_schema_compatibility()
+    ensure_face_schema_compatibility()
+    ensure_multimodal_schema_compatibility()
     ensure_default_users()
 
 

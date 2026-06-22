@@ -62,6 +62,57 @@ def test_docx_unified_recognition_reports_ocr_unavailable_for_images_but_keeps_t
     assert "报警人李娟" in result.text
 
 
+def test_docx_xml_text_fallback_keeps_table_text_when_body_blocks_empty(monkeypatch):
+    service = DocumentExtractService()
+    monkeypatch.setattr(service, "_iter_body_blocks", lambda _document: iter(()))
+    monkeypatch.setattr(service, "_extract_docx_images", lambda _file_bytes: [])
+
+    document = Document()
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "报警人"
+    table.cell(0, 1).text = "李娟"
+    table.cell(1, 0).text = "嫌疑人"
+    table.cell(1, 1).text = "张磊"
+
+    result = service.recognize_docx(_docx_bytes(document))
+
+    assert result.method == "docx_unified_ocr"
+    assert any("底层 XML 文本兜底" in warning for warning in result.warnings)
+    assert "报警人" in result.text
+    assert "李娟" in result.text
+    assert "嫌疑人" in result.text
+    assert "张磊" in result.text
+
+
+def test_docx_xml_text_fallback_runs_when_table_iteration_fails(monkeypatch):
+    service = DocumentExtractService()
+    monkeypatch.setattr(service, "_extract_docx_images", lambda _file_bytes: [])
+
+    def fail_table(*_args, **_kwargs):
+        raise ValueError("在 tbtbl 中，顶层 tr is invalid")
+
+    monkeypatch.setattr(service, "_format_table", fail_table)
+
+    document = Document()
+    document.add_paragraph("询问笔录")
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "报警人"
+    table.cell(0, 1).text = "李娟"
+    table.cell(1, 0).text = "嫌疑人"
+    table.cell(1, 1).text = "张磊"
+
+    result = service.recognize_docx(_docx_bytes(document))
+
+    assert result.method == "docx_unified_ocr"
+    assert any("读取正文/表格失败" in warning for warning in result.warnings)
+    assert any("追加 DOCX 底层 XML 文本" in warning for warning in result.warnings)
+    assert "询问笔录" in result.text
+    assert "报警人" in result.text
+    assert "李娟" in result.text
+    assert "嫌疑人" in result.text
+    assert "张磊" in result.text
+
+
 def test_empty_docx_without_text_or_images_is_rejected(monkeypatch):
     service = DocumentExtractService()
     monkeypatch.setattr(service, "_extract_docx_images", lambda _file_bytes: [])

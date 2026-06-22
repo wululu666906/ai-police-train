@@ -350,7 +350,16 @@ def start_training(
                 link_session_to_assignment(db, assignment_id, current_user, latest_session, scene)
             db.commit()
             return _serialize_session_response(latest_session, role, case, scene)
-        if latest_session and latest_session.status == "evaluating":
+        latest_evaluation = safe_json_loads(latest_session.evaluation_result, {}) if latest_session else {}
+        latest_has_final_report = (
+            isinstance(latest_evaluation, dict)
+            and bool(latest_evaluation)
+            and (
+                latest_evaluation.get("termination_reason") == "face_verification_failed"
+                or isinstance(latest_evaluation.get("total_score"), (int, float))
+            )
+        )
+        if latest_session and latest_session.status == "evaluating" and not latest_has_final_report:
             if assignment_id is not None:
                 link_session_to_assignment(db, assignment_id, current_user, latest_session, scene)
                 db.commit()
@@ -622,7 +631,12 @@ def re_evaluate_training(
         .filter(models.Message.session_id == session.id, models.Message.role == "user")
         .count()
     )
-    if user_message_count <= 0:
+    evaluation_payload = safe_json_loads(session.evaluation_result, {})
+    is_face_terminated = (
+        isinstance(evaluation_payload, dict)
+        and evaluation_payload.get("termination_reason") == "face_verification_failed"
+    )
+    if user_message_count <= 0 and not is_face_terminated:
         raise HTTPException(status_code=400, detail="At least one valid round of dialogue is required before evaluation")
 
     report = evaluate_session(db, session.id, current_user.id, force_recompute=True)

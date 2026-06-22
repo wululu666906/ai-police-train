@@ -136,7 +136,16 @@ def get_student_cases(
             evaluation_result = safe_json_loads(row.evaluation_result, {})
             final_score = evaluation_result.get("total_score") if isinstance(evaluation_result, dict) else None
             raw_status = str(row.status or "active").strip().lower()
-            if raw_status == "finished" and isinstance(evaluation_result, dict) and bool(evaluation_result):
+            is_completed_report = (
+                isinstance(evaluation_result, dict)
+                and bool(evaluation_result)
+                and (
+                    raw_status == "finished"
+                    or evaluation_result.get("termination_reason") == "face_verification_failed"
+                    or isinstance(evaluation_result.get("total_score"), (int, float))
+                )
+            )
+            if is_completed_report:
                 training_status = "completed"
             elif raw_status == "evaluating":
                 training_status = "evaluating"
@@ -147,8 +156,8 @@ def get_student_cases(
             latest_session_meta_by_scene[row.scene_id] = {
                 "status": row.status,
                 "training_status": training_status,
-                "active_session_id": row.session_id if raw_status in {"active", "evaluating"} else None,
-                "active_session_is_empty": is_empty_session if raw_status in {"active", "evaluating"} else False,
+                "active_session_id": row.session_id if training_status in {"in_progress", "evaluating"} else None,
+                "active_session_is_empty": is_empty_session if training_status in {"in_progress", "evaluating"} else False,
                 "finished_session_id": row.session_id if training_status == "completed" else None,
                 "final_score": final_score if training_status == "completed" else None,
             }
@@ -213,7 +222,8 @@ def get_student_history(
 
     activity_subquery = build_message_activity_subquery(db)
 
-    is_empty_expr = func.coalesce(activity_subquery.c.user_message_count, 0) == 0
+    has_report_expr = models.TrainingSession.evaluation_result.isnot(None)
+    is_empty_expr = (func.coalesce(activity_subquery.c.user_message_count, 0) == 0) & ~has_report_expr
 
     base_query = (
         db.query(

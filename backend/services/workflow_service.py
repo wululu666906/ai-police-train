@@ -1418,6 +1418,44 @@ class WorkflowService:
         normalized["parse_engine"] = "heuristic"
         return normalized
 
+    def parse_case_text_with_rule_fallback(
+        self,
+        text: str,
+        source_mode: str = "plain_case",
+        source_meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        text = str(text or "").strip()
+        if not text:
+            raise ValueError("案件文本为空，无法解析")
+        try:
+            return self.parse_case_text(text, source_mode=source_mode, source_meta=source_meta)
+        except Exception as exc:
+            try:
+                fallback = self._heuristic_parse_case(text, source_mode, source_meta)
+            except Exception as fallback_exc:
+                fallback = self._default_parse_result(text, "笔录" if source_mode == "transcript_file" else "普通案件文本")
+                fallback.update(
+                    {
+                        "case_name": self._extract_case_name(text),
+                        "case_type": self.normalize_case_type(text=text),
+                        "case_background": text[:1200],
+                        "full_narrative": text[:4000],
+                        "rawText": text,
+                        "original_content": text,
+                        "source_mode": source_mode,
+                        "parse_engine": "heuristic",
+                    }
+                )
+                if source_meta:
+                    fallback["source_file_name"] = source_meta.get("name")
+                    fallback["source_file_type"] = source_meta.get("type")
+                    fallback["source_file_size"] = source_meta.get("size")
+                    fallback["extracted_text_preview"] = text[:500]
+                self._append_warning(fallback, f"规则兜底解析也遇到异常，已返回最小可复核结果：{fallback_exc}")
+            self._append_warning(fallback, f"AI 解析失败，已切换为规则兜底解析：{exc}")
+            fallback["parse_engine"] = "heuristic"
+            return fallback
+
     def parse_case_text(self, text: str, source_mode: str = "plain_case", source_meta: dict[str, Any] | None = None):
         text = str(text or "").strip()
         if not text:

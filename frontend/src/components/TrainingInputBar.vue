@@ -77,6 +77,13 @@ const emit = defineEmits<{
   'update:modelValue': [value: string]
   send: []
   'voice-send': [transcript: string]
+  'voice-event': [payload: {
+    event_type: string
+    transcript?: string
+    duration_ms?: number
+    audio_level?: number
+    repeated?: boolean
+  }]
 }>()
 
 type InputMode = 'voice' | 'typing'
@@ -93,6 +100,9 @@ const voiceIdleHint = '点击麦克风开始，说完自动发送'
 const pendingUtterances = ref<string[]>([])
 let microphoneLease: MicrophoneLease | null = null
 let micStream: MediaStream | null = null
+let utteranceStartedAt = 0
+let lastVoiceTranscript = ''
+let latestAudioLevel = 0
 
 const speech = useSpeechInput()
 
@@ -158,6 +168,19 @@ const dispatchUtterance = (transcript: string) => {
     return
   }
 
+  const normalized = transcript.trim()
+  const repeated = Boolean(lastVoiceTranscript && normalized === lastVoiceTranscript)
+  const duration = utteranceStartedAt ? Date.now() - utteranceStartedAt : undefined
+  emit('voice-event', {
+    event_type: 'utterance_end',
+    transcript: normalized,
+    duration_ms: duration,
+    audio_level: latestAudioLevel,
+    repeated,
+  })
+  utteranceStartedAt = Date.now()
+  lastVoiceTranscript = normalized
+
   if (props.loading || props.disabled) {
     pendingUtterances.value.push(transcript)
     liveTranscript.value = '等待上一条回复后再发送…'
@@ -198,6 +221,10 @@ const startVoiceCallSession = async () => {
   isMicMuted.value = false
   setMicTracksEnabled(true)
   inVoiceCall.value = true
+  utteranceStartedAt = Date.now()
+  lastVoiceTranscript = ''
+  latestAudioLevel = 0
+  emit('voice-event', { event_type: 'call_start' })
   speech.resetSession()
 
   speech.startVoiceCall(
@@ -210,6 +237,7 @@ const startVoiceCallSession = async () => {
         dispatchUtterance(transcript)
       },
       onError: () => {
+        emit('voice-event', { event_type: 'error' })
         inVoiceCall.value = false
         isEndingCall.value = false
         pendingUtterances.value = []
@@ -217,7 +245,12 @@ const startVoiceCallSession = async () => {
         showToast(speech.errorMessage.value || '语音识别失败')
       },
     },
-    { mediaStream: micStream || undefined }
+    {
+      mediaStream: micStream || undefined,
+      onAudioLevel: (level) => {
+        latestAudioLevel = level
+      },
+    }
   )
 }
 
@@ -231,7 +264,11 @@ const onToggleMic = async () => {
 
   setMicTracksEnabled(isMicMuted.value)
   if (isMicMuted.value) {
+    emit('voice-event', { event_type: 'mute' })
     liveTranscript.value = '麦克风已关闭'
+  }
+  if (!isMicMuted.value) {
+    emit('voice-event', { event_type: 'unmute' })
   }
 }
 
@@ -249,9 +286,18 @@ const onCloseVoice = async () => {
     releaseMicrophone()
 
     if (tail && isUtteranceValid(tail) && !props.loading) {
+      emit('voice-event', {
+        event_type: 'hangup_tail',
+        transcript: tail,
+        duration_ms: utteranceStartedAt ? Date.now() - utteranceStartedAt : undefined,
+        audio_level: latestAudioLevel,
+        repeated: Boolean(lastVoiceTranscript && tail.trim() === lastVoiceTranscript),
+      })
       emit('voice-send', tail)
     }
+    emit('voice-event', { event_type: 'call_end' })
   } catch {
+    emit('voice-event', { event_type: 'error' })
     showToast('结束通话失败，请重试')
     speech.cancelVoiceCall()
     inVoiceCall.value = false
@@ -358,14 +404,6 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
 }
 </style>
-
-
-
-
-
-
-
-
 
 
 

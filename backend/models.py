@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -116,6 +116,79 @@ class TrainingSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     messages = relationship("Message", back_populates="session")
+
+
+class FaceProfile(Base):
+    __tablename__ = "face_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False, index=True)
+    face_embedding = Column(Text, nullable=False)
+    face_image_url = Column(String(255), nullable=True)
+    embeddings_json = Column(Text, nullable=True)
+    sample_images_json = Column(Text, nullable=True)
+    quality_json = Column(Text, nullable=True)
+    embedding_model = Column(String(80), default="insightface:buffalo_l")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    student = relationship("User")
+
+
+class FaceVerificationEvent(Base):
+    __tablename__ = "face_verification_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("training_sessions.id"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    event_type = Column(String(30), default="verify")
+    status = Column(String(30), default="failed")
+    reason = Column(String(120), nullable=True)
+    reason_code = Column(String(60), nullable=True)
+    similarity = Column(Integer, nullable=True)
+    liveness_score = Column(Integer, nullable=True)
+    quality_json = Column(Text, nullable=True)
+    liveness_json = Column(Text, nullable=True)
+    abnormal_level = Column(String(20), nullable=True)
+    failure_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("TrainingSession")
+    student = relationship("User")
+
+
+class MultimodalSessionMetric(Base):
+    __tablename__ = "multimodal_session_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("training_sessions.id"), unique=True, nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    summary_json = Column(Text, default="{}")
+    behavior_score = Column(Integer, default=0)
+    risk_level = Column(String(20), default="normal")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("TrainingSession")
+    student = relationship("User")
+
+
+class MultimodalEvent(Base):
+    __tablename__ = "multimodal_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("training_sessions.id"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    event_type = Column(String(40), nullable=False, index=True)
+    category = Column(String(40), nullable=False, index=True)
+    label = Column(String(80), nullable=True)
+    score = Column(Float, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    payload_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("TrainingSession")
+    student = relationship("User")
 
 
 class Message(Base):

@@ -149,7 +149,7 @@
         </div>
       </header>
 
-      <div class="flex-1 overflow-y-auto p-4 lg:p-6">
+      <div class="admin-content flex-1 overflow-y-auto p-4 lg:p-6">
         <router-view :key="route.path" v-slot="{ Component }">
           <transition name="fade-slide" mode="out-in">
             <component :is="Component" />
@@ -260,8 +260,15 @@ const toggleSidebar = () => {
 }
 
 .admin-main {
+  background: var(--police-bg, #f2f5fa);
   transition: margin-left 0.38s cubic-bezier(0.22, 1, 0.36, 1);
   will-change: margin-left;
+}
+
+.admin-content {
+  background:
+    radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 34rem),
+    var(--police-bg, #f2f5fa);
 }
 
 .fade-slide-enter-active,
