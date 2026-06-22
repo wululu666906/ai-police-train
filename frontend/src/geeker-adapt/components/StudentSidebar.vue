@@ -20,7 +20,7 @@
           v-else
           type="button"
           class="nav-item"
-          :class="{ 'nav-item--active': isActive(item.path) }"
+          :class="{ 'nav-item--active': isActive(item.path, item.activePaths) }"
           @click="go(item.path)"
         >
           <el-icon><component :is="item.icon" /></el-icon>
@@ -52,14 +52,15 @@ const rawMenuItems = [
   { key: 'videos', label: '视频实训', icon: VideoPlay, path: '/student/videos', disabled: false },
   { key: 'face-demo', label: '人脸核验', icon: Aim, path: '/student/face-demo', disabled: false },
   { key: 'tasks', label: '班级作业', icon: Files, path: '/student/classes', disabled: false },
-  { key: 'history', label: '训练历史', icon: Clock, path: '/student/history', disabled: false },
+  { key: 'history', label: '训练历史', icon: Clock, path: '/student/history', disabled: false, activePaths: ['/student/evaluation'] },
   { key: 'knowledge', label: '个人知识库', icon: Reading, path: '', disabled: true },
   { key: 'settings', label: '系统设置', icon: Setting, path: '', disabled: true, hasChildren: true },
 ]
 
 const menuItems = rawMenuItems.filter((item) => !['videos', 'face-demo'].includes(item.key))
 
-const isActive = (path?: string) => Boolean(path && (route.path === path || route.path.startsWith(`${path}/`)))
+const isActive = (path?: string, activePaths: string[] = []) =>
+  Boolean((path && (route.path === path || route.path.startsWith(`${path}/`))) || activePaths.some((item) => route.path === item))
 
 const go = (path?: string) => {
   if (path && path !== route.path) router.push(path)

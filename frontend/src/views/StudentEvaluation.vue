@@ -1,20 +1,14 @@
 <template>
   <div class="student-page evaluation-page">
-    <div v-if="loading" class="card loading-state">
+    <div v-if="loading" class="loading-state">
       <el-skeleton :rows="10" animated />
     </div>
 
-    <article v-else-if="report" class="evaluation-shell">
-      <header class="card page-heading">
+    <article v-else-if="report" class="evaluation-document">
+      <header class="document-toolbar no-print">
         <div>
+          <p>训练历史 / 训练评估报告</p>
           <h1>训练评估报告</h1>
-          <el-descriptions :column="2" border class="meta-descriptions">
-            <el-descriptions-item label="案件名称">{{ reportMeta.caseTitle }}</el-descriptions-item>
-            <el-descriptions-item label="训练场景">{{ reportMeta.sceneName }}</el-descriptions-item>
-            <el-descriptions-item label="训练时长">{{ reportMeta.duration }}</el-descriptions-item>
-            <el-descriptions-item label="完成时间">{{ reportMeta.finishedAt }}</el-descriptions-item>
-            <el-descriptions-item label="评估人">系统评估</el-descriptions-item>
-          </el-descriptions>
         </div>
         <div class="page-actions">
           <el-button plain size="small" @click="printReport">导出报告</el-button>
@@ -23,212 +17,124 @@
         </div>
       </header>
 
-      <section v-if="isLegacyReport" class="card legacy-state">
+      <section v-if="isLegacyReport" class="legacy-state">
         <h2>旧版评估报告</h2>
         <p>当前记录仍是旧版固定维度报告。系统现在只使用 Adaptive V1 评估制度，请重新评估后查看新版报告。</p>
         <el-button type="primary" :loading="refreshing" @click="refreshEvaluation">重新评估</el-button>
       </section>
 
-      <div v-else class="report-layout">
-        <aside class="summary-panel">
-          <section class="card summary-card score-card">
-            <h2>综合评分</h2>
-            <div class="score-line">
-              <strong>{{ report.total_score ?? 0 }}</strong>
-              <span>/100</span>
-            </div>
-            <div class="grade-badge" :class="`grade-${reportHeader.gradeClass}`">{{ reportHeader.gradeLevel }}</div>
-            <p>{{ scoreSummary }}</p>
-          </section>
+      <main v-else class="report-paper">
+        <header class="paper-header">
+          <h2>训练评估报告</h2>
+          <span>报告编号：{{ reportMeta.reportNo }}</span>
+        </header>
 
-          <section class="card summary-card">
-            <h2>权重构成</h2>
-            <div class="closure-row">
-              <span>通用能力</span>
-              <strong>{{ percent(weighting.common_share) }}</strong>
-            </div>
-            <div class="closure-row">
-              <span>场景考察点</span>
-              <strong>{{ percent(weighting.assessment_share) }}</strong>
-            </div>
-            <div class="closure-row">
-              <span>必考命中率</span>
-              <strong>{{ percent(assessmentCompletion.required_rate) }}</strong>
-            </div>
-          </section>
+        <section class="report-section report-section--overview">
+          <h3>一、训练概况</h3>
+          <div class="overview-table">
+            <div><span>案件名称：</span><strong>{{ reportMeta.caseTitle }}</strong></div>
+            <div><span>训练场景：</span><strong>{{ reportMeta.sceneName }}</strong></div>
+            <div><span>训练时长：</span><strong>{{ reportMeta.duration }}</strong></div>
+            <div><span>完成时间：</span><strong>{{ reportMeta.finishedAt }}</strong></div>
+            <div><span>评估方式：</span><strong>系统自动评估</strong></div>
+            <div><span>评估人：</span><strong>系统评估</strong></div>
+          </div>
+        </section>
 
-          <section class="card summary-card">
-            <h2>评估校准</h2>
-            <div class="closure-row">
-              <span>考察点完成度</span>
-              <strong>{{ reportMeta.assessmentRate }}</strong>
-            </div>
-            <div class="closure-row">
-              <span>总分上限</span>
-              <strong>{{ scoreCapLabel }}</strong>
-            </div>
-            <div class="closure-row">
-              <span>红线提示</span>
-              <strong>{{ redFlags.length ? `${redFlags.length} 项` : '无' }}</strong>
-            </div>
-            <el-button style="width: 100%" plain :loading="refreshing" @click="refreshEvaluation">重新评估</el-button>
-          </section>
-        </aside>
-
-        <main class="card formal-report">
-          <header class="document-header">
-            <h2>训练评估报告</h2>
-            <span>报告编号：{{ reportMeta.reportNo }}</span>
-          </header>
-
-          <section class="report-section">
-            <h3>一、综合评分</h3>
-            <p class="report-text">
-              {{ studentScoreIntro }}
-            </p>
-            <div v-if="studentNoticeItems.length" class="notice-list">
-              <p v-for="item in studentNoticeItems" :key="item">{{ item }}</p>
-            </div>
-          </section>
-
-          <section class="report-section">
-            <h3>二、能力指标结果</h3>
-            <div class="score-grid">
-              <article v-for="item in commonScoreItems" :key="item.dimension" class="score-item">
-                <div class="score-item__head">
-                  <strong>{{ item.dimension }}</strong>
-                  <span>{{ item.score }}/{{ item.full_score }} 分</span>
-                </div>
-                <div class="score-bar"><i :style="{ width: scoreWidth(item) }"></i></div>
-                <p>{{ item.reason || '该项已纳入通用能力评估。' }}</p>
-              </article>
-            </div>
-
-            <div v-if="assessmentPointResults.length" class="assessment-block">
-              <h4>场景考察点</h4>
-              <div class="assessment-summary">
-              <div>
-                <span>已命中</span>
-                <strong>{{ assessmentStats.hit }}</strong>
+        <section class="report-section">
+          <h3>二、能力指标结果</h3>
+          <div class="score-grid">
+            <article v-for="item in commonScoreItems" :key="item.dimension" class="score-item">
+              <div class="score-item__head">
+                <strong>{{ item.dimension }}</strong>
+                <span>{{ item.score }}/{{ item.full_score }} 分</span>
               </div>
-              <div>
-                <span>部分命中</span>
-                <strong>{{ assessmentStats.partial }}</strong>
-              </div>
-              <div>
-                <span>未命中</span>
-                <strong>{{ assessmentStats.missed }}</strong>
-              </div>
-              <div>
-                <span>完成度</span>
-                <strong>{{ reportMeta.assessmentRate }}</strong>
-              </div>
-              </div>
-              <p class="report-text assessment-note">
-                系统已对 {{ assessmentStats.total }} 项考察点按数量、难度和必考属性动态分配分值。场景未配置的专项能力不会作为固定维度扣分。
-              </p>
-              <table class="report-table compact-table assessment-table">
-                <thead>
-                  <tr>
-                    <th>考察点</th>
-                    <th>难度</th>
-                    <th>属性</th>
-                    <th>状态</th>
-                    <th>权重</th>
-                    <th>得分</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="item in dedupedAssessmentPointResults" :key="assessmentPointKey(item)">
-                    <td>
-                      <strong>{{ item.label }}</strong>
-                      <p :title="assessmentPointContent(item)">{{ assessmentPointContent(item) }}</p>
-                    </td>
-                    <td>{{ item.difficulty_level || difficultyFromWeight(item.weight) }}</td>
-                    <td>{{ item.required ? '必考' : '选考' }}</td>
-                    <td>{{ statusLabel(item.status) }}</td>
-                    <td>{{ percent(item.score_share) }}</td>
-                    <td class="col-score">{{ item.weighted_score ?? item.score }}/{{ item.full_score ?? '-' }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
+              <div class="score-bar"><i :style="{ width: scoreWidth(item) }"></i></div>
+              <p>{{ item.reason || '该项已纳入通用能力评估。' }}</p>
+            </article>
+          </div>
+        </section>
 
-          <section class="report-section">
-            <h3>三、综合点评</h3>
-            <div class="commentary-box">
-              <p>{{ enhancedOverallComment }}</p>
-            </div>
-          </section>
+        <section class="report-section">
+          <h3>三、场景考察点</h3>
+          <div class="assessment-summary">
+            <div><span>已命中</span><strong>{{ assessmentStats.hit }}</strong></div>
+            <div><span>部分命中</span><strong>{{ assessmentStats.partial }}</strong></div>
+            <div><span>未命中</span><strong>{{ assessmentStats.missed }}</strong></div>
+            <div><span>完成度</span><strong>{{ reportMeta.assessmentRate }}</strong></div>
+          </div>
+          <p class="report-text assessment-note">
+            系统已对 {{ assessmentStats.total }} 项考察点按数量、难度和必考属性动态分配分值。场景未配置的专项能力不会作为固定维度扣分。
+          </p>
+          <table class="report-table assessment-table">
+            <thead>
+              <tr><th>考察点</th><th>难度</th><th>属性</th><th>状态</th><th>权重</th><th>得分</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in dedupedAssessmentPointResults" :key="assessmentPointKey(item)">
+                <td><strong>{{ item.label }}</strong><p :title="assessmentPointContent(item)">{{ assessmentPointContent(item) }}</p></td>
+                <td>{{ item.difficulty_level || difficultyFromWeight(item.weight) }}</td>
+                <td>{{ item.required ? '必考' : '选考' }}</td>
+                <td>{{ statusLabel(item.status) }}</td>
+                <td>{{ percent(item.score_share) }}</td>
+                <td class="col-score">{{ item.weighted_score ?? item.score }}/{{ item.full_score ?? '-' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
 
-          <section class="report-section">
-            <h3>四、反馈建议</h3>
-            <ul class="report-list advice-list">
-              <li v-for="item in actionableAdviceItems" :key="item">{{ item }}</li>
-            </ul>
-          </section>
+        <section class="report-section report-section--score">
+          <h3>四、综合评分</h3>
+          <div class="score-summary-line">
+            <strong>{{ report.total_score ?? 0 }}</strong><span>/100</span><em :class="`grade-${reportHeader.gradeClass}`">{{ reportHeader.gradeLevel }}</em>
+          </div>
+          <p class="report-text">{{ studentScoreIntro }}</p>
+          <div class="calibration-strip">
+            <div><span>通用能力</span><strong>{{ percent(weighting.common_share) }}</strong></div>
+            <div><span>场景考察点</span><strong>{{ percent(weighting.assessment_share) }}</strong></div>
+            <div><span>必考命中率</span><strong>{{ percent(assessmentCompletion.required_rate) }}</strong></div>
+            <div><span>总分上限</span><strong>{{ scoreCapLabel }}</strong></div>
+            <div><span>红线提示</span><strong>{{ redFlags.length ? `${redFlags.length} 项` : '无' }}</strong></div>
+          </div>
+          <div v-if="studentNoticeItems.length" class="notice-list"><p v-for="item in studentNoticeItems" :key="item">{{ item }}</p></div>
+        </section>
 
-          <section class="report-section">
-            <h3>五、对话分析</h3>
-            <div v-if="deductionDialogueItems.length" class="dialogue-analysis-list">
-              <article v-for="item in deductionDialogueItems" :key="item.key" class="dialogue-analysis-card">
-                <div class="dialogue-analysis-card__utterance">
-                  <span>学员发言</span>
-                  <p>{{ item.utterance }}</p>
-                </div>
-                <div>
-                  <strong>问题说明</strong>
-                  <p>{{ item.reason }}</p>
-                </div>
-                <div>
-                  <strong>改进建议</strong>
-                  <p>{{ item.advice }}</p>
-                </div>
-              </article>
-            </div>
-            <p v-else class="all-clear-text">本次报告未识别到需要单独展开的扣分发言，可重点查看能力指标结果。</p>
-          </section>
+        <section class="report-section"><h3>五、综合点评</h3><p class="report-text">{{ enhancedOverallComment }}</p></section>
+        <section class="report-section"><h3>六、反馈建议</h3><ul class="report-list advice-list"><li v-for="item in actionableAdviceItems" :key="item">{{ item }}</li></ul></section>
 
-          <section class="report-section report-section--supplement">
-            <h3>六、训练概述</h3>
-            <div class="overview-table">
-              <div><span>案件名称：</span><strong>{{ reportMeta.caseTitle }}</strong></div>
-              <div><span>完成时间：</span><strong>{{ reportMeta.finishedAt }}</strong></div>
-              <div><span>训练场景：</span><strong>{{ reportMeta.sceneName }}</strong></div>
-              <div><span>评估方式：</span><strong>系统自动评估</strong></div>
-              <div><span>训练时长：</span><strong>{{ reportMeta.duration }}</strong></div>
-              <div><span>评估人：</span><strong>系统评估</strong></div>
-            </div>
-          </section>
-        </main>
-      </div>
+        <section class="report-section">
+          <h3>七、对话分析</h3>
+          <div v-if="deductionDialogueItems.length" class="dialogue-analysis-list">
+            <article v-for="item in deductionDialogueItems" :key="item.key" class="dialogue-analysis-row">
+              <div><span>学员发言</span><p>{{ item.utterance }}</p></div>
+              <div><span>问题说明</span><p>{{ item.reason }}</p></div>
+              <div><span>改进建议</span><p>{{ item.advice }}</p></div>
+            </article>
+          </div>
+          <p v-else class="all-clear-text">本次报告未识别到需要单独展开的扣分发言，可重点查看能力指标结果。</p>
+        </section>
+      </main>
     </article>
 
-    <div v-else class="card empty-state">
+    <div v-else class="empty-state">
       <el-empty :description="emptyState.title">
-        <template #description>
-          <p>{{ emptyState.title }}</p>
-          <span>{{ emptyState.description }}</span>
-        </template>
-        <div class="empty-actions">
-          <el-button v-if="canResumeTraining" plain size="small" @click="resumeTraining">继续训练</el-button>
-          <el-button plain size="small" @click="router.push('/student/history')">训练历史</el-button>
-          <el-button type="primary" size="small" @click="router.push('/student/hall')">训练大厅</el-button>
-        </div>
+        <template #description><p>{{ emptyState.title }}</p><span>{{ emptyState.description }}</span></template>
+        <div class="empty-actions"><el-button v-if="canResumeTraining" plain size="small" @click="resumeTraining">继续训练</el-button><el-button plain size="small" @click="router.push('/student/history')">训练历史</el-button><el-button type="primary" size="small" @click="router.push('/student/hall')">训练大厅</el-button></div>
       </el-empty>
     </div>
   </div>
 </template>
 
+
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import request from '../utils/request'
 
 const router = useRouter()
 const route = useRoute()
+const setMainScrollable = inject<(value: boolean) => void>('setMainScrollable')
 const report = ref<any>(null)
 const loading = ref(true)
 const refreshing = ref(false)
@@ -781,6 +687,7 @@ const printReport = () => {
 }
 
 onMounted(async () => {
+  setMainScrollable?.(true)
   await fetchEvaluation()
   if (route.query.refresh === '1') {
     await refreshEvaluation()
@@ -789,669 +696,79 @@ onMounted(async () => {
     router.replace({ query: nextQuery })
   }
 })
+
+onUnmounted(() => {
+  setMainScrollable?.(false)
+})
 </script>
 
 <style scoped>
-.evaluation-page {
-  height: 100%;
-  padding: 20px 32px;
-  font-size: 16px;
-  line-height: 1.7;
-  color: #111827;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.evaluation-shell {
-  max-width: none;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding-bottom: 32px;
-}
-.loading-state,
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  text-align: center;
-  gap: 8px;
-}
-
-.empty-state span {
-  font-size: 14px;
-  color: #666;
-}
-
-.legacy-state {
-  display: grid;
-  gap: 12px;
-  max-width: 760px;
-  margin: 32px auto;
-  padding: 32px;
-}
-
-.legacy-state h2 {
-  margin: 0;
-  color: #111827;
-  font-size: 22px;
-  font-weight: 900;
-}
-
-.legacy-state p {
-  margin: 0;
-  color: #334155;
-}
-
-.page-heading {
-  display: flex;
-  justify-content: space-between;
-  gap: 28px;
-  align-items: flex-start;
-  margin-bottom: 20px;
-}
-
-.page-heading h1 {
-  margin: 0 0 16px;
-  font-size: 28px;
-  color: #111827;
-  font-weight: 900;
-}
-
-.meta-descriptions {
-  margin-top: 14px;
-}
-
-.page-actions {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.report-layout {
-  display: grid;
-  grid-template-columns: 380px minmax(0, 1fr);
-  gap: 28px;
-  align-items: start;
-}
-
-.summary-panel {
-  display: grid;
-  gap: 18px;
-}
-
-.summary-card {
-  padding: 28px 30px;
-}
-
-.summary-card h2 {
-  margin: 0 0 18px;
-  color: #111827;
-  font-size: 18px;
-  font-weight: 900;
-}
-
-.score-line {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  margin: 8px 0 12px;
-}
-
-.score-line strong {
-  color: #f04423;
-  font-size: 64px;
-  line-height: 1;
-  font-weight: 900;
-  font-variant-numeric: tabular-nums;
-}
-
-.score-line span {
-  color: #94a3b8;
-  font-size: 24px;
-  font-weight: 700;
-}
-
-.grade-badge {
-  display: inline-flex;
-  min-width: 80px;
-  justify-content: center;
-  border-radius: 999px;
-  padding: 6px 16px;
-  font-size: 15px;
-  font-weight: 800;
-  background: #fee2e2;
-  color: #dc2626;
-}
-
-.grade-pass {
-  background: #dcfce7;
-  color: #047857;
-}
-
-.grade-ok {
-  background: #fef3c7;
-  color: #b45309;
-}
-
-.score-card p {
-  margin: 16px 0 0;
-  color: #64748b;
-  font-size: 14px;
-}
-
-.weakness-row,
-.closure-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-  padding: 12px 0;
-  border-bottom: 1px solid #eef2f7;
-}
-
-.weakness-row:last-child,
-.closure-row:last-of-type {
-  border-bottom: none;
-}
-
-.weakness-row span,
-.closure-row span {
-  color: #334155;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.weakness-row strong,
-.closure-row strong {
-  color: #ef4444;
-  font-size: 15px;
-  font-variant-numeric: tabular-nums;
-}
-
-.summary-card .van-button {
-  margin-top: 18px;
-}
-
-.formal-report {
-  min-height: 720px;
-  padding: 44px 52px 48px;
-  background: #fff;
-  border: 1px solid #e6edf5;
-  border-radius: 12px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
-}
-
-.document-header {
-  display: flex;
-  justify-content: center;
-  position: relative;
-  padding-bottom: 28px;
-  border-bottom: 2px solid #cbd5e1;
-}
-
-.document-header h2 {
-  margin: 0;
-  color: #111827;
-  font-size: 30px;
-  font-weight: 900;
-  letter-spacing: 0;
-}
-
-.document-header span {
-  position: absolute;
-  right: 0;
-  bottom: 16px;
-  color: #64748b;
-  font-size: 14px;
-}
-
-.report-section {
-  padding: 24px 0;
-  border-bottom: 1px solid #cbd5e1;
-}
-
-.report-section:last-child {
-  border-bottom: none;
-}
-
-.report-section h3 {
-  margin: 0 0 14px;
-  color: #111827;
-  font-size: 20px;
-  font-weight: 900;
-}
-
-.report-table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-  font-size: 15px;
-}
-
-.report-table th {
-  padding: 10px 12px;
-  border-bottom: 1px solid #cbd5e1;
-  color: #334155;
-  font-size: 13px;
-  text-align: left;
-  background: #f8fafc;
-}
-
-.report-table td {
-  padding: 10px 12px;
-  border-bottom: 1px solid #eef2f7;
-  text-align: left;
-  vertical-align: middle;
-}
-
-.report-table tbody tr:last-child td {
-  border-bottom: none;
-}
-
-.col-index {
-  width: 38px;
-  color: #111827;
-}
-
-.col-score {
-  width: 130px;
-  text-align: right;
-  color: #111827;
-  font-size: 16px;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.report-text {
-  margin: 0;
-  color: #111827;
-  font-size: 15px;
-  line-height: 2;
-  text-indent: 2em;
-}
-
-.overview-table {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px 60px;
-  padding: 0 18px;
-}
-
-.overview-table div {
-  display: flex;
-  gap: 10px;
-  min-width: 0;
-  font-size: 15px;
-}
-
-.overview-table span {
-  color: #334155;
-  white-space: nowrap;
-}
-
-.overview-table strong {
-  color: #111827;
-  font-weight: 700;
-}
-
-.report-list {
-  margin: 0;
-  padding-left: 22px;
-  color: #111827;
-  font-size: 15px;
-  line-height: 2;
-}
-
-.advice-list li + li {
-  margin-top: 8px;
-}
-
-.commentary-box {
-  border: 1px solid #dbeafe;
-  border-radius: 10px;
-  padding: 16px 18px;
-  background: #f8fbff;
-}
-
-.commentary-box p {
-  margin: 0;
-  color: #0f172a;
-  font-size: 15px;
-  line-height: 2;
-  text-indent: 2em;
-}
-
-.assessment-block {
-  margin-top: 22px;
-}
-
-.assessment-block h4 {
-  margin: 0 0 12px;
-  color: #111827;
-  font-size: 17px;
-  font-weight: 900;
-}
-
-.dialogue-analysis-list {
-  display: grid;
-  gap: 14px;
-}
-
-.dialogue-analysis-card {
-  display: grid;
-  gap: 12px;
-  padding: 16px 18px;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  background: #fff;
-}
-
-.dialogue-analysis-card__utterance {
-  border-left: 4px solid #165dff;
-  padding: 10px 12px;
-  border-radius: 0 8px 8px 0;
-  background: #f8fbff;
-}
-
-.dialogue-analysis-card span,
-.dialogue-analysis-card strong {
-  display: block;
-  margin-bottom: 5px;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 900;
-}
-
-.dialogue-analysis-card p {
-  margin: 0;
-  color: #111827;
-  font-size: 14px;
-  line-height: 1.8;
-}
-
-.report-section--supplement {
-  color: #475569;
-}
-
-.notice-list {
-  display: grid;
-  gap: 8px;
-  margin-top: 14px;
-}
-
-.notice-list p {
-  margin: 0;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: #fff7ed;
-  color: #9a3412;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.score-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.score-item {
-  display: grid;
-  gap: 10px;
-  padding: 16px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #fbfdff;
-}
-
-.score-item__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.score-item__head strong {
-  color: #111827;
-  font-weight: 900;
-}
-
-.score-item__head span {
-  color: #165dff;
-  font-weight: 900;
-  white-space: nowrap;
-}
-
-.score-item p {
-  margin: 0;
-  color: #334155;
-  font-size: 14px;
-  line-height: 1.7;
-}
-
-.score-bar {
-  height: 8px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #e5e7eb;
-}
-
-.score-bar i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #165dff;
-}
-
-.evidence-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.evidence-list span {
-  display: inline-flex;
-  max-width: 100%;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: #eef6ff;
-  color: #1d4ed8;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.evidence-list--table {
-  margin-top: 8px;
-}
-
-.assessment-summary {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 16px;
-}
-
-.assessment-summary div {
-  display: grid;
-  gap: 6px;
-  padding: 14px 16px;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  background: #fafafa;
-}
-
-.assessment-summary span {
-  color: #64748b;
-  font-size: 13px;
-}
-
-.assessment-summary strong {
-  color: #111827;
-  font-size: 22px;
-  font-variant-numeric: tabular-nums;
-}
-
-.assessment-note {
-  margin-bottom: 12px;
-  color: #334155;
-  font-size: 15px;
-}
-
-.compact-table td {
-  padding-top: 8px;
-  padding-bottom: 8px;
-}
-
-.assessment-table th,
-.assessment-table td {
-  height: 92px;
-  overflow: hidden;
-}
-
-.assessment-table th:nth-child(1),
-.assessment-table td:nth-child(1) {
-  width: 42%;
-}
-
-.assessment-table th:nth-child(2),
-.assessment-table td:nth-child(2),
-.assessment-table th:nth-child(3),
-.assessment-table td:nth-child(3),
-.assessment-table th:nth-child(4),
-.assessment-table td:nth-child(4),
-.assessment-table th:nth-child(5),
-.assessment-table td:nth-child(5) {
-  width: 12%;
-  text-align: center;
-}
-
-.assessment-table th:nth-child(6),
-.assessment-table td:nth-child(6) {
-  width: 10%;
-  text-align: right;
-}
-
-.assessment-table td:first-child strong,
-.assessment-table td p {
-  display: -webkit-box;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  -webkit-box-orient: vertical;
-}
-
-.assessment-table td:first-child strong {
-  -webkit-line-clamp: 1;
-  color: #111827;
-}
-
-.assessment-table td p {
-  -webkit-line-clamp: 3;
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.all-clear-text {
-  margin: 0;
-  color: #047857;
-  font-weight: 700;
-}
-
-.detail-collapse {
-  margin-top: 14px;
-  border-top: 1px dashed #cbd5e1;
-  padding-top: 12px;
-}
-
-.detail-collapse summary {
-  width: fit-content;
-  color: #334155;
-  cursor: pointer;
-  font-weight: 700;
-}
-
-.detail-collapse .report-table {
-  margin-top: 12px;
-}
-
-.empty-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-
-@media (max-width: 1100px) {
-  .page-heading,
-  .report-layout {
-    grid-template-columns: 1fr;
-    display: grid;
-  }
-
-  .page-actions {
-    justify-content: flex-start;
-  }
-
-  .meta-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 640px) {
-  .evaluation-page {
-    padding: 16px 16px 28px;
-    font-size: 15px;
-  }
-
-  .formal-report {
-    padding: 28px 20px;
-  }
-
-  .document-header {
-    justify-content: flex-start;
-  }
-
-  .document-header span {
-    position: static;
-    display: block;
-    margin-top: 8px;
-  }
-
-  .overview-table,
-  .meta-strip,
-  .assessment-summary,
-  .score-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media print {
-  .evaluation-page {
-    padding: 0;
-    background: #fff;
-  }
-
-  .page-heading,
-  .summary-panel {
-    display: none;
-  }
-
-  .report-layout {
-    display: block;
-  }
-
-  .formal-report {
-    border: none;
-    box-shadow: none;
-    border-radius: 0;
-    max-width: none;
-  }
-}
+.evaluation-page { min-height: 100%; padding: 20px 28px 36px; background: #f3f5f8; color: #1f2937; font-size: 15px; line-height: 1.75; }
+.evaluation-document { max-width: 1280px; margin: 0 auto; }
+.document-toolbar { height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.document-toolbar p { margin: 0 0 4px; color: #667085; font-size: 13px; }
+.document-toolbar h1 { margin: 0; color: #111827; font-size: 24px; font-weight: 900; }
+.page-actions, .empty-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
+.report-paper, .legacy-state, .loading-state, .empty-state { background: #fff; border: 1px solid #d9e0ea; }
+.report-paper { padding: 38px 48px 44px; min-height: 760px; }
+.paper-header { position: relative; display: flex; justify-content: center; padding-bottom: 24px; border-bottom: 2px solid #c8d1df; }
+.paper-header h2 { margin: 0; color: #111827; font-size: 30px; font-weight: 900; letter-spacing: 0; }
+.paper-header span { position: absolute; right: 0; bottom: 14px; color: #667085; font-size: 13px; }
+.report-section { padding: 24px 0; border-bottom: 1px solid #d8e0ea; }
+.report-section:last-child { border-bottom: 0; }
+.report-section h3 { margin: 0 0 14px; color: #111827; font-size: 19px; font-weight: 900; }
+.report-text { margin: 0; color: #1f2937; line-height: 2; text-indent: 2em; }
+.overview-table, .score-grid, .assessment-summary, .calibration-strip, .dialogue-analysis-list { border-top: 1px solid #d8e0ea; border-left: 1px solid #d8e0ea; }
+.overview-table { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.overview-table div, .calibration-strip div { min-width: 0; display: flex; gap: 8px; align-items: center; }
+.overview-table div { min-height: 44px; padding: 9px 14px; border-right: 1px solid #d8e0ea; border-bottom: 1px solid #d8e0ea; }
+.overview-table span, .calibration-strip span { color: #475467; white-space: nowrap; }
+.overview-table strong, .calibration-strip strong { color: #111827; font-weight: 800; overflow-wrap: anywhere; }
+.score-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.score-item { min-height: 132px; padding: 16px; border-right: 1px solid #d8e0ea; border-bottom: 1px solid #d8e0ea; background: #fff; }
+.score-item__head { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+.score-item__head strong { color: #111827; font-weight: 900; }
+.score-item__head span { color: #165dff; font-weight: 900; white-space: nowrap; }
+.score-item p { margin: 10px 0 0; color: #475467; line-height: 1.8; }
+.score-bar { height: 7px; margin-top: 12px; background: #e5e7eb; overflow: hidden; }
+.score-bar i { display: block; height: 100%; background: #165dff; }
+.assessment-summary, .calibration-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 14px; }
+.assessment-summary div, .calibration-strip div { min-height: 54px; padding: 10px 14px; border-right: 1px solid #d8e0ea; border-bottom: 1px solid #d8e0ea; justify-content: center; }
+.assessment-summary span { color: #667085; }
+.assessment-summary strong { color: #111827; font-size: 22px; font-weight: 900; }
+.assessment-note { margin-bottom: 14px; color: #475467; }
+.report-table { width: 100%; border-collapse: collapse; table-layout: fixed; border: 1px solid #d8e0ea; }
+.report-table th, .report-table td { border-bottom: 1px solid #d8e0ea; border-right: 1px solid #d8e0ea; padding: 10px 12px; vertical-align: middle; }
+.report-table th:last-child, .report-table td:last-child { border-right: 0; }
+.report-table tr:last-child td { border-bottom: 0; }
+.report-table th { color: #1f2937; font-size: 13px; font-weight: 900; background: #f5f7fa; text-align: left; }
+.assessment-table th:nth-child(n + 2), .assessment-table td:nth-child(n + 2) { text-align: center; }
+.assessment-table th:first-child, .assessment-table td:first-child { width: 42%; }
+.assessment-table td:first-child strong { display: block; color: #111827; font-weight: 900; }
+.assessment-table td p { margin: 4px 0 0; color: #667085; line-height: 1.55; }
+.col-score { color: #d92d20; font-weight: 900; white-space: nowrap; }
+.report-section--score .report-text { margin-top: 12px; }
+.score-summary-line { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.score-summary-line strong { color: #d92d20; font-size: 44px; line-height: 1; font-weight: 900; }
+.score-summary-line span { color: #98a2b3; font-size: 20px; font-weight: 800; }
+.score-summary-line em { margin-left: 8px; padding: 3px 10px; border: 1px solid currentColor; font-style: normal; font-size: 13px; font-weight: 900; }
+.grade-pass { color: #067647; } .grade-ok { color: #b54708; } .grade-fail { color: #d92d20; }
+.calibration-strip { grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 14px 0 0; }
+.notice-list { display: grid; gap: 8px; margin-top: 14px; }
+.notice-list p { margin: 0; padding: 8px 12px; color: #7a2e0e; background: #fff7ed; border-left: 3px solid #f79009; }
+.report-list { margin: 0; padding-left: 22px; color: #1f2937; line-height: 2; }
+.advice-list li + li { margin-top: 6px; }
+.dialogue-analysis-list { display: grid; }
+.dialogue-analysis-row { display: grid; grid-template-columns: 1.1fr 1fr 1fr; border-bottom: 1px solid #d8e0ea; }
+.dialogue-analysis-row > div { padding: 12px 14px; border-right: 1px solid #d8e0ea; }
+.dialogue-analysis-row span { display: block; margin-bottom: 6px; color: #475467; font-size: 13px; font-weight: 900; }
+.dialogue-analysis-row p, .all-clear-text { margin: 0; color: #1f2937; line-height: 1.8; }
+.all-clear-text { color: #067647; font-weight: 800; }
+.loading-state, .empty-state, .legacy-state { min-height: 420px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 32px; }
+.empty-state span { color: #667085; }
+:deep(.el-button) { border-radius: 4px; font-weight: 700; }
+:deep(.el-button--primary) { background: #165dff; border-color: #165dff; }
+@media (max-width: 1100px) { .overview-table, .score-grid, .assessment-summary, .calibration-strip, .dialogue-analysis-row { grid-template-columns: 1fr; } .paper-header { justify-content: flex-start; display: block; } .paper-header span { position: static; display: block; margin-top: 8px; } }
+@media (max-width: 720px) { .evaluation-page { padding: 14px; } .document-toolbar { height: auto; align-items: flex-start; flex-direction: column; } .page-actions, .page-actions .el-button { width: 100%; } .report-paper { padding: 24px 18px; } }
+@media print { .evaluation-page { padding: 0; background: #fff; } .no-print { display: none !important; } .report-paper { border: 0; padding: 0; } }
 </style>

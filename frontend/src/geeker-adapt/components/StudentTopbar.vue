@@ -1,6 +1,6 @@
 <template>
   <header class="student-topbar flx-align-center">
-    <div class="topbar-spacer" />
+    <div class="breadcrumb">训练历史 / <strong>{{ title }}</strong></div>
 
     <div class="topbar-actions flx-align-center">
       <el-badge :value="notificationCount" :max="99" class="notify-badge">
@@ -30,6 +30,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Bell } from '@element-plus/icons-vue'
 import { MOCK_NOTIFICATION_COUNT } from '../../mocks/studentHallMock'
@@ -44,8 +45,10 @@ const emit = defineEmits<{
   'back-admin': []
 }>()
 
+const route = useRoute()
 const notificationCount = MOCK_NOTIFICATION_COUNT
 const avatarLetter = computed(() => (props.displayName || '学').slice(0, 1).toUpperCase())
+const title = computed(() => (route.path === '/student/evaluation' ? '训练评估报告' : route.meta?.title || '训练大厅'))
 
 const onNotifyClick = () => {
   ElMessage.info('通知功能开发中')
@@ -54,16 +57,22 @@ const onNotifyClick = () => {
 
 <style scoped lang="scss">
 .student-topbar {
-  justify-content: flex-end;
+  justify-content: space-between;
   height: 56px;
-  padding: 0 20px;
+  padding: 0 20px 0 32px;
   background: #fff;
   border-bottom: 1px solid #e5e7eb;
   box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
 }
 
-.topbar-spacer {
-  flex: 1;
+.breadcrumb {
+  color: #667085;
+  font-size: 14px;
+
+  strong {
+    color: #344054;
+    font-weight: 600;
+  }
 }
 
 .topbar-actions {
@@ -134,6 +143,20 @@ const onNotifyClick = () => {
 .action-btn {
   color: #374151 !important;
   border-color: #d1d5db !important;
+}
+
+@media (max-width: 760px) {
+  .student-topbar {
+    height: auto;
+    padding: 12px 14px;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .topbar-actions {
+    flex-wrap: wrap;
+  }
 }
 
 @media (max-width: 640px) {

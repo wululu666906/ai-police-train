@@ -78,10 +78,14 @@ const challengeHint = ref('请将脸部放在圆形区域内，系统正在检�
 const lastFrameAverage = ref<number | null>(null)
 const lastFrameSignature = ref<number[] | null>(null)
 const staticFrameStreak = ref(0)
+const blinkBaseline = ref<number | null>(null)
+const blinkCandidateFrames = ref(0)
+const lastBlinkScore = ref(0)
 
 const targetCameraLabel = 'HK 5M CAM 200W'
 const builtInCameraLabel = 'ASUS FHD webcam'
 const actionLabels: Record<string, string> = {
+  blink: '眨眼',
   turn_left: '向左转头',
   turn_right: '向右转头',
   move_closer: '靠近摄像头',
@@ -268,10 +272,38 @@ const captureFrame = (purpose: 'verify' | 'heartbeat' = 'verify') => {
   const motionScore = Math.min(1, delta / 18 + signatureDelta / 22)
   const staticPenalty = Math.min(0.38, staticFrameStreak.value * 0.13)
   const liveScore = purpose === 'heartbeat' ? 1 : Math.max(0.18, Math.min(1, 0.42 + motionScore * 0.48 - staticPenalty))
+  if (purpose === 'verify') {
+    const sampleY = 18
+    let upperBrightness = 0
+    let lowerBrightness = 0
+    const sampleWidth = 64
+    for (let x = 0; x < sampleWidth; x += 1) {
+      const upperIndex = (sampleY * sampleWidth + x) * 4
+      const lowerIndex = ((sampleY + 10) * sampleWidth + x) * 4
+      upperBrightness += (imageData[upperIndex] + imageData[upperIndex + 1] + imageData[upperIndex + 2]) / 3
+      lowerBrightness += (imageData[lowerIndex] + imageData[lowerIndex + 1] + imageData[lowerIndex + 2]) / 3
+    }
+    const eyeBandContrast = Math.abs(upperBrightness - lowerBrightness) / sampleWidth
+    blinkBaseline.value = blinkBaseline.value == null
+      ? eyeBandContrast
+      : blinkBaseline.value * 0.9 + eyeBandContrast * 0.1
+    const blinkDrop = Math.max(0, (blinkBaseline.value - eyeBandContrast) / Math.max(blinkBaseline.value, 1))
+    blinkCandidateFrames.value = blinkDrop > 0.18 && signatureDelta > 2.2 ? blinkCandidateFrames.value + 1 : 0
+    lastBlinkScore.value = Math.max(lastBlinkScore.value * 0.82, Math.min(1, blinkDrop * 2.4 + Math.min(0.3, blinkCandidateFrames.value * 0.12)))
+  } else {
+    lastBlinkScore.value = 0
+  }
 
   return {
     frame: canvas.toDataURL('image/jpeg', 0.9),
     liveness_score: liveScore,
+    liveness_actions: [
+      {
+        action: 'blink',
+        passed: lastBlinkScore.value >= 0.45,
+        score: Number(lastBlinkScore.value.toFixed(3)),
+      },
+    ],
   }
 }
 
@@ -284,6 +316,8 @@ const buildPayload = (endpoint: 'verify' | 'heartbeat') => {
     circle_radius: 0.5,
     server_liveness: true,
     challenge_actions: challengeActions.value,
+    liveness_actions: payload.liveness_actions,
+    blink_score: lastBlinkScore.value,
   }
   if (endpoint === 'verify') payload.challenge_id = challengeId.value
   return payload
@@ -357,6 +391,9 @@ const runVerify = async () => {
   challengeId.value = ''
   challengeActions.value = []
   challengeHint.value = '请将脸部放在圆形区域内，系统正在检测。'
+  blinkBaseline.value = null
+  blinkCandidateFrames.value = 0
+  lastBlinkScore.value = 0
   try {
     await nextTick()
     await startCamera()

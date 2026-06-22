@@ -100,6 +100,7 @@ test3.txt
 test_write.txt
 backend/package-lock.json
 frontend/*-verify.png
+frontend/*-check.png
 scripts/edit*.json
 scripts/edits*.json
 scripts/esc_test*

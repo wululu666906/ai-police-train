@@ -27,6 +27,10 @@ FACE_SERIOUS_MAX_FAILURES = int(os.getenv("FACE_SERIOUS_MAX_FAILURES", "5"))
 FACE_VOTE_WINDOW = int(os.getenv("FACE_VOTE_WINDOW", "3"))
 FACE_VOTE_FAIL_LIMIT = int(os.getenv("FACE_VOTE_FAIL_LIMIT", "2"))
 FACE_CONSECUTIVE_MAX_FAILURES = int(os.getenv("FACE_CONSECUTIVE_MAX_FAILURES", "5"))
+FACE_CHALLENGE_TURN_DELTA = float(os.getenv("FACE_CHALLENGE_TURN_DELTA", "0.055"))
+FACE_CHALLENGE_DISTANCE_DELTA = float(os.getenv("FACE_CHALLENGE_DISTANCE_DELTA", "0.18"))
+FACE_CHALLENGE_CONSECUTIVE_HITS = int(os.getenv("FACE_CHALLENGE_CONSECUTIVE_HITS", "3"))
+FACE_CHALLENGE_BLINK_SCORE = float(os.getenv("FACE_CHALLENGE_BLINK_SCORE", "0.45"))
 FACE_ENGINE_REQUIRED = os.getenv("FACE_ENGINE_REQUIRED", "1").strip().lower() in {"1", "true", "yes", "on"}
 FACE_IMAGE_DIR = Path(os.getenv("FACE_IMAGE_DIR", Path(__file__).resolve().parents[1] / "static" / "face_profiles"))
 INSIGHTFACE_MODEL_DIR = os.getenv(
@@ -136,11 +140,15 @@ def engine_status() -> dict[str, Any]:
         "heartbeat_similarity_threshold": FACE_HEARTBEAT_SIMILARITY_THRESHOLD,
         "liveness_threshold": FACE_LIVENESS_THRESHOLD,
         "max_failures": FACE_MAX_FAILURES,
+        "challenge_turn_delta": FACE_CHALLENGE_TURN_DELTA,
+        "challenge_distance_delta": FACE_CHALLENGE_DISTANCE_DELTA,
+        "challenge_consecutive_hits": FACE_CHALLENGE_CONSECUTIVE_HITS,
+        "challenge_blink_score": FACE_CHALLENGE_BLINK_SCORE,
     }
 
 
 def create_liveness_challenge(session_id: int, student_id: int) -> dict[str, Any]:
-    actions = random.sample(["turn_left", "turn_right", "move_closer", "move_farther"], 2)
+    actions = ["blink", random.choice(["turn_left", "turn_right"])]
     challenge_id = uuid4().hex
     expires_at = datetime.utcnow() + timedelta(minutes=5)
     _challenge_store[challenge_id] = {
@@ -224,6 +232,14 @@ def update_liveness_challenge_from_quality(
     x1, _y1, x2, _y2 = [float(item) for item in bbox[:4]]
     center_x = ((x1 + x2) / 2) / max(frame_width, 1)
     area_ratio = float(quality.get("face_area_ratio") or 0)
+    client_quality = quality.get("client_quality") if isinstance(quality.get("client_quality"), dict) else {}
+    client_liveness_actions = client_quality.get("liveness_actions") if isinstance(client_quality, dict) else None
+    client_completed = {
+        str(item.get("action")): bool(item.get("passed"))
+        for item in (client_liveness_actions or [])
+        if isinstance(item, dict)
+    }
+    blink_score = float(client_quality.get("blink_score") or 0)
 
     if not challenge.get("baseline"):
         challenge["baseline"] = {"center_x": center_x, "area_ratio": area_ratio}
@@ -242,16 +258,22 @@ def update_liveness_challenge_from_quality(
     hits = dict(challenge.get("hits") or {})
     base_x = float(baseline.get("center_x") or 0.5)
     base_area = max(float(baseline.get("area_ratio") or area_ratio), 0.001)
-    if "turn_left" in required and center_x < base_x - 0.018:
-        hits["turn_left"] = hits.get("turn_left", 0) + 1
-    if "turn_right" in required and center_x > base_x + 0.018:
-        hits["turn_right"] = hits.get("turn_right", 0) + 1
-    if "move_closer" in required and area_ratio > base_area * 1.08:
-        hits["move_closer"] = hits.get("move_closer", 0) + 1
-    if "move_farther" in required and area_ratio < base_area * 0.92:
-        hits["move_farther"] = hits.get("move_farther", 0) + 1
+    # The camera preview is mirrored for the learner, so left/right challenge labels
+    # are interpreted from the learner's perspective instead of the raw image axis.
+    action_matched = {
+        "blink": client_completed.get("blink") or blink_score >= FACE_CHALLENGE_BLINK_SCORE,
+        "turn_left": center_x > base_x + FACE_CHALLENGE_TURN_DELTA,
+        "turn_right": center_x < base_x - FACE_CHALLENGE_TURN_DELTA,
+        "move_closer": area_ratio > base_area * (1 + FACE_CHALLENGE_DISTANCE_DELTA),
+        "move_farther": area_ratio < base_area * (1 - FACE_CHALLENGE_DISTANCE_DELTA),
+    }
+    for action in required:
+        if action_matched.get(action):
+            hits[action] = hits.get(action, 0) + 1
+        else:
+            hits[action] = 0
     for action, count in hits.items():
-        if count >= 2:
+        if count >= FACE_CHALLENGE_CONSECUTIVE_HITS:
             completed[action] = True
     challenge["hits"] = hits
     challenge["completed"] = completed
