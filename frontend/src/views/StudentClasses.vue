@@ -3,7 +3,7 @@
     <header class="task-header">
       <div>
         <h1>班级作业</h1>
-        <p>加入班级后，训练作业会在这里统一接收、训练和提交评估。</p>
+        <p>加入班级后，训练作业会统一下发到这里，支持开始训练、继续训练和查看报告。</p>
       </div>
       <div class="join-box">
         <input v-model.trim="inviteCode" type="text" placeholder="输入班级邀请码" />
@@ -34,8 +34,10 @@
 
     <section v-if="announcements.length" class="notice-band">
       <article v-for="item in announcements.slice(0, 3)" :key="item.id">
-        <strong>{{ item.title }}</strong>
-        <span>{{ formatDateTime(item.created_at) }}</span>
+        <div>
+          <strong>{{ item.title }}</strong>
+          <span>{{ formatDateTime(item.created_at) }}</span>
+        </div>
         <p>{{ item.content || '无正文' }}</p>
       </article>
     </section>
@@ -50,7 +52,7 @@
         <strong>{{ statusCount.completed }}</strong>
       </div>
       <div class="summary-card summary-card--warn">
-        <span>未提交/截止</span>
+        <span>逾期未交</span>
         <strong>{{ statusCount.unsubmitted }}</strong>
       </div>
     </section>
@@ -112,7 +114,7 @@
                 <div v-for="scene in caseItem.scenes" :key="scene.id" class="scene-card">
                   <div>
                     <strong>{{ scene.name }}</strong>
-                    <span>{{ scene.difficulty || '中等' }} · {{ sceneStatusLabel(scene.training_status) }}</span>
+                    <span>{{ scene.difficulty || '中等' }} / {{ sceneStatusLabel(scene.training_status) }}</span>
                   </div>
                   <div class="scene-actions">
                     <el-button
@@ -328,7 +330,7 @@ const statusLabel = (status: string) => {
     pending: '待完成',
     in_progress: '训练中',
     completed: '已完成',
-    late: '迟交完成',
+    late: '补交完成',
     unsubmitted: '未提交',
   }
   return map[status] || '待完成'
@@ -349,7 +351,7 @@ const caseStatus = (assignment: any, caseId: number) => {
 const caseStatusLabel = (status: string) => {
   const map: Record<string, string> = {
     completed: '已完成',
-    late: '迟交',
+    late: '补交',
     in_progress: '训练中',
     evaluating: '评估中',
     expired: '已截止',
@@ -540,166 +542,114 @@ onUnmounted(() => {
   margin-bottom: 0;
 }
 
-.task-tabs :deep(.el-tabs__nav-wrap::after) {
-  display: none;
-}
-
 .assignment-list {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   padding: 14px;
 }
 
 .assignment-card {
   border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  border-radius: 10px;
   background: #fff;
   padding: 16px;
-}
-
-.assignment-card header {
-  align-items: flex-start;
 }
 
 .assignment-meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
-}
-
-.assignment-meta span {
   color: #64748b;
   font-size: 12px;
-  font-weight: 800;
 }
 
 .assignment-card h2 {
-  margin: 0;
-  color: #111827;
-  font-size: 18px;
+  margin: 10px 0 0;
+  color: #0f172a;
+  font-size: 20px;
   font-weight: 900;
 }
 
 .assignment-card p {
-  margin: 7px 0 0;
+  margin: 8px 0 0;
   color: #64748b;
   font-size: 13px;
   line-height: 1.7;
 }
 
 .assignment-progress {
-  min-width: 94px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #f8fafc;
-  padding: 10px;
-  text-align: center;
+  min-width: 112px;
+  display: grid;
+  justify-items: end;
 }
 
 .assignment-progress strong {
   color: #165dff;
-  font-size: 24px;
+  font-size: 28px;
   line-height: 1;
 }
 
 .assignment-progress span {
-  display: block;
-  margin-top: 4px;
+  margin-top: 6px;
   color: #64748b;
   font-size: 12px;
-  font-weight: 800;
 }
 
 .assignment-info {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 16px;
-  margin: 12px 0;
-  border-top: 1px solid #eef2f7;
-  border-bottom: 1px solid #eef2f7;
-  padding: 10px 0;
-  color: #64748b;
+  gap: 12px;
+  margin-top: 14px;
+  color: #475569;
   font-size: 12px;
 }
 
 .case-list,
-.scene-list,
-.scene-list section {
+.scene-list {
   display: grid;
-  gap: 8px;
+  gap: 10px;
+  margin-top: 14px;
 }
 
-.case-row {
+.case-row,
+.scene-card {
+  border: 1px solid #eef2f7;
   border-radius: 8px;
   background: #f8fafc;
-  padding: 10px 12px;
+  padding: 12px;
 }
 
-.case-row strong {
-  display: block;
+.case-row strong,
+.scene-card strong {
   color: #0f172a;
   font-size: 14px;
 }
 
-.case-row span {
+.case-row span,
+.scene-card span {
+  display: block;
+  margin-top: 6px;
   color: #64748b;
   font-size: 12px;
-}
-
-.scene-list {
-  margin-top: 12px;
-  border-top: 1px dashed #cbd5e1;
-  padding-top: 12px;
-}
-
-.scene-list h3 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 900;
 }
 
 .scene-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.scene-card {
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #fff;
-  padding: 10px 12px;
-}
-
-.scene-card strong {
-  display: block;
-  color: #111827;
-  font-size: 13px;
-}
-
-.scene-card span {
-  color: #64748b;
-  font-size: 12px;
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .scene-actions {
   display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.assignment-card footer {
-  justify-content: flex-end;
-  margin-top: 12px;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .state-panel {
-  padding: 28px 18px;
+  padding: 18px;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 960px) {
   .task-header,
   .assignment-card header,
   .assignment-card footer,
@@ -710,14 +660,13 @@ onUnmounted(() => {
   }
 
   .join-box,
-  .notice-band,
   .summary-grid,
-  .scene-grid {
+  .notice-band {
     grid-template-columns: 1fr;
   }
 
-  .assignment-card footer {
-    justify-content: stretch;
+  .class-task-page {
+    padding: 16px;
   }
 }
 </style>

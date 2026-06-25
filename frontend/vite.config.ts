@@ -4,10 +4,30 @@ import vue from '@vitejs/plugin-vue'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue()],
+  build: {
+    rollupOptions: {
+      output: {
+        entryFileNames: 'assets/[name].js',
+        chunkFileNames: 'assets/[name].js',
+        assetFileNames: 'assets/[name][extname]',
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('element-plus') || id.includes('@element-plus')) return 'vendor-element'
+          if (id.includes('vant')) return 'vendor-vant'
+          if (id.includes('echarts')) return 'vendor-echarts'
+          if (id.includes('xlsx')) return 'vendor-xlsx'
+          return 'vendor-core'
+        },
+      },
+    },
+  },
   server: {
     port: 5556,
     strictPort: true,
     host: true,
+    headers: {
+      'Cache-Control': 'no-store',
+    },
     proxy: {
       '/api':       { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/auth':      { target: 'http://127.0.0.1:8000', changeOrigin: true },

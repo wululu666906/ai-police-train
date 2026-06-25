@@ -336,6 +336,11 @@ class VideoTrainingSession(Base):
     node_records = Column(Text, default="[]")
     # 违规记录（切屏、退出等）
     violation_log = Column(Text, default="[]")
+    evaluation_status = Column(String(20), default="pending")
+    evaluation_result = Column(Text, nullable=True)
+    evaluation_error = Column(Text, nullable=True)
+    evaluation_started_at = Column(DateTime, nullable=True)
+    evaluation_completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)
 
@@ -346,6 +351,12 @@ class VideoTrainingSession(Base):
         back_populates="session",
         cascade="all, delete-orphan",
         order_by="VideoNodeResult.node_index",
+    )
+    artifacts = relationship(
+        "VideoTrainingArtifact",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="VideoTrainingArtifact.created_at",
     )
 
 
@@ -367,7 +378,25 @@ class VideoNodeResult(Base):
     answer_data = Column(Text, nullable=True)
     # 语音识别结果
     speech_transcript = Column(Text, nullable=True)
+    evidence_payload = Column(Text, nullable=True)
+    assessment_payload = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     session = relationship("VideoTrainingSession", back_populates="node_results")
     node = relationship("VideoNode")
+
+
+class VideoTrainingArtifact(Base):
+    """训练过程媒体留存：当前用于摄像头/麦克风录制回放"""
+    __tablename__ = "video_training_artifacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("video_training_sessions.id"), nullable=False)
+    artifact_type = Column(String(30), nullable=False, default="camera_recording")
+    file_path = Column(String(500), nullable=False)
+    mime_type = Column(String(120), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    duration_seconds = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("VideoTrainingSession", back_populates="artifacts")

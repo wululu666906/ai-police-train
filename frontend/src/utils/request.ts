@@ -35,7 +35,14 @@ service.interceptors.response.use(
     }
 
     if (!error.config?._skipErrorToast) {
-      const msg = error.response?.data?.detail || '网络异常，请稍后重试'
+      const detail = error.response?.data?.detail
+      let msg: string
+      if (Array.isArray(detail)) {
+        // FastAPI 422 validation error：detail 是 [{loc, msg, type}] 数组
+        msg = detail.map((d: any) => d.msg || String(d)).join('；') || '请求参数有误'
+      } else {
+        msg = String(detail || '网络异常，请稍后重试')
+      }
       showToast({ type: 'fail', message: msg })
     }
 

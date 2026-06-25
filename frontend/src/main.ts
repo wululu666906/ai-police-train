@@ -30,6 +30,7 @@ const routes = [
       { path: 'classes', component: () => import('./views/AdminClasses.vue') },
       { path: 'videos', component: () => import('./views/AdminVideoLibrary.vue') },
       { path: 'video-sessions', component: () => import('./views/AdminVideoSessions.vue') },
+      { path: 'video-sessions/:sessionId/report', component: () => import('./views/VideoTrainingReportPage.vue'), meta: { reportRole: 'admin' } },
       { path: 'students', component: () => import('./views/Students.vue') },
       { path: 'students/:id', component: () => import('./views/StudentProfile.vue') },
       { path: 'profile', component: () => import('./views/Profile.vue') }
@@ -44,6 +45,8 @@ const routes = [
     children: [
       { path: 'hall', component: () => import('./views/StudentHall.vue') },
       { path: 'videos', component: () => import('./views/StudentVideoHall.vue') },
+      { path: 'video-history', component: () => import('./views/StudentVideoHistory.vue') },
+      { path: 'video-report/:sessionId', component: () => import('./views/VideoTrainingReportPage.vue'), meta: { reportRole: 'student' } },
       { path: 'classes', component: () => import('./views/StudentClasses.vue') },
       { path: 'history', component: () => import('./views/StudentHistory.vue') },
       { path: 'evaluation', component: () => import('./views/StudentEvaluation.vue') }
@@ -59,7 +62,33 @@ const router = createRouter({
   routes,
 })
 
+const DYNAMIC_IMPORT_RECOVERY_KEY = 'vite-dynamic-import-recovery'
+
+router.onError((error, to) => {
+  const message = error instanceof Error ? error.message : String(error || '')
+  const isDynamicImportFailure =
+    message.includes('Failed to fetch dynamically imported module') ||
+    message.includes('Importing a module script failed')
+
+  if (!isDynamicImportFailure) return
+
+  const targetPath = typeof to?.fullPath === 'string' ? to.fullPath : window.location.pathname
+  const lastRecoveredPath = sessionStorage.getItem(DYNAMIC_IMPORT_RECOVERY_KEY)
+  if (lastRecoveredPath === targetPath) {
+    sessionStorage.removeItem(DYNAMIC_IMPORT_RECOVERY_KEY)
+    console.error('Dynamic import recovery failed after reload:', message)
+    return
+  }
+
+  sessionStorage.setItem(DYNAMIC_IMPORT_RECOVERY_KEY, targetPath)
+  window.location.assign(targetPath)
+})
+
 router.beforeEach((to) => {
+  if (sessionStorage.getItem(DYNAMIC_IMPORT_RECOVERY_KEY) === to.fullPath) {
+    sessionStorage.removeItem(DYNAMIC_IMPORT_RECOVERY_KEY)
+  }
+
   if (to.path === '/login') {
     resetLoginRedirectState()
   }

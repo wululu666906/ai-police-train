@@ -3,7 +3,7 @@
     <header class="admin-list-header">
       <div>
         <h1>班级训练</h1>
-        <p>以班级为边界发布训练作业、收集评估报告，并处理未交与补交流程。</p>
+        <p>按班级发布训练作业、管理学员、查看提交与补交情况。</p>
       </div>
       <div class="header-actions">
         <van-button plain class="!rounded-[6px] !border-slate-200 !text-slate-600" :loading="loadingClasses" @click="fetchClasses">
@@ -32,12 +32,13 @@
         <div class="class-card__stats">
           <span>{{ item.student_count || 0 }} 名学员</span>
           <span>{{ item.assignment_count || 0 }} 个作业</span>
-          <span>全员禁言</span>
+          <span>{{ item.announcement_count || 0 }} 条通知</span>
         </div>
       </button>
+
       <button v-if="!classes.length && !loadingClasses" type="button" class="class-card class-card--empty" @click="showClassPopup = true">
         <strong>创建第一个班级</strong>
-        <p>班级创建后会自动生成邀请码，学员可通过邀请码加入。</p>
+        <p>创建后会自动生成邀请码，学员可凭邀请码加入班级。</p>
       </button>
     </section>
 
@@ -76,7 +77,7 @@
       <el-tabs v-model="activeTab" class="workspace-tabs">
         <el-tab-pane label="学员名单" name="students" />
         <el-tab-pane label="作业任务" name="assignments" />
-        <el-tab-pane label="作业评审区" name="review" />
+        <el-tab-pane label="作业评审" name="review" />
         <el-tab-pane label="班级通知" name="announcements" />
       </el-tabs>
 
@@ -107,7 +108,7 @@
               <th>作业名称</th>
               <th>关联案件</th>
               <th>截止时间</th>
-              <th>补交</th>
+              <th>补交策略</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -260,11 +261,11 @@
         </header>
         <label class="field-block">
           <span>标题</span>
-          <input v-model.trim="announcementForm.title" type="text" placeholder="例如 第二次作业补交提醒" />
+          <input v-model.trim="announcementForm.title" type="text" placeholder="例如 第二次作业补交通知" />
         </label>
         <label class="field-block">
           <span>内容</span>
-          <textarea v-model.trim="announcementForm.content" rows="5" placeholder="通知内容仅管理员可发布，学员端只读展示。" />
+          <textarea v-model.trim="announcementForm.content" rows="5" placeholder="通知内容会同步展示到学员端班级作业页" />
         </label>
         <van-button block type="primary" :loading="savingAnnouncement" class="!rounded-[6px] !border-none !bg-[#1D3557]" @click="createAnnouncement">
           发布
@@ -298,7 +299,7 @@
         </label>
         <label class="field-block">
           <span>评分规则</span>
-          <textarea v-model.trim="assignmentForm.scoringRule" rows="3" placeholder="默认使用系统 Adaptive V1 评估，也可补充自定义规则。" />
+          <textarea v-model.trim="assignmentForm.scoringRule" rows="3" placeholder="默认采用系统评估，也可以补充班级专属评分标准" />
         </label>
         <div class="field-block">
           <span>关联案件</span>
@@ -321,7 +322,7 @@
         <header>
           <div>
             <h3>提交详情</h3>
-            <p v-if="submissionDetail">{{ submissionDetail.student.username }} · {{ submissionDetail.case.title }} · {{ submissionDetail.scene.name }}</p>
+            <p v-if="submissionDetail">{{ submissionDetail.student.username }} / {{ submissionDetail.case.title }} / {{ submissionDetail.scene.name }}</p>
           </div>
           <van-icon name="cross" @click="showSubmissionPopup = false" />
         </header>
@@ -363,7 +364,17 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { showToast } from 'vant'
 import request from '../utils/request'
 
-const classes = ref<any[]>([])
+interface ClassItem {
+  id: number
+  name: string
+  description?: string
+  invite_code: string
+  student_count?: number
+  assignment_count?: number
+  announcement_count?: number
+}
+
+const classes = ref<ClassItem[]>([])
 const cases = ref<any[]>([])
 const classDetail = ref<any>(null)
 const reviewData = ref<any>(null)
@@ -395,7 +406,7 @@ const assignmentForm = reactive({
   caseIds: [] as number[],
   dueAt: '',
   instructions: '',
-  scoringRule: '系统默认评分；系统完成对话记录归档与 Adaptive V1 评估。',
+  scoringRule: '系统默认评分，并同步归档训练对话记录与评估结果。',
   allowLate: false,
 })
 
@@ -404,8 +415,6 @@ const popupStyle = {
   borderRadius: '12px',
   overflow: 'hidden',
 }
-
-const selectedClass = computed(() => classes.value.find((item) => item.id === selectedClassId.value))
 
 const fetchClasses = async () => {
   loadingClasses.value = true
@@ -432,6 +441,7 @@ const selectClass = async (classId: number) => {
   selectedClassId.value = classId
   reviewData.value = null
   selectedReviewAssignmentId.value = 0
+  activeTab.value = 'students'
   await fetchClassDetail()
 }
 
@@ -525,7 +535,7 @@ const createAssignment = async () => {
   }
   savingAssignment.value = true
   try {
-    const res: any = await request.post(`/classes/${selectedClassId.value}/assignments`, {
+    await request.post(`/classes/${selectedClassId.value}/assignments`, {
       title: assignmentForm.title.trim(),
       case_ids: assignmentForm.caseIds,
       due_at: assignmentForm.dueAt || null,
@@ -538,19 +548,29 @@ const createAssignment = async () => {
     assignmentForm.caseIds = []
     assignmentForm.dueAt = ''
     assignmentForm.instructions = ''
-    assignmentForm.scoringRule = '系统默认评分；系统完成对话记录归档与 Adaptive V1 评估。'
+    assignmentForm.scoringRule = '系统默认评分，并同步归档训练对话记录与评估结果。'
     assignmentForm.allowLate = false
     showAssignmentPopup.value = false
     await fetchClassDetail()
-    openReview(res)
   } finally {
     savingAssignment.value = false
   }
 }
 
+const copyInviteCode = async () => {
+  const inviteCode = classDetail.value?.classroom?.invite_code
+  if (!inviteCode) return
+  try {
+    await navigator.clipboard.writeText(inviteCode)
+    showToast({ type: 'success', message: '邀请码已复制' })
+  } catch {
+    showToast('复制失败，请手动复制')
+  }
+}
+
 const openReview = async (assignment: any) => {
   activeTab.value = 'review'
-  selectedReviewAssignmentId.value = Number(assignment.id)
+  selectedReviewAssignmentId.value = assignment.id
   await fetchReview()
 }
 
@@ -567,62 +587,48 @@ const fetchReview = async () => {
   }
 }
 
-const updateAssignmentPolicy = async (assignment: any, payload: Record<string, unknown>) => {
-  if (!selectedClassId.value) return
-  await request.post(`/classes/${selectedClassId.value}/assignments/${assignment.id}/late-policy`, payload)
-  showToast({ type: 'success', message: '作业策略已更新' })
-  await fetchClassDetail()
-  if (selectedReviewAssignmentId.value === assignment.id) await fetchReview()
-}
-
 const toggleAssignmentLate = async (assignment: any) => {
-  await updateAssignmentPolicy(assignment, { allow_late: !assignment.allow_late })
+  if (!selectedClassId.value) return
+  await request.post(`/classes/${selectedClassId.value}/assignments/${assignment.id}/late-policy`, {
+    allow_late: !assignment.allow_late,
+  })
+  showToast({ type: 'success', message: !assignment.allow_late ? '已开启补交' : '已关闭补交' })
+  await fetchClassDetail()
+  if (selectedReviewAssignmentId.value === assignment.id) {
+    await fetchReview()
+  }
 }
 
 const extendAssignmentDue = async (assignment: any) => {
-  const value = window.prompt('请输入新的全班截止时间（格式：2026-06-30T18:00）', toDatetimeInput(assignment.due_at))
-  if (value === null) return
-  await updateAssignmentPolicy(assignment, { due_at: value || null })
-}
-
-const setStudentLate = async (row: any, allowLate: boolean) => {
-  if (!selectedClassId.value || !selectedReviewAssignmentId.value) return
-  await request.post(`/classes/${selectedClassId.value}/assignments/${selectedReviewAssignmentId.value}/students/${row.student.id}/override`, {
-    allow_late: allowLate,
+  if (!selectedClassId.value) return
+  const dueAt = window.prompt('请输入新的截止时间（格式：2026-06-30T18:00）', toDatetimeLocalValue(assignment.due_at))
+  if (!dueAt) return
+  await request.post(`/classes/${selectedClassId.value}/assignments/${assignment.id}/late-policy`, {
+    due_at: dueAt,
   })
-  showToast({ type: 'success', message: allowLate ? '已允许该学员补交' : '已拒绝该学员补交' })
-  await fetchReview()
-}
-
-const extendStudentDue = async (row: any) => {
-  if (!selectedClassId.value || !selectedReviewAssignmentId.value) return
-  const value = window.prompt('请输入该学员新的截止时间（格式：2026-06-30T18:00）', toDatetimeInput(row.effective_due_at))
-  if (value === null) return
-  await request.post(`/classes/${selectedClassId.value}/assignments/${selectedReviewAssignmentId.value}/students/${row.student.id}/override`, {
-    due_at: value || null,
-    allow_late: true,
-  })
-  showToast({ type: 'success', message: '已更新该学员截止时间' })
-  await fetchReview()
+  showToast({ type: 'success', message: '截止时间已更新' })
+  await fetchClassDetail()
+  if (selectedReviewAssignmentId.value === assignment.id) {
+    await fetchReview()
+  }
 }
 
 const firstSubmission = (row: any) => {
-  for (const caseRow of row?.cases || []) {
-    if (caseRow?.submission?.id) return caseRow.submission
-  }
-  return null
+  const submitted = (row.cases || [])
+    .map((item: any) => item.submission)
+    .filter(Boolean)
+  return submitted[0] || null
 }
 
 const openSubmission = async (row: any) => {
   if (!selectedClassId.value || !selectedReviewAssignmentId.value) return
   const submission = firstSubmission(row)
-  if (!submission) {
-    showToast('该学员暂无可查看提交')
+  if (!submission?.id) {
+    showToast('该学员暂无可查看的提交记录')
     return
   }
-  showSubmissionPopup.value = true
   loadingSubmission.value = true
-  submissionDetail.value = null
+  showSubmissionPopup.value = true
   try {
     submissionDetail.value = await request.get(
       `/classes/${selectedClassId.value}/assignments/${selectedReviewAssignmentId.value}/submissions/${submission.id}`,
@@ -632,56 +638,59 @@ const openSubmission = async (row: any) => {
   }
 }
 
-const copyInviteCode = async () => {
-  const code = selectedClass.value?.invite_code || classDetail.value?.classroom?.invite_code
-  if (!code) return
-  try {
-    await navigator.clipboard.writeText(code)
-    showToast({ type: 'success', message: '邀请码已复制' })
-  } catch {
-    showToast(`邀请码：${code}`)
-  }
+const setStudentLate = async (row: any, allowLate: boolean) => {
+  if (!selectedClassId.value || !selectedReviewAssignmentId.value) return
+  await request.post(
+    `/classes/${selectedClassId.value}/assignments/${selectedReviewAssignmentId.value}/students/${row.student.id}/override`,
+    { allow_late: allowLate },
+  )
+  showToast({ type: 'success', message: allowLate ? '已允许该学员补交' : '已关闭该学员补交权限' })
+  await fetchReview()
+}
+
+const extendStudentDue = async (row: any) => {
+  if (!selectedClassId.value || !selectedReviewAssignmentId.value) return
+  const dueAt = window.prompt('请输入该学员新的截止时间（格式：2026-06-30T18:00）', toDatetimeLocalValue(row.effective_due_at))
+  if (!dueAt) return
+  await request.post(
+    `/classes/${selectedClassId.value}/assignments/${selectedReviewAssignmentId.value}/students/${row.student.id}/override`,
+    { due_at: dueAt, allow_late: true },
+  )
+  showToast({ type: 'success', message: '学员延期已保存' })
+  await fetchReview()
 }
 
 const reviewStatusLabel = (status: string) => {
   const map: Record<string, string> = {
+    pending: '待开始',
+    in_progress: '进行中',
     submitted: '已提交',
-    completed: '已完成',
-    late: '迟交',
-    in_progress: '训练中',
-    evaluating: '评估中',
-    pending: '待完成',
-    unsubmitted: '未提交',
-    missing: '未提交',
+    late: '补交完成',
+    unsubmitted: '逾期未交',
+    missing: '未开始',
   }
-  return map[status] || status || '--'
+  return map[status] || status
 }
 
 const reviewStatusType = (status: string) => {
-  if (status === 'submitted' || status === 'completed') return 'success'
-  if (status === 'late' || status === 'in_progress' || status === 'evaluating') return 'warning'
-  if (status === 'unsubmitted' || status === 'missing') return 'danger'
-  return 'default'
+  if (status === 'submitted') return 'success'
+  if (status === 'late' || status === 'in_progress') return 'warning'
+  if (status === 'unsubmitted') return 'danger'
+  return 'primary'
 }
 
 const roleLabel = (role: string) => {
-  if (role === 'user') return '学员'
-  if (role === 'assistant' || role === 'ai') return 'AI角色'
-  if (role === 'action') return '训练动作'
-  return role || '系统'
+  return role === 'assistant' ? 'AI角色' : role === 'user' ? '学员' : role
 }
 
-const formatEvaluation = (value: any) => {
-  if (!value) return '暂无评估报告'
-  return JSON.stringify(value, null, 2)
-}
-
-const toDatetimeInput = (value: any) => {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return String(value)
-  const pad = (num: number) => String(num).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+const formatEvaluation = (payload: any) => {
+  if (!payload) return '暂无评估结果'
+  if (typeof payload === 'string') return payload
+  try {
+    return JSON.stringify(payload, null, 2)
+  } catch {
+    return String(payload)
+  }
 }
 
 const formatDateTime = (value: any) => {
@@ -692,8 +701,16 @@ const formatDateTime = (value: any) => {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
+const toDatetimeLocalValue = (value: any) => {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (num: number) => String(num).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 onMounted(async () => {
-  await Promise.all([fetchCases(), fetchClasses()])
+  await Promise.all([fetchClasses(), fetchCases()])
 })
 </script>
 
@@ -701,175 +718,155 @@ onMounted(async () => {
 .classroom-page {
   display: grid;
   gap: 16px;
-  padding-bottom: 28px;
 }
 
 .admin-list-header,
+.header-actions,
 .workspace-header,
 .workspace-actions,
-.review-toolbar {
+.class-card__head,
+.review-toolbar,
+.review-summary,
+.row-actions,
+.notice-item div,
+.submission-panel header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-}
-
-.admin-list-header {
-  padding: 18px 20px;
-  border: 1px solid var(--police-border);
-  border-radius: var(--police-radius-lg);
-  background: #fff;
-}
-
-.admin-list-header h1,
-.workspace-header h2 {
-  margin: 0;
-  color: var(--police-text-primary);
-  font-weight: 900;
+  gap: 12px;
 }
 
 .admin-list-header h1 {
-  font-size: 22px;
+  margin: 0;
+  color: #0f172a;
+  font-size: 28px;
+  font-weight: 900;
 }
 
-.admin-list-header p,
-.workspace-header p {
-  margin: 5px 0 0;
-  color: var(--police-text-muted);
+.admin-list-header p {
+  margin: 6px 0 0;
+  color: #64748b;
   font-size: 13px;
-}
-
-.header-actions,
-.workspace-actions,
-.row-actions,
-.review-summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
 }
 
 .classroom-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 14px;
 }
 
 .class-card {
-  min-height: 132px;
-  border: 1px solid var(--police-border);
-  border-radius: 8px;
+  border: 1px solid #dbe5f1;
+  border-radius: 10px;
   background: #fff;
   padding: 16px;
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.16s, box-shadow 0.16s;
+  transition: 0.2s ease;
 }
 
 .class-card:hover,
 .class-card--active {
   border-color: #1d4ed8;
-  box-shadow: 0 6px 20px rgba(29, 78, 216, 0.12);
+  box-shadow: 0 8px 20px rgba(29, 78, 216, 0.08);
 }
 
-.class-card__head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.class-card strong {
+.class-card__head strong {
   color: #0f172a;
   font-size: 16px;
 }
 
-.class-card__head span {
-  color: #1d4ed8;
+.class-card__head span,
+.class-card p,
+.class-card__stats {
+  color: #64748b;
   font-size: 12px;
-  font-weight: 800;
-  white-space: nowrap;
 }
 
 .class-card p {
-  min-height: 40px;
+  min-height: 38px;
   margin: 10px 0 12px;
-  color: #64748b;
-  font-size: 13px;
   line-height: 1.6;
 }
 
 .class-card__stats {
   display: flex;
+  gap: 10px;
   flex-wrap: wrap;
-  gap: 6px;
-}
-
-.class-card__stats span,
-.tag-list span {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  background: #f1f5f9;
-  padding: 4px 9px;
-  color: #475569;
-  font-size: 12px;
-  font-weight: 800;
 }
 
 .class-card--empty {
   border-style: dashed;
 }
 
+.state-card,
 .class-workspace,
-.state-card {
-  border: 1px solid var(--police-border);
-  border-radius: 8px;
+.popup-panel,
+.submission-panel {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
   background: #fff;
+}
+
+.state-card {
+  padding: 20px;
+}
+
+.state-card--flat {
+  border: 0;
+  padding: 0;
+}
+
+.class-workspace {
   padding: 18px;
 }
 
-.workspace-header {
-  align-items: flex-start;
-  padding-bottom: 16px;
-  border-bottom: 1px solid #eef2f7;
+.workspace-kicker {
+  display: inline-block;
+  margin-bottom: 8px;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 800;
 }
 
-.workspace-kicker {
-  color: #1d4ed8;
-  font-size: 12px;
+.workspace-header h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 24px;
   font-weight: 900;
 }
 
+.workspace-header p {
+  margin: 8px 0 0;
+  color: #64748b;
+}
+
 .invite-panel {
+  min-width: 180px;
   display: grid;
-  grid-template-columns: auto auto auto;
-  align-items: center;
-  gap: 10px;
-  border: 1px solid #dbeafe;
-  border-radius: 8px;
-  background: #f8fbff;
-  padding: 10px 12px;
+  gap: 6px;
+  text-align: right;
 }
 
 .invite-panel span {
   color: #64748b;
   font-size: 12px;
-  font-weight: 800;
 }
 
 .invite-panel strong {
-  color: #1d4ed8;
+  color: #0f172a;
+  font-size: 22px;
   letter-spacing: 0.08em;
 }
 
 .workspace-actions {
+  margin: 18px 0 6px;
   justify-content: flex-start;
-  margin: 14px 0;
+  flex-wrap: wrap;
 }
 
 .workspace-tabs {
-  border-top: 1px solid #eef2f7;
-  padding-top: 4px;
+  margin-top: 6px;
 }
 
 .panel-table-wrap {
@@ -878,51 +875,65 @@ onMounted(async () => {
 
 .ops-table {
   width: 100%;
-  min-width: 860px;
   border-collapse: collapse;
 }
 
 .ops-table th,
 .ops-table td {
   border-bottom: 1px solid #eef2f7;
-  padding: 12px 14px;
-  text-align: left;
+  padding: 14px 10px;
   vertical-align: top;
-  font-size: 13px;
+  text-align: left;
 }
 
 .ops-table th {
-  background: #f8fafc;
-  color: #475569;
-  font-weight: 900;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
 }
 
-.ops-table td strong {
+.ops-table td {
   color: #0f172a;
+  font-size: 13px;
 }
 
-.ops-table td p,
-.ops-table td small {
+.ops-table p,
+.ops-table small {
   display: block;
-  margin: 4px 0 0;
+  margin: 6px 0 0;
   color: #64748b;
+  font-size: 12px;
   line-height: 1.6;
 }
 
-.tag-list {
+.tag-list,
+.case-picker {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
+}
+
+.tag-list span {
+  border-radius: 999px;
+  background: #eff6ff;
+  padding: 4px 10px;
+  color: #1d4ed8;
+  font-size: 12px;
+}
+
+.row-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
 }
 
 .row-actions button {
-  height: 28px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid #dbeafe;
   border-radius: 6px;
   background: #fff;
-  color: #1d3557;
+  padding: 6px 10px;
+  color: #1d4ed8;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   cursor: pointer;
 }
 
@@ -931,38 +942,44 @@ onMounted(async () => {
   cursor: not-allowed;
 }
 
+.review-panel {
+  display: grid;
+  gap: 12px;
+}
+
 .review-toolbar {
-  margin: 4px 0 12px;
+  flex-wrap: wrap;
 }
 
 .review-toolbar label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 900;
+  display: grid;
+  gap: 6px;
+}
+
+.review-toolbar span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .review-toolbar select {
-  height: 34px;
-  min-width: 260px;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
+  min-width: 240px;
+  height: 36px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
   padding: 0 10px;
+  background: #fff;
+  color: #0f172a;
 }
 
-.review-summary span {
-  border-radius: 999px;
-  background: #f1f5f9;
-  padding: 5px 10px;
-  color: #475569;
-  font-size: 12px;
-  font-weight: 900;
+.review-summary {
+  flex-wrap: wrap;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .score-cell {
-  color: #1d4ed8;
   font-weight: 900;
 }
 
@@ -972,50 +989,40 @@ onMounted(async () => {
 }
 
 .notice-item {
-  border: 1px solid #eef2f7;
-  border-radius: 8px;
-  padding: 12px 14px;
-  background: #fbfdff;
-}
-
-.notice-item div {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #f8fbff;
+  padding: 14px;
 }
 
 .notice-item strong {
   color: #0f172a;
+  font-size: 14px;
 }
 
 .notice-item span,
 .notice-item p {
-  margin: 0;
   color: #64748b;
-  font-size: 13px;
+  font-size: 12px;
+}
+
+.notice-item p {
+  margin: 8px 0 0;
+  line-height: 1.7;
 }
 
 .popup-panel {
-  display: grid;
-  gap: 14px;
   padding: 18px;
-  max-height: 88vh;
-  overflow: auto;
-  background: #fff;
 }
 
-.popup-panel header,
-.submission-panel header {
+.popup-panel header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  border-bottom: 1px solid #eef2f7;
-  padding-bottom: 12px;
+  margin-bottom: 14px;
 }
 
-.popup-panel h3,
-.submission-panel h3 {
+.popup-panel h3 {
   margin: 0;
   color: #0f172a;
   font-size: 18px;
@@ -1024,31 +1031,31 @@ onMounted(async () => {
 
 .field-block {
   display: grid;
-  gap: 7px;
+  gap: 8px;
+  margin-bottom: 14px;
 }
 
-.field-block span {
+.field-block span,
+.checkline {
   color: #334155;
   font-size: 13px;
-  font-weight: 900;
+  font-weight: 700;
 }
 
 .field-block input,
-.field-block textarea,
-.review-toolbar select {
+.field-block textarea {
   width: 100%;
   border: 1px solid #dbe3ee;
-  border-radius: 6px;
-  background: #fff;
-  padding: 9px 10px;
+  border-radius: 8px;
+  padding: 10px 12px;
   color: #0f172a;
-  font-size: 13px;
+  resize: vertical;
   outline: none;
 }
 
 .form-grid {
   display: grid;
-  grid-template-columns: 1fr 220px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -1056,163 +1063,138 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.case-picker {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  margin-bottom: 14px;
 }
 
 .case-option {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
+  min-width: 180px;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   padding: 10px;
-  color: #334155;
-}
-
-.case-option strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-}
-
-.case-option small {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.submission-panel {
-  display: grid;
-  max-height: 92vh;
   background: #fff;
 }
 
-.submission-panel header {
-  padding: 16px 18px;
+.case-option strong {
+  display: block;
+  margin-top: 8px;
+  color: #0f172a;
 }
 
-.submission-panel header p {
-  margin: 4px 0 0;
+.case-option small {
+  display: block;
+  margin-top: 6px;
   color: #64748b;
-  font-size: 13px;
+}
+
+.submission-panel {
+  overflow: hidden;
+}
+
+.submission-panel header {
+  padding: 18px 18px 0;
+}
+
+.submission-panel h3 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.submission-panel p {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 12px;
 }
 
 .submission-body {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 240px 1fr;
   gap: 18px;
-  overflow: auto;
   padding: 18px;
 }
 
 .submission-body aside {
-  border: 1px solid #eef2f7;
-  border-radius: 8px;
-  padding: 14px;
-  height: fit-content;
-  background: #f8fafc;
+  display: grid;
+  align-content: start;
+  gap: 10px;
 }
 
 .score-box {
-  display: grid;
-  gap: 6px;
-  margin-bottom: 12px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #1d3557, #16324d);
+  padding: 18px;
+  color: #fff;
 }
 
-.score-box span,
-.submission-body aside p {
-  margin: 0 0 8px;
-  color: #64748b;
-  font-size: 13px;
+.score-box span {
+  display: block;
+  font-size: 12px;
 }
 
 .score-box strong {
-  color: #dc2626;
-  font-size: 42px;
+  display: block;
+  margin-top: 8px;
+  font-size: 38px;
   line-height: 1;
-}
-
-.submission-body main {
-  display: grid;
-  gap: 16px;
-}
-
-.submission-body h4 {
-  margin: 0 0 10px;
-  color: #0f172a;
-  font-size: 15px;
-  font-weight: 900;
 }
 
 .message-list {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .message-item {
-  border: 1px solid #eef2f7;
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: #fff;
+  border-radius: 10px;
+  padding: 12px;
+  background: #f8fafc;
 }
 
 .message-item--user {
-  border-color: #bfdbfe;
   background: #eff6ff;
 }
 
+.message-item--assistant {
+  background: #f8fafc;
+}
+
 .message-item span {
-  color: #334155;
+  color: #1d4ed8;
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .message-item p {
-  margin: 5px 0 0;
+  margin: 8px 0 0;
   color: #0f172a;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.7;
 }
 
 pre {
-  max-height: 360px;
-  overflow: auto;
-  border: 1px solid #eef2f7;
-  border-radius: 8px;
+  border-radius: 10px;
   background: #0f172a;
   padding: 14px;
-  color: #e5e7eb;
-  font-size: 12px;
-  line-height: 1.6;
+  color: #e2e8f0;
   white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.7;
 }
 
-.state-card--flat {
-  border: none;
-  padding: 12px;
-}
-
-@media (max-width: 900px) {
-  .admin-list-header,
+@media (max-width: 960px) {
   .workspace-header,
-  .review-toolbar,
+  .admin-list-header,
   .submission-body {
     grid-template-columns: 1fr;
     display: grid;
   }
 
-  .invite-panel,
-  .form-grid,
-  .case-picker {
+  .invite-panel {
+    text-align: left;
+  }
+
+  .form-grid {
     grid-template-columns: 1fr;
   }
 }

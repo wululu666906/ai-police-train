@@ -50,6 +50,7 @@ const router = useRouter()
 const menuItems = [
   { key: 'hall', label: '训练大厅', icon: Grid, path: '/student/hall', disabled: false },
   { key: 'videos', label: '视频实训', icon: VideoPlay, path: '/student/videos', disabled: false },
+  { key: 'video-history', label: '实训记录', icon: Clock, path: '/student/video-history', disabled: false },
   { key: 'tasks', label: '班级作业', icon: Files, path: '/student/classes', disabled: false },
   { key: 'history', label: '训练历史', icon: Clock, path: '/student/history', disabled: false },
   { key: 'knowledge', label: '个人知识库', icon: Reading, path: '', disabled: true },
