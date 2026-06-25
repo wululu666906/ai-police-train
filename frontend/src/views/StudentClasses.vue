@@ -55,6 +55,17 @@
       </div>
     </section>
 
+    <section v-if="priorityAssignment" class="priority-task">
+      <div>
+        <span>当前优先任务</span>
+        <strong>{{ priorityAssignment.title }}</strong>
+        <p>{{ assignmentActionHint(priorityAssignment) }}</p>
+      </div>
+      <el-button type="primary" :disabled="!canStartAssignment(priorityAssignment)" @click="startFirstScene(priorityAssignment)">
+        {{ primaryActionLabel(priorityAssignment) }}
+      </el-button>
+    </section>
+
     <section class="task-panel">
       <div class="task-toolbar">
         <el-tabs v-model="activeTab" class="task-tabs">
@@ -90,7 +101,18 @@
           <div class="assignment-info">
             <span>发布时间：{{ formatDateTime(assignment.published_at) }}</span>
             <span>截止时间：{{ formatDateTime(assignment.effective_due_at || assignment.due_at) }}</span>
+            <span>{{ duePressureText(assignment) }}</span>
             <span>{{ assignment.allow_late ? '允许补交' : '按时截止' }}</span>
+          </div>
+
+          <div class="completion-standard">
+            <strong>完成标准</strong>
+            <span>{{ completionStandardText(assignment) }}</span>
+          </div>
+
+          <div v-if="assignment.scoring_rule" class="scoring-rule">
+            <strong>达标与计分</strong>
+            <span>{{ compactRuleText(assignment.scoring_rule) }}</span>
           </div>
 
           <div class="case-list">
@@ -186,11 +208,17 @@ const visibleAssignments = computed(() => {
     result = result.filter((assignment) => normalizeStatus(assignment.status) === activeTab.value)
   }
   return [...result].sort((left, right) => {
+    const priorityDiff = assignmentPriority(right) - assignmentPriority(left)
+    if (priorityDiff !== 0) return priorityDiff
     const leftDue = new Date(left.effective_due_at || left.due_at || 8640000000000000).getTime()
     const rightDue = new Date(right.effective_due_at || right.due_at || 8640000000000000).getTime()
     return leftDue - rightDue
   })
 })
+
+const priorityAssignment = computed(() =>
+  visibleAssignments.value.find((assignment: any) => normalizeStatus(assignment.status) !== 'completed') || null,
+)
 
 const statusCount = computed(() => {
   const initial = { pending: 0, in_progress: 0, completed: 0, unsubmitted: 0 }
@@ -212,6 +240,64 @@ const normalizeStatus = (status: string): 'pending' | 'in_progress' | 'completed
   if (status === 'in_progress' || status === 'evaluating') return 'in_progress'
   if (status === 'unsubmitted' || status === 'expired') return 'unsubmitted'
   return 'pending'
+}
+
+const dueTime = (assignment: any) => {
+  const raw = assignment?.effective_due_at || assignment?.due_at
+  if (!raw) return null
+  const time = new Date(raw).getTime()
+  return Number.isNaN(time) ? null : time
+}
+
+const daysUntilDue = (assignment: any) => {
+  const time = dueTime(assignment)
+  if (!time) return null
+  return Math.ceil((time - Date.now()) / 86400000)
+}
+
+const assignmentPriority = (assignment: any) => {
+  const status = normalizeStatus(assignment.status)
+  const days = daysUntilDue(assignment)
+  if (status === 'unsubmitted') return assignment.allow_late ? 100 : 90
+  if (status === 'in_progress') return 80
+  if (status === 'pending' && days !== null && days <= 1) return 70
+  if (status === 'pending' && days !== null && days <= 3) return 60
+  if (status === 'pending') return 40
+  return 0
+}
+
+const duePressureText = (assignment: any) => {
+  const days = daysUntilDue(assignment)
+  if (days === null) return '未设置截止时间'
+  if (days < 0) return assignment.allow_late ? `已逾期 ${Math.abs(days)} 天，可补交` : `已逾期 ${Math.abs(days)} 天`
+  if (days === 0) return '今天截止'
+  if (days === 1) return '明天截止'
+  if (days <= 3) return `${days} 天后截止`
+  return `剩余 ${days} 天`
+}
+
+const completionStandardText = (assignment: any) => {
+  const required = Number(assignment.required_count || assignment.cases?.length || 0)
+  const completed = Number(assignment.completed_count || 0)
+  const lateText = assignment.allow_late ? '截止后仍可补交' : '截止后将不可继续提交'
+  if (!required) return `${lateText}；当前作业暂无可训练案件，请等待教官补充。`
+  return `需完成 ${required} 个案件训练并生成评估报告，当前已完成 ${completed} 个；${lateText}。`
+}
+
+const compactRuleText = (value: any) =>
+  String(value || '')
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .join('；')
+
+const assignmentActionHint = (assignment: any) => {
+  const status = normalizeStatus(assignment.status)
+  if (status === 'unsubmitted') return assignment.allow_late ? '作业已过截止时间，但仍开放补交，建议先完成未提交案件。' : '作业已截止且暂未开放补交，请联系教官确认处理方式。'
+  if (status === 'in_progress') return '已有未完成训练记录，建议继续上次进度，避免重复开始。'
+  if (status === 'pending') return `${duePressureText(assignment)}，请按完成标准依次完成案件训练。`
+  return '已完成，可查看报告或根据评估结果重新训练。'
 }
 
 const fetchAll = async () => {
@@ -524,6 +610,38 @@ onUnmounted(() => {
   color: #dc2626;
 }
 
+.priority-task {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  padding: 14px 16px;
+}
+
+.priority-task span {
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.priority-task strong {
+  display: block;
+  margin-top: 4px;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.priority-task p {
+  margin: 5px 0 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .task-panel {
   border: 1px solid #e5e7eb;
   border-radius: 8px;
@@ -621,6 +739,39 @@ onUnmounted(() => {
   padding: 10px 0;
   color: #64748b;
   font-size: 12px;
+}
+
+.completion-standard,
+.scoring-rule {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  border: 1px solid #e0f2fe;
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 10px 12px;
+}
+
+.scoring-rule {
+  margin-top: -4px;
+  border-color: #e5e7eb;
+  background: #fff;
+}
+
+.completion-standard strong,
+.scoring-rule strong {
+  flex: 0 0 auto;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.completion-standard span,
+.scoring-rule span {
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .case-list,

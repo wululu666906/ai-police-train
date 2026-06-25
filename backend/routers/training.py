@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -77,6 +78,19 @@ def _session_trust(session: models.TrainingSession, *, fallback: int = 30) -> in
     return _clamp_score(session.current_trust, fallback)
 
 
+def _as_utc_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+    if value.tzinfo:
+        return value.astimezone(timezone.utc)
+    return value.replace(tzinfo=timezone.utc)
+
+
 def _default_state_snapshot(role: models.Role | None, case: models.Case | None, scene: models.Scene | None):
     snapshot = {
         "cooperation": _clamp_score(getattr(role, "init_trust", 30), 30),
@@ -132,6 +146,9 @@ def _serialize_session_response(
         id=session.id,
         scene_id=session.scene_id,
         user_id=session.user_id,
+        created_at=_as_utc_datetime(session.created_at),
+        training_started_at=_as_utc_datetime(session.training_started_at),
+        training_finished_at=_as_utc_datetime(session.training_finished_at),
         current_stage=session.current_stage or "",
         current_emotion=_session_emotion(session),
         current_trust=state_snapshot["cooperation"],
@@ -156,6 +173,13 @@ def get_owned_session(db: Session, session_id: int, user_id: int) -> models.Trai
     if not session:
         raise HTTPException(status_code=404, detail="Session not found or not accessible")
     return session
+
+
+def _mark_session_training_finished(session: models.TrainingSession, finished_at: datetime | None = None) -> None:
+    end_time = finished_at or datetime.utcnow()
+    if session.training_started_at is None:
+        session.training_started_at = session.created_at or end_time
+    session.training_finished_at = session.training_finished_at or end_time
 
 
 def _build_session_guidance(
@@ -305,6 +329,10 @@ def _trigger_auto_evaluation_if_needed(
     result: dict,
 ):
     if result.get("auto_finished"):
+        session = get_owned_session(db, session_id, user_id)
+        _mark_session_training_finished(session)
+        session.status = "evaluating"
+        db.commit()
         report = evaluate_session(db, session_id, user_id)
         if report and "error" not in report:
             try:
@@ -345,6 +373,8 @@ def start_training(
             try_sync_case_to_knowledge(case)
         role = resolve_scene_role(db, scene, case)
         if latest_session and latest_session.status == "active":
+            if latest_session.training_started_at is None:
+                latest_session.training_started_at = latest_session.created_at or datetime.utcnow()
             ensure_opening_turn(db, latest_session, scene, case, role)
             if assignment_id is not None:
                 link_session_to_assignment(db, assignment_id, current_user, latest_session, scene)
@@ -354,15 +384,14 @@ def start_training(
         latest_has_final_report = (
             isinstance(latest_evaluation, dict)
             and bool(latest_evaluation)
-            and (
-                latest_evaluation.get("termination_reason") == "face_verification_failed"
-                or isinstance(latest_evaluation.get("total_score"), (int, float))
-            )
+            and isinstance(latest_evaluation.get("total_score"), (int, float))
         )
         if latest_session and latest_session.status == "evaluating" and not latest_has_final_report:
+            if latest_session.training_started_at is None:
+                latest_session.training_started_at = latest_session.created_at or datetime.utcnow()
             if assignment_id is not None:
                 link_session_to_assignment(db, assignment_id, current_user, latest_session, scene)
-                db.commit()
+            db.commit()
             return _serialize_session_response(latest_session, role, case, scene)
         stage_config = _get_stage_config(scene, "", case_type=_get_case_type(case))
         initial_runtime_state = load_runtime_state([])
@@ -377,6 +406,7 @@ def start_training(
             current_emotion=role.init_emotion if role else 50,
             current_trust=initial_state_snapshot["cooperation"],
             revealed_info=dump_runtime_state(initial_runtime_state),
+            training_started_at=datetime.utcnow(),
         )
         db.add(new_session)
         db.commit()
@@ -492,7 +522,7 @@ def get_session(
             content=repair_text(message.content),
             speaker_role_id=getattr(message, "speaker_role_id", None),
             speaker_name=repair_text(getattr(message, "speaker_name", None)) if getattr(message, "speaker_name", None) else None,
-            created_at=message.created_at,
+            created_at=_as_utc_datetime(message.created_at),
         )
         for message in messages
     ]
@@ -507,6 +537,12 @@ def get_session(
         current_trust=session.current_trust,
     )
     repaired_revealed_info = json.dumps(runtime_state.get("revealed_info") or [], ensure_ascii=False)
+
+    if session.status == "finished" and session.evaluation_result:
+        refreshed_report = evaluate_session(db, session.id, current_user.id)
+        if isinstance(refreshed_report, dict) and not refreshed_report.get("error"):
+            session.evaluation_result = json.dumps(refreshed_report, ensure_ascii=False)
+            db.commit()
 
     repaired_evaluation_result = session.evaluation_result
     if repaired_evaluation_result:
@@ -532,6 +568,9 @@ def get_session(
         id=session.id,
         scene_id=session.scene_id,
         user_id=session.user_id,
+        created_at=_as_utc_datetime(session.created_at),
+        training_started_at=_as_utc_datetime(session.training_started_at),
+        training_finished_at=_as_utc_datetime(session.training_finished_at),
         current_stage=session.current_stage or "训练中",
         current_stage_goal=current_goal,
         current_emotion=_session_emotion(session),
@@ -601,7 +640,11 @@ def finish_training(
         raise HTTPException(status_code=400, detail="At least one valid round of dialogue is required before finishing")
 
     if session.status == "active":
+        _mark_session_training_finished(session)
         session.status = "evaluating"
+        db.commit()
+    elif session.training_finished_at is None:
+        _mark_session_training_finished(session)
         db.commit()
 
     report = evaluate_session(db, session_id, current_user.id)
@@ -609,6 +652,7 @@ def finish_training(
         raise HTTPException(status_code=404, detail="Session not found")
     if report.get("error"):
         session.status = "active"
+        session.training_finished_at = None
         db.commit()
         raise HTTPException(status_code=502, detail=report["error"])
     try:
@@ -631,13 +675,12 @@ def re_evaluate_training(
         .filter(models.Message.session_id == session.id, models.Message.role == "user")
         .count()
     )
-    evaluation_payload = safe_json_loads(session.evaluation_result, {})
-    is_face_terminated = (
-        isinstance(evaluation_payload, dict)
-        and evaluation_payload.get("termination_reason") == "face_verification_failed"
-    )
-    if user_message_count <= 0 and not is_face_terminated:
+    if user_message_count <= 0:
         raise HTTPException(status_code=400, detail="At least one valid round of dialogue is required before evaluation")
+
+    if session.training_started_at is None or session.training_finished_at is None:
+        _mark_session_training_finished(session)
+        db.commit()
 
     report = evaluate_session(db, session.id, current_user.id, force_recompute=True)
     if not report:

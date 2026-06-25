@@ -29,6 +29,27 @@
           <span>报告编号：{{ reportMeta.reportNo }}</span>
         </header>
 
+        <section class="report-action-brief">
+          <div class="action-verdict">
+            <span>本次结论</span>
+            <strong>{{ trainingVerdict.title }}</strong>
+            <p>{{ trainingVerdict.description }}</p>
+          </div>
+          <div class="action-card-grid">
+            <article v-for="item in reportActionCards" :key="item.label">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+              <p>{{ item.note }}</p>
+            </article>
+          </div>
+          <div class="next-step-list">
+            <strong>下一轮训练建议</strong>
+            <ol>
+              <li v-for="item in nextTrainingSteps" :key="item">{{ item }}</li>
+            </ol>
+          </div>
+        </section>
+
         <section class="report-section report-section--overview">
           <h3>一、训练概况</h3>
           <div class="overview-table">
@@ -99,6 +120,52 @@
           <div v-if="studentNoticeItems.length" class="notice-list"><p v-for="item in studentNoticeItems" :key="item">{{ item }}</p></div>
         </section>
 
+        <section v-if="scenePerformance" class="report-section">
+          <h3>{{ sceneReportTitle }}</h3>
+          <div class="scene-score-grid">
+            <article v-for="item in sceneScoreItems" :key="item.label" class="scene-score-item">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+              <em>{{ item.note }}</em>
+            </article>
+          </div>
+          <div class="scene-status-line">
+            <span>{{ degradationPrefix }}{{ degradationLabel }}</span>
+            <span>{{ formulaPrefix }}{{ sceneFormulaMode }}</span>
+            <span>{{ unavailablePrefix }}{{ unavailableModulesText }}</span>
+            <span>证据置信度：{{ sceneEvidenceConfidence }}</span>
+          </div>
+          <div v-if="sceneEvidenceWindows.length" class="scene-window-grid">
+            <article v-for="item in sceneEvidenceWindows" :key="item.index">
+              <strong>窗口 {{ item.index + 1 }}</strong>
+              <span>样本 {{ item.sample_count }}</span>
+              <em>在场 {{ item.presence_rate ?? '无' }}% · 专注 {{ item.focused_rate ?? '无' }}% · DeepFace {{ item.deepface_rate ?? '无' }}% · MediaPipe {{ item.mediapipe_rate ?? '无' }}%</em>
+            </article>
+          </div>
+          <div v-if="toolEvidenceItems.length" class="tool-evidence-grid">
+            <article v-for="item in toolEvidenceItems" :key="item.name">
+              <strong>{{ item.name }}</strong>
+              <span>{{ item.status }}</span>
+              <em>{{ item.detail }}</em>
+            </article>
+          </div>
+          <div v-if="sceneRubricGroups.length" class="scene-rubric-list">
+            <article v-for="group in sceneRubricGroups" :key="group.key">
+              <h4>{{ group.label }} <strong>{{ group.score }}</strong></h4>
+              <div v-for="item in group.items" :key="item.key" class="scene-rubric-row">
+                <span>{{ item.label }}</span>
+                <strong>{{ item.score }}</strong>
+                <em>
+                  <b>{{ item.weight }} · {{ item.evidence }}</b>
+                  <small v-if="item.description">说明：{{ item.description }}</small>
+                  <small v-if="item.highScore">高分：{{ item.highScore }}</small>
+                  <small v-if="item.deduction">扣分：{{ item.deduction }}</small>
+                </em>
+              </div>
+            </article>
+          </div>
+        </section>
+
         <section class="report-section"><h3>五、综合点评</h3><p class="report-text">{{ enhancedOverallComment }}</p></section>
         <section class="report-section"><h3>六、反馈建议</h3><ul class="report-list advice-list"><li v-for="item in actionableAdviceItems" :key="item">{{ item }}</li></ul></section>
 
@@ -143,6 +210,7 @@ const emptyState = ref({
   title: '暂无评估数据',
   description: '当前会话可能还未完成评估，或评估结果暂未写入。',
 })
+let evaluationPollTimer: number | null = null
 
 const safeParse = <T>(value: any, fallback: T): T => {
   if (value === null || value === undefined || value === '') return fallback
@@ -261,6 +329,134 @@ const scoreCapLabel = computed(() => {
   return Number.isFinite(cap) && cap < 100 ? `${cap} 分` : '无'
 })
 
+const scenePerformance = computed(() => report.value?.scene_performance_report || null)
+const sceneScores = computed(() => scenePerformance.value?.scores || scenePerformance.value?.overall || {})
+const sceneHasCurrentSchema = computed(() => scenePerformance.value?.schema_version === 'scene_performance_report/v2')
+const sceneReportTitle = '\u4e94\u3001\u5b9e\u8bad\u68c0\u6d4b\u62a5\u544a'
+const degradationPrefix = '\u964d\u7ea7\u7b49\u7ea7\uff1a'
+const formulaPrefix = '\u8bc4\u5206\u6a21\u5f0f\uff1a'
+const unavailablePrefix = '\u4e0d\u53ef\u7528\u6a21\u5757\uff1a'
+const sceneScoreValue = (value: any) => Number.isFinite(Number(value)) ? `${Math.round(Number(value))}` : '\u6682\u65e0'
+const pickFirstFinite = (...values: any[]) => {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue
+    const normalized = Number(value)
+    if (Number.isFinite(normalized)) return normalized
+  }
+  return null
+}
+const sceneScoreByKey = (key: 'face_score' | 'behavior_score' | 'attention_score' | 'final_score') => {
+  const scene: any = scenePerformance.value || {}
+  const scores: any = sceneScores.value || {}
+  if (key === 'face_score') {
+    return pickFirstFinite(scores.face_score, scene.face?.score, scene.micro_expression?.score, scene.overall?.face_score)
+  }
+  if (key === 'behavior_score') {
+    return pickFirstFinite(scores.behavior_score, scene.gesture?.score, scene.voice?.score, scene.overall?.behavior_score)
+  }
+  if (key === 'attention_score') {
+    return pickFirstFinite(scores.attention_score, scene.attention?.score, scene.overall?.attention_score)
+  }
+  const behavior = sceneScoreByKey('behavior_score')
+  const face = sceneScoreByKey('face_score')
+  const attention = sceneScoreByKey('attention_score')
+  if (behavior !== null && face !== null && attention !== null) {
+    return behavior * 0.35 + face * 0.30 + attention * 0.35
+  }
+  return pickFirstFinite(scores.final_score, scene.overall?.final_score)
+}
+const sceneScoreItems = computed(() => [
+  { label: '\u8868\u60c5\u8bc4\u5206', value: sceneScoreValue(sceneScoreByKey('face_score')), note: '\u60c5\u7eea\u7a33\u5b9a\u3001\u538b\u529b\u6ce2\u52a8\u3001\u5934\u90e8\u72b6\u6001' },
+  { label: '\u884c\u4e3a\u8bc4\u5206', value: sceneScoreValue(sceneScoreByKey('behavior_score')), note: '\u624b\u52bf\u89c4\u8303\u3001\u52a8\u4f5c\u8fde\u8d2f\u3001\u59ff\u6001\u7a33\u5b9a' },
+  { label: '\u4e13\u6ce8\u5ea6\u8bc4\u5206', value: sceneScoreValue(sceneScoreByKey('attention_score')), note: '\u6301\u7eed\u6ce8\u89c6\u3001\u5206\u5fc3\u3001\u79bb\u5f00\u753b\u9762' },
+  { label: '\u6700\u7ec8\u80fd\u529b\u8bc4\u5206', value: sceneScoreValue(sceneScoreByKey('final_score')), note: '0.35 \u884c\u4e3a + 0.30 \u8868\u60c5 + 0.35 \u4e13\u6ce8' },
+])
+const sceneDegradation = computed(() => {
+  const degradation = scenePerformance.value?.degradation || scenePerformance.value?.adapter_status?.degradation
+  if (degradation) return degradation
+  return {
+    level: sceneHasCurrentSchema.value ? 3 : 4,
+    label: sceneHasCurrentSchema.value ? 'weak_visual_rules' : 'legacy_report_disabled',
+    formula_mode: sceneScores.value?.formula_mode || 'weighted_multimodal',
+    unavailable_modules: sceneHasCurrentSchema.value ? [] : ['legacy_scene_report'],
+  }
+})
+const degradationLabel = computed(() => {
+  const level = sceneDegradation.value?.level
+  const label = sceneDegradation.value?.label || 'unknown'
+  return level ? `Level ${level} / ${label}` : label
+})
+const sceneFormulaMode = computed(() => sceneDegradation.value?.formula_mode || sceneScores.value.formula_mode || 'weighted_multimodal')
+const unavailableModulesText = computed(() => {
+  const modules = sceneDegradation.value?.unavailable_modules
+  return Array.isArray(modules) && modules.length ? modules.join('\u3001') : '\u65e0'
+})
+const sceneEvidenceLayer = computed(() => scenePerformance.value?.evidence_layer || {})
+const sceneEvidenceConfidence = computed(() => {
+  const value = Number(sceneEvidenceLayer.value?.confidence?.overall)
+  return Number.isFinite(value) ? `${Math.round(value * 100)}%` : '暂无'
+})
+const sceneEvidenceWindows = computed(() => {
+  const windows = sceneEvidenceLayer.value?.windows
+  return Array.isArray(windows) ? windows.slice(0, 6) : []
+})
+const toolEvidenceItems = computed(() => {
+  const evidence = scenePerformance.value?.tool_evidence || scenePerformance.value?.adapter_status?.tool_evidence || {}
+  const engine = scenePerformance.value?.adapter_status?.engine || {}
+  const names: Record<string, string> = {
+    insightface: 'InsightFace',
+    deepface: 'DeepFace',
+    opencv: 'OpenCV',
+    mediapipe: 'MediaPipe',
+  }
+  return Object.entries(names).map(([key, name]) => {
+    const item: any = evidence[key] || {}
+    const engineItem: any = engine[key] || {}
+    const count = Number(item.evidence_count || 0)
+    const fallback = item.fallback || engineItem.fallback
+    const fallbackText = fallback ? ` / fallback: ${fallback}` : ''
+    return {
+      name,
+      status: item.status || engineItem.status || (count > 0 ? 'active' : 'no_data'),
+      detail: `${count} samples${fallbackText}`,
+    }
+  })
+})
+const sceneRubricGroups = computed(() => {
+  const rubric = scenePerformance.value?.rubric || {}
+  const dimensions = rubric?.dimensions || {}
+  const fallbackBreakdown = scenePerformance.value?.score_breakdown || {}
+  const groups = [
+    { key: 'face', label: '表情评分细则', score: sceneScoreByKey('face_score') },
+    { key: 'behavior', label: '行为评分细则', score: sceneScoreByKey('behavior_score') },
+    { key: 'attention', label: '专注度评分细则', score: sceneScoreByKey('attention_score') },
+  ]
+  return groups
+    .map((group) => {
+      const dimension = dimensions[group.key] || {}
+      const items = Array.isArray(dimension.items)
+        ? dimension.items
+        : (Array.isArray(fallbackBreakdown[group.key]) ? fallbackBreakdown[group.key] : [])
+      return {
+        ...group,
+        score: sceneScoreValue(dimension.score ?? group.score),
+        items: items
+          .filter((item: any) => item && item.available !== false)
+          .map((item: any) => ({
+            key: item.key || item.label,
+            label: item.label || item.key || '评分项',
+            score: sceneScoreValue(item.score),
+            weight: `${Math.round(Number(item.weight || 0) * 100)}%`,
+            evidence: item.evidence || '暂无证据说明',
+            description: item.description || '',
+            highScore: item.high_score || '',
+            deduction: item.deduction || '',
+          })),
+      }
+    })
+    .filter((group) => group.items.length)
+})
+
 const reportHeader = computed(() => {
   const meta = report.value?.evaluation_meta?.report_header || {}
   const total = Number(report.value?.total_score ?? meta.total_score ?? 0)
@@ -270,17 +466,40 @@ const reportHeader = computed(() => {
   }
 })
 
+const diffSeconds = (start: any, end: any) => {
+  if (!start || !end) return null
+  const startDate = new Date(start)
+  const endDate = new Date(end)
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return null
+  const seconds = Math.floor((endDate.getTime() - startDate.getTime()) / 1000)
+  return seconds >= 0 ? seconds : null
+}
+
+const formatTrainingDuration = (seconds: any) => {
+  if (seconds === null || seconds === undefined || seconds === '') return '未记录'
+  const total = Number(seconds)
+  if (!Number.isFinite(total) || total < 0) return '未记录'
+  const minutes = Math.floor(total / 60)
+  const remainSeconds = Math.floor(total % 60)
+  return `${minutes}分${remainSeconds}秒`
+}
+
 const reportMeta = computed(() => {
   const meta = report.value?.evaluation_meta?.report_header || {}
   const caseTitle = meta.case_title || sessionDetail.value?.case_title
   const sceneName = meta.scene_name || sessionDetail.value?.scene_name
-  const createdAt = sessionDetail.value?.created_at || meta.created_at
-  const finishedAt = meta.finished_at || report.value?.evaluated_at || sessionDetail.value?.updated_at || createdAt
+  const createdAt = meta.training_started_at || sessionDetail.value?.training_started_at || meta.created_at || sessionDetail.value?.created_at
+  const finishedAt = meta.training_finished_at || meta.finished_at || sessionDetail.value?.training_finished_at || report.value?.evaluated_at || sessionDetail.value?.updated_at || createdAt
+  const durationSeconds = pickFirstFinite(
+    meta.duration_seconds,
+    sessionDetail.value?.duration_seconds,
+    diffSeconds(createdAt, finishedAt),
+  )
   const score = Number(report.value?.total_score || 0)
   return {
     caseTitle: caseTitle || '未知案件',
     sceneName: sceneName || '训练场景',
-    duration: formatDuration(meta.duration_seconds || sessionDetail.value?.duration_seconds),
+    duration: formatTrainingDuration(durationSeconds),
     finishedAt: formatDateTime(finishedAt),
     reportNo: `PES-${formatReportNo(finishedAt)}-${String(sessionDetail.value?.id || getSessionId() || 0).padStart(4, '0')}`,
     passLabel: score >= 60 ? '满足' : '未满足',
@@ -362,6 +581,51 @@ const studentScoreIntro = computed(() => {
       ? '建议重点复盘关键事实核查、主动追问和收尾表达。'
       : '建议先补齐关键处置点，再强化主动追问和处置收尾。'
   return `综合得分 ${score} 分（满分 100 分），评定等级为 ${grade}。本次训练${result}，${action}`
+})
+
+const trainingVerdict = computed(() => {
+  const score = Number(report.value?.total_score || 0)
+  const missedRequired = Number(assessmentCompletion.value?.required_missed || 0)
+  const hasRedFlags = redFlags.value.length > 0
+  if (score >= 80 && !missedRequired && !hasRedFlags) {
+    return {
+      title: '可以进入巩固提升',
+      description: '本次训练整体稳定，建议继续挑战同类更复杂警情，保持处置链条完整度。',
+    }
+  }
+  if (score >= 60 && !hasRedFlags) {
+    return {
+      title: '建议针对薄弱点复训',
+      description: '本次已达到基础要求，但仍有关键问询、现场动作或收尾表达需要补齐。',
+    }
+  }
+  return {
+    title: '建议先完成补练',
+    description: '本次训练未达到预期标准，请优先复盘未命中考察点和扣分发言，再重新训练。',
+  }
+})
+
+const reportActionCards = computed(() => {
+  const requiredRate = percent(assessmentCompletion.value?.required_rate)
+  const weakDimension = weakCommonScoreItems.value[0]?.dimension || '暂无明显短板'
+  const weakPoint = weakAssessmentItems.value[0]?.label || '暂无未命中考察点'
+  return [
+    { label: '综合得分', value: `${Math.round(Number(report.value?.total_score || 0))}`, note: reportHeader.value.gradeLevel },
+    { label: '必考命中率', value: requiredRate, note: scoreCapLabel.value === '无' ? '未触发额外上限' : `总分上限 ${scoreCapLabel.value}` },
+    { label: '优先补强能力', value: weakDimension, note: weakCommonScoreItems.value[0]?.reason || '继续保持现有训练节奏' },
+    { label: '优先补齐考察点', value: weakPoint, note: weakAssessmentItems.value[0]?.content || weakAssessmentItems.value[0]?.feedback || '本场景考察点完成较完整' },
+  ]
+})
+
+const nextTrainingSteps = computed(() => {
+  const steps = actionableAdviceItems.value.slice(0, 3)
+  if (steps.length >= 3) return steps
+  const fallback = [
+    '重新训练前先阅读本报告中的未命中考察点，明确下一轮必须主动问到或做到的内容。',
+    '训练中按“身份核实-事实经过-风险判断-处置告知-收尾确认”的顺序推进。',
+    '结束前用一句话复述已核实事实，并明确下一步处置安排。',
+  ]
+  return Array.from(new Set([...steps, ...fallback])).slice(0, 3)
 })
 
 const formatStudentNotice = (value: any, type = '重点提醒') => {
@@ -583,7 +847,14 @@ const normalizeReportPayload = (payload: any) => {
   return safeParse(payload, null)
 }
 
-const fetchEvaluation = async () => {
+const clearEvaluationPoll = () => {
+  if (evaluationPollTimer != null) {
+    window.clearTimeout(evaluationPollTimer)
+    evaluationPollTimer = null
+  }
+}
+
+const fetchEvaluation = async (options: { silent?: boolean; attempt?: number } = {}) => {
   const sessionId = getSessionId()
   if (!sessionId) {
     showToast('无法加载评估报告')
@@ -596,14 +867,25 @@ const fetchEvaluation = async () => {
     const res: any = await request.get(`/training/session/${sessionId}`, { _skipErrorToast: true } as any)
     sessionDetail.value = res || null
     if (!res.evaluation_result) {
-      showToast('当前训练尚未生成评估报告')
+      if (res.status === 'evaluating' && (options.attempt || 0) < 12) {
+        setEmptyState('评估报告生成中', '系统正在生成评估报告，请稍候。')
+        loading.value = false
+        clearEvaluationPoll()
+        evaluationPollTimer = window.setTimeout(() => {
+          loading.value = true
+          void fetchEvaluation({ silent: true, attempt: (options.attempt || 0) + 1 })
+        }, 1200)
+        return
+      }
+      if (!options.silent) showToast('当前训练尚未生成评估报告')
       if (res.status === 'active') {
         setEmptyState('尚未完成评估', '训练进行中，完成后再查看报告。')
       } else {
-        setEmptyState('报告暂未生成', '可在训练历史中重新评估。')
+        setEmptyState('报告暂未生成', '系统可能仍在生成报告，请稍后刷新；也可在训练历史中重新评估。')
       }
       return
     }
+    clearEvaluationPoll()
     report.value = normalizeReportPayload(res)
     if (!report.value) {
       showToast('评估报告解析失败')
@@ -698,6 +980,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  clearEvaluationPoll()
   setMainScrollable?.(false)
 })
 </script>
@@ -714,6 +997,16 @@ onUnmounted(() => {
 .paper-header { position: relative; display: flex; justify-content: center; padding-bottom: 24px; border-bottom: 2px solid #c8d1df; }
 .paper-header h2 { margin: 0; color: #111827; font-size: 30px; font-weight: 900; letter-spacing: 0; }
 .paper-header span { position: absolute; right: 0; bottom: 14px; color: #667085; font-size: 13px; }
+.report-action-brief { display: grid; grid-template-columns: 1.15fr 2fr; gap: 14px; margin: 20px 0 2px; border: 1px solid #d8e0ea; background: #f8fbff; padding: 16px; }
+.action-verdict { display: grid; align-content: start; gap: 6px; border-right: 1px solid #d8e0ea; padding-right: 14px; }
+.action-verdict span, .action-card-grid span, .next-step-list strong { color: #475467; font-size: 13px; font-weight: 900; }
+.action-verdict strong { color: #111827; font-size: 22px; line-height: 1.25; font-weight: 900; }
+.action-verdict p, .action-card-grid p { margin: 0; color: #667085; font-size: 13px; line-height: 1.7; }
+.action-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.action-card-grid article { border: 1px solid #e5e7eb; background: #fff; padding: 12px; }
+.action-card-grid strong { display: block; margin: 5px 0; color: #165dff; font-size: 18px; line-height: 1.3; font-weight: 900; }
+.next-step-list { grid-column: 1 / -1; border-top: 1px solid #d8e0ea; padding-top: 12px; }
+.next-step-list ol { margin: 8px 0 0; padding-left: 20px; color: #344054; line-height: 1.8; }
 .report-section { padding: 24px 0; border-bottom: 1px solid #d8e0ea; }
 .report-section:last-child { border-bottom: 0; }
 .report-section h3 { margin: 0 0 14px; color: #111827; font-size: 19px; font-weight: 900; }
@@ -756,6 +1049,34 @@ onUnmounted(() => {
 .calibration-strip { grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 14px 0 0; }
 .notice-list { display: grid; gap: 8px; margin-top: 14px; }
 .notice-list p { margin: 0; padding: 8px 12px; color: #7a2e0e; background: #fff7ed; border-left: 3px solid #f79009; }
+.scene-score-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid #d8e0ea; border-left: 1px solid #d8e0ea; }
+.scene-score-item { min-height: 104px; display: grid; align-content: center; gap: 4px; padding: 14px; border-right: 1px solid #d8e0ea; border-bottom: 1px solid #d8e0ea; }
+.scene-score-item span { color: #475467; font-size: 13px; font-weight: 900; }
+.scene-score-item strong { color: #165dff; font-size: 28px; line-height: 1.15; font-weight: 900; }
+.scene-score-item em { color: #667085; font-style: normal; font-size: 12px; line-height: 1.5; }
+.scene-status-line { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; color: #475467; font-size: 13px; font-weight: 800; }
+.scene-status-line span { padding: 5px 9px; background: #f5f7fa; border: 1px solid #d8e0ea; }
+.scene-window-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.scene-window-grid article { display: grid; gap: 3px; padding: 10px; background: #fff; border: 1px solid #d8e0ea; }
+.scene-window-grid strong { color: #111827; font-size: 13px; font-weight: 900; }
+.scene-window-grid span { color: #165dff; font-size: 12px; font-weight: 900; }
+.scene-window-grid em { color: #667085; font-style: normal; font-size: 12px; overflow-wrap: anywhere; }
+.tool-evidence-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.tool-evidence-grid article { display: grid; gap: 3px; padding: 10px; background: #f8fafc; border: 1px solid #d8e0ea; }
+.tool-evidence-grid strong { color: #111827; font-size: 13px; font-weight: 900; }
+.tool-evidence-grid span { color: #165dff; font-size: 12px; font-weight: 900; }
+.tool-evidence-grid em { color: #667085; font-style: normal; font-size: 12px; overflow-wrap: anywhere; }
+.scene-rubric-list { display: grid; gap: 12px; margin-top: 14px; }
+.scene-rubric-list article { border: 1px solid #d8e0ea; }
+.scene-rubric-list h4 { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 0; padding: 9px 12px; color: #111827; font-size: 14px; font-weight: 900; background: #f5f7fa; border-bottom: 1px solid #d8e0ea; }
+.scene-rubric-list h4 strong { color: #165dff; font-size: 18px; }
+.scene-rubric-row { display: grid; grid-template-columns: 180px 64px minmax(0, 1fr); gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid #eef2f6; }
+.scene-rubric-row:last-child { border-bottom: 0; }
+.scene-rubric-row span { color: #1f2937; font-size: 13px; font-weight: 800; }
+.scene-rubric-row strong { color: #165dff; font-size: 15px; font-weight: 900; }
+.scene-rubric-row em { display: grid; gap: 3px; color: #667085; font-size: 12px; font-style: normal; overflow-wrap: anywhere; }
+.scene-rubric-row em b { color: #475467; font-weight: 800; }
+.scene-rubric-row em small { color: #667085; font-size: 12px; line-height: 1.55; }
 .report-list { margin: 0; padding-left: 22px; color: #1f2937; line-height: 2; }
 .advice-list li + li { margin-top: 6px; }
 .dialogue-analysis-list { display: grid; }
@@ -768,7 +1089,7 @@ onUnmounted(() => {
 .empty-state span { color: #667085; }
 :deep(.el-button) { border-radius: 4px; font-weight: 700; }
 :deep(.el-button--primary) { background: #165dff; border-color: #165dff; }
-@media (max-width: 1100px) { .overview-table, .score-grid, .assessment-summary, .calibration-strip, .dialogue-analysis-row { grid-template-columns: 1fr; } .paper-header { justify-content: flex-start; display: block; } .paper-header span { position: static; display: block; margin-top: 8px; } }
+@media (max-width: 1100px) { .overview-table, .score-grid, .assessment-summary, .calibration-strip, .dialogue-analysis-row, .scene-score-grid, .scene-window-grid, .tool-evidence-grid, .scene-rubric-row { grid-template-columns: 1fr; } .paper-header { justify-content: flex-start; display: block; } .paper-header span { position: static; display: block; margin-top: 8px; } }
 @media (max-width: 720px) { .evaluation-page { padding: 14px; } .document-toolbar { height: auto; align-items: flex-start; flex-direction: column; } .page-actions, .page-actions .el-button { width: 100%; } .report-paper { padding: 24px 18px; } }
 @media print { .evaluation-page { padding: 0; background: #fff; } .no-print { display: none !important; } .report-paper { border: 0; padding: 0; } }
 </style>

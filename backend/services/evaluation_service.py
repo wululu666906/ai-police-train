@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Tuple
 
@@ -27,6 +28,44 @@ COMMON_DIMENSIONS = [
     (SUMMARY_DIMENSION, "归纳时间、地点、人物、经过、诉求、矛盾点等已获信息。"),
     (CLOSURE_DIMENSION, "阶段总结、下一步安排、确认反馈，避免草率结束。"),
 ]
+
+
+def _parse_report_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not value:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(normalized)
+            return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+        except ValueError:
+            for pattern in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    return datetime.strptime(normalized, pattern)
+                except ValueError:
+                    continue
+    return None
+
+
+def _report_header_from_payload(report: Dict[str, Any]) -> Dict[str, Any]:
+    meta = report.get("evaluation_meta") if isinstance(report, dict) else {}
+    header = meta.get("report_header") if isinstance(meta, dict) else {}
+    return header if isinstance(header, dict) else {}
+
+
+def _format_report_datetime(value: Any) -> str | None:
+    parsed = _parse_report_datetime(value)
+    if not parsed:
+        return None
+    if parsed.tzinfo:
+        return parsed.isoformat()
+    return f"{parsed.isoformat()}+00:00"
 
 DIMENSIONS = [(name, 25) for name, _ in COMMON_DIMENSIONS]
 
@@ -1067,8 +1106,33 @@ def finalize_evaluation_report(
     student_lines: List[str],
 ) -> Dict[str, Any]:
     total_score = int(report.get("total_score") or 0)
+    existing_header = _report_header_from_payload(report)
+    created_at = getattr(session, "created_at", None)
+    started_at = (
+        getattr(session, "training_started_at", None)
+        or _parse_report_datetime(existing_header.get("training_started_at"))
+        or _parse_report_datetime(existing_header.get("created_at"))
+        or created_at
+    )
+    finished_at = (
+        getattr(session, "training_finished_at", None)
+        or _parse_report_datetime(existing_header.get("training_finished_at"))
+        or _parse_report_datetime(existing_header.get("finished_at"))
+        or _parse_report_datetime(report.get("evaluated_at"))
+        or started_at
+        or datetime.utcnow()
+    )
+    duration_seconds = None
+    if started_at:
+        try:
+            duration_seconds = max(0, int((finished_at - started_at).total_seconds()))
+        except Exception:
+            duration_seconds = None
+    if duration_seconds is None:
+        duration_seconds = existing_header.get("duration_seconds")
     report["grade_level"] = compute_grade_level(total_score)
     report["total_score"] = total_score
+    report["evaluated_at"] = _format_report_datetime(finished_at)
 
     if "evaluation_meta" not in report:
         report["evaluation_meta"] = {}
@@ -1079,6 +1143,11 @@ def finalize_evaluation_report(
         "scene_name": str(getattr(scene, "name", "") or "训练场景").strip() or "训练场景",
         "scene_type": report["evaluation_meta"].get("scene_type") or infer_scene_type(scene) if scene else "通用",
         "dialogue_turns": len(student_lines),
+        "created_at": _format_report_datetime(created_at),
+        "training_started_at": _format_report_datetime(started_at),
+        "finished_at": _format_report_datetime(finished_at),
+        "training_finished_at": _format_report_datetime(finished_at),
+        "duration_seconds": duration_seconds,
         "grade_level": report["grade_level"],
         "total_score": total_score,
     }
@@ -1279,7 +1348,31 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
         return None
 
     if not force_recompute and session.status == "finished" and session.evaluation_result:
-        return json.loads(session.evaluation_result)
+        cached_report = json.loads(session.evaluation_result)
+        scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
+        case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
+        msgs = (
+            db.query(models.Message)
+            .filter(models.Message.session_id == session_id)
+            .order_by(models.Message.created_at.asc())
+            .all()
+        )
+        _, student_lines = format_dialogue(msgs)
+        header = cached_report.get("evaluation_meta", {}).get("report_header", {}) if isinstance(cached_report, dict) else {}
+        if (
+            not isinstance(header, dict)
+            or not header.get("finished_at")
+            or "duration_seconds" not in header
+            or "training_started_at" not in header
+            or "training_finished_at" not in header
+        ):
+            cached_report = finalize_evaluation_report(cached_report, session, scene, case, student_lines)
+        cached_report = append_scene_performance_report(db, session.id, cached_report)
+        next_report_json = json.dumps(cached_report, ensure_ascii=False)
+        if next_report_json != session.evaluation_result:
+            session.evaluation_result = next_report_json
+            db.commit()
+        return cached_report
 
     scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
     case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None

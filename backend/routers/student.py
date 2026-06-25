@@ -15,6 +15,16 @@ from services.training_runtime_service import load_runtime_state
 router = APIRouter(prefix="/student", tags=["Student"])
 
 
+def format_utc_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, str):
+        return value
+    if getattr(value, "tzinfo", None):
+        return value.isoformat()
+    return f"{value.isoformat()}+00:00"
+
+
 def build_message_activity_subquery(db: Session):
     return (
         db.query(
@@ -139,11 +149,7 @@ def get_student_cases(
             is_completed_report = (
                 isinstance(evaluation_result, dict)
                 and bool(evaluation_result)
-                and (
-                    raw_status == "finished"
-                    or evaluation_result.get("termination_reason") == "face_verification_failed"
-                    or isinstance(evaluation_result.get("total_score"), (int, float))
-                )
+                and (raw_status == "finished" or isinstance(evaluation_result.get("total_score"), (int, float)))
             )
             if is_completed_report:
                 training_status = "completed"
@@ -234,6 +240,8 @@ def get_student_history(
             models.TrainingSession.current_emotion.label("final_emotion"),
             models.TrainingSession.current_trust.label("final_trust"),
             models.TrainingSession.created_at.label("created_at"),
+            models.TrainingSession.training_started_at.label("training_started_at"),
+            models.TrainingSession.training_finished_at.label("training_finished_at"),
             models.Scene.name.label("scene_name"),
             models.Scene.difficulty.label("difficulty"),
             models.Case.title.label("case_title"),
@@ -278,6 +286,14 @@ def get_student_history(
         assistant_message_count = int(row.assistant_message_count or 0)
         evaluation_result = safe_json_loads(row.evaluation_result, {})
         evaluation_meta = evaluation_result.get("evaluation_meta") if isinstance(evaluation_result, dict) else {}
+        report_header = evaluation_meta.get("report_header") if isinstance(evaluation_meta, dict) else {}
+        display_time = (
+            row.training_finished_at
+            if row.status == "finished" and row.training_finished_at
+            else row.training_started_at or row.created_at
+        )
+        if row.status == "finished" and isinstance(report_header, dict) and report_header.get("finished_at"):
+            display_time = report_header.get("training_finished_at") or report_header.get("finished_at") or display_time
         stage_gap_summary = evaluation_meta.get("stage_gap_summary") if isinstance(evaluation_meta, dict) else None
         stage_gap_missing = []
         if isinstance(stage_gap_summary, dict):
@@ -304,7 +320,11 @@ def get_student_history(
                 "total_score": evaluation_result.get("total_score") if isinstance(evaluation_result, dict) else None,
                 "stage_gap_scene_type": stage_gap_summary.get("scene_type") if isinstance(stage_gap_summary, dict) else None,
                 "stage_gap_missing": [repair_text(str(item)) for item in stage_gap_missing[:3]],
-                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "created_at": format_utc_datetime(display_time),
+                "session_created_at": format_utc_datetime(row.created_at),
+                "training_started_at": format_utc_datetime(row.training_started_at),
+                "training_finished_at": format_utc_datetime(row.training_finished_at),
+                "display_time": format_utc_datetime(display_time),
             }
         )
 

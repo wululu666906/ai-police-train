@@ -160,6 +160,9 @@ class SessionCreate(SessionBase):
 
 class Session(SessionBase):
     id: int
+    created_at: Optional[datetime] = None
+    training_started_at: Optional[datetime] = None
+    training_finished_at: Optional[datetime] = None
     current_stage: str
     current_emotion: int
     current_trust: int
@@ -176,6 +179,9 @@ class SessionDetail(BaseModel):
     id: int
     scene_id: int
     user_id: int
+    created_at: Optional[datetime] = None
+    training_started_at: Optional[datetime] = None
+    training_finished_at: Optional[datetime] = None
     current_stage: str
     current_stage_goal: Optional[str] = None
     current_emotion: int

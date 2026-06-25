@@ -115,7 +115,7 @@
               </div>
 
               <div class="history-row__time">
-                <div class="history-row__time-main">{{ formatTime(record.created_at) }}</div>
+                <div class="history-row__time-main">{{ formatTime(record.display_time || record.training_finished_at || record.training_started_at || record.created_at) }}</div>
                 <div class="history-row__time-sub">对话 {{ record.turn_count ?? 0 }} 轮次</div>
               </div>
 
@@ -265,7 +265,7 @@ const filteredRecords = computed(() => {
     const title = String(record.case_title || '').toLowerCase()
     const type = String(record.case_type || '').toLowerCase()
     const scene = String(record.scene_name || '').toLowerCase()
-    const created = String(record.created_at || '')
+    const created = String(record.display_time || record.training_finished_at || record.training_started_at || record.created_at || '')
     const day = created ? created.slice(0, 10) : ''
 
     const matchKeyword = !keyword || title.includes(keyword) || type.includes(keyword) || scene.includes(keyword)
@@ -453,7 +453,16 @@ const getScoreClass = (score: number | null | undefined) => {
 const formatTime = (iso: string) => {
   if (!iso) return '-'
   const date = new Date(iso)
-  return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`
+  if (Number.isNaN(date.getTime())) return String(iso)
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const pick = (type: string) => parts.find((part) => part.type === type)?.value || ''
+  return `${pick('month')}/${pick('day')} ${pick('hour')}:${pick('minute')}`
 }
 
 onMounted(() => {

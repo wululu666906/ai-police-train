@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from services.evaluation_service import (
     COMMON_DIMENSIONS,
     DIMENSIONS,
@@ -6,6 +8,7 @@ from services.evaluation_service import (
     build_rule_checks,
     calculate_adaptive_weighting,
     compute_grade_level,
+    finalize_evaluation_report,
     format_dialogue,
     infer_scene_type,
     merge_assessment_point_results,
@@ -204,6 +207,30 @@ class TestFormalScoringHelpers:
         }
         result = reconcile_dimension_scores(report)
         assert result["total_score"] == sum(item["score"] for item in result["scores"])
+
+    def test_finalize_report_uses_training_timer_fields(self):
+        started_at = datetime(2026, 6, 23, 9, 5, 10)
+        finished_at = started_at + timedelta(minutes=12, seconds=35)
+
+        class MockSession:
+            id = 42
+            created_at = started_at - timedelta(minutes=5)
+            training_started_at = started_at
+            training_finished_at = finished_at
+
+        result = finalize_evaluation_report(
+            {"total_score": 88, "scores": [], "evaluation_meta": {}},
+            MockSession(),
+            None,
+            None,
+            ["student line"],
+        )
+        header = result["evaluation_meta"]["report_header"]
+
+        assert header["training_started_at"] == f"{started_at.isoformat()}+00:00"
+        assert header["training_finished_at"] == f"{finished_at.isoformat()}+00:00"
+        assert header["finished_at"] == f"{finished_at.isoformat()}+00:00"
+        assert header["duration_seconds"] == 755
 
 
 class TestAdaptiveReport:

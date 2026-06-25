@@ -10,6 +10,7 @@ from routers.auth import get_current_user, require_admin_user
 from services.face_service import (
     create_liveness_challenge,
     count_session_failures,
+    count_session_failures_total,
     count_session_monitor_failures,
     count_session_monitor_failures_total,
     engine_status,
@@ -97,12 +98,14 @@ def get_session_face_status(
     profile = db.query(models.FaceProfile).filter(models.FaceProfile.student_id == session.user_id).first()
     monitor_failure_count = count_session_monitor_failures(db, session.id)
     monitor_failure_total = count_session_monitor_failures_total(db, session.id)
+    failure_total = count_session_failures_total(db, session.id)
     terminated_by_policy = is_face_session_terminated_by_policy(db, session.id)
     return {
         "registered": profile is not None,
-        "failure_count": monitor_failure_count,
+        "failure_count": failure_total,
         "monitor_failure_count": monitor_failure_count,
         "monitor_failure_total": monitor_failure_total,
+        "failure_total": failure_total,
         "max_failures": FACE_MAX_FAILURES,
         "terminated_by_policy": terminated_by_policy,
         "terminated": terminated_by_policy or session.status in {"evaluating", "finished"},

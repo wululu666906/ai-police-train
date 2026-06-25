@@ -1,4 +1,6 @@
+import json
 import os
+from datetime import datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +11,7 @@ from sqlalchemy import inspect, text
 import database
 import models
 from routers import auth, cases, classes, dashboard, face, knowledge, multimodal, speech, student, training, videos, video_training
+from services.multimodal_service import warmup_deepface_async
 
 # 不在启动时强制初始化数据库，因为项目已经提供 init_db.py。
 # models.Base.metadata.create_all(bind=database.engine)
@@ -173,8 +176,171 @@ def ensure_multimodal_schema_compatibility():
             models.MultimodalEvent.__table__,
         ):
             table.create(bind=database.engine, checkfirst=True)
+        metric_columns = inspect(database.engine).get_columns("multimodal_session_metrics")
+        existing = {column["name"] for column in metric_columns}
+        column_defs = {
+            "face_score": "INTEGER",
+            "attention_score": "INTEGER",
+            "final_score": "INTEGER",
+            "adapter_status_json": "TEXT",
+        }
+        statements = [
+            f"ALTER TABLE multimodal_session_metrics ADD COLUMN {name} {column_type}"
+            for name, column_type in column_defs.items()
+            if name not in existing
+        ]
+        if statements:
+            with database.engine.begin() as connection:
+                for statement in statements:
+                    connection.execute(text(statement))
     except Exception as error:
         print(f"Multimodal schema compatibility check failed: {error}")
+
+
+def ensure_training_session_schema_compatibility():
+    try:
+        inspector = inspect(database.engine)
+        if "training_sessions" not in inspector.get_table_names():
+            return
+
+        existing = {column["name"] for column in inspector.get_columns("training_sessions")}
+        statements = []
+        if "training_started_at" not in existing:
+            statements.append("ALTER TABLE training_sessions ADD COLUMN training_started_at DATETIME")
+        if "training_finished_at" not in existing:
+            statements.append("ALTER TABLE training_sessions ADD COLUMN training_finished_at DATETIME")
+
+        if statements:
+            with database.engine.begin() as connection:
+                for statement in statements:
+                    connection.execute(text(statement))
+        _backfill_training_session_timer_fields()
+    except Exception as error:
+        print(f"Training session schema compatibility check failed: {error}")
+
+
+def _parse_training_timer_datetime(value):
+    if isinstance(value, datetime):
+        return value
+    if not value:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(normalized)
+            return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+        except ValueError:
+            for pattern in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    return datetime.strptime(normalized, pattern)
+                except ValueError:
+                    continue
+    return None
+
+
+def _timer_iso(value):
+    parsed = _parse_training_timer_datetime(value)
+    if not parsed:
+        return None
+    if parsed.tzinfo:
+        return parsed.isoformat()
+    return f"{parsed.isoformat()}+00:00"
+
+
+def _backfill_training_session_timer_fields():
+    db = database.SessionLocal()
+    try:
+        sessions = (
+            db.query(models.TrainingSession)
+            .filter(
+                (models.TrainingSession.training_started_at.is_(None))
+                | (models.TrainingSession.training_finished_at.is_(None))
+                | (models.TrainingSession.evaluation_result.isnot(None))
+            )
+            .all()
+        )
+        changed = False
+        for session in sessions:
+            report = {}
+            if session.evaluation_result:
+                try:
+                    report = json.loads(session.evaluation_result)
+                except Exception:
+                    report = {}
+            meta = report.get("evaluation_meta") if isinstance(report, dict) else {}
+            header = meta.get("report_header") if isinstance(meta, dict) else {}
+            if not isinstance(header, dict):
+                header = {}
+
+            first_message = (
+                db.query(models.Message.created_at)
+                .filter(models.Message.session_id == session.id)
+                .order_by(models.Message.created_at.asc())
+                .first()
+            )
+            last_message = (
+                db.query(models.Message.created_at)
+                .filter(models.Message.session_id == session.id)
+                .order_by(models.Message.created_at.desc())
+                .first()
+            )
+            first_message_at = first_message[0] if first_message else None
+            last_message_at = last_message[0] if last_message else None
+            started_at = (
+                session.training_started_at
+                or _parse_training_timer_datetime(header.get("training_started_at"))
+                or _parse_training_timer_datetime(header.get("created_at"))
+                or session.created_at
+                or first_message_at
+            )
+            finished_at = (
+                session.training_finished_at
+                or _parse_training_timer_datetime(header.get("training_finished_at"))
+                or _parse_training_timer_datetime(header.get("finished_at"))
+                or _parse_training_timer_datetime(report.get("evaluated_at") if isinstance(report, dict) else None)
+                or last_message_at
+                or started_at
+            )
+
+            if session.training_started_at is None and started_at:
+                session.training_started_at = started_at
+                changed = True
+            if session.status == "finished" and session.training_finished_at is None and finished_at:
+                session.training_finished_at = finished_at
+                changed = True
+
+            if isinstance(report, dict) and session.status == "finished":
+                if "evaluation_meta" not in report or not isinstance(report.get("evaluation_meta"), dict):
+                    report["evaluation_meta"] = {}
+                header = report["evaluation_meta"].get("report_header")
+                if not isinstance(header, dict):
+                    header = {}
+                duration_seconds = None
+                if started_at and finished_at:
+                    duration_seconds = max(0, int((finished_at - started_at).total_seconds()))
+                next_header = {
+                    **header,
+                    "created_at": _timer_iso(session.created_at),
+                    "training_started_at": _timer_iso(started_at),
+                    "finished_at": _timer_iso(finished_at),
+                    "training_finished_at": _timer_iso(finished_at),
+                    "duration_seconds": duration_seconds,
+                }
+                report["evaluation_meta"]["report_header"] = next_header
+                report["evaluated_at"] = _timer_iso(finished_at)
+                next_json = json.dumps(report, ensure_ascii=False)
+                if next_json != session.evaluation_result:
+                    session.evaluation_result = next_json
+                    changed = True
+
+        if changed:
+            db.commit()
+    finally:
+        db.close()
 
 app.add_middleware(
     CORSMiddleware,
@@ -281,11 +447,13 @@ if os.path.exists(os.path.join(frontend_dist, "assets")):
 def on_startup():
     ensure_message_schema_compatibility()
     ensure_role_schema_compatibility()
+    ensure_training_session_schema_compatibility()
     ensure_classroom_schema_compatibility()
     ensure_video_schema_compatibility()
     ensure_face_schema_compatibility()
     ensure_multimodal_schema_compatibility()
     ensure_default_users()
+    warmup_deepface_async()
 
 
 @app.get("/{catchall:path}")

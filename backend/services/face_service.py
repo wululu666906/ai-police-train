@@ -541,6 +541,17 @@ def count_session_monitor_failures_total(db: Session, session_id: int) -> int:
     )
 
 
+def count_session_failures_total(db: Session, session_id: int) -> int:
+    return (
+        db.query(models.FaceVerificationEvent)
+        .filter(
+            models.FaceVerificationEvent.session_id == session_id,
+            models.FaceVerificationEvent.status == "failed",
+        )
+        .count()
+    )
+
+
 def count_session_serious_failures_total(db: Session, session_id: int) -> int:
     return (
         db.query(models.FaceVerificationEvent)
@@ -632,14 +643,14 @@ def build_adaptive_fallback_report(
             }
         ],
         "assessment_check_results": [],
-        "termination_reason": "face_verification_failed",
+        "termination_reason": "multimodal_guard_finished",
         "termination_report": "人脸识别异常累计达到上限，系统已自动终止训练并生成评估结果。",
         "failure_count": failure_count,
         "last_reason": localize_face_reason(reason),
         "evaluation_meta": {
             "scoring_version": "adaptive_v1",
             "evaluation_type": "auto_terminated_fallback",
-            "trigger": "face_verification",
+            "trigger": "multimodal_guard",
             "session_id": session.id,
             "auto_finished": True,
             "evaluator_error": error,
@@ -673,6 +684,10 @@ def _finalize_face_termination(
     )
     session.status = "evaluating"
     session.evaluation_result = None
+    now = datetime.utcnow()
+    if session.training_started_at is None:
+        session.training_started_at = session.created_at or now
+    session.training_finished_at = session.training_finished_at or now
     db.commit()
 
     report = evaluate_session(db, session.id, session.user_id, force_recompute=True)
@@ -680,12 +695,27 @@ def _finalize_face_termination(
         meta = report.setdefault("evaluation_meta", {})
         meta["scoring_version"] = meta.get("scoring_version") or "adaptive_v1"
         meta["evaluation_type"] = "auto_terminated"
-        meta["trigger"] = "face_verification"
+        meta["trigger"] = "multimodal_guard"
         meta["auto_finished"] = True
-        report["termination_reason"] = "face_verification_failed"
+        report["termination_reason"] = "multimodal_guard_finished"
         report["termination_report"] = "人脸识别异常累计达到上限，系统已自动终止训练并完成当前评估流程。"
         report["failure_count"] = failure_count
         report["last_reason"] = localize_face_reason(reason)
+        report["termination_report"] = "系统已根据实训检测守护规则自动结束训练，并生成完整评估报告。人脸异常作为实训检测事件纳入报告，不再覆盖能力评估结论。"
+        report["face_monitor"] = {
+            "termination_reason": "face_verification_failed",
+            "failure_count": failure_count,
+            "last_reason": localize_face_reason(reason),
+        }
+        report["termination_reason"] = "multimodal_guard_finished"
+        report["termination_report"] = "系统已根据实训检测守护规则自动结束训练；因常规评估生成失败，当前报告以实训检测兜底结果为准。"
+        report["face_monitor"] = {
+            "termination_reason": "face_verification_failed",
+            "failure_count": failure_count,
+            "last_reason": localize_face_reason(reason),
+        }
+        report["termination_reason"] = "multimodal_guard_finished"
+        report["termination_report"] = "\u7cfb\u7edf\u5df2\u6839\u636e\u5b9e\u8bad\u68c0\u6d4b\u5b88\u62a4\u89c4\u5219\u81ea\u52a8\u7ed3\u675f\u8bad\u7ec3\uff0c\u5e76\u751f\u6210\u5b8c\u6574\u8bc4\u4f30\u62a5\u544a\u3002\u4eba\u8138\u5f02\u5e38\u4f5c\u4e3a\u5b9e\u8bad\u68c0\u6d4b\u4e8b\u4ef6\u7eb3\u5165\u62a5\u544a\uff0c\u4e0d\u518d\u8986\u76d6\u80fd\u529b\u8bc4\u4f30\u7ed3\u8bba\u3002"
         report = append_scene_performance_report(db, session.id, report)
         session.status = "finished"
         session.evaluation_result = json.dumps(report, ensure_ascii=False)
@@ -697,6 +727,13 @@ def _finalize_face_termination(
             reason=reason,
             error=str(report.get("error") if isinstance(report, dict) else "评估服务异常"),
         )
+        report["termination_reason"] = "multimodal_guard_finished"
+        report["termination_report"] = "\u7cfb\u7edf\u5df2\u6839\u636e\u5b9e\u8bad\u68c0\u6d4b\u5b88\u62a4\u89c4\u5219\u81ea\u52a8\u7ed3\u675f\u8bad\u7ec3\uff1b\u56e0\u5e38\u89c4\u8bc4\u4f30\u751f\u6210\u5931\u8d25\uff0c\u5f53\u524d\u62a5\u544a\u4ee5\u5b9e\u8bad\u68c0\u6d4b\u515c\u5e95\u7ed3\u679c\u4e3a\u51c6\u3002"
+        report["face_monitor"] = {
+            "termination_reason": "face_verification_failed",
+            "failure_count": failure_count,
+            "last_reason": localize_face_reason(reason),
+        }
         report = append_scene_performance_report(db, session.id, report)
         session.status = "finished"
         session.evaluation_result = json.dumps(report, ensure_ascii=False)

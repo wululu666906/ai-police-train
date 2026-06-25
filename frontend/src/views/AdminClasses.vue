@@ -100,47 +100,68 @@
         <el-empty v-if="!classDetail.students.length" description="班级内暂无学员" />
       </div>
 
-      <div v-if="activeTab === 'assignments'" class="panel-table-wrap">
-        <table class="ops-table">
-          <thead>
-            <tr>
-              <th>作业名称</th>
-              <th>关联案件</th>
-              <th>截止时间</th>
-              <th>补交</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="assignment in classDetail.assignments" :key="assignment.id">
-              <td>
-                <strong>{{ assignment.title }}</strong>
-                <p>{{ assignment.instructions || '暂无训练要求说明' }}</p>
-              </td>
-              <td>
-                <div class="tag-list">
-                  <span v-for="caseItem in assignment.cases" :key="caseItem.id">{{ caseItem.title }}</span>
-                </div>
-              </td>
-              <td>{{ formatDateTime(assignment.due_at) }}</td>
-              <td>
-                <van-tag :type="assignment.allow_late ? 'success' : 'default'" plain>
-                  {{ assignment.allow_late ? '允许补交' : '按时截止' }}
-                </van-tag>
-              </td>
-              <td>
-                <div class="row-actions">
-                  <button type="button" @click="openReview(assignment)">评审</button>
-                  <button type="button" @click="toggleAssignmentLate(assignment)">
-                    {{ assignment.allow_late ? '关闭补交' : '允许补交' }}
-                  </button>
-                  <button type="button" @click="extendAssignmentDue(assignment)">延期</button>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <el-empty v-if="!classDetail.assignments.length" description="暂无作业任务" />
+      <div v-if="activeTab === 'assignments'">
+        <div class="assignment-filter-bar">
+          <button
+            v-for="item in assignmentFilterOptions"
+            :key="item.key"
+            type="button"
+            :class="{ 'assignment-filter--active': assignmentFilter === item.key }"
+            @click="assignmentFilter = item.key"
+          >
+            <span>{{ item.label }}</span>
+            <strong>{{ item.count }}</strong>
+          </button>
+        </div>
+        <div class="panel-table-wrap">
+          <table class="ops-table">
+            <thead>
+              <tr>
+                <th>作业名称</th>
+                <th>关联案件</th>
+                <th>状态</th>
+                <th>截止时间</th>
+                <th>补交</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="assignment in displayedAssignments" :key="assignment.id">
+                <td>
+                  <strong>{{ assignment.title }}</strong>
+                  <p>{{ assignment.instructions || '暂无训练要求说明' }}</p>
+                </td>
+                <td>
+                  <div class="tag-list">
+                    <span v-for="caseItem in assignment.cases" :key="caseItem.id">{{ caseItem.title }}</span>
+                  </div>
+                </td>
+                <td>
+                  <van-tag :type="assignmentStatusType(assignment)" plain>
+                    {{ assignmentStatusLabel(assignment) }}
+                  </van-tag>
+                </td>
+                <td>{{ formatDateTime(assignment.due_at) }}</td>
+                <td>
+                  <van-tag :type="assignment.allow_late ? 'success' : 'default'" plain>
+                    {{ assignment.allow_late ? '允许补交' : '按时截止' }}
+                  </van-tag>
+                </td>
+                <td>
+                  <div class="row-actions">
+                    <button type="button" @click="openReview(assignment)">评审</button>
+                    <button type="button" @click="draftAssignmentNotice(assignment)">通知</button>
+                    <button type="button" @click="toggleAssignmentLate(assignment)">
+                      {{ assignment.allow_late ? '关闭补交' : '允许补交' }}
+                    </button>
+                    <button type="button" @click="extendAssignmentDue(assignment)">延期</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <el-empty v-if="!displayedAssignments.length" :description="assignmentEmptyDescription" />
+        </div>
       </div>
 
       <div v-if="activeTab === 'review'" class="review-panel">
@@ -159,6 +180,64 @@
             <span>进行中 {{ reviewData.summary.in_progress_count }}</span>
             <span>未提交 {{ reviewData.summary.unsubmitted_count }}</span>
           </div>
+          <div v-if="reviewData" class="review-notice-actions">
+            <button type="button" :disabled="!pendingRows.length" @click="draftReviewNotice('start')">提醒开始</button>
+            <button type="button" :disabled="!overdueRows.length" @click="draftReviewNotice('overdue')">催交/补交</button>
+            <button type="button" :disabled="!lowScoreRows.length" @click="draftReviewNotice('remedial')">复训通知</button>
+          </div>
+        </div>
+
+        <section v-if="reviewData" class="review-insights">
+          <article v-for="item in reviewInsightCards" :key="item.label" class="review-insight-card" :class="item.tone">
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
+            <p>{{ item.note }}</p>
+          </article>
+        </section>
+
+        <section v-if="attentionRows.length" class="attention-panel">
+          <div>
+            <strong>需要优先处理</strong>
+            <span>按逾期、未开始、低分和训练中断自动聚合</span>
+          </div>
+          <div class="attention-list">
+            <button v-for="row in attentionRows" :key="row.student.id" type="button" @click="openSubmission(row)">
+              <strong>{{ row.student.username }}</strong>
+              <span>{{ attentionReason(row) }}</span>
+            </button>
+          </div>
+        </section>
+
+        <div v-if="reviewData" class="review-filter-bar">
+          <button
+            v-for="item in reviewFilterOptions"
+            :key="item.key"
+            type="button"
+            :class="{ 'review-filter--active': reviewFilter === item.key }"
+            @click="reviewFilter = item.key"
+          >
+            <span>{{ item.label }}</span>
+            <strong>{{ item.count }}</strong>
+          </button>
+        </div>
+
+        <div v-if="reviewData" class="bulk-action-bar">
+          <span>当前筛选 {{ displayedReviewRows.length }} 人</span>
+          <button type="button" :disabled="!displayedReviewRows.length || bulkUpdating" @click="bulkSetLate(true)">
+            批量允许补交
+          </button>
+          <button type="button" :disabled="!displayedReviewRows.length || bulkUpdating" @click="bulkSetLate(false)">
+            批量关闭补交
+          </button>
+          <button type="button" :disabled="!displayedReviewRows.length || bulkUpdating" @click="bulkExtendDue">
+            批量延期
+          </button>
+          <button type="button" :disabled="!displayedReviewRows.length" @click="exportReviewCsv">
+            导出 CSV
+          </button>
+          <button type="button" :disabled="!displayedReviewRows.length" @click="copyReviewSummary">
+            复制摘要
+          </button>
         </div>
 
         <div v-if="loadingReview" class="state-card state-card--flat">
@@ -178,7 +257,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in reviewData.rows" :key="row.student.id">
+              <tr v-for="row in displayedReviewRows" :key="row.student.id">
                 <td><strong>{{ row.student.username }}</strong></td>
                 <td><van-tag :type="reviewStatusType(row.status)" plain>{{ reviewStatusLabel(row.status) }}</van-tag></td>
                 <td>{{ row.completed_count }}/{{ row.required_count }}</td>
@@ -199,7 +278,7 @@
               </tr>
             </tbody>
           </table>
-          <el-empty v-if="!reviewData.rows.length" description="当前作业暂无可评审学员" />
+          <el-empty v-if="!displayedReviewRows.length" :description="reviewEmptyDescription" />
         </div>
         <el-empty v-else description="请选择一个作业进入评审区" />
       </div>
@@ -291,6 +370,43 @@
         <label class="checkline">
           <input v-model="assignmentForm.allowLate" type="checkbox" />
           允许截止后补交
+        </label>
+        <div class="field-block">
+          <span>教学模板</span>
+          <div class="template-picker">
+            <button
+              v-for="template in assignmentTemplates"
+              :key="template.key"
+              type="button"
+              :class="{ 'template-option--active': assignmentForm.templateKey === template.key }"
+              @click="applyAssignmentTemplate(template)"
+            >
+              <strong>{{ template.name }}</strong>
+              <small>{{ template.goal }}</small>
+            </button>
+          </div>
+        </div>
+        <div class="form-grid form-grid--three">
+          <label class="field-block">
+            <span>训练目标</span>
+            <input v-model.trim="assignmentForm.trainingGoal" type="text" placeholder="例如 主动问清关键信息并完成处置闭环" />
+          </label>
+          <label class="field-block">
+            <span>通过分</span>
+            <input v-model.number="assignmentForm.passScore" type="number" min="0" max="100" />
+          </label>
+          <label class="field-block">
+            <span>必考命中率</span>
+            <input v-model.number="assignmentForm.requiredRate" type="number" min="0" max="100" />
+          </label>
+        </div>
+        <label class="field-block">
+          <span>多次训练计分口径</span>
+          <select v-model="assignmentForm.scoreStrategy">
+            <option value="best">多次训练取最高分</option>
+            <option value="latest">多次训练取最近一次</option>
+            <option value="average">多次训练取平均分</option>
+          </select>
         </label>
         <label class="field-block">
           <span>训练要求说明</span>
@@ -536,11 +652,14 @@ const submissionDetail = ref<any>(null)
 const selectedClassId = ref<number | null>(null)
 const selectedReviewAssignmentId = ref(0)
 const activeTab = ref<'students' | 'assignments' | 'review' | 'announcements'>('students')
+const assignmentFilter = ref<'all' | 'active' | 'overdue' | 'late_allowed' | 'closed'>('all')
+const reviewFilter = ref<'all' | 'attention' | 'pending' | 'in_progress' | 'unsubmitted' | 'low_score' | 'submitted'>('all')
 
 const loadingClasses = ref(false)
 const loadingDetail = ref(false)
 const loadingReview = ref(false)
 const loadingSubmission = ref(false)
+const bulkUpdating = ref(false)
 const savingClass = ref(false)
 const savingStudents = ref(false)
 const savingAnnouncement = ref(false)
@@ -560,10 +679,39 @@ const assignmentForm = reactive({
   title: '',
   caseIds: [] as number[],
   dueAt: '',
+  templateKey: '',
+  trainingGoal: '',
+  passScore: 60,
+  requiredRate: 70,
+  scoreStrategy: 'best',
   instructions: '',
   scoringRule: '系统默认评分；系统完成对话记录归档与 Adaptive V1 评估。',
   allowLate: false,
 })
+
+const assignmentTemplates = [
+  {
+    key: 'inquiry',
+    name: '信息采集专项',
+    goal: '问清时间、地点、人物、经过和风险',
+    instructions: '训练重点：主动核实报警人身份、事件发生时间地点、涉事人员关系、现场风险和当前诉求。提交要求：完成全部关联案件训练并生成评估报告。',
+    scoringRule: '重点关注主动询问与逻辑推进、关键信息获取、必考点命中情况。',
+  },
+  {
+    key: 'deescalation',
+    name: '情绪安抚专项',
+    goal: '先稳住情绪，再推进事实核查',
+    instructions: '训练重点：面对情绪激动或抵触对象时，先降低对抗感，再逐步核实事实、风险和诉求。提交要求：完成全部关联案件训练并生成评估报告。',
+    scoringRule: '重点关注沟通表达与执法语言、情绪安抚、冲突降温和处置推进。',
+  },
+  {
+    key: 'closure',
+    name: '处置闭环专项',
+    goal: '补齐取证、告知、收尾和后续安排',
+    instructions: '训练重点：在掌握基本事实后，体现证据意识、风险判断、处置告知和收尾确认。提交要求：完成全部关联案件训练并生成评估报告。',
+    scoringRule: '重点关注证据固定、现场动作、后续处置安排和闭环表达。',
+  },
+]
 
 const popupStyle = {
   width: 'min(560px, 96vw)',
@@ -579,6 +727,210 @@ const evaluationPopupStyle = {
 }
 
 const selectedClass = computed(() => classes.value.find((item) => item.id === selectedClassId.value))
+
+const assignmentRows = computed(() => Array.isArray(classDetail.value?.assignments) ? classDetail.value.assignments : [])
+
+const assignmentDueState = (assignment: any) => {
+  if (!assignment?.due_at) return 'active'
+  const due = new Date(assignment.due_at).getTime()
+  if (Number.isNaN(due)) return 'active'
+  return due < Date.now() ? 'overdue' : 'active'
+}
+
+const assignmentStatusLabel = (assignment: any) => {
+  if (assignment.allow_late && assignmentDueState(assignment) === 'overdue') return '补交中'
+  if (assignmentDueState(assignment) === 'overdue') return '已截止'
+  if (assignment.status && assignment.status !== 'published') return String(assignment.status)
+  return '进行中'
+}
+
+const assignmentStatusType = (assignment: any) => {
+  if (assignment.allow_late && assignmentDueState(assignment) === 'overdue') return 'warning'
+  if (assignmentDueState(assignment) === 'overdue') return 'danger'
+  return 'primary'
+}
+
+const displayedAssignments = computed(() => {
+  if (assignmentFilter.value === 'active') return assignmentRows.value.filter((item: any) => assignmentDueState(item) === 'active')
+  if (assignmentFilter.value === 'overdue') return assignmentRows.value.filter((item: any) => assignmentDueState(item) === 'overdue')
+  if (assignmentFilter.value === 'late_allowed') return assignmentRows.value.filter((item: any) => item.allow_late)
+  if (assignmentFilter.value === 'closed') return assignmentRows.value.filter((item: any) => assignmentDueState(item) === 'overdue' && !item.allow_late)
+  return assignmentRows.value
+})
+
+const assignmentFilterOptions = computed(() => [
+  { key: 'all' as const, label: '全部', count: assignmentRows.value.length },
+  { key: 'active' as const, label: '进行中', count: assignmentRows.value.filter((item: any) => assignmentDueState(item) === 'active').length },
+  { key: 'overdue' as const, label: '已截止', count: assignmentRows.value.filter((item: any) => assignmentDueState(item) === 'overdue').length },
+  { key: 'late_allowed' as const, label: '允许补交', count: assignmentRows.value.filter((item: any) => item.allow_late).length },
+  { key: 'closed' as const, label: '不可补交', count: assignmentRows.value.filter((item: any) => assignmentDueState(item) === 'overdue' && !item.allow_late).length },
+])
+
+const assignmentEmptyDescription = computed(() => {
+  const option = assignmentFilterOptions.value.find((item) => item.key === assignmentFilter.value)
+  return option ? `当前没有“${option.label}”作业` : '暂无作业任务'
+})
+
+const reviewRows = computed(() => Array.isArray(reviewData.value?.rows) ? reviewData.value.rows : [])
+
+const reviewScoreRows = computed(() =>
+  reviewRows.value.filter((row: any) => Number.isFinite(Number(row.score_avg))),
+)
+
+const reviewAverageScore = computed(() => {
+  if (!reviewScoreRows.value.length) return null
+  const total = reviewScoreRows.value.reduce((sum: number, row: any) => sum + Number(row.score_avg), 0)
+  return Math.round((total / reviewScoreRows.value.length) * 10) / 10
+})
+
+const reviewCompletionRate = computed(() => {
+  const total = Number(reviewData.value?.summary?.student_count || reviewRows.value.length || 0)
+  if (!total) return 0
+  const submitted = Number(reviewData.value?.summary?.submitted_count || 0)
+  return Math.round((submitted / total) * 100)
+})
+
+const lowScoreRows = computed(() =>
+  reviewScoreRows.value.filter((row: any) => Number(row.score_avg) < 60),
+)
+
+const pendingRows = computed(() =>
+  reviewRows.value.filter((row: any) => row.status === 'pending'),
+)
+
+const overdueRows = computed(() =>
+  reviewRows.value.filter((row: any) => row.status === 'unsubmitted' || row.status === 'in_progress'),
+)
+
+const submittedRows = computed(() =>
+  reviewRows.value.filter((row: any) => row.status === 'submitted' || row.status === 'late'),
+)
+
+const attentionRows = computed(() =>
+  reviewRows.value
+    .filter((row: any) =>
+      row.status === 'unsubmitted' ||
+      row.status === 'pending' ||
+      row.status === 'in_progress' ||
+      Number(row.score_avg) < 60,
+    )
+    .sort((left: any, right: any) => attentionWeight(right) - attentionWeight(left))
+    .slice(0, 6),
+)
+
+const attentionWeight = (row: any) => {
+  if (row.status === 'unsubmitted') return 4
+  if (Number(row.score_avg) < 60) return 3
+  if (row.status === 'in_progress') return 2
+  if (row.status === 'pending') return 1
+  return 0
+}
+
+const attentionReason = (row: any) => {
+  if (row.status === 'unsubmitted') return row.allow_late ? '已逾期，可考虑单独催交或延长期限' : '已逾期且不可补交，需确认是否开放补交'
+  if (Number(row.score_avg) < 60) return `平均分 ${row.score_avg}，建议安排补练或点评`
+  if (row.status === 'in_progress') return '已有训练记录但未完成提交，可提醒继续训练'
+  if (row.status === 'pending') return '尚未开始，可发送开始训练提醒'
+  return '建议关注'
+}
+
+const reviewInsightCards = computed(() => {
+  const summary = reviewData.value?.summary || {}
+  const studentCount = Number(summary.student_count || reviewRows.value.length || 0)
+  const pendingTotal = Number(summary.pending_count || 0) + Number(summary.in_progress_count || 0)
+  return [
+    {
+      label: '提交完成率',
+      value: `${reviewCompletionRate.value}%`,
+      note: `${summary.submitted_count || 0}/${studentCount || 0} 名学员已完成`,
+      tone: reviewCompletionRate.value >= 80 ? 'is-good' : reviewCompletionRate.value >= 50 ? 'is-warn' : 'is-danger',
+    },
+    {
+      label: '班级平均分',
+      value: reviewAverageScore.value === null ? '--' : `${reviewAverageScore.value}`,
+      note: reviewAverageScore.value === null ? '暂无可统计成绩' : `${reviewScoreRows.value.length} 名学员已有成绩`,
+      tone: reviewAverageScore.value === null || reviewAverageScore.value >= 75 ? 'is-good' : reviewAverageScore.value >= 60 ? 'is-warn' : 'is-danger',
+    },
+    {
+      label: '低于通过线',
+      value: `${lowScoreRows.value.length}`,
+      note: '建议优先查看报告并布置补练',
+      tone: lowScoreRows.value.length ? 'is-danger' : 'is-good',
+    },
+    {
+      label: '待推进人数',
+      value: `${pendingTotal}`,
+      note: '包含待开始与训练中未提交',
+      tone: pendingTotal ? 'is-warn' : 'is-good',
+    },
+  ]
+})
+
+const selectedReviewAssignment = computed(() => reviewData.value?.assignment || classDetail.value?.assignments?.find((item: any) => item.id === selectedReviewAssignmentId.value))
+
+const isAttentionRow = (row: any) =>
+  row.status === 'unsubmitted' ||
+  row.status === 'pending' ||
+  row.status === 'in_progress' ||
+  Number(row.score_avg) < 60
+
+const displayedReviewRows = computed(() => {
+  if (reviewFilter.value === 'attention') return reviewRows.value.filter(isAttentionRow)
+  if (reviewFilter.value === 'pending') return pendingRows.value
+  if (reviewFilter.value === 'in_progress') return reviewRows.value.filter((row: any) => row.status === 'in_progress')
+  if (reviewFilter.value === 'unsubmitted') return reviewRows.value.filter((row: any) => row.status === 'unsubmitted')
+  if (reviewFilter.value === 'low_score') return lowScoreRows.value
+  if (reviewFilter.value === 'submitted') return submittedRows.value
+  return reviewRows.value
+})
+
+const reviewFilterOptions = computed(() => [
+  { key: 'all' as const, label: '全部', count: reviewRows.value.length },
+  { key: 'attention' as const, label: '需处理', count: reviewRows.value.filter(isAttentionRow).length },
+  { key: 'pending' as const, label: '未开始', count: pendingRows.value.length },
+  { key: 'in_progress' as const, label: '训练中', count: reviewRows.value.filter((row: any) => row.status === 'in_progress').length },
+  { key: 'unsubmitted' as const, label: '未提交', count: reviewRows.value.filter((row: any) => row.status === 'unsubmitted').length },
+  { key: 'low_score' as const, label: '低分', count: lowScoreRows.value.length },
+  { key: 'submitted' as const, label: '已提交', count: submittedRows.value.length },
+])
+
+const reviewEmptyDescription = computed(() => {
+  const option = reviewFilterOptions.value.find((item) => item.key === reviewFilter.value)
+  return option ? `当前没有“${option.label}”学员` : '当前作业暂无可评审学员'
+})
+
+const studentNamesText = (rows: any[]) => {
+  const names = rows.map((row: any) => row?.student?.username).filter(Boolean)
+  if (!names.length) return '相关学员'
+  if (names.length <= 8) return names.join('、')
+  return `${names.slice(0, 8).join('、')} 等 ${names.length} 名学员`
+}
+
+const draftReviewNotice = (kind: 'start' | 'overdue' | 'remedial') => {
+  const assignment = selectedReviewAssignment.value || {}
+  const title = assignment.title || '班级训练作业'
+  const dueText = formatDateTime(assignment.due_at)
+  if (kind === 'start') {
+    announcementForm.title = `${title} 开始训练提醒`
+    announcementForm.content = [
+      `${studentNamesText(pendingRows.value)}：请尽快进入“班级作业”完成《${title}》。`,
+      `本次作业截止时间：${dueText}。请按作业卡片中的完成标准完成全部关联案件训练，并确认已生成评估报告。`,
+    ].join('\n')
+  } else if (kind === 'overdue') {
+    announcementForm.title = `${title} 提交进度提醒`
+    announcementForm.content = [
+      `${studentNamesText(overdueRows.value)}：系统显示你们仍有《${title}》未完成提交或仍处于训练中。`,
+      `请在截止时间 ${dueText} 前完成；如已逾期，请关注教官是否开放补交，并尽快补齐训练报告。`,
+    ].join('\n')
+  } else {
+    announcementForm.title = `${title} 复训提醒`
+    announcementForm.content = [
+      `${studentNamesText(lowScoreRows.value)}：你们在《${title}》中的成绩低于通过线，建议查看评估报告中的薄弱项后重新训练。`,
+      '复训重点：优先补齐未命中考察点，训练结束前完成事实复述、风险判断和后续处置安排。',
+    ].join('\n')
+  }
+  showAnnouncementPopup.value = true
+}
 
 const fetchClasses = async () => {
   loadingClasses.value = true
@@ -686,6 +1038,77 @@ const createAnnouncement = async () => {
   }
 }
 
+const draftAssignmentNotice = (assignment: any) => {
+  const title = assignment?.title || '班级训练作业'
+  const dueText = formatDateTime(assignment?.due_at)
+  const status = assignmentStatusLabel(assignment)
+  announcementForm.title = `${title} ${status === '进行中' ? '训练提醒' : status === '补交中' ? '补交提醒' : '复盘安排'}`
+  if (status === '进行中') {
+    announcementForm.content = [
+      `请各位学员按时完成《${title}》。`,
+      `截止时间：${dueText}。请进入“班级作业”查看完成标准，完成全部关联案件训练并生成评估报告。`,
+    ].join('\n')
+  } else if (status === '补交中') {
+    announcementForm.content = [
+      `《${title}》已过原截止时间，目前仍开放补交。`,
+      '尚未完成或报告未生成的学员，请尽快补齐训练记录；已完成的学员请查看评估报告，准备后续复盘。',
+    ].join('\n')
+  } else {
+    announcementForm.content = [
+      `《${title}》已截止。`,
+      '请已完成的学员查看评估报告，重点复盘未命中考察点、低分能力项和后续改进建议；未完成学员请等待教官后续安排。',
+    ].join('\n')
+  }
+  showAnnouncementPopup.value = true
+}
+
+const scoreStrategyLabel = (value: string) => {
+  const map: Record<string, string> = {
+    best: '多次训练取最高分',
+    latest: '多次训练取最近一次',
+    average: '多次训练取平均分',
+  }
+  return map[value] || '多次训练取最高分'
+}
+
+const applyAssignmentTemplate = (template: any) => {
+  assignmentForm.templateKey = template.key
+  assignmentForm.trainingGoal = template.goal
+  assignmentForm.instructions = template.instructions
+  assignmentForm.scoringRule = template.scoringRule
+}
+
+const buildAssignmentInstructions = () => {
+  const parts = [
+    assignmentForm.trainingGoal ? `训练目标：${assignmentForm.trainingGoal}` : '',
+    assignmentForm.instructions.trim(),
+  ].filter(Boolean)
+  return parts.join('\n')
+}
+
+const buildAssignmentScoringRule = () => {
+  const ruleLines = [
+    `达标规则：总分不低于 ${Number(assignmentForm.passScore || 0)} 分，必考点命中率不低于 ${Number(assignmentForm.requiredRate || 0)}%。`,
+    `计分口径：${scoreStrategyLabel(assignmentForm.scoreStrategy)}。`,
+    assignmentForm.scoringRule.trim(),
+  ].filter(Boolean)
+  return ruleLines.join('\n')
+}
+
+const resetAssignmentForm = () => {
+  assignmentForm.title = ''
+  assignmentForm.caseIds = []
+  assignmentForm.dueAt = ''
+  assignmentForm.templateKey = ''
+  assignmentForm.trainingGoal = ''
+  assignmentForm.passScore = 60
+  assignmentForm.requiredRate = 70
+  assignmentForm.scoreStrategy = 'best'
+  assignmentForm.instructions = ''
+  assignmentForm.scoringRule = '系统默认评分；系统完成对话记录归档与 Adaptive V1 评估。'
+  assignmentForm.allowLate = false
+}
+
 const createAssignment = async () => {
   if (!selectedClassId.value) return
   if (!assignmentForm.title.trim()) {
@@ -702,17 +1125,12 @@ const createAssignment = async () => {
       title: assignmentForm.title.trim(),
       case_ids: assignmentForm.caseIds,
       due_at: assignmentForm.dueAt || null,
-      instructions: assignmentForm.instructions.trim(),
-      scoring_rule: assignmentForm.scoringRule.trim(),
+      instructions: buildAssignmentInstructions(),
+      scoring_rule: buildAssignmentScoringRule(),
       allow_late: assignmentForm.allowLate,
     })
     showToast({ type: 'success', message: '作业已发布' })
-    assignmentForm.title = ''
-    assignmentForm.caseIds = []
-    assignmentForm.dueAt = ''
-    assignmentForm.instructions = ''
-    assignmentForm.scoringRule = '系统默认评分；系统完成对话记录归档与 Adaptive V1 评估。'
-    assignmentForm.allowLate = false
+    resetAssignmentForm()
     showAssignmentPopup.value = false
     await fetchClassDetail()
     openReview(res)
@@ -732,6 +1150,7 @@ const fetchReview = async () => {
     reviewData.value = null
     return
   }
+  reviewFilter.value = 'all'
   loadingReview.value = true
   try {
     reviewData.value = await request.get(`/classes/${selectedClassId.value}/assignments/${selectedReviewAssignmentId.value}/review`)
@@ -777,6 +1196,119 @@ const extendStudentDue = async (row: any) => {
   })
   showToast({ type: 'success', message: '已更新该学员截止时间' })
   await fetchReview()
+}
+
+const bulkSetLate = async (allowLate: boolean) => {
+  if (!selectedClassId.value || !selectedReviewAssignmentId.value || !displayedReviewRows.value.length) return
+  const label = allowLate ? '允许补交' : '关闭补交'
+  const ok = window.confirm(`确定对当前筛选的 ${displayedReviewRows.value.length} 名学员批量${label}吗？`)
+  if (!ok) return
+  bulkUpdating.value = true
+  try {
+    await Promise.all(displayedReviewRows.value.map((row: any) =>
+      request.post(`/classes/${selectedClassId.value}/assignments/${selectedReviewAssignmentId.value}/students/${row.student.id}/override`, {
+        allow_late: allowLate,
+      }),
+    ))
+    showToast({ type: 'success', message: `已批量${label}` })
+    await fetchReview()
+  } finally {
+    bulkUpdating.value = false
+  }
+}
+
+const bulkExtendDue = async () => {
+  if (!selectedClassId.value || !selectedReviewAssignmentId.value || !displayedReviewRows.value.length) return
+  const value = window.prompt('请输入当前筛选学员的新截止时间（格式：2026-06-30T18:00）')
+  if (value === null) return
+  bulkUpdating.value = true
+  try {
+    await Promise.all(displayedReviewRows.value.map((row: any) =>
+      request.post(`/classes/${selectedClassId.value}/assignments/${selectedReviewAssignmentId.value}/students/${row.student.id}/override`, {
+        due_at: value || null,
+        allow_late: true,
+      }),
+    ))
+    showToast({ type: 'success', message: '已批量更新截止时间' })
+    await fetchReview()
+  } finally {
+    bulkUpdating.value = false
+  }
+}
+
+const csvCell = (value: any) => {
+  const text = String(value ?? '').replace(/\r?\n/g, ' ').trim()
+  return `"${text.replace(/"/g, '""')}"`
+}
+
+const reviewFilterLabel = computed(() =>
+  reviewFilterOptions.value.find((item) => item.key === reviewFilter.value)?.label || '全部',
+)
+
+const reviewExportRows = computed(() =>
+  displayedReviewRows.value.map((row: any) => ({
+    student: row.student?.username || '',
+    status: reviewStatusLabel(row.status),
+    progress: `${row.completed_count || 0}/${row.required_count || 0}`,
+    score: row.score_avg ?? '',
+    lastSubmittedAt: formatDateTime(row.last_submitted_at),
+    allowLate: row.allow_late ? '可补交' : '不可补交',
+    dueAt: formatDateTime(row.effective_due_at),
+    attention: attentionReason(row),
+  })),
+)
+
+const exportReviewCsv = () => {
+  const assignment = selectedReviewAssignment.value || {}
+  const headers = ['学员', '状态', '完成进度', '平均分', '最近提交', '补交策略', '截止时间', '处理建议']
+  const lines = [
+    headers.map(csvCell).join(','),
+    ...reviewExportRows.value.map((row) => [
+      row.student,
+      row.status,
+      row.progress,
+      row.score,
+      row.lastSubmittedAt,
+      row.allowLate,
+      row.dueAt,
+      row.attention,
+    ].map(csvCell).join(',')),
+  ]
+  const blob = new Blob([`\uFEFF${lines.join('\n')}`], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  const safeTitle = String(assignment.title || '作业评审').replace(/[\\/:*?"<>|]/g, '_')
+  link.href = url
+  link.download = `${safeTitle}-${reviewFilterLabel.value}-评审数据.csv`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+const copyReviewSummary = async () => {
+  const assignment = selectedReviewAssignment.value || {}
+  const lines = [
+    `作业：${assignment.title || '未命名作业'}`,
+    `筛选：${reviewFilterLabel.value}，共 ${displayedReviewRows.value.length} 人`,
+    `提交完成率：${reviewCompletionRate.value}%`,
+    `班级平均分：${reviewAverageScore.value === null ? '暂无' : reviewAverageScore.value}`,
+    `低于通过线：${lowScoreRows.value.length} 人`,
+    '',
+    ...reviewExportRows.value.slice(0, 20).map((row) =>
+      `${row.student}｜${row.status}｜进度 ${row.progress}｜平均分 ${row.score || '--'}｜${row.attention}`,
+    ),
+  ]
+  if (reviewExportRows.value.length > 20) {
+    lines.push(`……另有 ${reviewExportRows.value.length - 20} 人未展开`)
+  }
+  const text = lines.join('\n')
+  try {
+    await navigator.clipboard.writeText(text)
+    showToast({ type: 'success', message: '评审摘要已复制' })
+  } catch {
+    window.prompt('复制以下评审摘要', text)
+  }
 }
 
 const firstSubmission = (row: any) => {
@@ -1156,7 +1688,8 @@ onMounted(async () => {
 .header-actions,
 .workspace-actions,
 .row-actions,
-.review-summary {
+.review-summary,
+.review-notice-actions {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1286,6 +1819,54 @@ onMounted(async () => {
   padding-top: 4px;
 }
 
+.assignment-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.assignment-filter-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  border: 1px solid #dbe3ee;
+  border-radius: 999px;
+  background: #fff;
+  padding: 0 12px;
+  color: #475569;
+  cursor: pointer;
+}
+
+.assignment-filter-bar span {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.assignment-filter-bar strong {
+  min-width: 20px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  padding: 2px 6px;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.assignment-filter-bar button:hover,
+.assignment-filter-bar .assignment-filter--active {
+  border-color: #165dff;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.assignment-filter-bar .assignment-filter--active strong {
+  background: #165dff;
+  color: #fff;
+}
+
 .panel-table-wrap {
   overflow-x: auto;
 }
@@ -1375,6 +1956,217 @@ onMounted(async () => {
   font-weight: 900;
 }
 
+.review-notice-actions button {
+  height: 28px;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  background: #eff6ff;
+  padding: 0 9px;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.review-notice-actions button:disabled {
+  border-color: #e5e7eb;
+  background: #f8fafc;
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
+.review-insights {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.review-insight-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px;
+}
+
+.review-insight-card span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.review-insight-card strong {
+  display: block;
+  margin-top: 6px;
+  color: #0f172a;
+  font-size: 26px;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.review-insight-card p {
+  margin: 8px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.review-insight-card.is-good {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.review-insight-card.is-warn {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.review-insight-card.is-danger {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.attention-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 12px;
+}
+
+.attention-panel > div:first-child {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.attention-panel strong {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.attention-panel span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.attention-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.attention-list button {
+  display: grid;
+  gap: 4px;
+  min-height: 62px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.attention-list button:hover {
+  border-color: #165dff;
+}
+
+.review-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.review-filter-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  border: 1px solid #dbe3ee;
+  border-radius: 999px;
+  background: #fff;
+  padding: 0 12px;
+  color: #475569;
+  cursor: pointer;
+}
+
+.review-filter-bar span {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.review-filter-bar strong {
+  min-width: 20px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  padding: 2px 6px;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.review-filter-bar button:hover,
+.review-filter-bar .review-filter--active {
+  border-color: #165dff;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.review-filter-bar .review-filter--active strong {
+  background: #165dff;
+  color: #fff;
+}
+
+.bulk-action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: -4px 0 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 10px;
+}
+
+.bulk-action-bar span {
+  margin-right: auto;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.bulk-action-bar button {
+  height: 30px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  padding: 0 10px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.bulk-action-bar button:hover {
+  border-color: #165dff;
+  color: #165dff;
+}
+
+.bulk-action-bar button:disabled {
+  border-color: #e5e7eb;
+  background: #f8fafc;
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
 .score-cell {
   color: #1d4ed8;
   font-weight: 900;
@@ -1449,6 +2241,7 @@ onMounted(async () => {
 
 .field-block input,
 .field-block textarea,
+.field-block select,
 .review-toolbar select {
   width: 100%;
   border: 1px solid #dbe3ee;
@@ -1464,6 +2257,46 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: 1fr 220px;
   gap: 12px;
+}
+
+.form-grid--three {
+  grid-template-columns: minmax(0, 1.6fr) minmax(96px, 0.7fr) minmax(110px, 0.7fr);
+}
+
+.template-picker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.template-picker button {
+  display: grid;
+  gap: 4px;
+  min-height: 72px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.template-picker button:hover,
+.template-picker .template-option--active {
+  border-color: #165dff;
+  background: #eff6ff;
+}
+
+.template-picker strong {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.template-picker small {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .checkline {

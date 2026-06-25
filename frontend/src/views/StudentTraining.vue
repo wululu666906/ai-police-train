@@ -185,6 +185,7 @@
         @verified="handleFaceVerified"
         @failed="handleFaceFailed"
         @terminated="handleFaceTerminated"
+        @multimodal-frame="handleMultimodalFrame"
       />
       <div v-if="routingSummary || addressingWarning" class="scene-session-bar">
         <span class="scene-session-bar__title">场景会话</span>
@@ -370,6 +371,7 @@ import request from '../utils/request'
 import TrainingInputBar from '../components/TrainingInputBar.vue'
 import RoleSpeakingAvatar from '../components/RoleSpeakingAvatar.vue'
 import TrainingFaceGuard from '../components/TrainingFaceGuard.vue'
+import { useMultimodalVision } from '../composables/useMultimodalVision'
 
 const AVATAR_PALETTE = [
   '#4F46E5', '#0891B2', '#059669', '#D97706', '#DC2626',
@@ -400,8 +402,11 @@ const suppressedBriefThisSession = ref(false)
 const isReturningToHall = ref(false)
 const faceVerified = ref(false)
 const faceTerminated = ref(false)
+const isFinishingTraining = ref(false)
 const faceGuardRef = ref<InstanceType<typeof TrainingFaceGuard> | null>(null)
-let multimodalFrameTimer: number | null = null
+const multimodalVision = useMultimodalVision()
+let multimodalFrameInFlight = false
+let multimodalFramePending: any | null = null
 
 const caseInfo = reactive({
   title: '加载中...',
@@ -999,6 +1004,10 @@ const sendMessage = async (content?: string, inputSource: 'voice' | 'text' = 'te
 }
 
 const finishTraining = async () => {
+  if (isFinishingTraining.value || !sessionId.value) return
+  isFinishingTraining.value = true
+  stopMultimodalSampling()
+  faceGuardRef.value?.stopCamera?.()
   const loader = showLoadingToast({ message: '正在生成评估报告...', forbidClick: true })
   try {
     await request.post(`/training/finish/${sessionId.value}`)
@@ -1006,36 +1015,63 @@ const finishTraining = async () => {
     router.push(`/student/evaluation?session_id=${sessionId.value}`)
   } catch (error) {
     loader.close()
+    isFinishingTraining.value = false
     showToast('评估报告生成失败')
   }
 }
 
-const stopMultimodalSampling = () => {
-  if (multimodalFrameTimer != null) {
-    window.clearInterval(multimodalFrameTimer)
-    multimodalFrameTimer = null
+const waitForEvaluationReport = async (targetSessionId: string, timeoutMs = 15000) => {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const res: any = await request.get(`/training/session/${targetSessionId}`, { _skipErrorToast: true } as any)
+      if (res?.evaluation_result || res?.status === 'finished') return true
+    } catch {
+      // Keep waiting; the evaluation worker may still be committing the result.
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 800))
   }
+  return false
 }
 
-const postMultimodalFrame = async () => {
-  if (!faceVerified.value || faceTerminated.value || !sessionId.value) return
-  const frame = faceGuardRef.value?.captureMultimodalFrame?.()
+const stopMultimodalSampling = () => {
+  multimodalFrameInFlight = false
+  multimodalFramePending = null
+}
+
+const postMultimodalFrame = async (capture: any) => {
+  if (faceTerminated.value || !sessionId.value) return
+  const frame = capture?.frame
   if (!frame) return
+  if (multimodalFrameInFlight) {
+    multimodalFramePending = capture
+    return
+  }
+  multimodalFrameInFlight = true
   try {
-    const res: any = await request.post(`/multimodal/session/${sessionId.value}/frame`, { frame }, { _skipErrorToast: true } as any)
-    const detected = Boolean(res?.face?.present)
-    if (!detected) return
+    await request.post(
+      `/multimodal/session/${sessionId.value}/frame`,
+      { frame, client_signals: capture.client_signals },
+      { _skipErrorToast: true } as any,
+    )
   } catch {
-    // Multimodal analysis is an enhancement layer and must not interrupt training.
+    // Multimodal analysis follows the face heartbeat and must not interrupt training.
+  } finally {
+    multimodalFrameInFlight = false
+    if (multimodalFramePending) {
+      const pending = multimodalFramePending
+      multimodalFramePending = null
+      void postMultimodalFrame(pending)
+    }
   }
 }
 
 const startMultimodalSampling = () => {
-  if (multimodalFrameTimer != null || !sessionId.value) return
-  void postMultimodalFrame()
-  multimodalFrameTimer = window.setInterval(() => {
-    void postMultimodalFrame()
-  }, 3000)
+  faceGuardRef.value?.setMultimodalVision?.(multimodalVision)
+}
+
+const handleMultimodalFrame = (payload: any) => {
+  void postMultimodalFrame(payload)
 }
 
 const recordVoiceMetric = (payload: {
@@ -1067,14 +1103,20 @@ const handleFaceFailed = (message: string) => {
 }
 
 const handleFaceTerminated = (payload?: any) => {
+  if (isFinishingTraining.value) return
   faceVerified.value = false
   faceTerminated.value = true
   stopMultimodalSampling()
   const maxFailures = Number(payload?.max_failures || 5)
-  showToast(`人脸异常连续达到 ${maxFailures} 次，训练已自动中断`)
-  setTimeout(() => {
+  const loader = showLoadingToast({
+    message: `实训检测异常达到 ${maxFailures} 次，正在生成评估报告...`,
+    forbidClick: true,
+    duration: 0,
+  })
+  void waitForEvaluationReport(sessionId.value).finally(() => {
+    loader.close()
     router.replace(`/student/evaluation?session_id=${sessionId.value}`)
-  }, 900)
+  })
 }
 
 const getDifficultyColor = (diff: string) => {

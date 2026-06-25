@@ -73,6 +73,11 @@ class RAGService:
     def is_available(self) -> bool:
         return not self.embedding_error
 
+    def _mark_retrieval_error(self, operation: str, exc: Exception):
+        message = f"{operation}: {exc}"
+        self.embedding_error = message
+        print(f"RAG retrieval degraded ({message})")
+
     @staticmethod
     def normalize_library(value: Any, *, source: str = "", category: str = "", doc_type: str = "") -> str:
         raw = str(value or "").strip()
@@ -489,7 +494,11 @@ class RAGService:
         kwargs = {"where": where, "include": ["documents", "metadatas"]}
         if limit is not None:
             kwargs["limit"] = limit
-        results = self.collection.get(**kwargs)
+        try:
+            results = self.collection.get(**kwargs)
+        except Exception as exc:
+            self._mark_retrieval_error("metadata lookup failed", exc)
+            return []
         return self._rows_from_chroma_results(results)
 
     @staticmethod
@@ -513,11 +522,15 @@ class RAGService:
         return []
 
     def get_items(self, limit: int = 50, offset: int = 0) -> List[dict]:
-        results = self.collection.get(
-            limit=limit,
-            offset=offset,
-            include=["documents", "metadatas"],
-        )
+        try:
+            results = self.collection.get(
+                limit=limit,
+                offset=offset,
+                include=["documents", "metadatas"],
+            )
+        except Exception as exc:
+            self._mark_retrieval_error("item listing failed", exc)
+            return []
         return self._rows_from_chroma_results(results)
 
     def get_all_items(self, *, include_documents: bool = True) -> List[dict]:
@@ -663,7 +676,11 @@ class RAGService:
         clean_ids = [str(item).strip() for item in ids if str(item).strip()]
         if not clean_ids:
             return []
-        results = self.collection.get(ids=clean_ids, include=["documents", "metadatas"])
+        try:
+            results = self.collection.get(ids=clean_ids, include=["documents", "metadatas"])
+        except Exception as exc:
+            self._mark_retrieval_error("id lookup failed", exc)
+            return []
         items: List[dict] = []
         for index, item_id in enumerate(results.get("ids") or []):
             metadata = (results.get("metadatas") or [{}])[index] or {}

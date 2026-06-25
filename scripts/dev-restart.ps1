@@ -10,6 +10,11 @@ $LogsRoot = Join-Path $Root "logs"
 $PythonExe = Join-Path $BackendRoot "venv\Scripts\python.exe"
 $DatabasePath = Join-Path $Root "data\ai_police.db"
 $ChromaPath = Join-Path $Root "data\chroma_db"
+if ($env:LOCALAPPDATA) {
+    $DeepFaceHome = Join-Path $env:LOCALAPPDATA "ai-police-sim\deepface"
+} else {
+    $DeepFaceHome = Join-Path $env:TEMP "ai-police-sim\deepface"
+}
 $BackendLog = Join-Path $LogsRoot "dev-backend.log"
 $FrontendLog = Join-Path $LogsRoot "dev-frontend.log"
 
@@ -43,10 +48,15 @@ function Wait-HttpOk {
 }
 
 function Stop-BackendDevProcesses {
-    $processes = Get-CimInstance Win32_Process | Where-Object {
-        $_.CommandLine -like "*uvicorn main:app*" -and
-        $_.CommandLine -like "*--port 8000*" -and
-        $_.CommandLine -notlike "*Get-CimInstance*"
+    try {
+        $processes = Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+            $_.CommandLine -like "*uvicorn main:app*" -and
+            $_.CommandLine -like "*--port 8000*" -and
+            $_.CommandLine -notlike "*Get-CimInstance*"
+        }
+    } catch {
+        Write-Host "无权限枚举后端开发进程，已跳过精确清理；端口清理仍会继续。" -ForegroundColor Yellow
+        return
     }
     foreach ($proc in $processes) {
         if ($proc.ProcessId -and $proc.ProcessId -ne $PID) {
@@ -60,6 +70,7 @@ Set-Location $Root
 New-Item -ItemType Directory -Force -Path $LogsRoot | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DatabasePath) | Out-Null
 New-Item -ItemType Directory -Force -Path $ChromaPath | Out-Null
+New-Item -ItemType Directory -Force -Path $DeepFaceHome | Out-Null
 
 if (-not (Test-Path $PythonExe)) {
     Write-Host "未找到后端虚拟环境 Python: $PythonExe" -ForegroundColor Red
@@ -96,6 +107,9 @@ $DatabaseUrl = "sqlite:///$($DatabasePath.Replace('\', '/'))"
 $BackendCommand = @"
 `$env:DATABASE_URL = '$DatabaseUrl'
 `$env:CHROMA_DB_PATH = '$ChromaPath'
+`$env:DEEPFACE_HOME = '$DeepFaceHome'
+`$env:AI_POLICE_DEEPFACE_HOME = '$DeepFaceHome'
+`$env:PYTHONIOENCODING = 'utf-8'
 Set-Location '$BackendRoot'
 & '$PythonExe' -m uvicorn main:app --host 0.0.0.0 --port 8000 *> '$BackendLog'
 "@
