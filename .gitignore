@@ -24,6 +24,12 @@ backend/static/face_profiles/*
 !backend/static/thumbnails/.gitkeep
 !backend/static/face_profiles/.gitkeep
 
+# 实训录制的摄像头视频（学员实训录像，不入库）
+backend/static/session_media/**/
+backend/static/session_media/**/*.webm
+backend/static/session_media/**/*.mp4
+!backend/static/session_media/.gitkeep
+
 # Secrets — never commit real keys (keep local backend/.env)
 .env
 .env.local

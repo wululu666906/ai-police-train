@@ -350,6 +350,8 @@ class TrainingVideo(Base):
     file_size = Column(Integer, nullable=True)               # 文件大小（字节）
     case_id = Column(Integer, ForeignKey("cases.id"), nullable=True)   # 可选关联案件
     tags = Column(Text, default="[]")                        # JSON 字符串
+    # 训练前简报（案情背景、训练要点、评分规则等，富文本/纯文本均可）
+    briefing = Column(Text, nullable=True)
     # published=已发布，draft=草稿，archived=归档
     status = Column(String(20), default="draft")
     sort_order = Column(Integer, default=0)
@@ -361,8 +363,6 @@ class TrainingVideo(Base):
                          order_by="VideoNode.node_index")
     case = relationship("Case")
     uploader = relationship("User")
-
-
 class VideoNode(Base):
     """视频训练节点：在某个时间点暂停并触发考核"""
     __tablename__ = "video_nodes"
@@ -416,6 +416,11 @@ class VideoTrainingSession(Base):
     node_records = Column(Text, default="[]")
     # 违规记录（切屏、退出等）
     violation_log = Column(Text, default="[]")
+    evaluation_status = Column(String(20), default="pending")
+    evaluation_result = Column(Text, nullable=True)
+    evaluation_error = Column(Text, nullable=True)
+    evaluation_started_at = Column(DateTime, nullable=True)
+    evaluation_completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)
 
@@ -426,6 +431,12 @@ class VideoTrainingSession(Base):
         back_populates="session",
         cascade="all, delete-orphan",
         order_by="VideoNodeResult.node_index",
+    )
+    artifacts = relationship(
+        "VideoTrainingArtifact",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="VideoTrainingArtifact.created_at",
     )
 
 
@@ -445,7 +456,27 @@ class VideoNodeResult(Base):
     score_deducted = Column(Integer, default=0)      # 本节点扣分
     # 学员提交的答案（JSON）
     answer_data = Column(Text, nullable=True)
+    # 语音识别结果
+    speech_transcript = Column(Text, nullable=True)
+    evidence_payload = Column(Text, nullable=True)
+    assessment_payload = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     session = relationship("VideoTrainingSession", back_populates="node_results")
     node = relationship("VideoNode")
+
+
+class VideoTrainingArtifact(Base):
+    """训练过程媒体留存：当前用于摄像头/麦克风录制回放"""
+    __tablename__ = "video_training_artifacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("video_training_sessions.id"), nullable=False)
+    artifact_type = Column(String(30), nullable=False, default="camera_recording")
+    file_path = Column(String(500), nullable=False)
+    mime_type = Column(String(120), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    duration_seconds = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("VideoTrainingSession", back_populates="artifacts")

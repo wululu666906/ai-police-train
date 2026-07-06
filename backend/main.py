@@ -132,8 +132,43 @@ def ensure_video_schema_compatibility():
             models.VideoNode.__table__,
             models.VideoTrainingSession.__table__,
             models.VideoNodeResult.__table__,
+            models.VideoTrainingArtifact.__table__,
         ):
             table.create(bind=database.engine, checkfirst=True)
+        # 为已存在的 training_videos 表补充 briefing 列
+        from sqlalchemy import inspect, text
+        inspector = inspect(database.engine)
+        if "training_videos" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("training_videos")}
+            with database.engine.begin() as conn:
+                if "briefing" not in cols:
+                    conn.execute(text("ALTER TABLE training_videos ADD COLUMN briefing TEXT"))
+        if "video_training_sessions" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("video_training_sessions")}
+            statements = []
+            if "evaluation_status" not in cols:
+                statements.append("ALTER TABLE video_training_sessions ADD COLUMN evaluation_status VARCHAR(20) DEFAULT 'pending'")
+            if "evaluation_result" not in cols:
+                statements.append("ALTER TABLE video_training_sessions ADD COLUMN evaluation_result TEXT")
+            if "evaluation_error" not in cols:
+                statements.append("ALTER TABLE video_training_sessions ADD COLUMN evaluation_error TEXT")
+            if "evaluation_started_at" not in cols:
+                statements.append("ALTER TABLE video_training_sessions ADD COLUMN evaluation_started_at DATETIME")
+            if "evaluation_completed_at" not in cols:
+                statements.append("ALTER TABLE video_training_sessions ADD COLUMN evaluation_completed_at DATETIME")
+            with database.engine.begin() as conn:
+                for statement in statements:
+                    conn.execute(text(statement))
+        if "video_node_results" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("video_node_results")}
+            statements = []
+            if "evidence_payload" not in cols:
+                statements.append("ALTER TABLE video_node_results ADD COLUMN evidence_payload TEXT")
+            if "assessment_payload" not in cols:
+                statements.append("ALTER TABLE video_node_results ADD COLUMN assessment_payload TEXT")
+            with database.engine.begin() as conn:
+                for statement in statements:
+                    conn.execute(text(statement))
     except Exception as error:
         print(f"Video schema compatibility check failed: {error}")
 
@@ -346,9 +381,23 @@ def _backfill_training_session_timer_fields():
     finally:
         db.close()
 
+
+_cors_origins_env = os.getenv("CORS_ALLOW_ORIGINS", "").strip()
+if _cors_origins_env:
+    cors_allow_origins = [item.strip() for item in _cors_origins_env.split(",") if item.strip()]
+else:
+    cors_allow_origins = [
+        "http://localhost:5556",
+        "http://127.0.0.1:5556",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 部署到云服务器时可改为真实域名白名单。
+    allow_origins=cors_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -410,11 +459,23 @@ _face_profiles_dir = os.path.join(os.path.dirname(__file__), "static", "face_pro
 os.makedirs(_face_profiles_dir, exist_ok=True)
 app.mount("/static/face-profiles", StaticFiles(directory=_face_profiles_dir), name="face_profiles_static")
 
+_session_media_dir = os.path.join(os.path.dirname(__file__), "static", "session_media")
+os.makedirs(_session_media_dir, exist_ok=True)
+app.mount("/static/session_media", StaticFiles(directory=_session_media_dir), name="session_media_static")
+
 frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 
 
 def _frontend_index_path() -> str:
     return os.path.join(frontend_dist, "index.html")
+
+
+def _frontend_index_response() -> FileResponse:
+    response = FileResponse(_frontend_index_path())
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 def _is_browser_navigation(request) -> bool:
@@ -433,8 +494,19 @@ async def serve_spa_routes_before_api_prefixes(request, call_next):
     ):
         index_path = _frontend_index_path()
         if os.path.exists(index_path):
-            return FileResponse(index_path)
+            return _frontend_index_response()
     return await call_next(request)
+
+
+@app.middleware("http")
+async def apply_frontend_cache_headers(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith(("/admin", "/student", "/assets/")):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 if os.path.exists(os.path.join(frontend_dist, "assets")):
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
@@ -468,5 +540,5 @@ def on_startup():
 def serve_vue_app(catchall: str):
     index_path = _frontend_index_path()
     if os.path.exists(index_path):
-        return FileResponse(index_path)
+        return _frontend_index_response()
     return {"message": "AI虚拟警情模拟训练平台后端已启动（前端尚未构建）。"}
