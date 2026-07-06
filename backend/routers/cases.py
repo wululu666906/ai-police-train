@@ -1028,6 +1028,7 @@ def ai_fill_case_by_id(case_id: int, payload: dict = Body(default={}), db: Sessi
         target_groups = None
 
     include_scenes = bool(payload.get("include_scenes", True))
+    scene_generation_strategy = payload.get("scene_generation_strategy") or "case_driven"
 
     try:
         result = complete_case_information(
@@ -1037,6 +1038,7 @@ def ai_fill_case_by_id(case_id: int, payload: dict = Body(default={}), db: Sessi
             mode=mode,
             target_groups=target_groups,
             include_scenes=include_scenes,
+            scene_generation_strategy=scene_generation_strategy,
         )
         result["case_id"] = case_id
         result["case_title"] = db_case.title
@@ -1066,6 +1068,7 @@ def ai_complete_case(payload: dict = Body(...)):
 
     existing_case = payload.get("case_info") or payload.get("existing_case") or {}
     include_scenes = bool(payload.get("include_scenes", True))
+    scene_generation_strategy = payload.get("scene_generation_strategy") or "case_driven"
 
     try:
         return complete_case_information(
@@ -1076,6 +1079,7 @@ def ai_complete_case(payload: dict = Body(...)):
             target_groups=target_groups,
             include_scenes=include_scenes,
             source_meta=payload.get("source_meta"),
+            scene_generation_strategy=scene_generation_strategy,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1088,8 +1092,9 @@ def generate_scenes(payload: dict = Body(...)):
     case_info = payload.get("case_info")
     if not case_info:
         raise HTTPException(status_code=400, detail="Case info is required")
+    scene_generation_strategy = payload.get("scene_generation_strategy") or "case_driven"
     try:
-        return workflow_service.generate_scenes(case_info)
+        return workflow_service.generate_scenes(case_info, scene_generation_strategy=scene_generation_strategy)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI scene generation failed: {exc}") from exc
 

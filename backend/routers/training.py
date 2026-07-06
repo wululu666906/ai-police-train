@@ -1,7 +1,10 @@
 import json
+import time
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 import database
@@ -252,7 +255,9 @@ def _build_session_guidance(
         last_user_message=last_user_message,
         recent_messages=recent_message_payload,
         custom_prompts=custom_prompts,
-        use_llm=bool(last_user_message or any(message.role == "assistant" for message in messages)),
+        # Session detail is on the page-load path; keep recommendations deterministic
+        # so a slow LLM provider cannot leave the training page stuck on loading.
+        use_llm=False,
     )
     recommended_questions = [item["text"] for item in recommended_question_items]
     communication_feedback = _build_feedback(
@@ -457,6 +462,104 @@ def training_chat(
     result.pop("state_influence_metrics", None)
 
     return _trigger_auto_evaluation_if_needed(db, session_id, current_user.id, result)
+
+
+@router.post("/chat-stream/{session_id}")
+def training_chat_stream(
+    session_id: int,
+    message: schemas.MessageCreate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    session = get_owned_session(db, session_id, current_user.id)
+    if session.status != "active":
+        raise HTTPException(status_code=400, detail="Training session has already been finished")
+    if not message.content or not message.content.strip():
+        raise HTTPException(status_code=400, detail="Message content cannot be empty")
+
+    result = generate_dialogue(
+        db,
+        session_id,
+        message.content.strip(),
+        current_user.id,
+        target_role_name=message.target_role_name,
+    )
+    if not result:
+        raise HTTPException(status_code=502, detail="训练环境暂时无法响应，请稍后重试")
+    if result.get("inner_thought") == "ACCESS_DENIED":
+        raise HTTPException(status_code=403, detail="当前账号无权访问这条训练会话")
+    if result.get("inner_thought") == "ERROR":
+        detail = result.get("communication_feedback", {}).get("message") or "训练环境暂时无法响应，请稍后重试"
+        raise HTTPException(status_code=502, detail=detail)
+
+    result.pop("state_contract", None)
+    result.pop("last_postcheck", None)
+    result.pop("state_influence_metrics", None)
+
+    def _event(name: str, payload: dict[str, Any]) -> str:
+        return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    def _stream():
+        yield _event("meta", {
+            "session_id": session_id,
+            "status": session.status,
+            "auto_finished": bool(result.get("auto_finished")),
+            "reply_turns": len(result.get("reply_turns") or []),
+        })
+        reply_turns = result.get("reply_turns") or []
+        for index, turn in enumerate(reply_turns):
+            content = str(turn.get("content") or "").strip()
+            if not content:
+                continue
+            chunk_payload = {
+                "index": index,
+                "speaker_name": turn.get("speaker_name") or "",
+                "speaker_role_id": turn.get("speaker_role_id"),
+                "content": content,
+                "is_last": index == len(reply_turns) - 1,
+            }
+            yield _event("chunk", chunk_payload)
+            time.sleep(0.03)
+        yield _event("done", {
+            "response": result.get("response"),
+            "reply_sequence": result.get("reply_sequence"),
+            "reply_turns": result.get("reply_turns"),
+            "active_speakers": result.get("active_speakers"),
+            "scene_roles": result.get("scene_roles"),
+            "routing_summary": result.get("routing_summary"),
+            "addressing_warning": result.get("addressing_warning"),
+            "recognized_actions": result.get("recognized_actions"),
+            "available_actions": result.get("available_actions"),
+            "assessment_progress": result.get("assessment_progress"),
+            "completed_point_ids": result.get("completed_point_ids"),
+            "completed_action_ids": result.get("completed_action_ids"),
+            "auto_finish_ready": result.get("auto_finish_ready"),
+            "auto_finished": result.get("auto_finished"),
+            "redirect_to_evaluation": result.get("redirect_to_evaluation"),
+            "closure_summary": result.get("closure_summary"),
+            "inner_thought": result.get("inner_thought"),
+            "updated_emotion": result.get("updated_emotion"),
+            "updated_trust": result.get("updated_trust"),
+            "updated_cooperation": result.get("updated_cooperation"),
+            "updated_risk": result.get("updated_risk"),
+            "updated_clarity": result.get("updated_clarity"),
+            "new_fact_revealed": result.get("new_fact_revealed"),
+            "is_stage_completed": result.get("is_stage_completed"),
+            "current_stage": result.get("current_stage"),
+            "current_stage_goal": result.get("current_stage_goal"),
+            "stage_transition_message": result.get("stage_transition_message"),
+            "stage_completion_requirements": result.get("stage_completion_requirements"),
+            "stage_completion_satisfied": result.get("stage_completion_satisfied"),
+            "stage_completion_missing": result.get("stage_completion_missing"),
+            "recommended_questions": result.get("recommended_questions"),
+            "recommended_question_items": result.get("recommended_question_items"),
+            "communication_feedback": result.get("communication_feedback"),
+            "persona_hint": result.get("persona_hint"),
+            "role_state_label": result.get("role_state_label"),
+            "truth_stage": result.get("truth_stage"),
+        })
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
 @router.post("/action/{session_id}")

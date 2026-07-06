@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 import database
 import models
 from routers.auth import get_current_user
-from services.multimodal_service import build_scene_performance_report, get_engine_status, record_frame, record_voice_event
+from services.multimodal_service import build_scene_performance_report, get_engine_status, record_frame
 
 
 router = APIRouter(prefix="/multimodal", tags=["Multimodal"])
@@ -16,14 +16,6 @@ router = APIRouter(prefix="/multimodal", tags=["Multimodal"])
 class FrameAnalysisRequest(BaseModel):
     frame: str
     client_signals: dict[str, Any] | None = None
-
-
-class VoiceEventRequest(BaseModel):
-    event_type: str
-    transcript: str = ""
-    duration_ms: int | None = None
-    audio_level: float | None = None
-    repeated: bool = False
 
 
 @router.post("/session/{session_id}/frame")
@@ -45,25 +37,6 @@ def analyze_session_frame(
 @router.get("/engine")
 def get_multimodal_engine_status(_: models.User = Depends(get_current_user)) -> dict[str, Any]:
     return get_engine_status()
-
-
-@router.post("/session/{session_id}/voice-event")
-def create_session_voice_event(
-    session_id: int,
-    payload: VoiceEventRequest,
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(get_current_user),
-) -> dict[str, Any]:
-    return record_voice_event(
-        db,
-        session_id=session_id,
-        user=current_user,
-        event_type=payload.event_type,
-        transcript=payload.transcript,
-        duration_ms=payload.duration_ms,
-        audio_level=payload.audio_level,
-        repeated=payload.repeated,
-    )
 
 
 @router.get("/session/{session_id}/summary")

@@ -10,7 +10,6 @@ from routers.auth import get_current_user, require_admin_user
 from services.face_service import (
     create_liveness_challenge,
     count_session_failures,
-    count_session_failures_total,
     count_session_monitor_failures,
     count_session_monitor_failures_total,
     engine_status,
@@ -75,6 +74,15 @@ def get_face_profile(
     return serialize_profile(profile)
 
 
+@router.get("/me/profile")
+def get_my_face_profile(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+) -> dict[str, Any]:
+    profile = db.query(models.FaceProfile).filter(models.FaceProfile.student_id == current_user.id).first()
+    return serialize_profile(profile)
+
+
 @router.post("/students/{student_id}/register")
 async def register_face_profile(
     student_id: int,
@@ -88,6 +96,17 @@ async def register_face_profile(
     return serialize_profile(profile)
 
 
+@router.post("/me/register")
+async def register_my_face_profile(
+    file: UploadFile = File(...),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+) -> dict[str, Any]:
+    raw = await read_upload(file)
+    profile = register_profile(db, current_user, raw)
+    return serialize_profile(profile)
+
+
 @router.get("/session/{session_id}/status")
 def get_session_face_status(
     session_id: int,
@@ -98,14 +117,13 @@ def get_session_face_status(
     profile = db.query(models.FaceProfile).filter(models.FaceProfile.student_id == session.user_id).first()
     monitor_failure_count = count_session_monitor_failures(db, session.id)
     monitor_failure_total = count_session_monitor_failures_total(db, session.id)
-    failure_total = count_session_failures_total(db, session.id)
     terminated_by_policy = is_face_session_terminated_by_policy(db, session.id)
     return {
         "registered": profile is not None,
-        "failure_count": failure_total,
+        "failure_count": monitor_failure_count,
         "monitor_failure_count": monitor_failure_count,
         "monitor_failure_total": monitor_failure_total,
-        "failure_total": failure_total,
+        "failure_total": monitor_failure_count,
         "max_failures": FACE_MAX_FAILURES,
         "terminated_by_policy": terminated_by_policy,
         "terminated": terminated_by_policy or session.status in {"evaluating", "finished"},

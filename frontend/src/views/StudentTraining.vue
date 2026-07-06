@@ -85,17 +85,16 @@
                 class="scene-role-card"
                 :class="{
                   'scene-role-card--selected': targetRoleName === role.name,
-                  'scene-role-card--speaking': isRoleAvatarSpeaking(role.name),
                   'scene-role-card--thinking': isRoleAvatarThinking(role.name),
                 }"
-                :disabled="!role.speakable || isLoading || isPlayingReplies"
+                :disabled="!role.speakable || isLoading"
                 @click="toggleTargetRole(role)"
               >
                 <RoleSpeakingAvatar
                   :name="role.name"
                   :avatar-url="role.avatar_url"
                   :avatar-id="role.avatar_id"
-                  :speaking="isRoleAvatarSpeaking(role.name)"
+                  :speaking="false"
                   :thinking="isRoleAvatarThinking(role.name)"
                   :primary="role.is_primary"
                   :risk="(role.risk ?? 0) >= 70"
@@ -108,8 +107,7 @@
                     <template v-if="role.emotion != null"> · 情绪{{ role.emotion }}</template>
                   </span>
                 </span>
-                <span v-if="isRoleAvatarSpeaking(role.name)" class="scene-role-card__badge">正在说话</span>
-                <span v-else-if="isRoleAvatarThinking(role.name)" class="scene-role-card__badge scene-role-card__badge--think">
+                <span v-if="isRoleAvatarThinking(role.name)" class="scene-role-card__badge scene-role-card__badge--think">
                   准备发言
                 </span>
               </button>
@@ -177,12 +175,13 @@
 
     <div class="chat-area">
       <TrainingFaceGuard
-        v-if="sessionId"
+        v-if="sessionId && !faceVerificationSkipped"
         ref="faceGuardRef"
         class="training-face-guard"
         :session-id="sessionId"
         :mode="faceVerified ? 'monitor' : 'gate'"
         @verified="handleFaceVerified"
+        @skipped="handleFaceSkipped"
         @failed="handleFaceFailed"
         @terminated="handleFaceTerminated"
         @multimodal-frame="handleMultimodalFrame"
@@ -224,7 +223,6 @@
             <div class="msg-body">
               <span class="msg-sender">
                 执法民警
-                <span v-if="msg.inputSource === 'voice'" class="msg-source-tag">语音</span>
               </span>
               <div class="msg-bubble bubble-human">{{ msg.content }}</div>
             </div>
@@ -234,7 +232,7 @@
           </div>
         </div>
 
-        <div v-if="isLoading && !isPlayingReplies" class="msg-row msg-ai">
+        <div v-if="isLoading" class="msg-row msg-ai">
           <div class="avatar avatar-ai">
             <van-icon name="contact" size="20" />
           </div>
@@ -275,10 +273,10 @@
         <TrainingInputBar
           v-model="inputMessage"
           :loading="isLoading"
-          :disabled="isLoading || !faceVerified || faceTerminated"
+          :disabled="!canUseConversation"
           @send="sendMessage()"
-          @voice-send="sendVoiceMessage"
-          @voice-event="recordVoiceMetric"
+          @voice-send="sendMessage"
+          @voice-event="handleVoiceEvent"
         />
       </div>
     </div>
@@ -364,7 +362,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showLoadingToast, showToast } from 'vant'
 import request from '../utils/request'
@@ -395,18 +393,19 @@ const inputMessage = ref('')
 const isLoading = ref(false)
 const isSessionBooting = ref(true)
 const trainingLoadError = ref('')
-const isPlayingReplies = ref(false)
-const speakingRoleName = ref('')
 const showCaseBrief = ref(false)
 const suppressedBriefThisSession = ref(false)
 const isReturningToHall = ref(false)
+const faceVerificationSkipped = ref(false)
 const faceVerified = ref(false)
 const faceTerminated = ref(false)
 const isFinishingTraining = ref(false)
 const faceGuardRef = ref<InstanceType<typeof TrainingFaceGuard> | null>(null)
 const multimodalVision = useMultimodalVision()
+const faceVerificationSkipEnabled = import.meta.env.DEV && import.meta.env.VITE_FACE_VERIFICATION_SKIP_ENABLED === '1'
 let multimodalFrameInFlight = false
 let multimodalFramePending: any | null = null
+const canUseConversation = computed(() => faceVerificationSkipped.value || (faceVerified.value && !faceTerminated.value))
 
 const caseInfo = reactive({
   title: '加载中...',
@@ -471,8 +470,10 @@ const autoFinishReady = ref(false)
 
 const revealedInfo = ref<string[]>([])
 const chatHistory = ref<
-  Array<{ id: number; role: string; content: string; speakerName?: string; inputSource?: 'voice' | 'text'; avatarUrl?: string; avatarId?: number }>
+  Array<{ id: number; role: string; content: string; speakerName?: string; avatarUrl?: string; avatarId?: number }>
 >([])
+let activeChatAbortController: AbortController | null = null
+let activeChatRequestId = 0
 
 type RoleStateAxisKey = 'emotion' | 'cooperation' | 'risk' | 'clarity'
 
@@ -689,11 +690,8 @@ const guessThinkingRoleName = () => {
 
 const thinkingRoleLabel = computed(() => guessThinkingRoleName())
 
-const isRoleAvatarSpeaking = (roleName: string) => speakingRoleName.value === roleName
-
 const isRoleAvatarThinking = (roleName: string) => {
-  if (speakingRoleName.value) return false
-  if (!isLoading.value || isPlayingReplies.value) return false
+  if (!isLoading.value) return false
   return roleName === thinkingRoleLabel.value
 }
 
@@ -719,35 +717,52 @@ const collectAssistantReplyTurns = (res: any) => {
     }))
 }
 
+const streamTextIntoMessage = async (message: { content: string }, text: string) => {
+  const chars = Array.from(String(text || ''))
+  message.content = ''
+  for (let index = 0; index < chars.length; index += 1) {
+    message.content += chars[index]
+    if (index % 3 === 0) {
+      await nextTick()
+      scrollToBottom()
+      await sleep(18)
+    }
+  }
+}
+
+const parseSseBlock = (block: string) => {
+  const eventMatch = block.match(/^event:\s*(.+)$/m)
+  const dataMatch = block.match(/^data:\s*([\s\S]+)$/m)
+  const event = String(eventMatch?.[1] || 'message').trim()
+  const dataRaw = String(dataMatch?.[1] || '').trim()
+  if (!dataRaw) return null
+  try {
+    return { event, data: JSON.parse(dataRaw) }
+  } catch {
+    return null
+  }
+}
+
 const playAssistantReplies = async (res: any, baseId: number) => {
   const items = collectAssistantReplyTurns(res)
   if (!items.length) return false
 
-  isPlayingReplies.value = true
-  try {
-    for (let index = 0; index < items.length; index += 1) {
+  for (let index = 0; index < items.length; index += 1) {
       const item = items[index]
-      speakingRoleName.value = item.speakerName
-      // Find avatar data for this speaker from scene roles
       const speakerRole = sceneRoles.value.find((r) => r.name === item.speakerName)
-      chatHistory.value.push({
+      const message = {
         id: baseId + index,
         role: 'assistant',
-        content: item.content,
+        content: '',
         speakerName: item.speakerName,
         avatarUrl: speakerRole?.avatar_url,
         avatarId: speakerRole?.avatar_id,
-      })
-      await nextTick()
-      scrollToBottom()
-      await sleep(estimateSpeakDuration(item.content))
-      if (index < items.length - 1) {
-        await sleep(REPLY_GAP_MS)
       }
-    }
-  } finally {
-    speakingRoleName.value = ''
-    isPlayingReplies.value = false
+      chatHistory.value.push(message)
+      await streamTextIntoMessage(message, item.content)
+      if (index < items.length - 1) {
+        await sleep(180)
+      }
   }
   return true
 }
@@ -847,6 +862,7 @@ const fetchSessionData = async () => {
 
     // 进入对话即展示案件信息（学员若选择“本次不再提示”则本会话内不再自动弹出）
     suppressedBriefThisSession.value = isBriefSuppressedInSession()
+    faceVerificationSkipped.value = isFaceVerificationSkippedInSession()
     if (!suppressedBriefThisSession.value) {
       showCaseBrief.value = true
     }
@@ -892,6 +908,37 @@ const clearBriefSuppressedInSession = () => {
   }
 }
 
+const getFaceSkipKey = () => `student_training_face_skipped_${String(sessionId.value || '')}`
+
+const clearFaceVerificationSkipped = () => {
+  try {
+    sessionStorage.removeItem(getFaceSkipKey())
+  } catch {
+    // ignore
+  }
+}
+
+const isFaceVerificationSkippedInSession = () => {
+  if (!faceVerificationSkipEnabled) {
+    clearFaceVerificationSkipped()
+    return false
+  }
+  try {
+    return sessionStorage.getItem(getFaceSkipKey()) === '1'
+  } catch {
+    return false
+  }
+}
+
+const persistFaceVerificationSkipped = () => {
+  if (!faceVerificationSkipEnabled) return
+  try {
+    sessionStorage.setItem(getFaceSkipKey(), '1')
+  } catch {
+    // ignore
+  }
+}
+
 const onSuppressCheckboxChange = (event: Event) => {
   const checked = Boolean((event.target as HTMLInputElement | null)?.checked)
   if (checked) suppressBriefInSession()
@@ -920,39 +967,103 @@ const handleBriefReturnToHall = async () => {
   }
 }
 
-const sendVoiceMessage = (transcript: string) => {
-  void sendMessage(transcript, 'voice')
-}
-
-const sendMessage = async (content?: string, inputSource: 'voice' | 'text' = 'text') => {
+const sendMessage = async (content?: string) => {
   const msg = String(content ?? inputMessage.value).trim()
-  if (!msg || isLoading.value) return
+  if (!msg) return
+  if (isLoading.value) return
   if (faceTerminated.value) {
     showToast('人脸异常次数已达上限，本次训练已中断')
     return
   }
-  if (!faceVerified.value) {
+  if (!canUseConversation.value) {
     showToast('请先完成人脸身份验证')
     return
   }
 
   syncTargetFromMessage(msg)
   const pendingId = Date.now()
-  chatHistory.value.push({ id: pendingId, role: 'human', content: msg, inputSource })
-  if (inputSource === 'text') {
-    inputMessage.value = ''
-  }
+  chatHistory.value.push({ id: pendingId, role: 'human', content: msg })
+  inputMessage.value = ''
   isLoading.value = true
+  const requestId = activeChatRequestId + 1
+  activeChatRequestId = requestId
+  const abortController = new AbortController()
+  activeChatAbortController = abortController
   scrollToBottom()
 
   try {
-    const res: any = await request.post(`/training/chat/${sessionId.value}`, {
-      role: 'user',
-      content: msg,
-      target_role_name: targetRoleName.value || undefined,
+    const token = localStorage.getItem('token') || ''
+    const apiBase = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '')
+    const streamUrl = `${apiBase.replace(/\/$/, '')}/training/chat-stream/${sessionId.value}`
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    }
+    if (token) {
+      headers.Authorization = `Bearer ${token}`
+    }
+
+    const response = await fetch(streamUrl, {
+      method: 'POST',
+      headers,
+      signal: abortController.signal,
+      body: JSON.stringify({
+        role: 'user',
+        content: msg,
+        target_role_name: targetRoleName.value || undefined,
+      }),
     })
 
-    const hasAssistantReply = await playAssistantReplies(res, Date.now() + 1)
+    if (!response.ok || !response.body) {
+      throw new Error(`stream failed: ${response.status}`)
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buffer = ''
+    const streamResult: any = {}
+    const assistantRows: Array<{ id: number; role: string; content: string; speakerName?: string; avatarUrl?: string; avatarId?: number }> = []
+
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let boundaryIndex = buffer.indexOf('\n\n')
+      while (boundaryIndex !== -1) {
+        const block = buffer.slice(0, boundaryIndex)
+        buffer = buffer.slice(boundaryIndex + 2)
+        const parsed = parseSseBlock(block)
+        if (parsed) {
+          if (parsed.event === 'chunk') {
+            const chunk = parsed.data
+            const speakerName = String(chunk.speaker_name || roleInfo.name).trim() || roleInfo.name
+            const speakerRole = sceneRoles.value.find((r) => r.name === speakerName)
+            const row = {
+              id: Date.now() + Number(chunk.index || 0) + assistantRows.length,
+              role: 'assistant',
+              content: String(chunk.content || ''),
+              speakerName,
+              avatarUrl: speakerRole?.avatar_url,
+              avatarId: speakerRole?.avatar_id,
+            }
+            assistantRows.push(row)
+            chatHistory.value.push(row)
+            await nextTick()
+            scrollToBottom()
+          } else if (parsed.event === 'done') {
+            Object.assign(streamResult, parsed.data || {})
+          }
+        }
+        boundaryIndex = buffer.indexOf('\n\n')
+      }
+    }
+
+    const res: any = streamResult
+    if (!Object.keys(res).length) {
+      throw new Error('empty stream result')
+    }
+
+    const hasAssistantReply = assistantRows.length > 0
 
     if (Array.isArray(res.scene_roles) && res.scene_roles.length) {
       sceneRoles.value = res.scene_roles
@@ -991,14 +1102,47 @@ const sendMessage = async (content?: string, inputSource: 'voice' | 'text' = 'te
     } else {
       showToast('AI 回复出错，请稍后重试')
     }
-  } catch (error) {
-    chatHistory.value = chatHistory.value.filter((item) => item.id !== pendingId)
-    if (inputSource === 'text') {
-      inputMessage.value = msg
+  } catch (error: any) {
+    if (abortController.signal.aborted || error?.name === 'AbortError') {
+      return
     }
-    showToast('AI 响应异常，请稍后重试')
+    try {
+      const res: any = await request.post(`/training/chat/${sessionId.value}`, {
+        role: 'user',
+        content: msg,
+        target_role_name: targetRoleName.value || undefined,
+      })
+      const hasAssistantReply = await playAssistantReplies(res, Date.now() + 1)
+
+      if (Array.isArray(res.scene_roles) && res.scene_roles.length) {
+        sceneRoles.value = res.scene_roles
+      }
+      routingSummary.value = String(res.routing_summary || '').trim()
+      addressingWarning.value = String(res.addressing_warning || '').trim()
+      applyGuidancePayload(res)
+
+      if (hasAssistantReply) {
+        if (res.new_fact_revealed && res.new_fact_revealed !== 'null' && !revealedInfo.value.includes(res.new_fact_revealed)) {
+          revealedInfo.value.push(res.new_fact_revealed)
+          chatHistory.value.push({
+            id: Date.now() + 2,
+            role: 'system',
+            content: `[关键线索获取] ${res.new_fact_revealed}`
+          })
+        }
+      } else {
+        showToast('AI 回复出错，请稍后重试')
+      }
+    } catch {
+      chatHistory.value = chatHistory.value.filter((item) => item.id !== pendingId)
+      inputMessage.value = msg
+      showToast('AI 响应异常，请稍后重试')
+    }
   } finally {
-    isLoading.value = false
+    if (activeChatRequestId === requestId) {
+      activeChatAbortController = null
+      isLoading.value = false
+    }
     scrollToBottom()
   }
 }
@@ -1040,7 +1184,10 @@ const stopMultimodalSampling = () => {
 }
 
 const postMultimodalFrame = async (capture: any) => {
-  if (faceTerminated.value || !sessionId.value) return
+  if (faceVerificationSkipped.value || faceTerminated.value || !sessionId.value) {
+    stopMultimodalSampling()
+    return
+  }
   const frame = capture?.frame
   if (!frame) return
   if (multimodalFrameInFlight) {
@@ -1067,6 +1214,7 @@ const postMultimodalFrame = async (capture: any) => {
 }
 
 const startMultimodalSampling = () => {
+  if (faceVerificationSkipped.value) return
   faceGuardRef.value?.setMultimodalVision?.(multimodalVision)
 }
 
@@ -1074,26 +1222,38 @@ const handleMultimodalFrame = (payload: any) => {
   void postMultimodalFrame(payload)
 }
 
-const recordVoiceMetric = (payload: {
-  event_type: string
-  transcript?: string
-  duration_ms?: number
-  audio_level?: number
-  repeated?: boolean
-}) => {
-  if (!sessionId.value) return
-  void request.post(`/multimodal/session/${sessionId.value}/voice-event`, payload, { _skipErrorToast: true } as any).catch(() => {
-    // Voice metrics are best-effort and should not block the conversation loop.
-  })
+const interruptAssistantReply = () => {
+  if (!isLoading.value || !activeChatAbortController || activeChatAbortController.signal.aborted) return
+  activeChatAbortController.abort()
+  showToast({ type: 'text', message: '已打断 AI 回复，继续说完后将重新发送' })
+}
+
+const handleVoiceEvent = (payload: any) => {
+  if (payload?.event_type === 'transcript_delta') {
+    interruptAssistantReply()
+  }
 }
 
 const handleFaceVerified = () => {
   if (!faceVerified.value) {
     showToast({ type: 'success', message: '身份验证通过，可以开始训练' })
   }
+  faceVerificationSkipped.value = false
+  clearFaceVerificationSkipped()
   faceVerified.value = true
   faceTerminated.value = false
   startMultimodalSampling()
+}
+
+const handleFaceSkipped = () => {
+  if (!faceVerificationSkipEnabled) return
+  faceVerificationSkipped.value = true
+  faceVerified.value = false
+  faceTerminated.value = false
+  stopMultimodalSampling()
+  faceGuardRef.value?.stopCamera?.()
+  persistFaceVerificationSkipped()
+  showToast({ type: 'success', message: '已跳过人脸验证，本次训练不启用人脸与异常监测' })
 }
 
 const handleFaceFailed = (message: string) => {

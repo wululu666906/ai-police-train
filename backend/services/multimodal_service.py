@@ -1,4 +1,4 @@
-import base64
+﻿import base64
 import importlib.util
 import json
 import os
@@ -136,7 +136,6 @@ REQUIRED_SCENE_SECTIONS = {
     "micro_expression",
     "gesture",
     "attention",
-    "voice",
     "scores",
     "overall",
     "degradation",
@@ -558,7 +557,7 @@ def _degradation_status(summary: dict[str, Any], frame_available: bool, deepface
             "formula_mode": "llm_only",
             "confidence": 0.35,
             "unavailable_modules": ["vision_frame", *unavailable],
-            "substitutions": {"vision": "voice_llm_scoring", **substitutions},
+            "substitutions": {"vision": "visual_data_unavailable", **substitutions},
         }
     if summary["has_mediapipe"] and deepface_ready and engine["opencv"]["available"]:
         level = 1
@@ -863,37 +862,6 @@ def record_frame(
     return analysis
 
 
-def record_voice_event(
-    db: Session,
-    *,
-    session_id: int,
-    user: models.User,
-    event_type: str,
-    transcript: str = "",
-    duration_ms: int | None = None,
-    audio_level: float | None = None,
-    repeated: bool = False,
-) -> dict[str, Any]:
-    session = _get_owned_session(db, session_id, user)
-    payload = {
-        "transcript": transcript.strip(),
-        "audio_level": audio_level,
-        "repeated": repeated,
-    }
-    label = "repeat" if repeated else event_type
-    event = record_event(
-        db,
-        session=session,
-        event_type=event_type,
-        category="voice",
-        label=label,
-        score=audio_level,
-        duration_ms=duration_ms,
-        payload=payload,
-    )
-    return {"event_id": event.id, "status": "recorded"}
-
-
 def _event_payload(event: models.MultimodalEvent) -> dict[str, Any]:
     payload = _safe_json_loads(event.payload_json, {})
     return payload if isinstance(payload, dict) else {}
@@ -1131,7 +1099,6 @@ def _build_scene_rubric(
     avg_tension: float | None,
     volatility: float | None,
     gesture_score: int | None,
-    voice_score: int | None,
     normative_gestures: list[models.MultimodalEvent],
     abnormal_gestures: list[models.MultimodalEvent],
     attention_score: int | None,
@@ -1242,7 +1209,6 @@ def build_scene_performance_report(db: Session, session_id: int) -> dict[str, An
     micro_events = [event for event in multimodal_events if event.category == "micro_expression"]
     gesture_events = [event for event in multimodal_events if event.category == "gesture"]
     attention_events = [event for event in multimodal_events if event.category == "attention"]
-    voice_events = [event for event in multimodal_events if event.category == "voice"]
 
     passed_face = [event for event in face_events if event.status == "passed"]
     failed_face = [event for event in face_events if event.status == "failed"]
@@ -1299,15 +1265,6 @@ def build_scene_performance_report(db: Session, session_id: int) -> dict[str, An
         event for event in gesture_events if event.label in {"hands_off_camera", "frequent_leave", "abnormal_motion"}
     ]
 
-    utterance_events = [event for event in voice_events if event.event_type in {"utterance_end", "hangup_tail"}]
-    transcripts = [_event_payload(event).get("transcript", "") for event in utterance_events]
-    repeated_count = sum(1 for event in voice_events if _event_payload(event).get("repeated") or event.label == "repeat")
-    durations = [int(event.duration_ms or 0) for event in utterance_events if event.duration_ms]
-    avg_duration_ms = int(mean(durations)) if durations else 0
-    interruption_count = sum(1 for event in voice_events if event.event_type in {"interruption", "mute", "error"} or event.label in {"interruption", "mute", "error"})
-    complete_utterance_count = sum(1 for text in transcripts if len(str(text).strip()) >= 4)
-    voice_completeness = int(round((complete_utterance_count / max(len(utterance_events), 1)) * 100)) if utterance_events else None
-    continuous_expression = bool(len(utterance_events) >= 2 and interruption_count == 0) if utterance_events else None
 
     face_score = _average_payload_score(frame_face_events, "score")
     if face_score is None and face_sample_count:
@@ -1335,9 +1292,6 @@ def build_scene_performance_report(db: Session, session_id: int) -> dict[str, An
     if attention_score is None and frame_face_events:
         attention_score = int(_clamp(95 - (leave_rate or 0) * 0.65 - min(35, abnormal_leave_count * 6), 0, 100))
 
-    voice_score = None
-    if utterance_events:
-        voice_score = int(_clamp((voice_completeness or 0) - min(25, interruption_count * 8) - min(20, repeated_count * 6), 0, 100))
 
     fallback_behavior_score = _weighted_score([
         (gesture_score, 0.75),
@@ -1358,7 +1312,6 @@ def build_scene_performance_report(db: Session, session_id: int) -> dict[str, An
         avg_tension=avg_tension,
         volatility=volatility,
         gesture_score=gesture_score,
-        voice_score=voice_score,
         normative_gestures=normative_gestures,
         abnormal_gestures=abnormal_gestures,
         attention_score=attention_score,
@@ -1368,28 +1321,15 @@ def build_scene_performance_report(db: Session, session_id: int) -> dict[str, An
     behavior_score = rubric_dimensions["behavior"]["score"] if rubric_dimensions["behavior"]["score"] is not None else fallback_behavior_score
     attention_score = rubric_dimensions["attention"]["score"] if rubric_dimensions["attention"]["score"] is not None else attention_score
 
-    visual_scores = [score for score in (face_score, behavior_score if gesture_events else None, attention_score) if isinstance(score, int)]
-    if not visual_scores and voice_score is not None:
-        final_score = voice_score
-        formula_mode = "llm_only"
-        degradation = {
-            "level": 4,
-            "label": "llm_only",
-            "formula_mode": "llm_only",
-            "confidence": 0.35,
-            "unavailable_modules": ["vision_frame"],
-            "substitutions": {"vision": "voice_llm_scoring"},
-        }
-    else:
-        final_score = _weighted_score([
-            (behavior_score if isinstance(behavior_score, int) and behavior_score > 0 else None, FINAL_SCORE_WEIGHTS["behavior"]),
-            (face_score, FINAL_SCORE_WEIGHTS["face"]),
-            (attention_score, FINAL_SCORE_WEIGHTS["attention"]),
-        ])
-        formula_mode = "weighted_multimodal"
-        has_mediapipe = any(_event_payload(event).get("signal_summary", {}).get("has_mediapipe") for event in gesture_events)
-        has_deepface = any(_event_payload(event).get("adapter") == "deepface" for event in micro_events)
-        degradation = _degradation_status({"has_mediapipe": has_mediapipe}, bool(frame_face_events), deepface_active=has_deepface)
+    final_score = _weighted_score([
+        (behavior_score if isinstance(behavior_score, int) and behavior_score > 0 else None, FINAL_SCORE_WEIGHTS["behavior"]),
+        (face_score, FINAL_SCORE_WEIGHTS["face"]),
+        (attention_score, FINAL_SCORE_WEIGHTS["attention"]),
+    ])
+    formula_mode = "weighted_multimodal"
+    has_mediapipe = any(_event_payload(event).get("signal_summary", {}).get("has_mediapipe") for event in gesture_events)
+    has_deepface = any(_event_payload(event).get("adapter") == "deepface" for event in micro_events)
+    degradation = _degradation_status({"has_mediapipe": has_mediapipe}, bool(frame_face_events), deepface_active=has_deepface)
 
     risk_tips = []
     abnormal_records = []
@@ -1402,9 +1342,6 @@ def build_scene_performance_report(db: Session, session_id: int) -> dict[str, An
     if abnormal_gestures:
         risk_tips.append("存在离镜或异常动作记录")
         abnormal_records.append(f"异常动作 {len(abnormal_gestures)} 次")
-    if repeated_count or interruption_count:
-        risk_tips.append("语音表达存在中断或重复")
-        abnormal_records.append(f"语音中断 {interruption_count} 次，重复 {repeated_count} 次")
     if degradation["level"] >= 3:
         risk_tips.append("部分视觉模型不可用，已按降级规则生成实景评分")
     if not risk_tips:
@@ -1474,16 +1411,6 @@ def build_scene_performance_report(db: Session, session_id: int) -> dict[str, An
             "sample_count": len(attention_events),
             "has_data": bool(attention_events or frame_face_events),
         },
-        "voice": {
-            "completeness_score": voice_completeness,
-            "continuous_expression": continuous_expression,
-            "interruption_count": interruption_count,
-            "repeat_count": repeated_count,
-            "utterance_count": len(utterance_events),
-            "average_utterance_duration_ms": avg_duration_ms,
-            "score": voice_score,
-            "has_data": bool(voice_events),
-        },
         "scores": {
             "face_score": face_score,
             "behavior_score": behavior_score,
@@ -1510,7 +1437,7 @@ def build_scene_performance_report(db: Session, session_id: int) -> dict[str, An
             "risk_tips": risk_tips,
             "abnormal_records": abnormal_records,
             "generated_at": datetime.utcnow().isoformat(),
-            "has_data": any(isinstance(score, int) for score in (face_score, stability_score, gesture_score, voice_score, attention_score)),
+            "has_data": any(isinstance(score, int) for score in (face_score, stability_score, gesture_score, attention_score)),
         },
         "degradation": degradation,
         "tool_evidence": tool_evidence,
@@ -1520,7 +1447,6 @@ def build_scene_performance_report(db: Session, session_id: int) -> dict[str, An
             "deepface_sample_count": len(micro_events),
             "opencv_sample_count": len(attention_events),
             "mediapipe_sample_count": len(gesture_events),
-            "voice_event_count": len(voice_events),
             "adapter_status": degradation["label"],
             "confidence": evidence_layer["confidence"],
         },
@@ -1602,13 +1528,6 @@ def append_scene_performance_report(db: Session, session_id: int, report: dict[s
                 "has_data": False,
             },
             "attention": {"score": None, "has_data": False},
-            "voice": {
-                "completeness_score": None,
-                "continuous_expression": None,
-                "interruption_count": None,
-                "repeat_count": None,
-                "has_data": False,
-            },
             "scores": {
                 "face_score": None,
                 "behavior_score": 0,

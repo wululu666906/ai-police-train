@@ -1,7 +1,8 @@
-import json
+﻿import json
 import os
 from datetime import datetime
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -11,7 +12,10 @@ from sqlalchemy import inspect, text
 import database
 import models
 from routers import auth, cases, classes, dashboard, face, knowledge, multimodal, speech, student, training, videos, video_training
+from services.face_service import warmup_face_engine_async
 from services.multimodal_service import warmup_deepface_async
+
+load_dotenv()
 
 # 不在启动时强制初始化数据库，因为项目已经提供 init_db.py。
 # models.Base.metadata.create_all(bind=database.engine)
@@ -356,12 +360,12 @@ app.include_router(training.router)
 app.include_router(dashboard.router)
 app.include_router(knowledge.router)
 app.include_router(student.router)
-app.include_router(speech.router)
 app.include_router(classes.router)
 app.include_router(videos.router)
 app.include_router(video_training.router)
 app.include_router(face.router)
 app.include_router(multimodal.router)
+app.include_router(speech.router)
 
 # 兼容 Docker 静态前端的 /api 前缀调用（frontend/.env.production 默认 VITE_API_URL=/api）
 app.include_router(auth.router, prefix="/api")
@@ -370,12 +374,12 @@ app.include_router(training.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(knowledge.router, prefix="/api")
 app.include_router(student.router, prefix="/api")
-app.include_router(speech.router, prefix="/api")
 app.include_router(classes.router, prefix="/api")
 app.include_router(videos.router, prefix="/api")
 app.include_router(video_training.router, prefix="/api")
 app.include_router(face.router, prefix="/api")
 app.include_router(multimodal.router, prefix="/api")
+app.include_router(speech.router, prefix="/api")
 
 
 @app.get("/healthz")
@@ -386,6 +390,7 @@ def health_check():
 @app.get("/api/healthz")
 def health_check_api():
     return {"status": "ok"}
+
 
 # 像素风头像静态文件
 _avatars_dir = os.path.join(os.path.dirname(__file__), "static", "avatars")
@@ -453,7 +458,10 @@ def on_startup():
     ensure_face_schema_compatibility()
     ensure_multimodal_schema_compatibility()
     ensure_default_users()
-    warmup_deepface_async()
+    if os.getenv("FACE_ENGINE_WARMUP", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        warmup_face_engine_async()
+    if os.getenv("MULTIMODAL_DEEPFACE_WARMUP", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        warmup_deepface_async()
 
 
 @app.get("/{catchall:path}")

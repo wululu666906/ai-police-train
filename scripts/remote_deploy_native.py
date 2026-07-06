@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Deploy latest main branch to cloud server (native nginx + uvicorn)."""
 from __future__ import annotations
 
@@ -69,12 +69,6 @@ def build_env_content() -> str:
             lines.append(f"JWT_SECRET_KEY={jwt}")
         elif line.startswith("DEEPSEEK_API_KEY=") and vals.get("DEEPSEEK_API_KEY"):
             lines.append(f"DEEPSEEK_API_KEY={vals['DEEPSEEK_API_KEY']}")
-        elif line.startswith("IFLYTEK_API_KEY=") and vals.get("IFLYTEK_API_KEY"):
-            lines.append(f"IFLYTEK_API_KEY={vals['IFLYTEK_API_KEY']}")
-        elif line.startswith("IFLYTEK_APP_ID=") and vals.get("IFLYTEK_APP_ID"):
-            lines.append(f"IFLYTEK_APP_ID={vals['IFLYTEK_APP_ID']}")
-        elif line.startswith("IFLYTEK_API_SECRET=") and vals.get("IFLYTEK_API_SECRET"):
-            lines.append(f"IFLYTEK_API_SECRET={vals['IFLYTEK_API_SECRET']}")
         else:
             lines.append(line)
     body = "\n".join(lines) + "\n"
@@ -171,11 +165,6 @@ ASSET=$(echo "$HTML" | grep -oE '/assets/[^"]+\.js' | head -1)
 test -n "$ASSET" && $CURL -o /dev/null -w "asset=%{http_code}\n" "https://127.0.0.1$ASSET"
 TOKEN=$($CURL -X POST https://127.0.0.1/api/auth/token -d 'username=admin&password=123456')
 echo "$TOKEN" | grep -q access_token && echo OK_login_api
-SPEECH=$($CURL -H "Authorization: Bearer $(echo "$TOKEN" | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')" https://127.0.0.1/api/speech/iflytek/status)
-echo "$SPEECH"
-echo "$SPEECH" | grep -qE '"configured"[[:space:]]*:[[:space:]]*true' && echo OK_iflytek_configured
-WS=$($CURL -H "Authorization: Bearer $(echo "$TOKEN" | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')" https://127.0.0.1/api/speech/iflytek/ws-url)
-echo "$WS" | grep -q 'wss://' && echo OK_iflytek_ws_url
 
 echo "=== public IP :443 ==="
 $CURL -m 8 -o /dev/null -w "public_home=%{http_code}\n" https://{HOST}/ || echo public_home_fail
@@ -190,8 +179,6 @@ sudo systemctl is-active nginx
         "home=200",
         "OK_html_assets_path",
         "OK_login_api",
-        "OK_iflytek_configured",
-        "OK_iflytek_ws_url",
     ]
     ok = code == 0 and all(k in out for k in required)
     safe_print("\n=== ACCEPTANCE: " + ("PASS" if ok else "FAIL") + " ===")
@@ -324,7 +311,6 @@ sleep 4
 
     safe_print(f"\n访问地址: https://{HOST}/")
     safe_print("默认账号: admin / 123456")
-    safe_print("语音听写：登录后使用科大讯飞 API（/api/speech/iflytek/*）")
     return 0 if passed else 1
 
 

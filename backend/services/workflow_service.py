@@ -8,6 +8,7 @@ from .llm_provider import create_json_chat_completion, extract_json_payload, ext
 from .persona_engine import get_behavior_archetype_defaults, infer_persona_template, normalize_compact_persona_fields
 from .case_schema_service import canonicalize_person_payload, migrate_structured_data_payload
 from .stage_config_service import normalize_stages
+from .case_scene_module_service import build_case_frequency_prompt, build_scene_module_prompt, select_scene_modules
 
 CASE_TYPE_GROUPS = {
     "纠纷求助类": ["邻里纠纷", "家庭纠纷", "情感纠纷", "劳资纠纷", "消费纠纷", "噪音扰民", "失踪求助", "自杀干预", "校园警情", "宠物纠纷"],
@@ -268,12 +269,14 @@ persons 字段要求：
 
 SCENE_GEN_PROMPT = """你是公安警情训练场景设计专家。你的结果将直接进入管理员的"场景生成"预览页，管理员会人工复核后发布。
 
-任务：严格基于输入案件 JSON，生成 2 到 3 个适合警务训练的平台场景，最多不超过 3 个。
+任务：严格基于输入案件 JSON，生成 2 到 4 个适合警务训练的平台场景，最多不超过 4 个。
 
 硬性要求：
 1. 只能使用输入案件中的事实、人物、地点、关系和风险点，不得虚构新人物、新地点、新案件类型、新证据。
 2. 已死亡、昏迷、重伤无法交流的人物绝不能出现在 roles 中作为主对话对象。roles 只能用案件 persons 表中已有的 name（纯人名），不得编造新名字。
-3. 场景必须符合处警流程，优先组织成"接警研判/现场处置/重点问询或时间线压实"等渐进路径。
+3. 场景生成有两种策略：
+   - template_first：先参考候选模块/模板，再按本案人物、地点、证据、风险和矛盾点重组、改名、删减或合并。
+   - case_driven：不从模板里找场景，直接根据案件事实自动生成场景；候选模块只能作为现实警情常识参考，不得照搬。
 4. 每个场景都必须有清晰的 stage 列表，stage_name 和 stage_goal 要能支撑多轮问答，不能空泛重复。
 5. 场景目标要鼓励"先核实、再追问、再压实矛盾"，不要让角色一两轮就把全部核心事实说完。
 6. dispatch_brief 只能写该场景开始前警方已知内容；first_impression 只能写该场景一进入时可观察内容。不得把案件完整事实全写在同一个场景的 dispatch_brief 中。
@@ -283,12 +286,15 @@ SCENE_GEN_PROMPT = """你是公安警情训练场景设计专家。你的结果�
 10. assessment_points 要体现真正能训练能力提升的检查点，不要只复述 stage_goal。每条 assessment_point 包含 label（核心能力）、content（80-200字具体题目+达标标准）、category（procedure/risk/evidence）、required（布尔）、weight（必考12-15/选考8-10）、keywords（2-5个）。
 11. action_catalog 要优先覆盖执法动作、取证动作、收尾动作，不要只写说话动作。
 12. end_conditions 要体现这个场景在真实流程下何时应结束，并给出 closing_script。
-13. 只输出一个包含 scenes 的合法 JSON 对象，不要附加解释。
+13. 可根据案件复杂度输出 2-4 个场景；简单案件宁可 2 个扎实场景，复杂案件可 4 个递进场景。
+14. 只输出一个包含 scenes 的合法 JSON 对象，不要附加解释。
 
 场景设计偏好：
 - 每个场景都应有明确主任务。
 - 角色要有可问询空间、可压实的矛盾点或风险点。
 - 多个场景之间要形成递进，而不是简单改写同一段话。
+- 场景名应体现本案任务，不只写流程名。例如电诈可写"涉诈报警与预警劝阻/资金流与证据核查"，盗窃可写"失窃报警核实/盗窃现场勘查/可疑线索询问"，纠纷伤害可写"冲突报警与风险稳控/现场分离与证据固定/双方陈述重点询问"。
+- 如果候选模块与案件事实不一致，以案件事实为准；不要为了使用模块而生成不存在的现场、证据或人物。
 
 输出 JSON 结构参考：
 {
@@ -1565,9 +1571,42 @@ class WorkflowService:
                     selected.append(name)
         return selected[:limit]
 
-    def _fallback_scenes(self, case_info: dict[str, Any]) -> dict[str, Any]:
+    def _fallback_scenes(self, case_info: dict[str, Any], *, scene_generation_strategy: str = "case_driven") -> dict[str, Any]:
         case_name = str(case_info.get("case_name") or "该案件").strip()
         dispatch_brief = self._default_dispatch_brief(case_info, "接警研判")
+        scene_modules = select_scene_modules(case_info, limit=4)
+        if scene_modules:
+            scenes = []
+            for module in scene_modules:
+                scene_name = str(module.get("title") or self._default_scene_name(len(scenes) + 1)).strip()
+                roles = self._pick_scene_roles(case_info, list(module.get("role_types") or []))
+                scenes.append(
+                    {
+                        "scene_name": scene_name,
+                        "scene_description": f"围绕“{case_name}”开展{scene_name}训练，重点核实本案已有事实、风险和证据线索。",
+                        "difficulty": str(module.get("difficulty") or "中等").strip(),
+                        "dispatch_brief": dispatch_brief,
+                        "first_impression": str(
+                            module.get("first_impression_hint")
+                            or self._default_first_impression(case_info, scene_name, dispatch_brief)
+                        ).strip(),
+                        "roles": roles,
+                        "stages": normalize_stages(
+                            list(module.get("stage_examples") or []),
+                            case_type=str(case_info.get("case_type") or ""),
+                            scene_name=scene_name,
+                        ),
+                    }
+                )
+            normalized = [scene for scene in scenes if scene["roles"]]
+            return {
+                "scenes": (normalized or scenes)[:4],
+                "scene_generation_mode": (
+                    "fallback_template_first" if scene_generation_strategy == "template_first" else "fallback_case_driven"
+                ),
+                "scene_generation_warning": "本次训练场景未拿到完整 AI 结果，已根据案件关键词从现实警情模块库自动组合，请人工复核场景描述与角色分配。",
+            }
+
         first_impression = self._default_first_impression(case_info, "接警研判", dispatch_brief)
         scenes = [
             {
@@ -1622,11 +1661,19 @@ class WorkflowService:
         normalized = [scene for scene in scenes if scene["roles"]]
         return {
             "scenes": normalized[:3] or scenes[:2],
-            "scene_generation_mode": "fallback",
+            "scene_generation_mode": (
+                "fallback_template_first" if scene_generation_strategy == "template_first" else "fallback_case_driven"
+            ),
             "scene_generation_warning": "本次训练场景未拿到完整 AI 结果，已切换为规则兜底场景，请人工复核场景描述与角色分配。",
         }
 
-    def _normalize_scenes(self, case_info: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_scenes(
+        self,
+        case_info: dict[str, Any],
+        payload: dict[str, Any],
+        *,
+        scene_generation_strategy: str = "case_driven",
+    ) -> dict[str, Any]:
         scenes = payload.get("scenes") if isinstance(payload.get("scenes"), list) else []
         valid_names = {str(person.get("name") or "").strip() for person in case_info.get("persons") or [] if self._is_speakable_status(person.get("status"))}
         normalized = []
@@ -1665,14 +1712,39 @@ class WorkflowService:
             )
         if normalized:
             return {
-                "scenes": normalized[:3],
-                "scene_generation_mode": "ai",
+                "scenes": normalized[:4],
+                "scene_generation_mode": (
+                    "ai_template_first" if scene_generation_strategy == "template_first" else "ai_case_driven"
+                ),
                 "scene_generation_warning": "",
             }
-        return self._fallback_scenes(case_info)
+        return self._fallback_scenes(case_info, scene_generation_strategy=scene_generation_strategy)
 
-    def generate_scenes(self, case_info: dict[str, Any], use_case_completion_officer: bool = False):
-        messages = [{"role": "system", "content": SCENE_GEN_PROMPT}, {"role": "user", "content": json.dumps(case_info, ensure_ascii=False)}]
+    def generate_scenes(
+        self,
+        case_info: dict[str, Any],
+        use_case_completion_officer: bool = False,
+        scene_generation_strategy: str = "case_driven",
+    ):
+        if scene_generation_strategy not in {"template_first", "case_driven"}:
+            scene_generation_strategy = "case_driven"
+        case_type = str(case_info.get("case_type") or "").strip()
+        generation_context = {
+            "case_info": case_info,
+            "official_case_frequency_reference": build_case_frequency_prompt(),
+            "scene_generation_strategy": scene_generation_strategy,
+            "case_driven_scene_modules": (
+                ""
+                if scene_generation_strategy == "case_driven"
+                else build_scene_module_prompt(case_info)
+            ),
+            "generation_instruction": (
+                "模板优先模式：先从候选模块/模板中找最贴近的训练模块，再按本案事实改写、合并或删减。"
+                if scene_generation_strategy == "template_first"
+                else "案件生成模式：不要从模板中找场景，直接根据案件事实、人物、证据、风险和矛盾点自动生成场景。候选模块仅作现实警情参考，不得照搬。"
+            ),
+        }
+        messages = [{"role": "system", "content": SCENE_GEN_PROMPT}, {"role": "user", "content": json.dumps(generation_context, ensure_ascii=False)}]
         try:
             if use_case_completion_officer:
                 from .llm_provider import create_case_completion_chat_completion
@@ -1682,10 +1754,10 @@ class WorkflowService:
                 response = create_json_chat_completion(messages=messages, model=get_chat_model(), temperature=0.3, max_tokens=3000)
             payload = self._safe_json_loads(extract_message_text(response), {})
             if isinstance(payload, dict):
-                return self._normalize_scenes(case_info, payload)
+                return self._normalize_scenes(case_info, payload, scene_generation_strategy=scene_generation_strategy)
         except Exception:
             pass
-        return self._fallback_scenes(case_info)
+        return self._fallback_scenes(case_info, scene_generation_strategy=scene_generation_strategy)
 
 
 workflow_service = WorkflowService()

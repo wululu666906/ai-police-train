@@ -6,8 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5556 --strictPort",
     "build": "vite build --configLoader runner",
-    "preview": "vite preview",
-    "test:iflytek-parser": "node scripts/iflytek-parser-selfcheck.mjs"
+    "preview": "vite preview"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

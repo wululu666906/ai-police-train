@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="student-page student-page--video-hall">
 
     <!-- 顶部工具栏，与 StudentHall 保持同款风格 -->
@@ -161,7 +161,7 @@
               </div>
               <div class="entry-stat">
                 <el-icon color="#0066ff"><VideoCamera /></el-icon>
-                <span>需开启摄像头 + 麦克风</span>
+                <span>需开启摄像头</span>
               </div>
             </div>
 

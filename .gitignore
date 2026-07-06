@@ -46,6 +46,9 @@ dist/
 build/
 frontend/dist/
 
+# Third-party model source dumps
+vendor/face_antispoof_onnx_src/
+
 # Logs
 *.log
 logs/

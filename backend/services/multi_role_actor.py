@@ -1,4 +1,4 @@
-"""Per-role actor: each selected character generates 1-8 utterances with own persona."""
+﻿"""Per-role actor: each selected character generates 1-8 utterances with own persona."""
 
 from __future__ import annotations
 
@@ -299,7 +299,7 @@ def _append_unique(lines: list[str], line: str) -> None:
         lines.append(clean)
 
 
-def _role_voice(role: models.Role) -> str:
+def _role_archetype(role: models.Role) -> str:
     role_type = _text(getattr(role, "role_type", ""))
     name = _role_display_name(role)
     if "被害" in role_type or "受害" in role_type or "赵阳" in name:
@@ -312,24 +312,24 @@ def _role_voice(role: models.Role) -> str:
 
 
 def _time_reply(role: models.Role, time_fact: str) -> str:
-    voice = _role_voice(role)
-    if voice == "victim":
+    archetype = _role_archetype(role)
+    if archetype == "victim":
         return f"我记得差不多是{time_fact}，那会儿我和他已经在收银台那边吵起来了。"
-    if voice == "suspect":
+    if archetype == "suspect":
         return f"大概是{time_fact}吧。我当时喝了酒，时间可能没那么准。"
-    if voice == "witness":
+    if archetype == "witness":
         return f"我看到的时候大概是{time_fact}，他们两个已经吵起来了。"
     return f"我记得大概是{time_fact}。"
 
 
 def _identity_reply(role: models.Role, role_fact: str) -> list[str]:
     name = _role_display_name(role)
-    voice = _role_voice(role)
-    if voice == "victim":
+    archetype = _role_archetype(role)
+    if archetype == "victim":
         return [f"我是{name}，被打的是我，算是这事里的被害人。", "我现在就是想把当时怎么起冲突、谁先动手说清楚。"]
-    if voice == "suspect":
+    if archetype == "suspect":
         return [f"我是{name}。", "我和赵阳是起了冲突，但你们也先别一上来就说全是我的问题。"]
-    if voice == "witness":
+    if archetype == "witness":
         return [f"我是{name}，我是在现场看到情况的人。"]
     if role_fact:
         return [f"我是{name}，{role_fact}。"]
@@ -337,12 +337,12 @@ def _identity_reply(role: models.Role, role_fact: str) -> list[str]:
 
 
 def _vague_reply(role: models.Role) -> str:
-    voice = _role_voice(role)
-    if voice == "victim":
+    archetype = _role_archetype(role)
+    if archetype == "victim":
         return "你问哪一段？是问他怎么动手，还是问我伤在哪儿？"
-    if voice == "suspect":
+    if archetype == "suspect":
         return "你问清楚点行不行？时间、地点、还是问谁先动的手？"
-    if voice == "witness":
+    if archetype == "witness":
         return "你问具体哪一段，我只说我亲眼看到的。"
     return "你把问题说具体一点，我好回答。"
 
@@ -369,7 +369,7 @@ def _rule_based_utterances(
     evidence = _structured_items(case, "evidence_points", "evidence", "证据", "证据要点")
     people = _structured_items(case, "persons", "people", "人物", "相关人员")
     role_fact = _role_fact(role, case)
-    voice = _role_voice(role)
+    archetype = _role_archetype(role)
     reaction = reaction or {}
     reaction_key = _text(reaction.get("key"))
     lines: list[str] = []
@@ -384,9 +384,9 @@ def _rule_based_utterances(
     if participation == "interrupt":
         _append_unique(lines, f"{name}，你等一下，事情不是那样！")
     if _contains_any(text, ("冷静", "别激动", "放松", "慢慢说")):
-        if voice == "suspect":
+        if archetype == "suspect":
             _append_unique(lines, "行，我先不吵了。但你让我把话说完。")
-        elif voice == "victim":
+        elif archetype == "victim":
             _append_unique(lines, "我可以慢慢说，但他刚才确实动手了。")
         else:
             _append_unique(lines, "我配合，你问哪一段我说哪一段。")
@@ -404,18 +404,18 @@ def _rule_based_utterances(
     if _contains_any(text, ("几点", "时间", "什么时候", "发生")) and time_fact:
         _append_unique(lines, _time_reply(role, time_fact))
     if _contains_any(text, ("哪里", "地点", "位置", "在哪", "现场")) and location:
-        if voice == "suspect":
+        if archetype == "suspect":
             _append_unique(lines, f"就在{location}，旁边人不少，我也不想在那儿丢这个脸。")
-        elif voice == "victim":
+        elif archetype == "victim":
             _append_unique(lines, f"就在{location}，当时旁边有人围着看。")
         else:
             _append_unique(lines, f"地点是在{location}，我是在旁边看到的。")
     if _contains_any(text, ("伤", "打", "疼", "伤情", "动手")):
-        if voice == "victim":
+        if archetype == "victim":
             _append_unique(lines, "我眉弓这边被他打到了，现在还疼。")
-        elif voice == "suspect":
+        elif archetype == "suspect":
             _append_unique(lines, "我承认有推搡，也碰到他了，但当时是吵急了。")
-        elif voice == "witness":
+        elif archetype == "witness":
             _append_unique(lines, "我看到他们有推搡，后来赵阳脸这边像是被打到了。")
     if _contains_any(text, ("证据", "监控", "证人", "谁看见", "付款")):
         fact = "；".join(evidence[:2]) if evidence else ""
@@ -425,11 +425,11 @@ def _rule_based_utterances(
         if witness:
             _append_unique(lines, f"{witness}，她当时也在，可以问她。")
     if _contains_any(text, ("经过", "怎么回事", "原因", "起因")):
-        if voice == "suspect":
+        if archetype == "suspect":
             _append_unique(lines, "一开始就是结账那点事吵起来的，我喝了酒，话赶话就急了。")
-        elif voice == "victim":
+        elif archetype == "victim":
             _append_unique(lines, "就是结账插队那点事，他说话冲，后面就推我、打到我脸上。")
-        elif voice == "witness":
+        elif archetype == "witness":
             _append_unique(lines, "我看到他们先因为结账的事吵，后来声音越来越大，就有人动手了。")
         elif background:
             _append_unique(lines, background)

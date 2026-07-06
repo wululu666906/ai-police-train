@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base, relationship
@@ -380,11 +380,11 @@ class VideoNode(Base):
     skip_score_deduct = Column(Integer, default=20)          # 跳过扣分
     # auto=练习模式自动弹出，manual=考核模式手动取出
     prop_mode = Column(String(20), default="auto")
-    # action=指令引导，judge=判断题，choice=单选题，voice_qa=语音问答
+    # action=指令引导，judge=判断题，choice=单选题
     node_type = Column(String(20), default="action")
     node_config = Column(Text, default="{}")                 # 题目/选项等扩展配置（JSON）
     required_gesture = Column(String(50), nullable=True)     # 要求的手势类型
-    required_keywords = Column(Text, default="[]")           # 要求识别的语音关键词（JSON）
+    required_keywords = Column(Text, default="[]")           # 要求匹配的关键词（JSON）
     score_weight = Column(Integer, default=10)               # 本节点满分权重
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -445,8 +445,6 @@ class VideoNodeResult(Base):
     score_deducted = Column(Integer, default=0)      # 本节点扣分
     # 学员提交的答案（JSON）
     answer_data = Column(Text, nullable=True)
-    # 语音识别结果
-    speech_transcript = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     session = relationship("VideoTrainingSession", back_populates="node_results")

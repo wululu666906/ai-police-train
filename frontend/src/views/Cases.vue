@@ -1828,8 +1828,15 @@ const getEditablePersonCardStyle = (_index: number, person: any) => {
 
 const parseEngineLabel = (payload: any) => String(payload?.parse_engine || '') === 'ai' ? 'AI 结构化解析' : '规则兜底解析'
 const parseEngineIsFallback = (payload: any) => String(payload?.parse_engine || '') !== 'ai'
-const sceneGenerationLabel = (payload: any) => String(payload?.scene_generation_mode || '') === 'ai' ? 'AI 场景生成' : '规则兜底场景'
-const sceneGenerationIsFallback = (payload: any) => String(payload?.scene_generation_mode || '') === 'fallback'
+const sceneGenerationLabel = (payload: any) => {
+  const mode = String(payload?.scene_generation_mode || '')
+  if (mode === 'ai_template_first') return 'AI 模板优先场景生成'
+  if (mode === 'ai_case_driven' || mode === 'ai') return 'AI 案件驱动场景生成'
+  if (mode === 'fallback_template_first') return '模板优先兜底场景'
+  if (mode === 'fallback_case_driven' || mode === 'fallback_modules' || mode === 'fallback') return '案件驱动兜底场景'
+  return '场景生成'
+}
+const sceneGenerationIsFallback = (payload: any) => String(payload?.scene_generation_mode || '').startsWith('fallback')
 const parseWarnings = (payload: any) => Array.isArray(payload?.parse_warnings) ? payload.parse_warnings : []
 const sceneGenerationWarning = (payload: any) => String(payload?.scene_generation_warning || '').trim()
 
@@ -2721,7 +2728,11 @@ const startGenerating = async () => {
       case_type: form.caseType || aiParsedData.value.case_type,
       case_background: aiParsedData.value.case_background,
     }
-    const res: any = await request.post('/cases/generate-scenes', { case_info: caseInfo }, { _skipErrorToast: true } as any)
+    const res: any = await request.post(
+      '/cases/generate-scenes',
+      { case_info: caseInfo, scene_generation_strategy: 'case_driven' },
+      { _skipErrorToast: true } as any,
+    )
     generatedScenes.value = (res.scenes || []).map((scene: any) => {
       const roleNames = Array.isArray(scene?.roles) ? scene.roles : []
       return {
@@ -3053,6 +3064,7 @@ const runAiSupplement = async () => {
         source_mode: 'plain_case',
         mode: 'fill_gaps',
         include_scenes: true,
+        scene_generation_strategy: 'case_driven',
         target_groups: ['case_basic', 'fact_sheet', 'lists', 'persons', 'scenes'],
         case_info: buildCaseInfoForCompletion(editableCase.value),
       },

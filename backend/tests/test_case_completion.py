@@ -129,3 +129,92 @@ def test_case_completion_fallback_preserves_failure_warning(monkeypatch):
     assert any("upstream timeout" in warning for warning in result["completion_warnings"])
     assert "张某" in result["case_info"]["case_background"]
     assert result["case_info"]["fact_sheet"]["timeline"]
+
+
+def test_scene_group_is_not_sent_to_case_completion_prompt(monkeypatch):
+    monkeypatch.setattr(
+        case_completion_service.workflow_service,
+        "extract_case_person_names",
+        lambda text: [],
+    )
+
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured["messages"] = kwargs["messages"]
+
+        class _Msg:
+            content = '{"case_name":"测试案件","case_type":"盗窃","case_background":"报警人称手机被盗。","persons":[],"parse_engine":"ai","completion_engine":"deepseek-case-officer"}'
+
+        class _Choice:
+            message = _Msg()
+
+        class _Resp:
+            choices = [_Choice()]
+
+        return _Resp()
+
+    monkeypatch.setattr(
+        "services.case_completion_service.create_case_completion_chat_completion",
+        fake_completion,
+    )
+    monkeypatch.setattr(
+        case_completion_service.workflow_service,
+        "generate_scenes",
+        lambda *args, **kwargs: {"scenes": [], "scene_generation_mode": "ai_case_driven", "scene_generation_warning": ""},
+    )
+
+    result = case_completion_service.complete_case_information(
+        source_text="报警人称手机被盗。",
+        existing_case={},
+        mode="fill_gaps",
+        target_groups=["case_basic", "persons", "scenes"],
+        include_scenes=True,
+    )
+
+    user_payload = captured["messages"][1]["content"]
+    assert "scenes[]" not in user_payload
+    assert result["completion_engine"] == "deepseek-case-officer"
+    assert result["completion_target_groups"] == ["case_basic", "persons"]
+    assert "scenes" in result["target_groups"]
+
+
+def test_scene_generation_failure_does_not_downgrade_case_completion(monkeypatch):
+    monkeypatch.setattr(
+        case_completion_service.workflow_service,
+        "extract_case_person_names",
+        lambda text: [],
+    )
+
+    def fake_completion(**kwargs):
+        class _Msg:
+            content = '{"case_name":"测试案件","case_type":"盗窃","case_background":"报警人称手机被盗。","persons":[],"parse_engine":"ai","completion_engine":"deepseek-case-officer"}'
+
+        class _Choice:
+            message = _Msg()
+
+        class _Resp:
+            choices = [_Choice()]
+
+        return _Resp()
+
+    def broken_scene_generation(*args, **kwargs):
+        raise RuntimeError("scene timeout")
+
+    monkeypatch.setattr(
+        "services.case_completion_service.create_case_completion_chat_completion",
+        fake_completion,
+    )
+    monkeypatch.setattr(case_completion_service.workflow_service, "generate_scenes", broken_scene_generation)
+
+    result = case_completion_service.complete_case_information(
+        source_text="报警人称手机被盗。",
+        existing_case={},
+        mode="fill_gaps",
+        target_groups=["case_basic", "scenes"],
+        include_scenes=True,
+    )
+
+    assert result["completion_engine"] == "deepseek-case-officer"
+    assert result["scenes"] == []
+    assert "场景生成子任务失败" in result["scene_generation_warning"]

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="node-editor">
 
     <!-- 左栏：节点列表 -->
@@ -86,7 +86,6 @@
                 <el-option label="指令引导（实操动作）" value="action" />
                 <el-option label="判断题" value="judge" />
                 <el-option label="单项选择题" value="choice" />
-                <el-option label="语音问答（高阶）" value="voice_qa" />
               </el-select>
             </el-form-item>
 
@@ -104,7 +103,7 @@
               </el-form-item>
               <el-form-item label="标准话术">
                 <el-input
-                  v-model="currentNode.prompt_content.speech_hint"
+                  v-model="currentNode.prompt_content.script_hint"
                   type="textarea" :rows="2"
                   placeholder="如：您好，我是XX分局民警，请配合检查"
                 />
@@ -158,20 +157,6 @@
               </el-form-item>
               <el-form-item label="答题解析">
                 <el-input v-model="currentNode.node_config.explanation" type="textarea" :rows="2" placeholder="答错后展示的解析" />
-              </el-form-item>
-            </template>
-
-            <!-- 语音问答 -->
-            <template v-if="currentNode.node_type === 'voice_qa'">
-              <el-form-item label="提问内容">
-                <el-input v-model="currentNode.prompt_content.instruction" type="textarea" :rows="2" placeholder="如：请描述本次执法的法律依据" />
-              </el-form-item>
-              <el-form-item label="关键词">
-                <el-input
-                  v-model="keywordsInput"
-                  placeholder="多个关键词用逗号分隔"
-                  @blur="syncKeywords"
-                />
               </el-form-item>
             </template>
 
@@ -335,7 +320,7 @@ function addNode() {
     title: `节点 ${nodes.value.length + 1}`,
     trigger_time: 0,
     pause_mode: 'auto_pause',
-    prompt_content: { instruction: '', gesture_hint: '', speech_hint: '' },
+    prompt_content: { instruction: '', gesture_hint: '', script_hint: '' },
     timeout_seconds: 60,
     retry_score_deduct: 5,
     skip_score_deduct: 20,
@@ -428,11 +413,11 @@ function formatTime(seconds: number): string {
 }
 
 function nodeTypeLabel(type: string): string {
-  return { action: '实操', judge: '判断', choice: '选择', voice_qa: '语音' }[type] || type
+  return { action: '实操', judge: '判断', choice: '选择' }[type] || type
 }
 
 function nodeTypeTag(type: string): '' | 'success' | 'info' | 'warning' | 'danger' {
-  return ({ action: '', judge: 'warning', choice: 'success', voice_qa: 'danger' } as any)[type] || 'info'
+  return ({ action: '', judge: 'warning', choice: 'success' } as any)[type] || 'info'
 }
 </script>
 

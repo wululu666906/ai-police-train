@@ -1,5 +1,5 @@
 function Clear-PythonEnv {
-    foreach ($name in @("PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE")) {
+    foreach ($name in @("PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")) {
         if (Test-Path "Env:$name") { Remove-Item "Env:$name" }
     }
 }
@@ -26,7 +26,7 @@ function Invoke-PythonExe {
     if ($psi.EnvironmentVariables.ContainsKey("Path") -and $psi.EnvironmentVariables.ContainsKey("PATH")) {
         $psi.EnvironmentVariables.Remove("PATH")
     }
-    foreach ($key in @("PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE")) {
+    foreach ($key in @("PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")) {
         if ($psi.EnvironmentVariables.ContainsKey($key)) { $psi.EnvironmentVariables.Remove($key) }
     }
     $p = [System.Diagnostics.Process]::Start($psi)

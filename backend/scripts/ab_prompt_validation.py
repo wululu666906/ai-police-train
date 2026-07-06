@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import json
 from statistics import mean
 
@@ -12,8 +12,8 @@ from services.training_runtime_service import dump_runtime_state, load_runtime_s
 
 THREE_LAYER_APPEND = """
 
-【语音理解层规则】
-你接收到的是实时语音转写文本，可能存在同音字错误、断句问题和口语停顿词。优先理解意图，不要求用户重写文本。
+【输入理解层规则】
+你接收到的是学员输入文本，可能存在错别字、断句问题和口语停顿词。优先理解意图，不要求用户重写文本。
 对关键事实（时间、地点、人物、风险）先做语义归一化；信息不确定时用一句话澄清，不输出长篇解释。
 
 【执法训练主规则】
@@ -31,7 +31,7 @@ def orality_score(text: str) -> float:
     text = str(text or "").strip()
     if not text:
         return 0.0
-    oral_tokens = ["吗", "呢", "先", "再", "你说", "有没有", "请问", "先说", "先确认", "具体"]
+    oral_tokens = ["吗", "呢", "先", "再", "接说", "有没有", "请问", "先说", "先确认", "具体"]
     formal_tokens = ["因此", "首先", "其次", "综上", "建议如下", "根据", "请补充"]
     oral_hits = sum(token in text for token in oral_tokens)
     formal_hits = sum(token in text for token in formal_tokens)
@@ -75,7 +75,7 @@ def run_group(db, scene_id: int, user_id: int, use_three_layer: bool, rounds: in
         session = create_session(db, scene_id, user_id)
         seed_questions = [
             "先说一下当时发生了什么？",
-            "你和对方是什么关系？",
+            "接和对方是什么关系？",
             "事情大概几点开始的？",
             "现场还有谁在？",
             "有没有人受伤或者还有风险？",

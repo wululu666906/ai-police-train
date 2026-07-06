@@ -54,7 +54,7 @@ const rawMenuItems = [
   { key: 'tasks', label: '班级作业', icon: Files, path: '/student/classes', disabled: false },
   { key: 'history', label: '训练历史', icon: Clock, path: '/student/history', disabled: false, activePaths: ['/student/evaluation'] },
   { key: 'knowledge', label: '个人知识库', icon: Reading, path: '', disabled: true },
-  { key: 'settings', label: '系统设置', icon: Setting, path: '', disabled: true, hasChildren: true },
+  { key: 'settings', label: '个人设置', icon: Setting, path: '/student/settings', disabled: false },
 ]
 
 const menuItems = rawMenuItems.filter((item) => !['videos', 'face-demo'].includes(item.key))

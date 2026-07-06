@@ -29,7 +29,6 @@ from .dialogue_sequence_service import build_intake_sequence_feedback, merge_seq
 from .dialogue_sanitize_service import sanitize_spoken_line
 from .opening_turn_service import infer_session_scene_kind
 from .stage_config_service import find_stage_config, infer_scene_kind, normalize_stages
-from .prompts.training_voice_layers import TRAINING_VOICE_LAYER_PROMPT
 from .state_contract_postcheck import apply_contract_postcheck, postcheck_reply_turns, validate_response_against_contract
 from .state_influence_metrics import build_session_metrics, record_turn_metrics
 from .state_influence_engine import (
@@ -167,7 +166,7 @@ SYSTEM_PROMPT_TEMPLATE = """
   "new_fact_revealed": null,
   "is_stage_completed": false
 }}
-""" + TRAINING_VOICE_LAYER_PROMPT
+"""
 
 
 def _parse_json_list(raw_value: Any) -> list[str]:

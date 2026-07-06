@@ -352,7 +352,7 @@ const sceneScoreByKey = (key: 'face_score' | 'behavior_score' | 'attention_score
     return pickFirstFinite(scores.face_score, scene.face?.score, scene.micro_expression?.score, scene.overall?.face_score)
   }
   if (key === 'behavior_score') {
-    return pickFirstFinite(scores.behavior_score, scene.gesture?.score, scene.voice?.score, scene.overall?.behavior_score)
+    return pickFirstFinite(scores.behavior_score, scene.gesture?.score, scene.overall?.behavior_score)
   }
   if (key === 'attention_score') {
     return pickFirstFinite(scores.attention_score, scene.attention?.score, scene.overall?.attention_score)

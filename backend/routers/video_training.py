@@ -1,6 +1,6 @@
-"""
+﻿"""
 视频实训模块 - 第二阶段路由
-Session 管理、节点判定、语音关键词匹配、评估报告
+Session 管理、节点判定、关键词匹配、评估报告
 """
 import json
 from datetime import datetime
@@ -64,17 +64,16 @@ def _serialize_node_result(r: models.VideoNodeResult) -> dict:
         "score_earned": r.score_earned,
         "score_deducted": r.score_deducted,
         "answer_data": _load_json(r.answer_data, None),
-        "speech_transcript": r.speech_transcript,
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
 
 
-def _match_keywords(transcript: str, keywords: list[str]) -> bool:
-    """宽松关键词匹配：transcript 中包含任意一个关键词即通过"""
+def _match_keywords(text: str, keywords: list[str]) -> bool:
+    """宽松关键词匹配：文本中包含任意一个关键词即通过"""
     if not keywords:
         return True
-    text = transcript.lower()
-    return any(kw.lower() in text for kw in keywords)
+    normalized_text = text.lower()
+    return any(kw.lower() in normalized_text for kw in keywords)
 
 
 def _build_evaluation_report(
@@ -105,7 +104,6 @@ def _build_evaluation_report(
             "retry_count": r.retry_count,
             "score_earned": r.score_earned,
             "score_deducted": r.score_deducted,
-            "speech_transcript": r.speech_transcript,
         })
 
     pass_count = sum(1 for r in node_results if r.result == "pass")
@@ -227,7 +225,6 @@ def submit_node_result(
       retry_count: int          本节点重试次数（默认 0）
       time_used: int            实际用时（秒）
       answer_data: dict         答题数据（判断/选择题用）
-      speech_transcript: str    语音识别文本（action/voice_qa 节点用）
     """
     session = db.query(models.VideoTrainingSession).filter(
         models.VideoTrainingSession.id == session_id,
@@ -244,7 +241,6 @@ def submit_node_result(
     retry_count = int(payload.get("retry_count", 0))
     time_used = payload.get("time_used")
     answer_data = payload.get("answer_data")
-    speech_transcript = str(payload.get("speech_transcript", "") or "")
 
     node = db.query(models.VideoNode).filter(models.VideoNode.id == node_id).first()
     if not node:
@@ -268,10 +264,11 @@ def submit_node_result(
         score_earned = max(0, node.score_weight - score_deducted)
         result = "pass"
 
-        # 语音关键词校验（action / voice_qa 节点）
-        if node.node_type in ("action", "voice_qa") and speech_transcript:
+        # 关键词校验（action 节点）
+        submitted_text = str((answer_data or {}).get("text", "") if isinstance(answer_data, dict) else "")
+        if node.node_type == "action" and submitted_text:
             keywords = _load_json(node.required_keywords, [])
-            if keywords and not _match_keywords(speech_transcript, keywords):
+            if keywords and not _match_keywords(submitted_text, keywords):
                 # 关键词未匹配，额外扣一次重试分
                 score_deducted += node.retry_score_deduct
                 score_earned = max(0, node.score_weight - score_deducted)
@@ -290,7 +287,6 @@ def submit_node_result(
         existing_result.score_earned = score_earned
         existing_result.score_deducted = score_deducted
         existing_result.answer_data = json.dumps(answer_data, ensure_ascii=False) if answer_data else None
-        existing_result.speech_transcript = speech_transcript or None
         node_result = existing_result
     else:
         node_result = models.VideoNodeResult(
@@ -303,7 +299,6 @@ def submit_node_result(
             score_earned=score_earned,
             score_deducted=score_deducted,
             answer_data=json.dumps(answer_data, ensure_ascii=False) if answer_data else None,
-            speech_transcript=speech_transcript or None,
         )
         db.add(node_result)
 

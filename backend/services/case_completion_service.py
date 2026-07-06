@@ -329,6 +329,7 @@ def complete_case_information(
     target_groups: Optional[list[str]] = None,
     include_scenes: bool = True,
     source_meta: Optional[dict[str, Any]] = None,
+    scene_generation_strategy: str = "case_driven",
 ) -> dict[str, Any]:
     text = _text(source_text)
     if not text:
@@ -348,12 +349,16 @@ def complete_case_information(
         )
 
 
-    target_groups = target_groups or list(FIELD_CATALOG.keys())
-    if include_scenes and "scenes" not in target_groups:
-        target_groups = [*target_groups, "scenes"]
+    requested_target_groups = target_groups or list(FIELD_CATALOG.keys())
+    if include_scenes and "scenes" not in requested_target_groups:
+        requested_target_groups = [*requested_target_groups, "scenes"]
+
+    completion_target_groups = [group for group in requested_target_groups if group != "scenes"]
+    if not completion_target_groups:
+        completion_target_groups = ["case_basic", "fact_sheet", "lists", "persons"]
 
     existing_snapshot = existing_case if isinstance(existing_case, dict) else {}
-    target_specs = _build_target_field_specs(target_groups, mode)
+    target_specs = _build_target_field_specs(completion_target_groups, mode)
 
     user_payload = {
         "mode": mode,
@@ -440,8 +445,19 @@ def complete_case_information(
     merged_case["original_content"] = text
 
     scenes_payload: dict[str, Any] = {}
-    if include_scenes and (mode == "full" or "scenes" in (target_groups or [])):
-        scenes_payload = workflow_service.generate_scenes(merged_case, use_case_completion_officer=True)
+    if include_scenes and (mode == "full" or "scenes" in requested_target_groups):
+        try:
+            scenes_payload = workflow_service.generate_scenes(
+                merged_case,
+                use_case_completion_officer=True,
+                scene_generation_strategy=scene_generation_strategy,
+            )
+        except Exception as exc:
+            scenes_payload = {
+                "scenes": [],
+                "scene_generation_mode": "",
+                "scene_generation_warning": f"案件信息已补全，但场景生成子任务失败：{exc}",
+            }
 
     return {
         "case_info": merged_case,
@@ -456,7 +472,8 @@ def complete_case_information(
         "field_evidence": merged_case.get("field_evidence") or {},
         "completion_warnings": merged_case.get("completion_warnings") or [],
         "field_catalog": FIELD_CATALOG,
-        "target_groups": target_groups,
+        "target_groups": requested_target_groups,
+        "completion_target_groups": completion_target_groups,
     }
 
 

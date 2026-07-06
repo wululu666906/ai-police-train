@@ -88,12 +88,6 @@ def build_env() -> str:
             lines.append(f"JWT_SECRET_KEY={jwt}")
         elif line.startswith("DEEPSEEK_API_KEY=") and vals.get("DEEPSEEK_API_KEY"):
             lines.append(f"DEEPSEEK_API_KEY={vals['DEEPSEEK_API_KEY']}")
-        elif line.startswith("IFLYTEK_API_KEY=") and vals.get("IFLYTEK_API_KEY"):
-            lines.append(f"IFLYTEK_API_KEY={vals['IFLYTEK_API_KEY']}")
-        elif line.startswith("IFLYTEK_APP_ID=") and vals.get("IFLYTEK_APP_ID"):
-            lines.append(f"IFLYTEK_APP_ID={vals['IFLYTEK_APP_ID']}")
-        elif line.startswith("IFLYTEK_API_SECRET=") and vals.get("IFLYTEK_API_SECRET"):
-            lines.append(f"IFLYTEK_API_SECRET={vals['IFLYTEK_API_SECRET']}")
         else:
             lines.append(line)
     body = "\n".join(lines) + "\n"
@@ -201,14 +195,11 @@ def acceptance_tests() -> list[tuple[str, bool, str]]:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         token = json.loads(body)["access_token"]
-        req = urllib.request.Request(f"{base}/api/speech/iflytek/status")
         req.add_header("Authorization", f"Bearer {token}")
         try:
             with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
                 sb = resp.read().decode()
-                results.append(("GET /api/speech/iflytek/status", resp.status == 200, sb[:100]))
         except Exception as exc:
-            results.append(("GET /api/speech/iflytek/status", False, str(exc)))
 
     code, body = http_check(f"{base}/assets/")
     results.append(("GET /assets/ 静态资源目录", code in (200, 403), f"http={code}"))

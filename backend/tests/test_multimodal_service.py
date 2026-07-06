@@ -1,4 +1,4 @@
-import json
+﻿import json
 from datetime import datetime, timedelta
 
 import models
@@ -9,6 +9,7 @@ from services.face_service import (
     count_session_monitor_failures_total,
     create_liveness_challenge,
     cosine_similarity,
+    _liveness_probability_threshold_to_logit,
     verify_frame,
 )
 from services.multimodal_service import append_scene_performance_report, build_scene_performance_report, get_engine_status, record_event, record_frame
@@ -27,11 +28,10 @@ def test_scene_performance_report_defaults_without_multimodal_data(db_session):
     assert report["face"]["is_self"] is None
     assert report["face"]["abnormal_leave_count"] is None
     assert report["micro_expression"]["pressure_analysis"] == "暂无数据"
-    assert report["voice"]["utterance_count"] == 0
     assert report["overall"]["behavior_score"] == 0
 
 
-def test_scene_performance_report_aggregates_face_voice_and_behavior(db_session):
+def test_scene_performance_report_aggregates_face_and_behavior(db_session):
     user = models.User(username="multi_events", hashed_password="x", role="student")
     db_session.add(user)
     db_session.commit()
@@ -86,25 +86,6 @@ def test_scene_performance_report_aggregates_face_voice_and_behavior(db_session)
         payload={"tension_score": 42},
     )
     record_event(db_session, session=session, event_type="frame", category="gesture", label="open_palm", score=1)
-    record_event(
-        db_session,
-        session=session,
-        event_type="utterance_end",
-        category="voice",
-        label="utterance_end",
-        duration_ms=1800,
-        payload={"transcript": "请您先说明情况", "repeated": False},
-    )
-    record_event(
-        db_session,
-        session=session,
-        event_type="utterance_end",
-        category="voice",
-        label="repeat",
-        duration_ms=1600,
-        payload={"transcript": "请您先说明情况", "repeated": True},
-    )
-
     report = build_scene_performance_report(db_session, session.id)
 
     assert report["face"]["is_self"] is True
@@ -118,8 +99,6 @@ def test_scene_performance_report_aggregates_face_voice_and_behavior(db_session)
     assert report["gesture"]["has_normative_communication_gesture"] is True
     assert report["gesture"]["normative_rate"] is not None
     assert report["gesture"]["score"] is not None
-    assert report["voice"]["utterance_count"] == 2
-    assert report["voice"]["repeat_count"] == 1
     assert report["overall"]["behavior_score"] > 0
 
 
@@ -243,31 +222,6 @@ def test_multimodal_frame_counts_all_frame_samples_in_tool_evidence(db_session):
     assert report["tool_evidence"]["mediapipe"]["evidence_count"] >= 2
     assert report["meta"]["deepface_sample_count"] >= 2
     assert report["meta"]["mediapipe_sample_count"] >= 2
-
-
-def test_multimodal_report_enters_llm_only_without_visual_data(db_session):
-    user = models.User(username="multi_voice_only", hashed_password="x", role="student")
-    db_session.add(user)
-    db_session.commit()
-    session = models.TrainingSession(user_id=user.id, scene_id=1, status="finished")
-    db_session.add(session)
-    db_session.commit()
-
-    record_event(
-        db_session,
-        session=session,
-        event_type="utterance_end",
-        category="voice",
-        label="utterance_end",
-        duration_ms=1200,
-        payload={"transcript": "请说明现场情况", "repeated": False},
-    )
-
-    report = build_scene_performance_report(db_session, session.id)
-
-    assert report["degradation"]["level"] == 4
-    assert report["scores"]["formula_mode"] == "llm_only"
-    assert report["scores"]["final_score"] == report["voice"]["score"]
 
 
 def test_multimodal_report_exposes_tool_evidence(db_session):
@@ -546,3 +500,8 @@ def test_liveness_challenge_requires_all_actions():
 
     assert passed is False
     assert payload["missing_actions"]
+
+
+def test_liveness_threshold_uses_vendor_logit_semantics():
+    assert round(_liveness_probability_threshold_to_logit(0.50), 6) == 0
+    assert round(_liveness_probability_threshold_to_logit(0.60), 3) == 0.405

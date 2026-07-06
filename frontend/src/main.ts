@@ -10,7 +10,7 @@ import App from './App.vue'
 import { setupStudentElementPlus } from './geeker-adapt/setupElementPlus'
 import { clearAuth, getStoredRole, isLoggedIn, resetLoginRedirectState } from './utils/auth'
 
-const hiddenRoutePrefixes = ['/admin/videos', '/student/videos', '/student/video-training']
+const hiddenRoutePrefixes = ['/admin/videos', '/student/videos']
 
 // 配置路由
 const routes = [
@@ -48,7 +48,8 @@ const routes = [
       { path: 'videos', component: () => import('./views/StudentVideoHall.vue') },
       { path: 'classes', component: () => import('./views/StudentClasses.vue') },
       { path: 'history', component: () => import('./views/StudentHistory.vue') },
-      { path: 'evaluation', component: () => import('./views/StudentEvaluation.vue') }
+      { path: 'evaluation', component: () => import('./views/StudentEvaluation.vue') },
+      { path: 'settings', component: () => import('./views/StudentSettings.vue') }
     ]
   },
   { path: '/student/history/:id/dialogue', component: () => import('./views/StudentDialogueRecord.vue'), meta: { requiresAuth: true, roles: ['student', 'admin'] } },

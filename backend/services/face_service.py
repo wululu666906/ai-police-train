@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import random
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,12 +17,41 @@ from sqlalchemy.orm import Session
 import models
 from services.classroom_service import sync_assignment_submission_for_session
 from services.evaluation_service import evaluate_session
+from services.import_isolation import isolated_sys_path
 from services.multimodal_service import append_scene_performance_report
+
+
+def _find_project_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "data").exists():
+            return parent
+    return Path(__file__).resolve().parents[2]
+
+
+PROJECT_ROOT = _find_project_root()
+DEFAULT_FACE_MODEL_DIR = PROJECT_ROOT / "data" / "face_models"
+VENDOR_FACE_ANTISPOOF_ROOT = PROJECT_ROOT / "vendor" / "face_antispoof_onnx_src"
+VENDOR_FACE_LIVENESS_MODEL_PATH = (
+    VENDOR_FACE_ANTISPOOF_ROOT / "models" / "best" / "98.20" / "best_model_quantized.onnx"
+)
+
+
+def _resolve_path(value: str | Path) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    candidate = (PROJECT_ROOT / path).resolve()
+    if candidate.exists() or not str(path).startswith(".."):
+        return candidate
+    parts = path.parts
+    if "data" in parts:
+        data_index = parts.index("data")
+        return (PROJECT_ROOT / Path(*parts[data_index:])).resolve()
+    return (PROJECT_ROOT / "data" / path.name).resolve()
 
 
 FACE_SIMILARITY_THRESHOLD = float(os.getenv("FACE_SIMILARITY_THRESHOLD", "0.72"))
 FACE_HEARTBEAT_SIMILARITY_THRESHOLD = float(os.getenv("FACE_HEARTBEAT_SIMILARITY_THRESHOLD", "0.68"))
-FACE_LIVENESS_THRESHOLD = float(os.getenv("FACE_LIVENESS_THRESHOLD", "0.55"))
 FACE_MAX_FAILURES = int(os.getenv("FACE_MAX_FAILURES", "5"))
 FACE_SERIOUS_MAX_FAILURES = int(os.getenv("FACE_SERIOUS_MAX_FAILURES", "5"))
 FACE_VOTE_WINDOW = int(os.getenv("FACE_VOTE_WINDOW", "3"))
@@ -31,17 +61,40 @@ FACE_CHALLENGE_TURN_DELTA = float(os.getenv("FACE_CHALLENGE_TURN_DELTA", "0.055"
 FACE_CHALLENGE_DISTANCE_DELTA = float(os.getenv("FACE_CHALLENGE_DISTANCE_DELTA", "0.18"))
 FACE_CHALLENGE_CONSECUTIVE_HITS = int(os.getenv("FACE_CHALLENGE_CONSECUTIVE_HITS", "3"))
 FACE_CHALLENGE_BLINK_SCORE = float(os.getenv("FACE_CHALLENGE_BLINK_SCORE", "0.45"))
+FACE_LIVENESS_MODEL_PATH = _resolve_path(
+    os.getenv("FACE_LIVENESS_MODEL_PATH", str(PROJECT_ROOT / "backend" / "assets" / "face_liveness_model.onnx"))
+)
+FACE_LIVENESS_THRESHOLD = float(os.getenv("FACE_LIVENESS_THRESHOLD", "0.50"))
+FACE_LIVENESS_REAL_INDEX = int(os.getenv("FACE_LIVENESS_REAL_INDEX", "0"))
+FACE_LIVENESS_MODEL_SIZE = int(os.getenv("FACE_LIVENESS_MODEL_SIZE", "128"))
+FACE_LIVENESS_VENDOR_MODEL_PATH = _resolve_path(
+    os.getenv("FACE_LIVENESS_VENDOR_MODEL_PATH", str(VENDOR_FACE_LIVENESS_MODEL_PATH))
+)
 FACE_ENGINE_REQUIRED = os.getenv("FACE_ENGINE_REQUIRED", "1").strip().lower() in {"1", "true", "yes", "on"}
-FACE_IMAGE_DIR = Path(os.getenv("FACE_IMAGE_DIR", Path(__file__).resolve().parents[1] / "static" / "face_profiles"))
-INSIGHTFACE_MODEL_DIR = os.getenv(
-    "INSIGHTFACE_MODEL_DIR",
-    str(Path.home() / ".cache" / "ai-police-sim" / "insightface_models"),
+FACE_IMAGE_DIR = _resolve_path(os.getenv("FACE_IMAGE_DIR", Path(__file__).resolve().parents[1] / "static" / "face_profiles"))
+INSIGHTFACE_MODEL_DIR = _resolve_path(
+    os.getenv("INSIGHTFACE_MODEL_DIR", str(DEFAULT_FACE_MODEL_DIR)),
 )
 EMBEDDING_MODEL = os.getenv("INSIGHTFACE_MODEL_NAME", "buffalo_l")
 
 _face_app = None
+_face_liveness_app = None
+_face_liveness_input_name = ""
 _face_engine_error = ""
+_face_liveness_error = ""
 _challenge_store: dict[str, dict[str, Any]] = {}
+
+ACTION_LABELS = {
+    "blink": "眨眼",
+    "turn_left": "向左转头",
+    "turn_right": "向右转头",
+    "move_closer": "靠近摄像头",
+    "move_farther": "远离摄像头",
+}
+
+
+def _action_labels(actions: list[str]) -> list[str]:
+    return [ACTION_LABELS.get(action, action) for action in actions]
 
 
 def _face_service_unavailable_detail(error: Exception | str) -> str:
@@ -51,49 +104,51 @@ def _face_service_unavailable_detail(error: Exception | str) -> str:
 def _is_face_engine_unavailable(error: HTTPException | Exception | str) -> bool:
     detail = getattr(error, "detail", error)
     text = str(detail or "").lower()
-    return "face engine unavailable" in text or "insightface" in text or "onnx" in text or "模型暂不可用" in text or "model" in text
+    return "face engine unavailable" in text or "insightface" in text or "onnx" in text or "model" in text or "??" in text
 
 
 def localize_face_reason(reason: Any) -> str:
     text = str(reason or "").strip()
     lowered = text.lower()
     if not text:
-        return "人脸核验异常"
+        return "人脸验证失败"
+    if set(text) == {"?"}:
+        return "人脸验证未通过，请按提示调整后重试。"
     if "insightface unavailable" in lowered:
-        return "人脸识别依赖未安装或不可用，请先检查人脸识别配置。"
+        return "人脸识别模型暂不可用，请检查后端模型服务。"
     if "model init failed" in lowered:
         return "人脸识别模型初始化失败，请检查模型文件和运行环境。"
     if "invalid image" in lowered:
-        return "图片格式无效，请上传清晰的本人正脸照片。"
+        return "画面格式无效，请重新采集。"
     if "invalid camera frame" in lowered:
-        return "摄像头画面格式无效，请刷新页面或重新开启摄像头后重试。"
+        return "摄像头画面无效，请保持摄像头正常工作。"
     if "no face detected" in lowered or "no face" in lowered:
-        return "未检测到人脸，请将本人面部置于圆形识别区域内。"
+        return "未检测到人脸，请正对摄像头。"
     if "multiple faces" in lowered or "multiple" in lowered:
-        return "检测到多人入镜，请保持单人面对摄像头。"
+        return "检测到多人入镜，请保持单人验证。"
     if "embedding extraction" in lowered:
-        return "人脸特征提取失败，请保持正脸、光线充足后重试。"
+        return "人脸特征提取失败，请调整光线后重试。"
     if "please choose a face photo" in lowered:
-        return "请选择本人正脸照片。"
+        return "请选择人脸照片。"
     if "image must not exceed" in lowered:
         return "图片大小不能超过 8MB。"
     if "invalid face profile" in lowered:
-        return "人脸档案无效，请在管理端重新注册人脸照片。"
+        return "人脸档案无效，请重新注册。"
     if "no registered face profile" in lowered or "registered face profile" in lowered:
-        return "当前账号尚未在管理端注册人脸档案。"
+        return "当前账号尚未注册人脸档案。"
     if "liveness failed" in lowered or "liveness" in lowered:
-        return "活体检测未通过，请本人正对摄像头并保持自然动作。"
+        return "活体识别未通过，请移除照片、屏幕或其他攻击介质后重试。"
     if "face mismatch" in lowered or "mismatch" in lowered:
         return "当前人脸与注册学员不一致，请确认由本人参加训练。"
     if lowered == "passed":
-        return "身份验证通过"
+        return "人脸验证通过"
     if "unknown evaluator error" in lowered:
-        return "评估服务异常，系统已生成异常终止说明。"
+        return "评估生成失败，已生成兜底报告。"
     return text
-
 
 @dataclass
 class FaceExtraction:
+    frame: np.ndarray
     embedding: list[float]
     face_count: int
     detection_score: float
@@ -106,13 +161,10 @@ def _load_engine():
     if _face_app is not None:
         return _face_app
     try:
-        from insightface.app import FaceAnalysis
-    except Exception as error:
-        _face_engine_error = _face_service_unavailable_detail(error)
-        raise HTTPException(status_code=503, detail=_face_engine_error)
+        with isolated_sys_path(INSIGHTFACE_MODEL_DIR):
+            from insightface.app import FaceAnalysis
 
-    try:
-        app = FaceAnalysis(name=EMBEDDING_MODEL, root=INSIGHTFACE_MODEL_DIR, providers=["CPUExecutionProvider"])
+        app = FaceAnalysis(name=EMBEDDING_MODEL, root=str(INSIGHTFACE_MODEL_DIR), providers=["CPUExecutionProvider"])
         app.prepare(ctx_id=-1, det_size=(640, 640))
         _face_app = app
         _face_engine_error = ""
@@ -122,20 +174,65 @@ def _load_engine():
         raise HTTPException(status_code=503, detail=_face_engine_error)
 
 
+def _ensure_liveness_model_file() -> Path:
+    if FACE_LIVENESS_MODEL_PATH.exists():
+        return FACE_LIVENESS_MODEL_PATH
+    if FACE_LIVENESS_VENDOR_MODEL_PATH.exists():
+        FACE_LIVENESS_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(FACE_LIVENESS_VENDOR_MODEL_PATH, FACE_LIVENESS_MODEL_PATH)
+        return FACE_LIVENESS_MODEL_PATH
+    return FACE_LIVENESS_MODEL_PATH
+
+
+def _load_liveness_engine():
+    global _face_liveness_app, _face_liveness_error, _face_liveness_input_name
+    if _face_liveness_app is not None:
+        return _face_liveness_app
+    try:
+        with isolated_sys_path(VENDOR_FACE_ANTISPOOF_ROOT):
+            import onnxruntime as ort
+    except Exception as error:
+        _face_liveness_error = _face_service_unavailable_detail(error)
+        raise HTTPException(status_code=503, detail=_face_liveness_error)
+    model_path = _ensure_liveness_model_file()
+    if not model_path.exists():
+        _face_liveness_error = f"活体识别模型不存在：{FACE_LIVENESS_MODEL_PATH}"
+        raise HTTPException(status_code=503, detail=_face_liveness_error)
+    try:
+        session_options = ort.SessionOptions()
+        session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        session = ort.InferenceSession(str(model_path), sess_options=session_options, providers=["CPUExecutionProvider"])
+        _face_liveness_app = session
+        _face_liveness_input_name = session.get_inputs()[0].name
+        _face_liveness_error = ""
+        return session
+    except Exception as error:
+        _face_liveness_error = _face_service_unavailable_detail(error)
+        raise HTTPException(status_code=503, detail=_face_liveness_error)
+
+
 def engine_status() -> dict[str, Any]:
     model_path = Path(INSIGHTFACE_MODEL_DIR) / "models" / EMBEDDING_MODEL
     expected_files = ["det_10g.onnx", "w600k_r50.onnx"]
+    dependency_status = _face_dependency_status()
     return {
         "engine": "insightface",
         "model": EMBEDDING_MODEL,
-        "model_dir": INSIGHTFACE_MODEL_DIR,
+        "model_dir": str(INSIGHTFACE_MODEL_DIR),
         "model_path": str(model_path),
         "model_files_ready": all((model_path / filename).exists() for filename in expected_files),
         "expected_files": expected_files,
+        "liveness_model_path": str(FACE_LIVENESS_MODEL_PATH),
+        "liveness_vendor_model_path": str(FACE_LIVENESS_VENDOR_MODEL_PATH),
+        "liveness_model_ready": _ensure_liveness_model_file().exists(),
+        "liveness_model_size": FACE_LIVENESS_MODEL_SIZE,
+        "dependencies": dependency_status,
         "engine_required": FACE_ENGINE_REQUIRED,
         "degraded_allowed": not FACE_ENGINE_REQUIRED,
         "loaded": _face_app is not None,
+        "liveness_loaded": _face_liveness_app is not None,
         "last_error": _face_engine_error,
+        "liveness_last_error": _face_liveness_error,
         "similarity_threshold": FACE_SIMILARITY_THRESHOLD,
         "heartbeat_similarity_threshold": FACE_HEARTBEAT_SIMILARITY_THRESHOLD,
         "liveness_threshold": FACE_LIVENESS_THRESHOLD,
@@ -145,6 +242,33 @@ def engine_status() -> dict[str, Any]:
         "challenge_consecutive_hits": FACE_CHALLENGE_CONSECUTIVE_HITS,
         "challenge_blink_score": FACE_CHALLENGE_BLINK_SCORE,
     }
+
+
+def _face_dependency_status() -> dict[str, Any]:
+    import importlib.util
+
+    dependencies = {}
+    for module_name in ("insightface", "onnxruntime", "cv2", "numpy"):
+        spec = importlib.util.find_spec(module_name)
+        dependencies[module_name] = {
+            "available": spec is not None,
+            "origin": getattr(spec, "origin", None) if spec else None,
+        }
+    return dependencies
+
+
+def warmup_face_engine_async() -> None:
+    import threading
+
+    def _warmup() -> None:
+        try:
+            _load_engine()
+            _load_liveness_engine()
+        except Exception as error:
+            print(f"Face engine warmup failed: {error}")
+
+    thread = threading.Thread(target=_warmup, name="face-engine-warmup", daemon=True)
+    thread.start()
 
 
 def create_liveness_challenge(session_id: int, student_id: int) -> dict[str, Any]:
@@ -163,9 +287,10 @@ def create_liveness_challenge(session_id: int, student_id: int) -> dict[str, Any
     return {
         "challenge_id": challenge_id,
         "actions": actions,
+        "action_labels": _action_labels(actions),
         "expires_at": expires_at.isoformat(),
         "mode": "action_challenge",
-        "notice": "当前为动作挑战活体，不是金融级红外/深度活体。",
+        "notice": "请按顺序完成动作挑战，系统会同时使用 MiniFAS ONNX 模型判断是否为真人。",
     }
 
 
@@ -177,15 +302,15 @@ def validate_liveness_challenge(
     liveness_actions: list[dict[str, Any]] | None,
 ) -> tuple[bool, dict[str, Any], str]:
     if not challenge_id:
-        return False, {"mode": "action_challenge", "passed": False, "reason": "missing_challenge"}, "缺少活体挑战，请重新获取验证动作。"
+        return False, {"mode": "action_challenge", "passed": False, "reason": "missing_challenge"}, "活体挑战尚未创建，请重新开始验证。"
     challenge = _challenge_store.get(challenge_id)
     if not challenge:
-        return False, {"mode": "action_challenge", "passed": False, "reason": "invalid_challenge"}, "活体挑战已失效，请重新验证。"
+        return False, {"mode": "action_challenge", "passed": False, "reason": "invalid_challenge"}, "活体挑战已失效，请重新开始验证。"
     if challenge["session_id"] != session_id or challenge["student_id"] != student_id:
         return False, {"mode": "action_challenge", "passed": False, "reason": "challenge_mismatch"}, "活体挑战与当前会话不匹配。"
     if datetime.utcnow() > challenge["expires_at"]:
         _challenge_store.pop(challenge_id, None)
-        return False, {"mode": "action_challenge", "passed": False, "reason": "challenge_expired"}, "活体挑战已过期，请重新验证。"
+        return False, {"mode": "action_challenge", "passed": False, "reason": "challenge_expired"}, "活体挑战已超时，请重新开始验证。"
 
     completed = {
         str(item.get("action")): bool(item.get("passed"))
@@ -201,9 +326,10 @@ def validate_liveness_challenge(
         "completed_actions": completed,
         "passed": not missing,
         "missing_actions": missing,
+        "missing_action_labels": _action_labels(missing),
     }
     if missing:
-        return False, payload, "活体动作未完成，请按提示完成眨眼、转头或张嘴动作。"
+        return False, payload, f"请继续完成动作：{'、'.join(_action_labels(missing))}"
     _challenge_store.pop(challenge_id, None)
     return True, payload, "活体动作验证通过"
 
@@ -216,15 +342,15 @@ def update_liveness_challenge_from_quality(
     quality: dict[str, Any],
 ) -> tuple[bool, dict[str, Any], str]:
     if not challenge_id:
-        return False, {"mode": "server_action_challenge", "passed": False, "reason": "missing_challenge"}, "缺少活体挑战，请重新开始验证。"
+        return False, {"mode": "server_action_challenge", "passed": False, "reason": "missing_challenge"}, "活体挑战尚未创建。"
     challenge = _challenge_store.get(challenge_id)
     if not challenge:
-        return False, {"mode": "server_action_challenge", "passed": False, "reason": "invalid_challenge"}, "活体挑战已失效，请重新开始验证。"
+        return False, {"mode": "server_action_challenge", "passed": False, "reason": "invalid_challenge"}, "活体挑战不存在或已失效。"
     if challenge["session_id"] != session_id or challenge["student_id"] != student_id:
         return False, {"mode": "server_action_challenge", "passed": False, "reason": "challenge_mismatch"}, "活体挑战与当前会话不匹配。"
     if datetime.utcnow() > challenge["expires_at"]:
         _challenge_store.pop(challenge_id, None)
-        return False, {"mode": "server_action_challenge", "passed": False, "reason": "challenge_expired"}, "活体挑战已过期，请重新开始验证。"
+        return False, {"mode": "server_action_challenge", "passed": False, "reason": "challenge_expired"}, "活体挑战已超时，请重新开始验证。"
 
     required = list(challenge.get("actions") or [])
     bbox = quality.get("bbox") or [0, 0, 0, 0]
@@ -250,16 +376,15 @@ def update_liveness_challenge_from_quality(
             "completed_actions": {},
             "passed": False,
             "missing_actions": required,
+            "missing_action_labels": _action_labels(required),
         }
-        return False, payload, "已检测到人脸，请按提示完成动作。"
+        return False, payload, "请保持正对摄像头，系统正在建立动作基准。"
 
     baseline = challenge["baseline"]
     completed = dict(challenge.get("completed") or {})
     hits = dict(challenge.get("hits") or {})
     base_x = float(baseline.get("center_x") or 0.5)
     base_area = max(float(baseline.get("area_ratio") or area_ratio), 0.001)
-    # The camera preview is mirrored for the learner, so left/right challenge labels
-    # are interpreted from the learner's perspective instead of the raw image axis.
     action_matched = {
         "blink": client_completed.get("blink") or blink_score >= FACE_CHALLENGE_BLINK_SCORE,
         "turn_left": center_x > base_x + FACE_CHALLENGE_TURN_DELTA,
@@ -286,18 +411,18 @@ def update_liveness_challenge_from_quality(
         "completed_actions": completed,
         "passed": not missing,
         "missing_actions": missing,
+        "missing_action_labels": _action_labels(missing),
     }
     if missing:
-        return False, payload, "动作未完成，请继续按提示调整。"
+        return False, payload, f"请继续完成动作：{'、'.join(_action_labels(missing))}"
     _challenge_store.pop(challenge_id, None)
     return True, payload, "活体动作验证通过。"
-
 
 def _image_to_array(raw: bytes) -> np.ndarray:
     try:
         image = Image.open(__import__("io").BytesIO(raw)).convert("RGB")
     except Exception:
-        raise HTTPException(status_code=400, detail="图片格式无效，请上传清晰的本人正脸照片。")
+        raise HTTPException(status_code=400, detail="图片格式无效，请上传清晰的人脸照片。")
     return np.asarray(image)
 
 
@@ -317,13 +442,13 @@ def _is_circular_visible_region(quality: dict[str, Any]) -> bool:
 def _quality_reason(quality: dict[str, Any]) -> tuple[str, str, str] | None:
     center_limit = 0.44 if _is_circular_visible_region(quality) else 0.34
     if quality.get("face_area_ratio", 0) < 0.055:
-        return ("face_too_small", "人脸占比过小，请靠近摄像头并置于识别框内。", "minor")
+        return ("face_too_small", "人脸距离摄像头过远，请靠近后重试。", "minor")
     if quality.get("center_offset", 1) > center_limit:
-        return ("face_off_center", "人脸偏离识别区域中心，请正对摄像头。", "medium")
+        return ("face_off_center", "请将人脸放在圆形区域中央。", "medium")
     if quality.get("brightness", 0) < 42:
-        return ("low_light", "光线不足，请面向光源或提高环境亮度。", "minor")
+        return ("low_light", "当前光线偏暗，请补充光线。", "minor")
     if quality.get("detection_score", 0) < 0.45:
-        return ("low_detection_confidence", "人脸检测置信度较低，请调整角度和光线。", "minor")
+        return ("low_detection_confidence", "人脸检测置信度偏低，请正对摄像头。", "minor")
     return None
 
 
@@ -360,6 +485,72 @@ def _frame_quality(frame: np.ndarray, face: Any, face_count: int) -> dict[str, A
     return quality
 
 
+def _face_crop(frame: np.ndarray, bbox: list[float], *, margin: float = 0.2) -> np.ndarray:
+    height, width = frame.shape[:2]
+    x1, y1, x2, y2 = [float(item) for item in bbox[:4]]
+    face_width = max(1.0, x2 - x1)
+    face_height = max(1.0, y2 - y1)
+    pad_x = face_width * margin
+    pad_y = face_height * margin
+    left = max(0, int(round(x1 - pad_x)))
+    top = max(0, int(round(y1 - pad_y)))
+    right = min(width, int(round(x2 + pad_x)))
+    bottom = min(height, int(round(y2 + pad_y)))
+    crop = frame[top:bottom, left:right]
+    if crop.size == 0:
+        crop = frame
+    image = Image.fromarray(crop).convert("RGB")
+    return np.asarray(image, dtype=np.float32)
+
+
+def _preprocess_liveness_face(crop: np.ndarray) -> np.ndarray:
+    with isolated_sys_path(VENDOR_FACE_ANTISPOOF_ROOT):
+        from src.inference.preprocess import preprocess_batch
+
+    return preprocess_batch([crop.astype(np.uint8)], FACE_LIVENESS_MODEL_SIZE)
+
+
+def _liveness_probability_threshold_to_logit(threshold: float) -> float:
+    probability = max(1e-6, min(1 - 1e-6, float(threshold)))
+    return float(np.log(probability / (1 - probability)))
+
+
+def _predict_liveness(frame: np.ndarray, face: Any) -> dict[str, Any]:
+    session = _load_liveness_engine()
+    bbox = [float(v) for v in np.asarray(getattr(face, "bbox", [0, 0, frame.shape[1], frame.shape[0]]), dtype=np.float32)[:4]]
+    crop = _face_crop(frame, bbox)
+    input_tensor = _preprocess_liveness_face(crop)
+    input_name = _face_liveness_input_name or session.get_inputs()[0].name
+    outputs = session.run(None, {input_name: input_tensor})
+    scores = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
+    if scores.size < 2:
+        raise HTTPException(status_code=503, detail="活体识别模型输出异常。")
+    real_index = min(max(FACE_LIVENESS_REAL_INDEX, 0), scores.size - 1)
+    spoof_index = 0 if real_index == 1 else 1
+    real_logit = float(scores[real_index])
+    spoof_logit = float(scores[spoof_index])
+    logit_diff = real_logit - spoof_logit
+    logit_threshold = _liveness_probability_threshold_to_logit(FACE_LIVENESS_THRESHOLD)
+    real_score = float(1 / (1 + np.exp(-logit_diff)))
+    spoof_score = float(1 - real_score)
+    passed = logit_diff >= logit_threshold
+    return {
+        "passed": passed,
+        "score": round(real_score, 4),
+        "spoof_score": round(spoof_score, 4),
+        "raw_scores": [round(float(item), 4) for item in scores.tolist()],
+        "real_logit": round(real_logit, 4),
+        "spoof_logit": round(spoof_logit, 4),
+        "logit_diff": round(float(logit_diff), 4),
+        "threshold": FACE_LIVENESS_THRESHOLD,
+        "decision_threshold": round(logit_threshold, 4),
+        "model_path": str(FACE_LIVENESS_MODEL_PATH),
+        "input_shape": [1, 3, FACE_LIVENESS_MODEL_SIZE, FACE_LIVENESS_MODEL_SIZE],
+        "engine": "MiniFAS ONNX",
+        "mode": "logit_diff",
+    }
+
+
 def _merge_client_quality(quality: dict[str, Any], client_quality: dict[str, Any] | None) -> dict[str, Any]:
     merged = {**quality, "client_quality": client_quality or {}}
     reason = _quality_reason(merged)
@@ -380,7 +571,7 @@ def decode_data_url(data_url: str) -> bytes:
     try:
         return base64.b64decode(value)
     except Exception:
-        raise HTTPException(status_code=400, detail="摄像头画面格式无效，请刷新页面或重新开启摄像头后重试。")
+        raise HTTPException(status_code=400, detail="摄像头画面数据无效，请重新采集。")
 
 
 def extract_face(raw: bytes) -> FaceExtraction:
@@ -393,9 +584,9 @@ def extract_face(raw: bytes) -> FaceExtraction:
         if faces:
             frame = enhanced_frame
     if not faces:
-        raise HTTPException(status_code=422, detail="未检测到人脸，请将本人面部置于圆形识别区域内。")
+        raise HTTPException(status_code=422, detail="未检测到人脸，请正对摄像头。")
     if len(faces) > 1:
-        raise HTTPException(status_code=422, detail="检测到多人入镜，请保持单人面对摄像头。")
+        raise HTTPException(status_code=422, detail="检测到多人入镜，请保持单人验证。")
 
     face = faces[0]
     quality = _frame_quality(frame, face, len(faces))
@@ -403,12 +594,13 @@ def extract_face(raw: bytes) -> FaceExtraction:
     if embedding is None:
         embedding = getattr(face, "embedding", None)
     if embedding is None:
-        raise HTTPException(status_code=422, detail="人脸特征提取失败，请保持正脸、光线充足后重试。")
+        raise HTTPException(status_code=422, detail="人脸特征提取失败，请调整光线后重试。")
     vector = np.asarray(embedding, dtype=np.float32)
     norm = np.linalg.norm(vector)
     if norm > 0:
         vector = vector / norm
     return FaceExtraction(
+        frame=frame,
         embedding=vector.astype(float).tolist(),
         face_count=len(faces),
         detection_score=float(getattr(face, "det_score", 0) or 0),
@@ -420,7 +612,7 @@ def extract_face(raw: bytes) -> FaceExtraction:
 async def read_upload(file: UploadFile) -> bytes:
     raw = await file.read()
     if not raw:
-        raise HTTPException(status_code=400, detail="请选择本人正脸照片。")
+        raise HTTPException(status_code=400, detail="请选择人脸照片。")
     if len(raw) > 8 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="图片大小不能超过 8MB。")
     return raw
@@ -447,7 +639,7 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
 
 def register_profile(db: Session, student: models.User, raw: bytes) -> models.FaceProfile:
     extraction = extract_face(raw)
-    quality_payload = _merge_client_quality(extraction.quality, client_quality)
+    quality_payload = _merge_client_quality(extraction.quality, None)
     quality_reason = _quality_reason(quality_payload)
     if quality_reason:
         raise HTTPException(status_code=422, detail=quality_reason[1])
@@ -517,7 +709,7 @@ def _profile_embeddings(profile: models.FaceProfile) -> list[list[float]]:
     except Exception:
         value = []
     if not isinstance(value, list) or not value:
-        raise HTTPException(status_code=409, detail="人脸档案无效，请在管理端重新注册人脸照片。")
+        raise HTTPException(status_code=409, detail="人脸档案无效，请重新注册。")
     return [[float(item) for item in value]]
 
 
@@ -627,24 +819,24 @@ def build_adaptive_fallback_report(
 ) -> dict[str, Any]:
     return {
         "total_score": 0,
-        "grade_level": "不合格",
+        "grade_level": "未通过",
         "strengths": [],
         "improvements": [
-            "训练期间请保持本人持续位于圆形人脸识别区域内。",
-            "请避免离开画面、多人同时入镜或由他人替训。",
-            "重新训练前请确认管理端人脸档案、摄像头光线和 VideoCap/USB 摄像头连接正常。",
+            "训练过程中人脸监控连续异常，未能完成有效训练。",
+            "请确认摄像头可用、本人在镜头内，并重新开始训练。",
+            "重新训练前建议检查光线、坐姿和人脸档案是否正确。",
         ],
-        "suggestions": "本次训练因人脸识别异常累计达到上限而自动终止。请确认本人正对摄像头、保持单人入镜后重新训练。",
+        "suggestions": "本次训练因人脸验证异常中断，请处理摄像头、人脸档案或本人验证问题后重新训练。",
         "assessment_point_results": [],
         "common_reviews": [
             {
-                "title": "人脸识别异常自动终止",
-                "content": "系统检测到离开识别区域、身份不匹配、多人入镜或活体异常累计达到上限，已自动结束本次训练。",
+                "title": "人脸验证异常",
+                "content": "系统检测到人脸验证连续异常，已终止训练并生成兜底记录。",
             }
         ],
         "assessment_check_results": [],
         "termination_reason": "multimodal_guard_finished",
-        "termination_report": "人脸识别异常累计达到上限，系统已自动终止训练并生成评估结果。",
+        "termination_report": "训练因人脸验证连续异常被系统自动终止。",
         "failure_count": failure_count,
         "last_reason": localize_face_reason(reason),
         "evaluation_meta": {
@@ -657,12 +849,12 @@ def build_adaptive_fallback_report(
             "assessment_completion": {"weight_rate": 0, "hit_count": 0, "total_count": 0},
             "report_header": {
                 "total_score": 0,
-                "grade_level": "不合格",
-                "evaluator": "系统评估",
+                "grade_level": "未通过",
+                "evaluator": "系统自动评估",
             },
             "stage_gap_summary": {
-                "missing": ["本人持续在场", "人脸身份一致", "活体状态有效"],
-                "summary": "人脸识别异常触发自动终止，未形成完整训练闭环。",
+                "missing": ["身份验证稳定性", "训练过程完整性", "摄像头在线状态"],
+                "summary": "训练过程被人脸验证异常打断，无法形成完整对话表现。",
             },
         },
     }
@@ -679,7 +871,7 @@ def _finalize_face_termination(
         models.Message(
             session_id=session.id,
             role="system",
-            content="【系统自动终止】人脸识别异常累计达到上限，本次训练已结束并进入评估流程。",
+            content="系统检测到人脸验证连续异常，本次训练已自动终止并进入评估。",
         )
     )
     session.status = "evaluating"
@@ -698,24 +890,14 @@ def _finalize_face_termination(
         meta["trigger"] = "multimodal_guard"
         meta["auto_finished"] = True
         report["termination_reason"] = "multimodal_guard_finished"
-        report["termination_report"] = "人脸识别异常累计达到上限，系统已自动终止训练并完成当前评估流程。"
+        report["termination_report"] = "系统检测到人脸验证连续异常，本次训练已自动终止。请确认本人在镜头内并保持摄像头在线。"
         report["failure_count"] = failure_count
         report["last_reason"] = localize_face_reason(reason)
-        report["termination_report"] = "系统已根据实训检测守护规则自动结束训练，并生成完整评估报告。人脸异常作为实训检测事件纳入报告，不再覆盖能力评估结论。"
         report["face_monitor"] = {
             "termination_reason": "face_verification_failed",
             "failure_count": failure_count,
             "last_reason": localize_face_reason(reason),
         }
-        report["termination_reason"] = "multimodal_guard_finished"
-        report["termination_report"] = "系统已根据实训检测守护规则自动结束训练；因常规评估生成失败，当前报告以实训检测兜底结果为准。"
-        report["face_monitor"] = {
-            "termination_reason": "face_verification_failed",
-            "failure_count": failure_count,
-            "last_reason": localize_face_reason(reason),
-        }
-        report["termination_reason"] = "multimodal_guard_finished"
-        report["termination_report"] = "\u7cfb\u7edf\u5df2\u6839\u636e\u5b9e\u8bad\u68c0\u6d4b\u5b88\u62a4\u89c4\u5219\u81ea\u52a8\u7ed3\u675f\u8bad\u7ec3\uff0c\u5e76\u751f\u6210\u5b8c\u6574\u8bc4\u4f30\u62a5\u544a\u3002\u4eba\u8138\u5f02\u5e38\u4f5c\u4e3a\u5b9e\u8bad\u68c0\u6d4b\u4e8b\u4ef6\u7eb3\u5165\u62a5\u544a\uff0c\u4e0d\u518d\u8986\u76d6\u80fd\u529b\u8bc4\u4f30\u7ed3\u8bba\u3002"
         report = append_scene_performance_report(db, session.id, report)
         session.status = "finished"
         session.evaluation_result = json.dumps(report, ensure_ascii=False)
@@ -725,10 +907,10 @@ def _finalize_face_termination(
             session=session,
             failure_count=failure_count,
             reason=reason,
-            error=str(report.get("error") if isinstance(report, dict) else "评估服务异常"),
+            error=str(report.get("error") if isinstance(report, dict) else "未知评估错误"),
         )
         report["termination_reason"] = "multimodal_guard_finished"
-        report["termination_report"] = "\u7cfb\u7edf\u5df2\u6839\u636e\u5b9e\u8bad\u68c0\u6d4b\u5b88\u62a4\u89c4\u5219\u81ea\u52a8\u7ed3\u675f\u8bad\u7ec3\uff1b\u56e0\u5e38\u89c4\u8bc4\u4f30\u751f\u6210\u5931\u8d25\uff0c\u5f53\u524d\u62a5\u544a\u4ee5\u5b9e\u8bad\u68c0\u6d4b\u515c\u5e95\u7ed3\u679c\u4e3a\u51c6\u3002"
+        report["termination_report"] = "系统检测到人脸验证连续异常，本次训练已自动终止。"
         report["face_monitor"] = {
             "termination_reason": "face_verification_failed",
             "failure_count": failure_count,
@@ -763,7 +945,7 @@ def record_event(
 ) -> models.FaceVerificationEvent:
     if auto_finalize:
         failure_basis = _count_consecutive_session_failures(db, session.id, monitor_only=True)
-        failure_count = failure_basis + 1 if status == "failed" else failure_basis
+        failure_count = failure_basis + 1 if status == "failed" else 0
     else:
         failure_count = 0
     event = models.FaceVerificationEvent(
@@ -831,12 +1013,11 @@ def verify_frame(
         )
         return _verification_response(False, event, None, reason)
 
-    challenge_payload: dict[str, Any] | None = None
-
     try:
         extraction = extract_face(decode_data_url(frame_data_url))
     except HTTPException as error:
-        reason_code = "multiple_faces" if "多人" in str(error.detail) else "no_face"
+        detail_text = str(error.detail or "")
+        reason_code = "multiple_faces" if "multiple" in detail_text.lower() or "多人" in detail_text else "no_face"
         abnormal_level = "serious" if reason_code in {"multiple_faces", "no_face"} else "medium"
         event = record_event(
             db,
@@ -853,43 +1034,28 @@ def verify_frame(
 
     quality_payload = _merge_client_quality(extraction.quality, client_quality)
     quality_reason = _quality_reason(quality_payload)
-    if quality_reason and event_type == "verify":
-        reason_code, reason_text, abnormal_level = quality_reason
-        event = record_event(
-            db,
-            session=session,
-            event_type=event_type,
-            status="failed",
-            reason=reason_text,
-            liveness_score=liveness_score,
-            auto_finalize=auto_finalize,
-            reason_code=reason_code,
-            quality=quality_payload,
-            abnormal_level=abnormal_level,
-        )
-        return _verification_response(
-            False,
-            event,
-            None,
-            reason_text,
-            detection_score=extraction.detection_score,
-            quality=quality_payload,
-        )
-
     similarities = [cosine_similarity(template, extraction.embedding) for template in _profile_embeddings(profile)]
     similarity = max(similarities) if similarities else 0.0
     best_template_index = similarities.index(similarity) if similarities else -1
-    live_score = float(liveness_score if liveness_score is not None else 1.0)
+
     similarity_threshold = FACE_HEARTBEAT_SIMILARITY_THRESHOLD if event_type == "heartbeat" else FACE_SIMILARITY_THRESHOLD
     if quality_payload.get("blur", 0) < 22 and quality_payload.get("detection_score", 0) >= 0.5:
         similarity_threshold -= 0.03 if event_type == "heartbeat" else 0.04
     similarity_threshold = max(0.58 if event_type == "heartbeat" else 0.62, similarity_threshold)
-    quality_penalty = quality_reason is not None and event_type == "heartbeat"
     identity_passed = similarity >= similarity_threshold
-    passed = identity_passed and live_score >= FACE_LIVENESS_THRESHOLD and not (event_type == "verify" and quality_reason)
+
+    liveness_result = _predict_liveness(extraction.frame, extraction)
+    live_score = float(liveness_result["score"])
+    passed = identity_passed and liveness_result["passed"] and not quality_reason
+
     reason_code = None
     abnormal_level = None
-    if event_type == "verify" and identity_passed and not quality_reason:
+    challenge_payload: dict[str, Any] | None = None
+    if not liveness_result["passed"]:
+        reason = "活体识别未通过，请移除照片、屏幕或其他攻击介质后重试。"
+        reason_code = "liveness_failed"
+        abnormal_level = "serious"
+    elif event_type == "verify" and identity_passed and not quality_reason:
         challenge_passed, challenge_payload, challenge_reason = update_liveness_challenge_from_quality(
             session_id=session.id,
             student_id=session.user_id,
@@ -905,18 +1071,15 @@ def verify_frame(
             reason_code = "liveness_challenge_pending"
             abnormal_level = "minor"
     elif passed:
-        reason = "身份验证通过"
-    elif live_score < FACE_LIVENESS_THRESHOLD:
-        reason = "活体检测未通过，请本人正对摄像头并保持自然动作。"
-        reason_code = "liveness_failed"
-        abnormal_level = "serious"
-    elif quality_penalty and quality_reason:
+        reason = "人脸已回到识别区域。"
+    elif quality_reason:
         reason_code, reason, abnormal_level = quality_reason
         abnormal_level = "minor"
     else:
         reason = "当前人脸与注册学员不一致，请确认由本人参加训练。"
         reason_code = "face_mismatch"
         abnormal_level = "serious" if similarity < max(0.45, similarity_threshold - 0.15) else "medium"
+
     event = record_event(
         db,
         session=session,
@@ -928,7 +1091,7 @@ def verify_frame(
         auto_finalize=auto_finalize,
         reason_code=reason_code,
         quality={**quality_payload, "best_template_index": best_template_index},
-        liveness=challenge_payload or {"score": live_score, "mode": "monitor"},
+        liveness={**liveness_result, "challenge": challenge_payload, "mode": "model_antispoof"},
         abnormal_level=abnormal_level,
     )
     vote = _vote_window(db, session.id) if auto_finalize else None
@@ -945,7 +1108,7 @@ def verify_frame(
         vote_window=vote,
         abnormal_level=abnormal_level,
         reason_code=reason_code,
-        liveness=challenge_payload,
+        liveness=challenge_payload or liveness_result,
         terminated=terminated,
     )
 
@@ -980,6 +1143,7 @@ def _verification_response(
         "reason_code": reason_code,
         "liveness": liveness,
         "failure_count": event.failure_count,
+        "monitor_failure_count": event.failure_count,
         "max_failures": FACE_MAX_FAILURES,
         "terminated": terminated,
         "event_id": event.id,

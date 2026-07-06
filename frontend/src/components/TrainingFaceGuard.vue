@@ -19,6 +19,7 @@
       <p v-if="failureCount >= maxFailures">学员离开或人脸异常已连续达到上限，系统将自动终止训练并进入评估报告。</p>
       <div v-if="mode === 'gate'" class="face-guard__actions">
         <van-button size="small" type="primary" :loading="verifying" @click="runVerify">开始验证</van-button>
+        <van-button v-if="allowSkipVerify" size="small" plain hairline type="default" :disabled="verifying" @click="skipVerify">跳过验证</van-button>
       </div>
     </div>
 
@@ -32,10 +33,20 @@
       <div class="face-challenge">
         <div class="face-challenge__circle">
           <video ref="dialogVideoRef" autoplay muted playsinline></video>
-          <div v-if="!cameraReady" class="face-challenge__mask">正在打开摄像头</div>
+          <div v-if="!cameraReady" class="face-challenge__mask">正在打开摄像头...</div>
         </div>
         <strong>{{ challengeTitle }}</strong>
         <p>{{ challengeHint }}</p>
+        <div v-if="challengeActions.length" class="face-challenge__steps">
+          <span
+            v-for="action in challengeActions"
+            :key="action"
+            class="face-challenge__step"
+            :class="{ 'face-challenge__step--done': completedActions[action] }"
+          >
+            {{ completedActions[action] ? '已完成' : '待完成' }}：{{ actionLabels[action] || action }}
+          </span>
+        </div>
         <van-button size="small" plain hairline type="default" @click="cancelVerify">退出验证</van-button>
       </div>
     </van-dialog>
@@ -54,6 +65,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'verified'): void
+  (event: 'skipped'): void
   (event: 'failed', message: string): void
   (event: 'terminated', payload: any): void
   (event: 'heartbeat-frame', payload: { frame: string, client_signals: any, face_result: any, source?: string }): void
@@ -76,6 +88,7 @@ const heartbeatInFlight = ref(false)
 const challengeDialogVisible = ref(false)
 const challengeId = ref('')
 const challengeActions = ref<string[]>([])
+const completedActions = ref<Record<string, boolean>>({})
 const challengeHint = ref('请将脸部放在圆形区域内，系统正在检测。')
 const lastFrameAverage = ref<number | null>(null)
 const lastFrameSignature = ref<number[] | null>(null)
@@ -96,6 +109,7 @@ const actionLabels: Record<string, string> = {
 }
 
 const mode = computed(() => props.mode || (verified.value ? 'monitor' : 'gate'))
+const allowSkipVerify = computed(() => import.meta.env.DEV && import.meta.env.VITE_FACE_VERIFICATION_SKIP_ENABLED === '1')
 const badgeText = computed(() => {
   if (failureCount.value >= maxFailures.value) return '已中断'
   if (verified.value) return '已通过'
@@ -111,6 +125,7 @@ const localizeFaceMessage = (value: any, fallback = '人脸验证失败，请调
   const text = String(value || '').trim()
   const lowered = text.toLowerCase()
   if (!text) return fallback
+  if (/^\?+$/.test(text)) return fallback
   if (lowered.includes('no registered face profile')) return '当前账号尚未注册人脸档案'
   if (lowered.includes('no face detected') || lowered.includes('no face')) return '未检测到人脸，请正对摄像头'
   if (lowered.includes('multiple faces') || lowered.includes('multiple')) return '检测到多人入镜，请保持单人验证'
@@ -337,7 +352,9 @@ const buildClientSignals = async (vision = visionAnalyzer) => {
 }
 
 const applyResult = (result: any, endpoint: 'verify' | 'heartbeat') => {
-  if (endpoint === 'heartbeat') failureCount.value = Number(result?.failure_total ?? result?.failure_count ?? failureCount.value)
+  if (endpoint === 'heartbeat') {
+    failureCount.value = Number(result?.monitor_failure_count ?? result?.failure_count ?? failureCount.value)
+  }
   if (endpoint === 'verify' && result?.passed) failureCount.value = 0
   maxFailures.value = Number(result?.max_failures ?? maxFailures.value)
   if (result?.terminated) {
@@ -361,6 +378,12 @@ const applyResult = (result: any, endpoint: 'verify' | 'heartbeat') => {
   }
   if (endpoint === 'verify') {
     challengeHint.value = localizeFaceMessage(result?.reason)
+    const completed = result?.liveness?.completed_actions
+    if (completed && typeof completed === 'object') {
+      completedActions.value = Object.fromEntries(
+        Object.entries(completed).map(([key, value]) => [key, Boolean(value)])
+      )
+    }
     const missing = result?.liveness?.missing_actions
     if (Array.isArray(missing) && missing.length) {
       challengeActions.value = missing
@@ -420,6 +443,7 @@ const fetchChallenge = async () => {
   const result: any = await request.get(`/face/session/${props.sessionId}/challenge`, { _skipErrorToast: true } as any)
   challengeId.value = String(result?.challenge_id || '')
   challengeActions.value = Array.isArray(result?.actions) ? result.actions : []
+  completedActions.value = {}
   challengeHint.value = '请将脸部放在圆形区域内，按提示完成动作。'
 }
 
@@ -430,6 +454,7 @@ const runVerify = async () => {
   challengeDialogVisible.value = true
   challengeId.value = ''
   challengeActions.value = []
+  completedActions.value = {}
   challengeHint.value = '请将脸部放在圆形区域内，系统正在检测。'
   blinkBaseline.value = null
   blinkCandidateFrames.value = 0
@@ -440,6 +465,7 @@ const runVerify = async () => {
     await nextTick()
     if (stream.value) await bindStreamToVideos(stream.value)
     await fetchChallenge()
+    await sleep(120)
     await postFrame('verify')
     stopVerifyLoop()
     verifyTimer.value = window.setInterval(() => {
@@ -447,7 +473,7 @@ const runVerify = async () => {
       void postFrame('verify').catch((error: any) => {
         challengeHint.value = localizeFaceMessage(error?.response?.data?.detail, '检测失败，请调整后继续。')
       })
-    }, 250)
+    }, 380)
   } catch (error: any) {
     const message = localizeFaceMessage(error?.response?.data?.detail || error?.message)
     challengeHint.value = message
@@ -461,6 +487,14 @@ const cancelVerify = () => {
   challengeDialogVisible.value = false
 }
 
+const skipVerify = () => {
+  stopCamera()
+  verified.value = false
+  verifying.value = false
+  challengeDialogVisible.value = false
+  emit('skipped')
+}
+
 const startHeartbeat = () => {
   stopHeartbeat()
   heartbeatTimer.value = window.setInterval(() => {
@@ -468,13 +502,13 @@ const startHeartbeat = () => {
     void postFrame('heartbeat').catch(() => {
       // Heartbeat errors are surfaced by the next successful status/result update.
     })
-  }, 700)
+  }, 360)
 }
 
 const fetchStatus = async () => {
   try {
     const result: any = await request.get(`/face/session/${props.sessionId}/status`, { _skipErrorToast: true } as any)
-    failureCount.value = Number(result.failure_total ?? result.failure_count ?? result.monitor_failure_count ?? 0)
+    failureCount.value = Number(result.monitor_failure_count ?? result.failure_count ?? 0)
     maxFailures.value = Number(result.max_failures || 5)
     if (!result.registered) challengeHint.value = '当前账号尚未注册人脸档案'
     if (result.terminated) emit('terminated', result)
@@ -573,7 +607,8 @@ onBeforeUnmount(stopCamera)
 }
 
 .face-guard--monitor .face-guard__title-row {
-  white-space: nowrap;
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 
 .face-guard--monitor .face-guard__meta span,
@@ -581,6 +616,10 @@ onBeforeUnmount(stopCamera)
   display: block;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.face-guard--monitor .face-guard__badge {
+  flex-shrink: 0;
 }
 
 .face-guard--monitor .face-guard__body p {
@@ -690,6 +729,27 @@ onBeforeUnmount(stopCamera)
   color: #475569;
   font-size: 14px;
   line-height: 1.6;
+}
+
+.face-challenge__steps {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.face-challenge__step {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.face-challenge__step--done {
+  background: #ecfdf5;
+  color: #047857;
 }
 
 @media (max-width: 720px) {

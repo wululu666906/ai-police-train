@@ -8,8 +8,6 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_URL: /api
-        VITE_SPEECH_PROVIDER: auto
-        VITE_IFLYTEK_VAD_EOS: "1600"
     image: ai-police-sim:unified
     container_name: ai_police_app
     env_file:
@@ -74,8 +72,6 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_URL: /api
-        VITE_SPEECH_PROVIDER: auto
-        VITE_IFLYTEK_VAD_EOS: "1600"
     image: ai-police-sim:frontend
     container_name: ai_police_frontend
     ports:
