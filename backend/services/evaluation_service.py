@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 
 import models
 from .llm_provider import create_json_chat_completion, extract_json_payload, extract_message_text, get_chat_model
-from .multimodal_service import append_scene_performance_report
 from .persona_engine import build_persona_profile
 from .rag_service import rag_service
 from .role_resolver import resolve_scene_role
@@ -1367,7 +1366,6 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
             or "training_finished_at" not in header
         ):
             cached_report = finalize_evaluation_report(cached_report, session, scene, case, student_lines)
-        cached_report = append_scene_performance_report(db, session.id, cached_report)
         next_report_json = json.dumps(cached_report, ensure_ascii=False)
         if next_report_json != session.evaluation_result:
             session.evaluation_result = next_report_json
@@ -1465,8 +1463,6 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
             if llm_report["evaluation_meta"].get("raw_summary"):
                 report["evaluation_meta"]["raw_summary"] = llm_report["evaluation_meta"]["raw_summary"]
         report = finalize_evaluation_report(report, session, scene, case, student_lines)
-        report = append_scene_performance_report(db, session.id, report)
-
         report_json = json.dumps(report, ensure_ascii=False)
         session.status = "finished"
         session.evaluation_result = report_json

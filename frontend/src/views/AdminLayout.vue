@@ -185,7 +185,7 @@ const rawNavItems = [
   { name: 'profile', label: '个人中心', shortLabel: '我的', icon: 'user-o' },
 ]
 
-const navItems = rawNavItems.filter((item) => item.name !== 'videos')
+const navItems = rawNavItems
 
 const username = computed(() => localStorage.getItem('username') || '管理员')
 const roleLabel = computed(() => (localStorage.getItem('role') === 'admin' ? '管理员账号' : '学员账号'))

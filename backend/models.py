@@ -13,6 +13,15 @@ class User(Base):
     username = Column(String(50), unique=True, index=True)
     hashed_password = Column(String(255))
     role = Column(String(20), default="student")
+    display_name = Column(String(80), nullable=True)
+    real_name = Column(String(80), nullable=True)
+    phone = Column(String(30), nullable=True)
+    email = Column(String(120), nullable=True)
+    unit = Column(String(120), nullable=True)
+    department = Column(String(120), nullable=True)
+    bio = Column(Text, nullable=True)
+    last_login_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

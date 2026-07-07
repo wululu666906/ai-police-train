@@ -25,22 +25,6 @@ def _default_assessment_points_for_auto_node(
             "required": True,
             "rule": {"channel": "result", "mode": "result_pass"},
         },
-        {
-            "id": f"node_{index + 1}_focus",
-            "label": "训练专注度稳定",
-            "content": "训练中保持专注，避免切屏、中断或多人入镜。",
-            "dimension": "attention_focus",
-            "required": False,
-            "rule": {"channel": "focus", "mode": "focus_stable"},
-        },
-        {
-            "id": f"node_{index + 1}_behavior",
-            "label": "行为响应连贯",
-            "content": "动作、语言与处置衔接自然连贯。",
-            "dimension": "behavior_response",
-            "required": False,
-            "rule": {"channel": "behavior", "mode": "behavior_consistency"},
-        },
     ]
     if node_type in {"voice_qa", "action"} or required_keywords:
         points.append(

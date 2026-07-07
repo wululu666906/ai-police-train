@@ -58,7 +58,7 @@ const rawMenuItems = [
   { key: 'settings', label: '个人设置', icon: Setting, path: '/student/settings', disabled: false },
 ]
 
-const menuItems = rawMenuItems.filter((item) => !['videos', 'face-demo'].includes(item.key))
+const menuItems = rawMenuItems.filter((item) => item.key !== 'face-demo')
 
 const isActive = (path?: string, activePaths: string[] = []) =>
   Boolean((path && (route.path === path || route.path.startsWith(`${path}/`))) || activePaths.some((item) => route.path === item))

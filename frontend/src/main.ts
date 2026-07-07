@@ -10,8 +10,6 @@ import App from './App.vue'
 import { setupStudentElementPlus } from './geeker-adapt/setupElementPlus'
 import { clearAuth, getStoredRole, isLoggedIn, resetLoginRedirectState } from './utils/auth'
 
-const hiddenRoutePrefixes = ['/admin/videos', '/student/videos']
-
 // 配置路由
 const routes = [
   { path: '/login', component: () => import('./views/Login.vue'), meta: { guestOnly: true } },
@@ -100,11 +98,6 @@ router.beforeEach((to) => {
   const token = localStorage.getItem('token')
   const role = getStoredRole()
   const requiredRoles = to.meta.roles as string[] | undefined
-
-  if (hiddenRoutePrefixes.some((prefix) => to.path === prefix || to.path.startsWith(`${prefix}/`))) {
-    if (role === 'student') return '/student/hall'
-    return '/admin/dashboard'
-  }
 
   if (to.meta.guestOnly && token) {
     return role === 'student' ? '/student/hall' : '/admin/dashboard'

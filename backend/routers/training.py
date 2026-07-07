@@ -255,9 +255,7 @@ def _build_session_guidance(
         last_user_message=last_user_message,
         recent_messages=recent_message_payload,
         custom_prompts=custom_prompts,
-        # Session detail is on the page-load path; keep recommendations deterministic
-        # so a slow LLM provider cannot leave the training page stuck on loading.
-        use_llm=False,
+        use_llm=bool(last_user_message or any(message.role == "assistant" for message in messages)),
     )
     recommended_questions = [item["text"] for item in recommended_question_items]
     communication_feedback = _build_feedback(

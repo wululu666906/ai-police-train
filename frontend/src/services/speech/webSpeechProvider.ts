@@ -49,7 +49,7 @@ export class WebSpeechProvider implements SpeechRecognitionProvider {
   start(options: SpeechRecognitionStartOptions, callbacks: SpeechRecognitionCallbacks) {
     const Ctor = getRecognitionCtor()
     if (!Ctor) {
-      callbacks.onError?.('当前浏览器不支持语音听写，请改用键盘输入或接入科大讯飞 API')
+      callbacks.onError?.('当前浏览器不支持语音听写，请改用键盘输入或使用千问实时语音识别')
       return
     }
 

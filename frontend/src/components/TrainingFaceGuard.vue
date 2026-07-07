@@ -19,7 +19,7 @@
       <p v-if="failureCount >= maxFailures">学员离开或人脸异常已连续达到上限，系统将自动终止训练并进入评估报告。</p>
       <div v-if="mode === 'gate'" class="face-guard__actions">
         <van-button size="small" type="primary" :loading="verifying" @click="runVerify">开始验证</van-button>
-        <van-button v-if="allowSkipVerify" size="small" plain hairline type="default" :disabled="verifying" @click="skipVerify">跳过验证</van-button>
+        <van-button size="small" plain hairline type="default" :disabled="verifying" @click="skipVerify">跳过验证</van-button>
       </div>
     </div>
 
@@ -109,7 +109,6 @@ const actionLabels: Record<string, string> = {
 }
 
 const mode = computed(() => props.mode || (verified.value ? 'monitor' : 'gate'))
-const allowSkipVerify = computed(() => import.meta.env.DEV && import.meta.env.VITE_FACE_VERIFICATION_SKIP_ENABLED === '1')
 const badgeText = computed(() => {
   if (failureCount.value >= maxFailures.value) return '已中断'
   if (verified.value) return '已通过'

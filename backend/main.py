@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -107,6 +107,39 @@ def ensure_role_schema_compatibility():
                 connection.execute(text(statement))
     except Exception as error:
         print(f"Role schema compatibility check failed: {error}")
+
+
+def ensure_user_schema_compatibility():
+    engine = database.engine
+    try:
+        inspector = inspect(engine)
+        if "users" not in inspector.get_table_names():
+            return
+
+        user_columns = {column["name"] for column in inspector.get_columns("users")}
+        column_defs = {
+            "display_name": "VARCHAR(80)",
+            "real_name": "VARCHAR(80)",
+            "phone": "VARCHAR(30)",
+            "email": "VARCHAR(120)",
+            "unit": "VARCHAR(120)",
+            "department": "VARCHAR(120)",
+            "bio": "TEXT",
+            "last_login_at": "DATETIME",
+            "updated_at": "DATETIME",
+        }
+        statements = [
+            f"ALTER TABLE users ADD COLUMN {name} {column_type}"
+            for name, column_type in column_defs.items()
+            if name not in user_columns
+        ]
+
+        if statements:
+            with engine.begin() as connection:
+                for statement in statements:
+                    connection.execute(text(statement))
+    except Exception as error:
+        print(f"User schema compatibility check failed: {error}")
 
 
 def ensure_classroom_schema_compatibility():
@@ -522,6 +555,7 @@ if os.path.exists(os.path.join(frontend_dist, "assets")):
 
 @app.on_event("startup")
 def on_startup():
+    ensure_user_schema_compatibility()
     ensure_message_schema_compatibility()
     ensure_role_schema_compatibility()
     ensure_training_session_schema_compatibility()
@@ -538,6 +572,26 @@ def on_startup():
 
 @app.get("/{catchall:path}")
 def serve_vue_app(catchall: str):
+    first_segment = (catchall.split("/", 1)[0] if catchall else "").strip()
+    api_like_prefixes = {
+        "api",
+        "auth",
+        "cases",
+        "training",
+        "dashboard",
+        "knowledge",
+        "student",
+        "classes",
+        "videos",
+        "video-training",
+        "face",
+        "multimodal",
+        "speech",
+        "static",
+    }
+    if first_segment in api_like_prefixes:
+        raise HTTPException(status_code=404, detail="Not Found")
+
     index_path = _frontend_index_path()
     if os.path.exists(index_path):
         return _frontend_index_response()

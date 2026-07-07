@@ -16,9 +16,9 @@ def test_scene_modules_pick_theft_specific_workflow_from_case_facts():
         }
     )
 
-    assert "失窃报警核实" in titles
+    assert "失窃警情要素核实" in titles
     assert "盗窃现场勘查" in titles
-    assert "可疑线索询问" in titles
+    assert "盗窃可疑线索询问" in titles
     assert "接警研判" not in titles
 
 
@@ -31,8 +31,8 @@ def test_scene_modules_pick_self_harm_and_missing_person_modules():
         }
     )
 
-    assert "走失求助信息核查" in titles
-    assert "轻生自伤风险干预" in titles
+    assert "走失人员信息核查" in titles
+    assert "自伤轻生风险干预" in titles
 
 
 def test_fallback_scenes_are_composed_from_reality_modules():
@@ -50,7 +50,7 @@ def test_fallback_scenes_are_composed_from_reality_modules():
     names = [scene["scene_name"] for scene in result["scenes"]]
 
     assert result["scene_generation_mode"] == "fallback_case_driven"
-    assert "涉诈报警与预警劝阻" in names
+    assert "涉诈警情预警劝阻" in names
     assert "资金流与电子证据核查" in names
     assert "接警研判" not in names
     assert all(scene["stages"] for scene in result["scenes"])

@@ -12,15 +12,15 @@ VIDEO_DIMENSION_LABELS = {
     "verbal_communication": "语言表达与告知",
     "body_action": "动作规范与指令执行",
     "professional_safety": "执法规范与安全意识",
-    "attention_focus": "专注度表现",
-    "facial_expression": "表情状态",
-    "behavior_response": "行为反应",
     "risk_awareness": "风险识别能力",
     "procedure": "处置程序能力",
     "communication": "沟通稳控能力",
     "lawfulness": "依法处置能力",
     "safety": "现场安全意识",
 }
+
+FROZEN_REPORT_DIMENSIONS = {"attention_focus", "facial_expression", "behavior_response"}
+FROZEN_REPORT_CHANNELS = {"focus", "face", "behavior"}
 
 
 def _load_json(value: Optional[str], default: Any) -> Any:
@@ -85,6 +85,27 @@ def _reason_label(reason: str) -> str:
         "identity_lost": "身份校验中断",
     }
     return labels.get(reason, reason)
+
+
+def _is_frozen_report_point(point: dict[str, Any]) -> bool:
+    dimension = str(point.get("dimension") or point.get("category") or "")
+    rule = point.get("rule") if isinstance(point.get("rule"), dict) else {}
+    channel = str(rule.get("channel") or "")
+    return dimension in FROZEN_REPORT_DIMENSIONS or channel in FROZEN_REPORT_CHANNELS
+
+
+def _sanitize_report_points(points: list[Any]) -> list[dict[str, Any]]:
+    return [point for point in points if isinstance(point, dict) and not _is_frozen_report_point(point)]
+
+
+def _sanitize_report_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(evidence, dict):
+        return {}
+    return {
+        key: value
+        for key, value in evidence.items()
+        if key not in {"focus", "face", "behavior", "degradation", "tool_evidence"}
+    }
 
 
 def _legacy_grade(percentage: int) -> str:
@@ -181,40 +202,6 @@ def _default_assessment_points(node: models.VideoNode) -> list[dict[str, Any]]:
                 "rule": {"channel": "decision", "mode": "decision_correct"},
             }
         )
-
-    points.append(
-        {
-            "id": f"node_{node.node_index + 1}_focus",
-            "label": "训练专注度稳定",
-            "content": "训练过程保持专注，避免切屏、离开页面或身份状态丢失。",
-            "category": "attention_focus",
-            "required": False,
-            "dimension": "attention_focus",
-            "rule": {"channel": "focus", "mode": "focus_stable"},
-        }
-    )
-    points.append(
-        {
-            "id": f"node_{node.node_index + 1}_expression",
-            "label": "表情与状态自然稳定",
-            "content": "训练中保持自然、稳定、可识别的面部状态。",
-            "category": "facial_expression",
-            "required": False,
-            "dimension": "facial_expression",
-            "rule": {"channel": "face", "mode": "face_state"},
-        }
-    )
-    points.append(
-        {
-            "id": f"node_{node.node_index + 1}_behavior",
-            "label": "行为响应连贯",
-            "content": "动作、语言、证件操作与节点要求之间衔接自然、连贯。",
-            "category": "behavior_response",
-            "required": False,
-            "dimension": "behavior_response",
-            "rule": {"channel": "behavior", "mode": "behavior_consistency"},
-        }
-    )
 
     weights = _share_weight(max(node.score_weight or 10, len(points)), len(points))
     for idx, point in enumerate(points):
@@ -489,7 +476,7 @@ def build_runtime_assessment_snapshot(
     node: models.VideoNode,
     result: models.VideoNodeResult,
 ) -> dict[str, Any]:
-    requirement_rows = resolve_node_assessment_points(node)
+    requirement_rows = _sanitize_report_points(resolve_node_assessment_points(node))
     evidence = build_node_multimodal_evidence(session, node, result)
     runtime_points: list[dict[str, Any]] = []
     for point in requirement_rows:
@@ -527,18 +514,11 @@ def _point_score(status: str, weight: int) -> float:
     return 0.0
 
 
-def _summarize_dimension_scores(node_payloads: list[dict[str, Any]], total_score: int, full_score: int) -> tuple[list[dict[str, Any]], dict[str, float]]:
+def _summarize_dimension_scores(node_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     summary: dict[str, dict[str, float]] = {
         key: {"score": 0.0, "full_score": 0.0}
         for key in VIDEO_DIMENSION_LABELS
     }
-    visual_rollup = {
-        "expression_score": 0.0,
-        "behavior_score": 0.0,
-        "focus_score": 0.0,
-        "samples": 0.0,
-    }
-
     for payload in node_payloads:
         for point in payload.get("assessment_points") or []:
             if not isinstance(point, dict):
@@ -549,15 +529,6 @@ def _summarize_dimension_scores(node_payloads: list[dict[str, Any]], total_score
             weight = max(_safe_int(point.get("weight"), 1), 1)
             summary[dimension]["full_score"] += weight
             summary[dimension]["score"] += _point_score(str(point.get("status") or "missed"), weight)
-
-        evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
-        face = evidence.get("face") if isinstance(evidence, dict) and isinstance(evidence.get("face"), dict) else {}
-        focus = evidence.get("focus") if isinstance(evidence, dict) and isinstance(evidence.get("focus"), dict) else {}
-        behavior = evidence.get("behavior") if isinstance(evidence, dict) and isinstance(evidence.get("behavior"), dict) else {}
-        visual_rollup["expression_score"] += _safe_float(face.get("expression_score"), 0)
-        visual_rollup["behavior_score"] += _safe_float(behavior.get("behavior_score"), 0)
-        visual_rollup["focus_score"] += _safe_float(focus.get("focus_score"), 0)
-        visual_rollup["samples"] += 1
 
     dimension_scores: list[dict[str, Any]] = []
     for key, item in summary.items():
@@ -574,14 +545,7 @@ def _summarize_dimension_scores(node_payloads: list[dict[str, Any]], total_score
             }
         )
 
-    sample_count = max(visual_rollup["samples"], 1.0)
-    multimodal_scores = {
-        "expression_score": round(visual_rollup["expression_score"] / sample_count, 1),
-        "behavior_score": round(visual_rollup["behavior_score"] / sample_count, 1),
-        "focus_score": round(visual_rollup["focus_score"] / sample_count, 1),
-        "final_ability_score": round(((total_score / max(full_score, 1)) * 100) * 0.55 + (visual_rollup["behavior_score"] / sample_count) * 0.2 + (visual_rollup["focus_score"] / sample_count) * 0.15 + (visual_rollup["expression_score"] / sample_count) * 0.1, 1),
-    }
-    return sorted(dimension_scores, key=lambda item: item["percentage"]), multimodal_scores
+    return sorted(dimension_scores, key=lambda item: item["percentage"])
 
 
 def build_video_evaluation_report(
@@ -600,8 +564,6 @@ def build_video_evaluation_report(
     failure_reason_summary: dict[str, int] = {}
     violation_summary: dict[str, int] = {}
     all_assessment_points: list[dict[str, Any]] = []
-    tool_evidence: list[dict[str, Any]] = []
-    degradation: list[dict[str, Any]] = []
 
     violations = _load_json(session.violation_log, [])
     for item in violations:
@@ -617,12 +579,10 @@ def build_video_evaluation_report(
         payload = _load_json(result.assessment_payload, None)
         if not isinstance(payload, dict):
             payload = build_runtime_assessment_snapshot(session, node, result)
-        evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
-        points = payload.get("assessment_points") if isinstance(payload.get("assessment_points"), list) else []
+        evidence = _sanitize_report_evidence(payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {})
+        points = _sanitize_report_points(payload.get("assessment_points") if isinstance(payload.get("assessment_points"), list) else [])
         node_payloads.append({"assessment_points": points, "evidence": evidence})
         all_assessment_points.extend(points)
-        tool_evidence.extend(evidence.get("tool_evidence") or [])
-        degradation.extend(evidence.get("degradation") or [])
 
         failure_reasons = _dedupe_strings((_load_json(result.answer_data, {}) or {}).get("__validation_errors", []) if isinstance(_load_json(result.answer_data, {}), dict) else [], limit=10)
         for reason in failure_reasons:
@@ -649,7 +609,7 @@ def build_video_evaluation_report(
             }
         )
 
-    dimension_scores, multimodal_scores = _summarize_dimension_scores(node_payloads, total_score, full_score)
+    dimension_scores = _summarize_dimension_scores(node_payloads)
     weakness_summary = [
         f"{item['label']}偏弱（{item['percentage']}%），建议针对相关节点复训。"
         for item in dimension_scores[:3]
@@ -688,17 +648,6 @@ def build_video_evaluation_report(
     pass_count = sum(1 for item in node_results if item.result == "pass")
     skip_count = sum(1 for item in node_results if item.result in {"skip", "timeout"})
     fail_count = sum(1 for item in node_results if item.result == "fail")
-    model_degradation = []
-    seen_degradation = set()
-    for item in degradation:
-        if not isinstance(item, dict):
-            continue
-        key = (item.get("channel"), item.get("reason"))
-        if key in seen_degradation:
-            continue
-        seen_degradation.add(key)
-        model_degradation.append(item)
-
     return {
         "session_id": session.id,
         "video_id": session.video_id,
@@ -722,9 +671,6 @@ def build_video_evaluation_report(
         "weakness_summary": weakness_summary,
         "ability_profile": ability_profile,
         "assessment_point_results": all_assessment_points,
-        "multimodal_scores": multimodal_scores,
-        "model_degradation": model_degradation,
-        "tool_evidence": _dedupe_strings([f"{item.get('type')}:{'yes' if item.get('available') else 'no'}" for item in tool_evidence if isinstance(item, dict)], limit=20),
         "node_summaries": node_summaries,
         "finished_at": session.finished_at.isoformat() if session.finished_at else None,
         "evaluation_meta": {
@@ -737,9 +683,6 @@ def build_video_evaluation_report(
                 "total_score": total_score,
                 "full_score": full_score,
             },
-            "multimodal_scores": multimodal_scores,
-            "model_degradation": model_degradation,
-            "tool_evidence": tool_evidence,
             "ability_grade": ability_grade,
             "ability_profile": ability_profile,
         },

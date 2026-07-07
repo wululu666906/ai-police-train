@@ -1,5 +1,5 @@
 import { speechConfig } from '../../config/speech'
-import { IFlytekSpeechProvider } from './iflytekSpeechProvider'
+import { QwenRealtimeSpeechProvider } from './qwenRealtimeSpeechProvider'
 import type { SpeechRecognitionProvider } from './types'
 import { WebSpeechProvider } from './webSpeechProvider'
 
@@ -9,11 +9,11 @@ export const createSpeechProvider = (): SpeechRecognitionProvider => {
   if (speechConfig.provider === 'web') {
     return new WebSpeechProvider()
   }
-  return new IFlytekSpeechProvider()
+  return new QwenRealtimeSpeechProvider()
 }
 
 export const getActiveSpeechProviderLabel = (provider: SpeechRecognitionProvider) => {
-  if (provider.name === 'iflytek') return '科大讯飞听写'
-  if (provider.isSupported()) return '浏览器听写'
-  return '听写不可用'
+  if (provider.name === 'qwen') return '千问实时语音识别'
+  if (provider.name === 'web') return '浏览器听写'
+  return provider.isSupported() ? '语音识别' : '听写不可用'
 }

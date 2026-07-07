@@ -18,7 +18,6 @@ import models
 from services.classroom_service import sync_assignment_submission_for_session
 from services.evaluation_service import evaluate_session
 from services.import_isolation import isolated_sys_path
-from services.multimodal_service import append_scene_performance_report
 
 
 def _find_project_root() -> Path:
@@ -898,7 +897,6 @@ def _finalize_face_termination(
             "failure_count": failure_count,
             "last_reason": localize_face_reason(reason),
         }
-        report = append_scene_performance_report(db, session.id, report)
         session.status = "finished"
         session.evaluation_result = json.dumps(report, ensure_ascii=False)
         db.commit()
@@ -916,7 +914,6 @@ def _finalize_face_termination(
             "failure_count": failure_count,
             "last_reason": localize_face_reason(reason),
         }
-        report = append_scene_performance_report(db, session.id, report)
         session.status = "finished"
         session.evaluation_result = json.dumps(report, ensure_ascii=False)
         db.commit()

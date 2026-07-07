@@ -33,6 +33,21 @@ else:
     EMBEDDING_DIMENSIONS = None
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+LLM_TIMEOUT_SECONDS = _env_float("LLM_TIMEOUT_SECONDS", 30.0)
+EMBEDDING_TIMEOUT_SECONDS = _env_float("EMBEDDING_TIMEOUT_SECONDS", LLM_TIMEOUT_SECONDS)
+
+
 def _resolve_provider() -> str:
     if PROVIDER in {"qwen", "dashscope"}:
         return "qwen"
@@ -94,11 +109,13 @@ else:
 client = OpenAI(
     api_key=ACTIVE_API_KEY or "missing-api-key",
     base_url=ACTIVE_BASE_URL,
+    timeout=LLM_TIMEOUT_SECONDS,
 )
 
 embedding_client = OpenAI(
     api_key=ACTIVE_EMBEDDING_API_KEY or "missing-api-key",
     base_url=ACTIVE_EMBEDDING_BASE_URL,
+    timeout=EMBEDDING_TIMEOUT_SECONDS,
 )
 
 
@@ -120,13 +137,65 @@ CASE_COMPLETION_ACTIVE_PROVIDER = (
 case_completion_client = OpenAI(
     api_key=CASE_COMPLETION_API_KEY or "missing-api-key",
     base_url=CASE_COMPLETION_BASE_URL,
+    timeout=LLM_TIMEOUT_SECONDS,
+)
+
+qwen_chat_client = OpenAI(
+    api_key=QWEN_API_KEY or "missing-api-key",
+    base_url=QWEN_BASE_URL,
+    timeout=LLM_TIMEOUT_SECONDS,
+)
+
+deepseek_chat_client = OpenAI(
+    api_key=DEEPSEEK_API_KEY or "missing-api-key",
+    base_url=DEEPSEEK_BASE_URL,
+    timeout=LLM_TIMEOUT_SECONDS,
 )
 
 
 def _provider_for_client(llm_client: Optional[OpenAI]) -> str:
     if llm_client is case_completion_client:
         return CASE_COMPLETION_ACTIVE_PROVIDER
+    if llm_client is qwen_chat_client:
+        return "qwen"
+    if llm_client is deepseek_chat_client:
+        return "deepseek"
     return ACTIVE_PROVIDER
+
+
+def _chat_client_for_provider(provider: str) -> OpenAI:
+    if provider == "qwen":
+        return qwen_chat_client
+    if provider == "deepseek":
+        return deepseek_chat_client
+    return client
+
+
+def _chat_model_for_provider(provider: str) -> str:
+    if provider == "qwen":
+        return QWEN_CHAT_MODEL
+    if provider == "deepseek":
+        return DEEPSEEK_CHAT_MODEL
+    return ACTIVE_CHAT_MODEL
+
+
+def _provider_has_api_key(provider: str) -> bool:
+    if provider == "qwen":
+        return bool(QWEN_API_KEY)
+    if provider == "deepseek":
+        return bool(DEEPSEEK_API_KEY)
+    return bool(ACTIVE_API_KEY)
+
+
+def _provider_fallback_order(provider: str) -> list[str]:
+    candidates = ["qwen", "deepseek"] if provider == "deepseek" else ["deepseek", "qwen"]
+    return [item for item in candidates if item != provider and _provider_has_api_key(item)]
+
+
+def _llm_error_summary(exc: Exception) -> str:
+    text = str(exc or "").strip()
+    text = re.sub(r"sk-[A-Za-z0-9_.-]+", "sk-***", text)
+    return text[:500] or exc.__class__.__name__
 
 
 def get_chat_model() -> str:
@@ -234,6 +303,8 @@ def create_json_chat_completion(
     max_tokens: int = 4096,
     extra_kwargs: Optional[dict[str, Any]] = None,
     llm_client: Optional[OpenAI] = None,
+    retries: Optional[int] = None,
+    allow_plain_json_fallback: bool = True,
 ):
     request_messages = list(messages)
     request_messages.insert(
@@ -258,9 +329,10 @@ def create_json_chat_completion(
         kwargs.update(extra_kwargs)
 
     provider = _provider_for_client(llm_client)
-    retries = 4 if provider == "deepseek" else 2
+    resolved_retries = retries if retries is not None else (4 if provider == "deepseek" else 2)
+    resolved_retries = max(1, int(resolved_retries))
     last_response = None
-    for attempt in range(retries):
+    for attempt in range(resolved_retries):
         if attempt > 0 and provider == "deepseek":
             kwargs["temperature"] = min(1.0, float(kwargs.get("temperature", temperature)) + 0.05)
 
@@ -293,7 +365,7 @@ def create_json_chat_completion(
         ]
         time.sleep(0.35 * (attempt + 1))
 
-    if provider == "deepseek":
+    if provider == "deepseek" and allow_plain_json_fallback:
         fallback_kwargs = {
             "model": model or get_chat_model(),
             "messages": list(request_messages)

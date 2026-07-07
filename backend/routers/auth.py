@@ -470,6 +470,12 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    user.last_login_at = datetime.utcnow()
+    user.updated_at = datetime.utcnow()
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
     access_token = create_access_token(user_id=user.id, username=user.username, role=user.role)
     return {
         "access_token": access_token,
@@ -479,6 +485,78 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         "username": user.username,
         "role": user.role,
     }
+
+
+def _clean_optional_text(value: str | None, max_length: int) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) > max_length:
+        raise HTTPException(status_code=400, detail=f"字段长度不能超过 {max_length} 个字符")
+    return text
+
+
+@router.get("/me/settings", response_model=schemas.MySettingsResponse)
+def get_my_settings(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    memberships = (
+        db.query(models.TrainingClass.name)
+        .join(models.ClassMembership, models.ClassMembership.class_id == models.TrainingClass.id)
+        .filter(
+            models.ClassMembership.user_id == current_user.id,
+            models.ClassMembership.status == "active",
+        )
+        .order_by(models.TrainingClass.created_at.desc())
+        .all()
+    )
+    return schemas.MySettingsResponse(
+        user=schemas.User.model_validate(current_user),
+        classes=[row[0] for row in memberships if row[0]],
+    )
+
+
+@router.put("/me/settings", response_model=schemas.MySettingsResponse)
+def update_my_settings(
+    payload: schemas.MySettingsProfile,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    current_user.display_name = _clean_optional_text(payload.display_name, 80)
+    current_user.real_name = _clean_optional_text(payload.real_name, 80)
+    current_user.phone = _clean_optional_text(payload.phone, 30)
+    current_user.email = _clean_optional_text(payload.email, 120)
+    current_user.unit = _clean_optional_text(payload.unit, 120)
+    current_user.department = _clean_optional_text(payload.department, 120)
+    current_user.bio = _clean_optional_text(payload.bio, 300)
+    current_user.updated_at = datetime.utcnow()
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return get_my_settings(db=db, current_user=current_user)
+
+
+@router.post("/me/password")
+def change_my_password(
+    payload: schemas.ChangePasswordRequest,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    current_password = payload.current_password or ""
+    new_password = payload.new_password or ""
+    if not verify_password(current_password, current_user.hashed_password or ""):
+        raise HTTPException(status_code=400, detail="当前密码不正确")
+    if len(new_password.strip()) < 6:
+        raise HTTPException(status_code=400, detail="新密码至少需要 6 位")
+    if verify_password(new_password, current_user.hashed_password or ""):
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
+
+    current_user.hashed_password = hash_password(new_password.strip())
+    current_user.updated_at = datetime.utcnow()
+    db.add(current_user)
+    db.commit()
+    return {"success": True}
 
 
 @router.post("/register", response_model=schemas.User)

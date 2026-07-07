@@ -402,7 +402,6 @@ const faceTerminated = ref(false)
 const isFinishingTraining = ref(false)
 const faceGuardRef = ref<InstanceType<typeof TrainingFaceGuard> | null>(null)
 const multimodalVision = useMultimodalVision()
-const faceVerificationSkipEnabled = import.meta.env.DEV && import.meta.env.VITE_FACE_VERIFICATION_SKIP_ENABLED === '1'
 let multimodalFrameInFlight = false
 let multimodalFramePending: any | null = null
 const canUseConversation = computed(() => faceVerificationSkipped.value || (faceVerified.value && !faceTerminated.value))
@@ -919,10 +918,6 @@ const clearFaceVerificationSkipped = () => {
 }
 
 const isFaceVerificationSkippedInSession = () => {
-  if (!faceVerificationSkipEnabled) {
-    clearFaceVerificationSkipped()
-    return false
-  }
   try {
     return sessionStorage.getItem(getFaceSkipKey()) === '1'
   } catch {
@@ -931,7 +926,6 @@ const isFaceVerificationSkippedInSession = () => {
 }
 
 const persistFaceVerificationSkipped = () => {
-  if (!faceVerificationSkipEnabled) return
   try {
     sessionStorage.setItem(getFaceSkipKey(), '1')
   } catch {
@@ -1246,7 +1240,6 @@ const handleFaceVerified = () => {
 }
 
 const handleFaceSkipped = () => {
-  if (!faceVerificationSkipEnabled) return
   faceVerificationSkipped.value = true
   faceVerified.value = false
   faceTerminated.value = false

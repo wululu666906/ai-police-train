@@ -76,6 +76,7 @@
             <h3 class="library-content__title">视频素材列表</h3>
             <p class="library-content__subtitle">共 {{ total }} 个</p>
           </div>
+          <el-button type="primary" :icon="Plus" @click="openUploadDialog">上传视频制作实训</el-button>
         </div>
 
         <section v-if="loading" class="state-panel">

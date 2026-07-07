@@ -3,17 +3,27 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Optional
 
 _MAX_LEN = 42
 _MAX_ITEMS = 4
+_RECOMMENDATION_LLM_TIMEOUT_SECONDS = 3.0
 _META_PATTERNS = (
     r"先围绕",
     r"把最关键",
     r"这一点",
     r"建议先",
+    r"建议(民警|学员|你|其|对方|报警人)",
+    r"(民警|学员)(应当|应该|需要|可以|可|要)",
+    r"(可|可以)(询问|追问|核实|了解|确认)",
+    r"下一步",
+    r"后续",
+    r"本阶段",
+    r"缺口",
     r"训练已",
+    r"训练",
     r"补齐这些",
 )
 
@@ -38,6 +48,17 @@ _INTAKE_CORE_TOPICS = {"process", "time", "location", "people"}
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def _dedupe_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -77,6 +98,17 @@ def _is_meta_question(text: str) -> bool:
     if len(lowered) > 46 and any(token in lowered for token in ("评估", "初步了解", "保护现场")):
         return True
     return any(re.search(pattern, lowered) for pattern in _META_PATTERNS)
+
+
+def _is_officer_spoken_question(text: str) -> bool:
+    clean = _text(text)
+    if not clean or _is_meta_question(clean):
+        return False
+    if not clean.endswith(("？", "?")):
+        return False
+    if any(token in clean for token in ("我方", "警方应", "民警应", "学员应", "可进一步", "建议")):
+        return False
+    return True
 
 
 def _item(text: str, category: str = "追问", target_role_name: str = "") -> dict[str, Any]:
@@ -203,7 +235,7 @@ def _intake_flow_items(step: str, addressee: str) -> list[dict[str, Any]]:
             ("除了你，还有没有目击人或受伤的人？", "核实"),
         ],
         "contact": [
-            ("请报一下你的姓名和联系电话，方便回拨。", "核实"),
+            ("请说一下你的姓名和联系电话，可以吗？", "核实"),
             ("你和涉事人员是什么关系？", "核实"),
         ],
         "dispatch": [
@@ -311,7 +343,7 @@ def _goal_to_dialogue_questions(stage_goal: str, addressee: str) -> list[dict[st
         items.extend(_goal_fragment_questions(fragment, addressee))
     if not items:
         if "了解" in goal or "核实" in goal:
-            items.append(_item(_prefix_addressee("你把知道的情况如实说一下。", addressee), "核实", addressee))
+            items.append(_item(_prefix_addressee("你能把知道的情况如实说一下吗？", addressee), "核实", addressee))
         elif "处置" in goal or "控制" in goal:
             items.append(_item(_prefix_addressee("现场现在控制住了吗？", addressee), "程序", addressee))
     return items
@@ -326,14 +358,14 @@ def _missing_to_dialogue(label: str, addressee: str) -> Optional[dict[str, Any]]
     if any(token in text for token in ("地点", "位置")):
         return _item(_prefix_addressee("当时具体在哪个位置？", addressee), "核实", addressee)
     if "身份" in text:
-        return _item(_prefix_addressee("请先说明你的身份。", addressee), "核实", addressee)
+        return _item(_prefix_addressee("请说一下你的姓名和电话，可以吗？", addressee), "核实", addressee)
     if "证人" in text:
         return _item(_prefix_addressee("现场还有谁看到了？", addressee), "核实", addressee)
     if "经过" in text or "过程" in text:
         return _item(_prefix_addressee("事情经过能再说详细一点吗？", addressee), "追问", addressee)
     if "风险" in text or "安全" in text:
         return _item(_prefix_addressee("现场现在还有危险吗？", addressee), "核实", addressee)
-    return _item(_prefix_addressee(f"关于{text}，你再具体说一下。", addressee), "追问", addressee)
+    return _item(_prefix_addressee(f"关于{text}，你能再具体说一下吗？", addressee), "追问", addressee)
 
 
 def _case_type_questions(case_type: str, addressee: str) -> list[dict[str, Any]]:
@@ -495,10 +527,10 @@ def _intake_questions(addressee: str, *, has_dialogue: bool, has_assistant_openi
             _item(_prefix_addressee("你慢慢说，具体出了什么事？", addressee), "核实", addressee),
         ]
     if not has_dialogue:
-        return [_item("110，请讲。", "接警", addressee)]
+        return [_item("110，请讲，具体发生什么事了？", "接警", addressee)]
     return [
         _item(_prefix_addressee("你先别慌，你现在安全吗？有没有人受伤？", addressee), "安抚", addressee),
-        _item(_prefix_addressee("你再把事情经过简单说一下。", addressee), "核实", addressee),
+        _item(_prefix_addressee("你能再把事情经过简单说一下吗？", addressee), "核实", addressee),
     ]
 
 
@@ -538,16 +570,16 @@ def _stage_questions(current_stage: str, addressee: str, scene_kind: str = "") -
             _item(_prefix_addressee("你这边最核心的诉求是什么？", addressee), "追问", addressee),
         ]
     return [
-        _item(_prefix_addressee("你把前后经过按时间顺序再说一遍。", addressee), "追问", addressee),
+        _item(_prefix_addressee("你能按时间顺序再说一遍经过吗？", addressee), "追问", addressee),
         _item(_prefix_addressee("有没有和前面说法不一致的地方？", addressee), "追问", addressee),
     ]
 
 
 def _truth_stage_questions(truth_stage: str, emotion: int, addressee: str) -> list[dict[str, Any]]:
     if truth_stage in {"guarded_denial", "partial_release"}:
-        return [_item(_prefix_addressee("你先说你确定的部分，不确定的我会再核实。", addressee), "安抚", addressee)]
+        return [_item(_prefix_addressee("你先说确定的部分，可以吗？", addressee), "安抚", addressee)]
     if emotion >= 72:
-        return [_item(_prefix_addressee("你先深呼吸，我们一个问题一个问题来。", addressee), "安抚", addressee)]
+        return [_item(_prefix_addressee("你先深呼吸，我们一个问题一个问题来，好吗？", addressee), "安抚", addressee)]
     return []
 
 
@@ -558,7 +590,7 @@ def _multi_role_questions(scene_roles: list[dict[str, Any]] | None, target_role_
     if _text(target_role_name):
         return [_item(f"{target_role_name}，你刚才说的能再具体点吗？", "追问", target_role_name)]
     return [
-        _item(f"{names[0]}，你先说下你看到的情况。", "追问", names[0]),
+        _item(f"{names[0]}，你先说下你看到的情况，可以吗？", "追问", names[0]),
         _item(f"{names[1]}，你这边有什么补充？", "追问", names[1]),
     ]
 
@@ -597,13 +629,14 @@ def _try_llm_question_items(
         prompt = f"""你是警情处置训练教练，为执法学员生成「可直接说出口」的追问话术。
 
 要求：
-1. 输出 3 条，每条不超过 38 字，必须是民警对现场角色说的话，带问号。
-2. 不要出现“先围绕”“把最关键”“训练”等教学腔。
+1. 输出 3 条，每条不超过 38 字，必须是执法民警第一人称现场口吻，像“我/我们/请你/你先……”这样能直接对现场角色说出口，并且带问号。
+2. 不要出现“先围绕”“把最关键”“训练”“建议”“学员”“民警应当/可以/需要”等教学腔、第三人称或复盘口吻。
 3. 不要重复已覆盖主题：{covered_hint}
 4. 要承接对方上一句回复，不要像第一次到场。
 5. category 只能是：安抚、核实、追问、程序、调解
 6. 若需指定对象，填 target_role_name（从 {role_hint} 中选），否则 null
 7. 若「本阶段还缺」不为“无”，前 2 条必须直接追问缺口项，且问题正文须含对应关键词（如时间/地点/身份/证人/风险/经过）。
+8. 禁止输出给系统或教练看的分析句，只能输出民警要说的话。
 
 案件：{case_title or case_type}
 场景：{scene_name}
@@ -621,6 +654,14 @@ def _try_llm_question_items(
             temperature=0.55,
             model=get_chat_model(),
             max_tokens=700,
+            extra_kwargs={
+                "timeout": _env_float(
+                    "RECOMMENDED_QUESTIONS_LLM_TIMEOUT_SECONDS",
+                    _RECOMMENDATION_LLM_TIMEOUT_SECONDS,
+                )
+            },
+            retries=1,
+            allow_plain_json_fallback=False,
         )
         raw = extract_message_text(response) or ""
         match = re.search(r"\{[\s\S]*\}", raw)
@@ -636,7 +677,7 @@ def _try_llm_question_items(
             if not isinstance(entry, dict):
                 continue
             text = _trim_question(entry.get("text"))
-            if not text or _is_meta_question(text):
+            if not _is_officer_spoken_question(text):
                 continue
             category = _text(entry.get("category")) or "追问"
             if category not in valid_categories:
@@ -646,7 +687,8 @@ def _try_llm_question_items(
                 target = ""
             items.append(_item(text, category, target))
         return items
-    except Exception:
+    except Exception as error:
+        print(f"Recommended question LLM unavailable, using deterministic fallback: {error}")
         return []
 
 
@@ -764,7 +806,7 @@ def build_recommended_question_items(
     cleaned: list[dict[str, Any]] = []
     for raw in _dedupe_items(items):
         text = raw["text"]
-        if _is_meta_question(text):
+        if not _is_officer_spoken_question(text):
             continue
         q_topics = _question_topics(text)
         if _is_redundant(text, covered_topics) and not (
@@ -790,7 +832,7 @@ def build_recommended_question_items(
     cleaned = _apply_missing_first_correction(cleaned, effective_missing_requirements, addressee)
     if not cleaned:
         cleaned = [
-            _item(_prefix_addressee("你把知道的情况按顺序说一下。", addressee), "追问", addressee),
+            _item(_prefix_addressee("你能把知道的情况按顺序说一下吗？", addressee), "追问", addressee),
             _item(_prefix_addressee("现场现在还有什么风险？", addressee), "核实", addressee),
         ]
     return cleaned[:_MAX_ITEMS]

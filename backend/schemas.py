@@ -257,6 +257,13 @@ class PromptTemplate(PromptTemplateBase):
 class UserBase(BaseModel):
     username: str
     role: str = "student"
+    display_name: Optional[str] = None
+    real_name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    unit: Optional[str] = None
+    department: Optional[str] = None
+    bio: Optional[str] = None
 
 
 class UserCreate(UserBase):
@@ -265,8 +272,30 @@ class UserCreate(UserBase):
 
 class User(UserBase):
     id: int
+    last_login_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+class MySettingsProfile(BaseModel):
+    display_name: Optional[str] = None
+    real_name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    unit: Optional[str] = None
+    department: Optional[str] = None
+    bio: Optional[str] = None
+
+
+class MySettingsResponse(BaseModel):
+    user: User
+    classes: List[str] = []
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class AdminStudentOverview(User):
