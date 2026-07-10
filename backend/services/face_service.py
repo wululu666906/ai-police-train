@@ -834,14 +834,14 @@ def build_adaptive_fallback_report(
             }
         ],
         "assessment_check_results": [],
-        "termination_reason": "multimodal_guard_finished",
+        "termination_reason": "face_verification_finished",
         "termination_report": "训练因人脸验证连续异常被系统自动终止。",
         "failure_count": failure_count,
         "last_reason": localize_face_reason(reason),
         "evaluation_meta": {
             "scoring_version": "adaptive_v1",
             "evaluation_type": "auto_terminated_fallback",
-            "trigger": "multimodal_guard",
+            "trigger": "face_verification_guard",
             "session_id": session.id,
             "auto_finished": True,
             "evaluator_error": error,
@@ -886,9 +886,9 @@ def _finalize_face_termination(
         meta = report.setdefault("evaluation_meta", {})
         meta["scoring_version"] = meta.get("scoring_version") or "adaptive_v1"
         meta["evaluation_type"] = "auto_terminated"
-        meta["trigger"] = "multimodal_guard"
+        meta["trigger"] = "face_verification_guard"
         meta["auto_finished"] = True
-        report["termination_reason"] = "multimodal_guard_finished"
+        report["termination_reason"] = "face_verification_finished"
         report["termination_report"] = "系统检测到人脸验证连续异常，本次训练已自动终止。请确认本人在镜头内并保持摄像头在线。"
         report["failure_count"] = failure_count
         report["last_reason"] = localize_face_reason(reason)
@@ -907,7 +907,7 @@ def _finalize_face_termination(
             reason=reason,
             error=str(report.get("error") if isinstance(report, dict) else "未知评估错误"),
         )
-        report["termination_reason"] = "multimodal_guard_finished"
+        report["termination_reason"] = "face_verification_finished"
         report["termination_report"] = "系统检测到人脸验证连续异常，本次训练已自动终止。"
         report["face_monitor"] = {
             "termination_reason": "face_verification_failed",

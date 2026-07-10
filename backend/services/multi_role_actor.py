@@ -192,6 +192,124 @@ def _sanitize_utterances_for_last_user(utterances: list[dict[str, str]], user_te
     return sanitized or utterances
 
 
+def _normalize_repeat_key(text: str) -> str:
+    return re.sub(r"[\s，。！？,.!?、；;：“”\"'（）()…]+", "", _text(text))
+
+
+def _recent_role_contents(history: list[Any], role: models.Role) -> list[str]:
+    role_name = _role_display_name(role)
+    contents: list[str] = []
+    for message in history[-10:]:
+        if _text(getattr(message, "role", "")) not in {"assistant", "ai"}:
+            continue
+        speaker = _text(getattr(message, "speaker_name", ""))
+        if speaker and speaker != role_name:
+            continue
+        content = _text(getattr(message, "content", ""))
+        if content:
+            contents.append(content)
+    return contents[-4:]
+
+
+def _is_loss_control_snapshot(snapshot: dict[str, int], contract: Optional[dict[str, Any]] = None) -> bool:
+    scores = (contract or {}).get("scores") if isinstance(contract, dict) else {}
+    emotion = int((scores or {}).get("emotion", snapshot.get("emotion", 50)) or 50)
+    cooperation = int((scores or {}).get("cooperation", snapshot.get("cooperation", 30)) or 30)
+    risk = int((scores or {}).get("risk", snapshot.get("risk", 50)) or 50)
+    clarity = int((scores or {}).get("clarity", snapshot.get("clarity", 50)) or 50)
+    return emotion >= 88 and risk >= 82 and cooperation <= 24 and clarity <= 28
+
+
+def _loss_control_reply(role: models.Role, user_text: str, recent_contents: list[str]) -> str:
+    """Contextual fallback for the high emotion/high risk/zeroed cooperation+clarity corner."""
+    text = _text(user_text)
+    name = _role_display_name(role)
+    pools: list[str]
+    if _contains_any(text, ("冷静", "别激动", "慢慢", "深呼吸", "先坐", "别急", "我在听")):
+        pools = [
+            "你先别靠太近……我听见了，你一句一句说，别一上来就围着我。",
+            "我现在脑子乱，但你别吼我，我可以先站在这儿不动。",
+            "行，你说慢点。我不是不听，我现在就是一下子缓不过来。",
+        ]
+    elif _contains_any(text, ("安全", "分开", "距离", "救护", "120", "保护", "派警", "控制现场")):
+        pools = [
+            "那你先让旁边的人别围着我，我看见人一多就更慌。",
+            "你说已经处理安全，那你得让我看见他们离远点，我才说得下去。",
+            "先别碰我。你把人分开，我就站这儿，别再刺激我。",
+        ]
+    elif _contains_any(text, ("时间", "几点", "地点", "哪里", "谁先", "经过", "证据", "监控", "伤", "动手")):
+        pools = [
+            "你别一下问这么多，我现在只能先说一个点。你问时间，还是问谁先动的手？",
+            "我不确定顺序，脑子里乱成一团。你把问题拆开问，我能答一点是一点。",
+            "我现在说不完整，你先问最要紧的那个，别让我从头到尾捋。",
+        ]
+    elif _contains_any(text, ("快说", "老实", "别废话", "必须", "是不是你", "违法", "故意")):
+        pools = [
+            "你别这么逼我，我越急越说不清，真要问就一个问题一个问题来。",
+            "凭什么一上来就压我？我现在不是不说，是你这样问我脑子更乱。",
+            "你别把话说死，我现在听不得这个。你要问事实就直接问事实。",
+        ]
+    elif _contains_any(text, ("身份", "你是谁", "叫什么")):
+        pools = [
+            f"我是{name}……你先别催，我现在有点乱，但人就在这儿。",
+            f"我叫{name}。别一堆人围着问，我会更慌。",
+        ]
+    else:
+        pools = [
+            "你刚才那句我听见了，但我现在脑子乱，你换个更具体的问题问。",
+            "我不是故意顶你，我现在真的说不顺。你先问一件事。",
+            "等一下……你别连着问，我现在只能听明白一件事。",
+        ]
+
+    recent_keys = {_normalize_repeat_key(item) for item in recent_contents}
+    for candidate in pools:
+        if _normalize_repeat_key(candidate) not in recent_keys:
+            return candidate
+    return pools[0]
+
+
+def _dedupe_and_repair_utterances(
+    utterances: list[dict[str, str]],
+    *,
+    role: models.Role,
+    history: list[Any],
+    user_text: str,
+    role_snapshot: dict[str, int],
+    state_contract: Optional[dict[str, Any]] = None,
+) -> list[dict[str, str]]:
+    recent = _recent_role_contents(history, role)
+    recent_keys = {_normalize_repeat_key(item) for item in recent}
+    seen: set[str] = set()
+    repaired: list[dict[str, str]] = []
+    loss_control = _is_loss_control_snapshot(role_snapshot, state_contract)
+
+    for item in utterances or []:
+        content = _text(item.get("content"))
+        if not content:
+            continue
+        key = _normalize_repeat_key(content)
+        if key and (key in seen or key in recent_keys):
+            if loss_control and not repaired:
+                repaired.append(
+                    {
+                        "content": _loss_control_reply(role, user_text, recent),
+                        "delivery": item.get("delivery") or (state_contract or {}).get("delivery") or "anxious",
+                    }
+                )
+            continue
+        seen.add(key)
+        repaired.append(item)
+
+    if not repaired and loss_control:
+        repaired.append(
+            {
+                "content": _loss_control_reply(role, user_text, recent),
+                "delivery": (state_contract or {}).get("delivery") or "anxious",
+            }
+        )
+    return repaired or utterances
+
+
 def _json_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -373,6 +491,8 @@ def _rule_based_utterances(
     reaction = reaction or {}
     reaction_key = _text(reaction.get("key"))
     lines: list[str] = []
+    if _is_loss_control_snapshot(dict(cast_entry.get("role_snapshot") or {})):
+        lines.append(_loss_control_reply(role, text, []))
     preface = reaction_preface(role, reaction, peer_utterances)
     direct_fact_question = _contains_any(
         text,
@@ -586,7 +706,6 @@ def generate_role_dialogue(
             if cleaned:
                 cleaned = sanitize_utterances(cleaned)
                 cleaned = _sanitize_utterances_for_last_user(cleaned, user_text)
-                cleaned = apply_delivery_from_contract(cleaned, state_contract)
                 delta = payload.get("state_delta") if isinstance(payload.get("state_delta"), dict) else {}
                 output = {
                     "utterances": cleaned,
@@ -608,7 +727,7 @@ def generate_role_dialogue(
     if not output:
         output = _rule_based_utterances(
             role,
-            cast_entry,
+            {**cast_entry, "role_snapshot": role_snapshot},
             user_text,
             utterance_count,
             scene,
@@ -616,10 +735,19 @@ def generate_role_dialogue(
             reaction=reaction,
             peer_utterances=peer_utterances or [],
         )
-    else:
-        output["utterances"] = sanitize_utterances(
-            _sanitize_utterances_for_last_user(output.get("utterances") or [], user_text)
-        )
+
+    output["utterances"] = apply_delivery_from_contract(
+        sanitize_utterances(_sanitize_utterances_for_last_user(output.get("utterances") or [], user_text)),
+        state_contract,
+    )
+    output["utterances"] = _dedupe_and_repair_utterances(
+        output["utterances"],
+        role=role,
+        history=history,
+        user_text=user_text,
+        role_snapshot=role_snapshot,
+        state_contract=state_contract,
+    )
 
     return {
         "speaker_name": _role_display_name(role),

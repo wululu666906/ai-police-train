@@ -27,6 +27,7 @@ from services.ai_service import (
 )
 from services.evaluation_service import evaluate_session
 from services.classroom_service import (
+    get_session_assignment_context,
     link_session_to_assignment,
     sync_assignment_submission_for_session,
     validate_assignment_training_access,
@@ -362,15 +363,35 @@ def start_training(
         if assignment_id is not None:
             validate_assignment_training_access(db, assignment_id, current_user, scene_id)
 
-        latest_session = (
-            db.query(models.TrainingSession)
-            .filter(
-                models.TrainingSession.user_id == current_user.id,
-                models.TrainingSession.scene_id == scene_id,
+        if assignment_id is not None:
+            latest_session = (
+                db.query(models.TrainingSession)
+                .join(
+                    models.AssignmentSubmission,
+                    models.AssignmentSubmission.training_session_id == models.TrainingSession.id,
+                )
+                .filter(
+                    models.TrainingSession.user_id == current_user.id,
+                    models.TrainingSession.scene_id == scene_id,
+                    models.AssignmentSubmission.assignment_id == assignment_id,
+                )
+                .order_by(models.TrainingSession.created_at.desc())
+                .first()
             )
-            .order_by(models.TrainingSession.created_at.desc())
-            .first()
-        )
+        else:
+            assigned_session_ids = db.query(models.AssignmentSubmission.training_session_id).filter(
+                models.AssignmentSubmission.training_session_id.isnot(None)
+            )
+            latest_session = (
+                db.query(models.TrainingSession)
+                .filter(
+                    models.TrainingSession.user_id == current_user.id,
+                    models.TrainingSession.scene_id == scene_id,
+                    ~models.TrainingSession.id.in_(assigned_session_ids),
+                )
+                .order_by(models.TrainingSession.created_at.desc())
+                .first()
+            )
         case = db.query(models.Case).filter(models.Case.id == scene.case_id).first()
         if case:
             try_sync_case_to_knowledge(case)
@@ -597,17 +618,32 @@ def training_action(
 @router.get("/session/{session_id}", response_model=schemas.SessionDetail)
 def get_session(
     session_id: int,
+    for_report: bool = Query(False, description="报告页轻量读取：跳过训练中推荐问法和自动补全逻辑"),
+    assignment_id: int | None = Query(default=None, description="作业报告校验：确保会话属于指定作业"),
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     session = get_owned_session(db, session_id, current_user.id)
+    if assignment_id is not None:
+        linked_submission = (
+            db.query(models.AssignmentSubmission)
+            .filter(
+                models.AssignmentSubmission.assignment_id == assignment_id,
+                models.AssignmentSubmission.training_session_id == session.id,
+                models.AssignmentSubmission.user_id == current_user.id,
+            )
+            .first()
+        )
+        if not linked_submission:
+            raise HTTPException(status_code=404, detail="该报告不属于当前班级作业")
 
     scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
     case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
     role = resolve_scene_role(db, scene, case)
 
-    ensure_opening_turn(db, session, scene, case, role)
-    db.commit()
+    if not for_report:
+        ensure_opening_turn(db, session, scene, case, role)
+        db.commit()
 
     messages = (
         db.query(models.Message)
@@ -639,7 +675,7 @@ def get_session(
     )
     repaired_revealed_info = json.dumps(runtime_state.get("revealed_info") or [], ensure_ascii=False)
 
-    if session.status == "finished" and session.evaluation_result:
+    if not for_report and session.status == "finished" and session.evaluation_result:
         refreshed_report = evaluate_session(db, session.id, current_user.id)
         if isinstance(refreshed_report, dict) and not refreshed_report.get("error"):
             session.evaluation_result = json.dumps(refreshed_report, ensure_ascii=False)
@@ -655,15 +691,34 @@ def get_session(
         except Exception:
             repaired_evaluation_result = repair_text(repaired_evaluation_result)
 
-    guidance_payload = _build_session_guidance(
-        db,
-        session=session,
-        scene=scene,
-        case=case,
-        role=role,
-        messages=messages,
-        current_stage_goal=current_goal,
-    )
+    if for_report:
+        guidance_payload = {
+            "stage_completion_requirements": [],
+            "stage_completion_satisfied": [],
+            "stage_completion_missing": [],
+            "recommended_questions": [],
+            "recommended_question_items": [],
+            "communication_feedback": None,
+            "persona_hint": None,
+            "role_state_label": None,
+            "truth_stage": None,
+            "available_actions": [],
+            "assessment_progress": None,
+            "completed_point_ids": [],
+            "completed_action_ids": [],
+            "auto_finish_ready": False,
+            "closure_summary": None,
+        }
+    else:
+        guidance_payload = _build_session_guidance(
+            db,
+            session=session,
+            scene=scene,
+            case=case,
+            role=role,
+            messages=messages,
+            current_stage_goal=current_goal,
+        )
 
     return schemas.SessionDetail(
         id=session.id,
@@ -720,6 +775,7 @@ def get_session(
         completed_action_ids=guidance_payload["completed_action_ids"],
         auto_finish_ready=guidance_payload["auto_finish_ready"],
         closure_summary=guidance_payload["closure_summary"],
+        assignment_context=get_session_assignment_context(db, session.id, current_user.id),
         messages=repaired_messages,
     )
 
@@ -802,10 +858,17 @@ def delete_training_session(
     current_user: models.User = Depends(get_current_user),
 ):
     session = get_owned_session(db, session_id, current_user.id)
+    linked_submission = (
+        db.query(models.AssignmentSubmission)
+        .filter(
+            models.AssignmentSubmission.training_session_id == session.id,
+            models.AssignmentSubmission.user_id == current_user.id,
+        )
+        .first()
+    )
+    if linked_submission:
+        raise HTTPException(status_code=400, detail="班级作业训练记录请在班级作业中查看，不能从普通训练历史删除")
 
-    db.query(models.AssignmentSubmission).filter(
-        models.AssignmentSubmission.training_session_id == session.id
-    ).delete(synchronize_session=False)
     db.query(models.Message).filter(models.Message.session_id == session.id).delete(synchronize_session=False)
     db.delete(session)
     db.commit()
@@ -818,20 +881,21 @@ def delete_active_training_sessions(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    assigned_session_ids = db.query(models.AssignmentSubmission.training_session_id).filter(
+        models.AssignmentSubmission.training_session_id.isnot(None)
+    )
     active_sessions = (
         db.query(models.TrainingSession)
         .filter(
             models.TrainingSession.user_id == current_user.id,
             models.TrainingSession.status == "active",
+            ~models.TrainingSession.id.in_(assigned_session_ids),
         )
         .all()
     )
     session_ids = [session.id for session in active_sessions]
 
     if session_ids:
-        db.query(models.AssignmentSubmission).filter(
-            models.AssignmentSubmission.training_session_id.in_(session_ids)
-        ).delete(synchronize_session=False)
         db.query(models.Message).filter(models.Message.session_id.in_(session_ids)).delete(synchronize_session=False)
         db.query(models.TrainingSession).filter(models.TrainingSession.id.in_(session_ids)).delete(synchronize_session=False)
         db.commit()

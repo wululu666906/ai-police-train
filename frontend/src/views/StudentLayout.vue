@@ -1,8 +1,8 @@
 <template>
   <el-config-provider :locale="studentElementLocale" size="default">
     <div class="student-app">
-      <div class="student-shell">
-        <StudentSidebar />
+      <div class="student-shell" :class="{ 'student-shell--sidebar-collapsed': sidebarCollapsed }">
+        <StudentSidebar :collapsed="sidebarCollapsed" @toggle-collapse="toggleSidebar" />
 
         <div class="student-content">
           <StudentTopbar
@@ -26,7 +26,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, provide, ref } from 'vue'
+import { computed, onMounted, provide, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import StudentSidebar from '../geeker-adapt/components/StudentSidebar.vue'
 import StudentTopbar from '../geeker-adapt/components/StudentTopbar.vue'
@@ -37,10 +37,12 @@ import '../geeker-adapt/styles/student-theme.scss'
 import '../geeker-adapt/styles/element-student.scss'
 
 const router = useRouter()
+const SIDEBAR_COLLAPSED_KEY = 'student.sidebar.collapsed'
 
 const displayName = computed(() => localStorage.getItem('username') || '学员')
 const canBackToAdmin = computed(() => localStorage.getItem('role') === 'admin')
 const mainScrollable = ref(false)
+const sidebarCollapsed = ref(false)
 
 const setMainScrollable = (value: boolean) => {
   mainScrollable.value = value
@@ -52,6 +54,18 @@ const logout = () => {
   clearAuth()
   router.push('/login')
 }
+
+const toggleSidebar = () => {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+}
+
+onMounted(() => {
+  sidebarCollapsed.value = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
+})
+
+watch(sidebarCollapsed, (value) => {
+  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, value ? '1' : '0')
+})
 </script>
 
 <style scoped lang="scss">

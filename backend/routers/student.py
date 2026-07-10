@@ -215,6 +215,7 @@ def get_student_history(
     page: int = 1,
     page_size: int = 10,
     include_empty: bool = False,
+    include_assignments: bool = False,
     status: Optional[str] = None,
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
@@ -255,6 +256,11 @@ def get_student_history(
         .outerjoin(models.Case, models.Case.id == models.Scene.case_id)
         .filter(models.TrainingSession.user_id == current_user.id)
     )
+    if not include_assignments:
+        assignment_session_ids = db.query(models.AssignmentSubmission.training_session_id).filter(
+            models.AssignmentSubmission.training_session_id.isnot(None)
+        )
+        base_query = base_query.filter(~models.TrainingSession.id.in_(assignment_session_ids))
 
     empty_session_count = base_query.filter(is_empty_expr).count()
     visible_query = base_query if include_empty else base_query.filter(~is_empty_expr)

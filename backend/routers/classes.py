@@ -12,9 +12,13 @@ from services.classroom_service import (
     generate_invite_code,
     get_effective_assignment_policy,
     get_assignment_case_ids,
+    get_assignment_case_ids_from_scenes,
+    get_assignment_scene_ids,
+    get_assignment_scene_rows,
     require_student_membership,
     safe_json_loads,
     serialize_datetime,
+    set_assignment_scenes,
 )
 from services.text_repair import repair_text
 
@@ -78,6 +82,17 @@ def serialize_case_brief(case: models.Case | None) -> dict:
     }
 
 
+def serialize_scene_brief(scene: models.Scene | None, case: models.Case | None = None) -> dict:
+    return {
+        "id": getattr(scene, "id", None),
+        "case_id": getattr(scene, "case_id", getattr(case, "id", None)),
+        "case_title": case_title(case),
+        "name": scene_name(scene),
+        "difficulty": repair_text(getattr(scene, "difficulty", None)) if scene else "",
+        "description": repair_text(getattr(scene, "description", None)) if scene else "",
+    }
+
+
 def serialize_submission(submission: models.AssignmentSubmission | None, *, include_evaluation: bool = False) -> dict | None:
     if not submission:
         return None
@@ -110,14 +125,24 @@ def serialize_announcement(item: models.ClassAnnouncement) -> dict:
 
 
 def serialize_assignment_base(db: Session, assignment: models.TrainingAssignment, *, include_cases: bool = True) -> dict:
-    case_ids = get_assignment_case_ids(assignment)
+    case_ids = get_assignment_case_ids_from_scenes(db, assignment)
+    scene_ids = get_assignment_scene_ids(db, assignment)
     cases: list[dict] = []
+    scenes: list[dict] = []
     if include_cases and case_ids:
         case_map = {
             item.id: item
             for item in db.query(models.Case).filter(models.Case.id.in_(case_ids)).all()
         }
         cases = [serialize_case_brief(case_map.get(case_id)) for case_id in case_ids]
+    if include_cases and scene_ids:
+        scene_rows = db.query(models.Scene).filter(models.Scene.id.in_(scene_ids)).all()
+        scene_map = {item.id: item for item in scene_rows}
+        case_map = {
+            item.id: item
+            for item in db.query(models.Case).filter(models.Case.id.in_({scene.case_id for scene in scene_rows})).all()
+        } if scene_rows else {}
+        scenes = [serialize_scene_brief(scene_map.get(scene_id), case_map.get(getattr(scene_map.get(scene_id), "case_id", None))) for scene_id in scene_ids]
     return {
         "id": assignment.id,
         "class_id": assignment.class_id,
@@ -130,7 +155,9 @@ def serialize_assignment_base(db: Session, assignment: models.TrainingAssignment
         "due_at": serialize_datetime(assignment.due_at),
         "created_at": serialize_datetime(assignment.created_at),
         "case_ids": case_ids,
+        "scene_ids": scene_ids,
         "cases": cases,
+        "scenes": scenes,
     }
 
 
@@ -224,13 +251,13 @@ def latest_submission_for_scene(
     )
 
 
-def case_status_for_student(
+def scene_status_for_student(
     db: Session,
     assignment: models.TrainingAssignment,
     user_id: int,
-    case_id: int,
+    scene_id: int,
 ) -> dict:
-    submission = latest_submission_for_case(db, assignment.id, user_id, case_id)
+    submission = latest_submission_for_scene(db, assignment.id, user_id, scene_id)
     policy = get_effective_assignment_policy(db, assignment, user_id)
     if submission and submission.status in FINAL_SUBMISSION_STATUSES:
         status = "late" if submission.status == "late" else "completed"
@@ -241,9 +268,42 @@ def case_status_for_student(
     else:
         status = "pending"
     return {
-        "case_id": case_id,
+        "scene_id": scene_id,
         "status": status,
         "submission": serialize_submission(submission),
+    }
+
+
+def case_status_for_student(
+    db: Session,
+    assignment: models.TrainingAssignment,
+    user_id: int,
+    case_id: int,
+) -> dict:
+    scene_ids = [
+        row.scene_id
+        for row in get_assignment_scene_rows(db, assignment)
+        if row.case_id == case_id
+    ]
+    scene_statuses = [scene_status_for_student(db, assignment, user_id, scene_id) for scene_id in scene_ids]
+    completed = [item for item in scene_statuses if item["status"] in {"completed", "late"}]
+    active = [item for item in scene_statuses if item["status"] in {"in_progress", "evaluating"}]
+    policy = get_effective_assignment_policy(db, assignment, user_id)
+    if scene_ids and len(completed) == len(scene_ids):
+        status = "late" if any(item["status"] == "late" for item in completed) else "completed"
+    elif active:
+        status = "in_progress"
+    elif policy["is_overdue"] and not policy["allow_late"]:
+        status = "expired"
+    else:
+        status = "pending"
+    return {
+        "case_id": case_id,
+        "status": status,
+        "completed_count": len(completed),
+        "required_count": len(scene_ids),
+        "scene_statuses": scene_statuses,
+        "submission": completed[-1]["submission"] if completed else (active[-1]["submission"] if active else None),
     }
 
 
@@ -252,12 +312,16 @@ def assignment_status_for_student(
     assignment: models.TrainingAssignment,
     user_id: int,
 ) -> dict:
-    case_ids = get_assignment_case_ids(assignment)
+    scene_ids = get_assignment_scene_ids(db, assignment)
     policy = get_effective_assignment_policy(db, assignment, user_id)
-    case_statuses = [case_status_for_student(db, assignment, user_id, case_id) for case_id in case_ids]
-    completed = [item for item in case_statuses if item["status"] in {"completed", "late"}]
-    active = [item for item in case_statuses if item["status"] in {"in_progress", "evaluating"}]
-    if case_ids and len(completed) == len(case_ids):
+    scene_statuses = [scene_status_for_student(db, assignment, user_id, scene_id) for scene_id in scene_ids]
+    case_statuses = [
+        case_status_for_student(db, assignment, user_id, case_id)
+        for case_id in get_assignment_case_ids_from_scenes(db, assignment)
+    ]
+    completed = [item for item in scene_statuses if item["status"] in {"completed", "late"}]
+    active = [item for item in scene_statuses if item["status"] in {"in_progress", "evaluating"}]
+    if scene_ids and len(completed) == len(scene_ids):
         status = "late" if any(item["status"] == "late" for item in completed) else "completed"
     elif active:
         status = "in_progress"
@@ -268,8 +332,9 @@ def assignment_status_for_student(
     return {
         "status": status,
         "completed_count": len(completed),
-        "required_count": len(case_ids),
+        "required_count": len(scene_ids),
         "case_statuses": case_statuses,
+        "scene_statuses": scene_statuses,
         "effective_due_at": serialize_datetime(policy["due_at"]),
         "allow_late": policy["allow_late"],
         "is_overdue": policy["is_overdue"],
@@ -421,11 +486,14 @@ def get_student_assignment_detail(
         raise HTTPException(status_code=404, detail="Assignment not found")
     require_student_membership(db, assignment.class_id, current_user)
 
-    case_ids = get_assignment_case_ids(assignment)
+    assignment_scene_rows = get_assignment_scene_rows(db, assignment)
+    case_ids = get_assignment_case_ids_from_scenes(db, assignment)
+    scene_ids = [row.scene_id for row in assignment_scene_rows]
     cases = db.query(models.Case).filter(models.Case.id.in_(case_ids)).all() if case_ids else []
     case_map = {item.id: item for item in cases}
-    scenes = db.query(models.Scene).filter(models.Scene.case_id.in_(case_ids)).all() if case_ids else []
+    scenes = db.query(models.Scene).filter(models.Scene.id.in_(scene_ids)).all() if scene_ids else []
     scenes_by_case_id: dict[int, list[models.Scene]] = {}
+    scene_order = {row.scene_id: row.sort_order or 0 for row in assignment_scene_rows}
     for scene in scenes:
         scenes_by_case_id.setdefault(scene.case_id, []).append(scene)
 
@@ -434,7 +502,7 @@ def get_student_assignment_detail(
         case = case_map.get(case_id)
         status_payload = case_status_for_student(db, assignment, current_user.id, case_id)
         scene_payloads = []
-        for scene in sorted(scenes_by_case_id.get(case_id, []), key=lambda item: item.id):
+        for scene in sorted(scenes_by_case_id.get(case_id, []), key=lambda item: scene_order.get(item.id, item.id)):
             submission = latest_submission_for_scene(db, assignment.id, current_user.id, scene.id)
             training_status = "not_started"
             if submission and submission.status in FINAL_SUBMISSION_STATUSES:
@@ -468,6 +536,7 @@ def get_student_assignment_detail(
         **assignment_status_for_student(db, assignment, current_user.id),
         "class_name": classroom.name if classroom else "",
         "cases": case_payloads,
+        "content_unit": "scene",
     }
 
 
@@ -642,16 +711,25 @@ def create_assignment(
             continue
         if case_id not in case_ids:
             case_ids.append(case_id)
-    if not case_ids:
-        raise HTTPException(status_code=400, detail="Select at least one case")
+    scene_ids = []
+    for item in payload.get("scene_ids") or []:
+        try:
+            scene_id = int(item)
+        except (TypeError, ValueError):
+            continue
+        if scene_id not in scene_ids:
+            scene_ids.append(scene_id)
+    if not case_ids and not scene_ids:
+        raise HTTPException(status_code=400, detail="Select at least one case or scene")
 
-    existing_case_ids = {
-        row.id
-        for row in db.query(models.Case.id).filter(models.Case.id.in_(case_ids)).all()
-    }
-    missing_case_ids = [case_id for case_id in case_ids if case_id not in existing_case_ids]
-    if missing_case_ids:
-        raise HTTPException(status_code=400, detail=f"Cases not found: {missing_case_ids}")
+    if case_ids:
+        existing_case_ids = {
+            row.id
+            for row in db.query(models.Case.id).filter(models.Case.id.in_(case_ids)).all()
+        }
+        missing_case_ids = [case_id for case_id in case_ids if case_id not in existing_case_ids]
+        if missing_case_ids:
+            raise HTTPException(status_code=400, detail=f"Cases not found: {missing_case_ids}")
 
     published_at = parse_datetime(payload.get("published_at")) or datetime.utcnow()
     assignment = models.TrainingAssignment(
@@ -667,8 +745,17 @@ def create_assignment(
     )
     db.add(assignment)
     db.flush()
+    if scene_ids and not case_ids:
+        linked_case_ids = [
+            row.case_id
+            for row in db.query(models.Scene.case_id).filter(models.Scene.id.in_(scene_ids)).all()
+        ]
+        for case_id in linked_case_ids:
+            if case_id not in case_ids:
+                case_ids.append(case_id)
     for index, case_id in enumerate(case_ids):
         db.add(models.TrainingAssignmentCase(assignment_id=assignment.id, case_id=case_id, sort_order=index))
+    set_assignment_scenes(db, assignment, scene_ids=scene_ids, case_ids=case_ids)
     db.commit()
     db.refresh(assignment)
     return serialize_assignment_base(db, assignment)
@@ -749,11 +836,17 @@ def update_student_assignment_override(
 @router.get("/{class_id}/assignments/{assignment_id}/review", dependencies=[Depends(require_admin_user)])
 def get_assignment_review(class_id: int, assignment_id: int, db: Session = Depends(database.get_db)):
     assignment = ensure_assignment(db, class_id, assignment_id)
-    case_ids = get_assignment_case_ids(assignment)
+    assignment_scene_rows = get_assignment_scene_rows(db, assignment)
+    scene_ids = [row.scene_id for row in assignment_scene_rows]
+    case_ids = get_assignment_case_ids_from_scenes(db, assignment)
     case_map = {
         item.id: item
         for item in db.query(models.Case).filter(models.Case.id.in_(case_ids)).all()
     } if case_ids else {}
+    scene_map = {
+        item.id: item
+        for item in db.query(models.Scene).filter(models.Scene.id.in_(scene_ids)).all()
+    } if scene_ids else {}
     students = (
         db.query(models.User)
         .join(models.ClassMembership, models.ClassMembership.user_id == models.User.id)
@@ -773,8 +866,10 @@ def get_assignment_review(class_id: int, assignment_id: int, db: Session = Depen
         final_statuses = []
         active_count = 0
         last_submitted_at = None
-        for case_id in case_ids:
-            submission = latest_submission_for_case(db, assignment.id, student.id, case_id)
+        for scene_id in scene_ids:
+            scene = scene_map.get(scene_id)
+            case_id = getattr(scene, "case_id", None)
+            submission = latest_submission_for_scene(db, assignment.id, student.id, scene_id)
             is_final = bool(submission and submission.status in FINAL_SUBMISSION_STATUSES)
             if submission and submission.status in {"in_progress", "evaluating"}:
                 active_count += 1
@@ -787,13 +882,14 @@ def get_assignment_review(class_id: int, assignment_id: int, db: Session = Depen
             case_rows.append(
                 {
                     **serialize_case_brief(case_map.get(case_id)),
+                    "scene": serialize_scene_brief(scene, case_map.get(case_id)),
                     "submission": serialize_submission(submission),
                     "status": "submitted" if is_final else (submission.status if submission else "missing"),
                 }
             )
 
         completed_count = len(final_statuses)
-        required_count = len(case_ids)
+        required_count = len(scene_ids)
         if required_count and completed_count == required_count:
             status = "late" if any(item == "late" for item in final_statuses) else "submitted"
         elif active_count:
@@ -822,6 +918,10 @@ def get_assignment_review(class_id: int, assignment_id: int, db: Session = Depen
     return {
         "assignment": serialize_assignment_base(db, assignment),
         "cases": [serialize_case_brief(case_map.get(case_id)) for case_id in case_ids],
+        "scenes": [
+            serialize_scene_brief(scene_map.get(scene_id), case_map.get(getattr(scene_map.get(scene_id), "case_id", None)))
+            for scene_id in scene_ids
+        ],
         "rows": rows,
         "summary": {
             "student_count": len(rows),

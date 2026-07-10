@@ -10,17 +10,21 @@
       <p>{{ trainingLoadError }}</p>
       <div class="training-status-actions">
         <van-button plain size="small" @click="fetchSessionData">重新加载</van-button>
-        <van-button type="primary" size="small" @click="router.replace('/student/hall')">返回训练大厅</van-button>
+        <van-button type="primary" size="small" @click="router.replace(trainingReturnPath)">返回{{ trainingReturnLabel }}</van-button>
       </div>
     </div>
 
     <template v-else>
     <header class="training-header">
       <div class="training-header__case">
-        <span class="training-header__label">案件名称</span>
+        <span class="training-header__label">{{ trainingSourceLabel }}</span>
         <div class="training-header__title-row">
           <span class="training-header__title">{{ caseInfo.title }}</span>
           <span class="training-header__badge">{{ normalizeDifficulty(caseInfo.difficulty) }}难度</span>
+        </div>
+        <div v-if="assignmentContext" class="training-header__assignment">
+          {{ assignmentContext.class_name }} / {{ assignmentContext.assignment_title }}
+          <span v-if="assignmentContext.due_at">截止 {{ formatDateTime(assignmentContext.due_at) }}</span>
         </div>
       </div>
       <div class="training-header__right">
@@ -55,16 +59,21 @@
           </div>
         </div>
 
-        <div class="panel-section panel-section--primary stage-section">
+        <div class="panel-section panel-section--primary stage-section" :class="{ 'stage-section--assessment': isAssignmentAssessmentMode }">
           <h3 class="panel-title">
             <van-icon name="send-gift-o" />
-            训练阶段
+            {{ isAssignmentAssessmentMode ? '考察进度' : '训练阶段' }}
           </h3>
           <div class="stage-hero">
-            <span class="stage-tag">当前阶段</span>
+            <span class="stage-tag">{{ isAssignmentAssessmentMode ? '当前环节' : '当前阶段' }}</span>
             <div class="stage-name-text">{{ caseInfo.currentStage }}</div>
-            <div class="goal-label">本阶段目标</div>
-            <div class="goal-text">{{ caseInfo.currentStageGoal || '请开始与对方交流，获取关键事实。' }}</div>
+            <template v-if="showStageGoal">
+              <div class="goal-label">本阶段目标</div>
+              <div class="goal-text">{{ caseInfo.currentStageGoal || '请开始与对方交流，获取关键事实。' }}</div>
+            </template>
+            <div v-else class="goal-text goal-text--assessment">
+              请根据已知案情和现场对话自行判断处置重点，系统将在提交后统一评估。
+            </div>
           </div>
         </div>
 
@@ -146,7 +155,7 @@
           </button>
         </div>
 
-        <div class="panel-section panel-section--secondary facts-section">
+        <div v-if="showRevealedInfo" class="panel-section panel-section--secondary facts-section">
           <h3 class="panel-title">
             <van-icon name="bookmark-o" />
             已获取信息
@@ -168,7 +177,7 @@
 
       <div class="panel-actions">
         <van-button block type="danger" size="small" class="finish-btn" @click="finishTraining">
-          <van-icon name="flag-o" /> 结束训练并生成评估
+          <van-icon name="flag-o" /> {{ finishButtonText }}
         </van-button>
       </div>
     </aside>
@@ -184,7 +193,6 @@
         @skipped="handleFaceSkipped"
         @failed="handleFaceFailed"
         @terminated="handleFaceTerminated"
-        @multimodal-frame="handleMultimodalFrame"
       />
       <div v-if="routingSummary || addressingWarning" class="scene-session-bar">
         <span class="scene-session-bar__title">场景会话</span>
@@ -243,15 +251,15 @@
       </div>
 
       <div class="chat-input-area">
-        <div v-if="communicationFeedback.message" class="coach-feedback" :class="`coach-feedback--${communicationFeedback.level || 'info'}`">
+        <div v-if="showTrainingHints && communicationFeedback.message" class="coach-feedback" :class="`coach-feedback--${communicationFeedback.level || 'info'}`">
           <span class="coach-feedback__label">问法提示</span>
           <span class="coach-feedback__text">{{ communicationFeedback.message }}</span>
         </div>
-        <div v-if="stageMissing.length" class="stage-missing">
+        <div v-if="showTrainingHints && stageMissing.length" class="stage-missing">
           <span class="stage-missing__label">本阶段待补齐</span>
           <span v-for="item in stageMissing" :key="item" class="stage-missing__tag">{{ item }}</span>
         </div>
-        <div v-if="suggestedQuestionItems.length" class="suggested-questions">
+        <div v-if="showTrainingHints && suggestedQuestionItems.length" class="suggested-questions">
           <div class="suggested-questions__head">
             <span class="suggested-questions__title">建议追问</span>
             <span class="suggested-questions__hint">点选填入输入框，将自动对准询问对象</span>
@@ -297,7 +305,7 @@
           <div class="brief-head">
             <button type="button" class="brief-back-link" :disabled="isReturningToHall" @click="handleBriefReturnToHall">
               <van-icon name="arrow-left" />
-              {{ isReturningToHall ? '正在返回...' : '返回训练大厅' }}
+              {{ isReturningToHall ? '正在返回...' : `返回${trainingReturnLabel}` }}
             </button>
 
             <section class="brief-hero">
@@ -327,7 +335,7 @@
                 </div>
               </section>
 
-              <section class="brief-info-section">
+              <section v-if="showBriefTips" class="brief-info-section">
                 <h2>执法提示</h2>
                 <div class="brief-text-box">
                   <ol>
@@ -341,7 +349,7 @@
           <div class="brief-bottom">
             <section class="brief-warm-tip">
               <strong><van-icon name="info-o" /> 温馨提示</strong>
-              <span>{{ isIntakeScene ? '请确认已进入110接警状态，随后报警人将先开口说明情况；你再按规范顺序展开问询。' : '请阅读以上简报与现场信息，确认后进入对话训练。' }}</span>
+              <span>{{ briefWarmTipText }}</span>
             </section>
 
             <footer class="brief-actions">
@@ -362,14 +370,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showLoadingToast, showToast } from 'vant'
 import request from '../utils/request'
 import TrainingInputBar from '../components/TrainingInputBar.vue'
 import RoleSpeakingAvatar from '../components/RoleSpeakingAvatar.vue'
 import TrainingFaceGuard from '../components/TrainingFaceGuard.vue'
-import { useMultimodalVision } from '../composables/useMultimodalVision'
 
 const AVATAR_PALETTE = [
   '#4F46E5', '#0891B2', '#059669', '#D97706', '#DC2626',
@@ -400,11 +407,38 @@ const faceVerificationSkipped = ref(false)
 const faceVerified = ref(false)
 const faceTerminated = ref(false)
 const isFinishingTraining = ref(false)
+const assignmentContext = ref<any | null>(null)
 const faceGuardRef = ref<InstanceType<typeof TrainingFaceGuard> | null>(null)
-const multimodalVision = useMultimodalVision()
-let multimodalFrameInFlight = false
-let multimodalFramePending: any | null = null
 const canUseConversation = computed(() => faceVerificationSkipped.value || (faceVerified.value && !faceTerminated.value))
+const routeMarksAssignment = computed(() => route.query.source === 'assignment' || Boolean(route.query.assignment_id))
+const isAssignmentAssessmentMode = computed(() => Boolean(assignmentContext.value) || routeMarksAssignment.value)
+const currentAssignmentId = computed(() => {
+  const raw = assignmentContext.value?.assignment_id ?? (Array.isArray(route.query.assignment_id) ? route.query.assignment_id[0] : route.query.assignment_id)
+  const id = Number(raw)
+  return Number.isFinite(id) && id > 0 ? id : null
+})
+const showTrainingHints = computed(() => !isAssignmentAssessmentMode.value)
+const showBriefTips = computed(() => !isAssignmentAssessmentMode.value)
+const showStageGoal = computed(() => !isAssignmentAssessmentMode.value)
+const showRevealedInfo = computed(() => true)
+const trainingSourceLabel = computed(() => isAssignmentAssessmentMode.value ? '班级作业考察' : '自主案件训练')
+const trainingReturnPath = computed(() => isAssignmentAssessmentMode.value ? '/student/classes' : '/student/hall')
+const trainingReturnLabel = computed(() => isAssignmentAssessmentMode.value ? '班级作业' : '训练大厅')
+const finishButtonText = computed(() => isAssignmentAssessmentMode.value ? '提交作业并生成评估' : '结束训练并生成评估')
+const briefWarmTipText = computed(() => {
+  if (isAssignmentAssessmentMode.value) return '请阅读必要案情信息后进入考察。过程提示将在提交后统一体现在评估报告中。'
+  return isIntakeScene.value
+    ? '请确认已进入110接警状态，随后报警人将先开口说明情况；你再按规范顺序展开问询。'
+    : '请阅读以上简报与现场信息，确认后进入对话训练。'
+})
+
+const formatDateTime = (value: any) => {
+  if (!value) return '未设置'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  const pad = (num: number) => String(num).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
 
 const caseInfo = reactive({
   title: '加载中...',
@@ -810,9 +844,9 @@ const resolveRequestErrorMessage = (error: any, fallback: string) => {
 
 const fetchSessionData = async () => {
   if (!sessionId.value) {
-    trainingLoadError.value = '训练会话无效，请从训练大厅重新进入。'
+    trainingLoadError.value = '训练会话无效，请从入口重新进入。'
     isSessionBooting.value = false
-    setTimeout(() => router.replace('/student/hall'), 1200)
+    setTimeout(() => router.replace(trainingReturnPath.value), 1200)
     return
   }
   isSessionBooting.value = true
@@ -833,6 +867,7 @@ const fetchSessionData = async () => {
     caseInfo.sceneKind = res.scene_kind || 'generic'
     caseInfo.dialogueMode = res.dialogue_mode || 'officer_led'
     caseInfo.structuredData = safeParse(res.structured_data, null)
+    assignmentContext.value = res.assignment_context || null
     roleInfo.name = res.role_name
     sceneRoles.value = Array.isArray(res.scene_roles) ? res.scene_roles : []
     showAllRoles.value = false
@@ -868,11 +903,11 @@ const fetchSessionData = async () => {
   } catch (error: any) {
     const message = resolveRequestErrorMessage(error, '获取训练数据失败')
     trainingLoadError.value = error?.response?.status === 404
-      ? '该训练会话不存在，或不属于当前登录账号。请从训练大厅重新进入。'
+      ? '该训练会话不存在，或不属于当前登录账号。请从入口重新进入。'
       : message
     showToast(trainingLoadError.value)
     if (error?.response?.status === 404) {
-      setTimeout(() => router.replace('/student/hall'), 1800)
+      setTimeout(() => router.replace(trainingReturnPath.value), 1800)
     }
   } finally {
     isSessionBooting.value = false
@@ -957,7 +992,7 @@ const handleBriefReturnToHall = async () => {
   } finally {
     isReturningToHall.value = false
     showCaseBrief.value = false
-    router.replace('/student/hall')
+    router.replace(trainingReturnPath.value)
   }
 }
 
@@ -1144,13 +1179,15 @@ const sendMessage = async (content?: string) => {
 const finishTraining = async () => {
   if (isFinishingTraining.value || !sessionId.value) return
   isFinishingTraining.value = true
-  stopMultimodalSampling()
   faceGuardRef.value?.stopCamera?.()
   const loader = showLoadingToast({ message: '正在生成评估报告...', forbidClick: true })
   try {
     await request.post(`/training/finish/${sessionId.value}`)
     loader.close()
-    router.push(`/student/evaluation?session_id=${sessionId.value}`)
+    const sourceQuery = isAssignmentAssessmentMode.value
+      ? `&source=assignment${currentAssignmentId.value ? `&assignment_id=${currentAssignmentId.value}` : ''}`
+      : ''
+    router.push(`/student/evaluation?session_id=${sessionId.value}${sourceQuery}`)
   } catch (error) {
     loader.close()
     isFinishingTraining.value = false
@@ -1162,7 +1199,10 @@ const waitForEvaluationReport = async (targetSessionId: string, timeoutMs = 1500
   const startedAt = Date.now()
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const res: any = await request.get(`/training/session/${targetSessionId}`, { _skipErrorToast: true } as any)
+      const res: any = await request.get(`/training/session/${targetSessionId}`, {
+        params: { for_report: 1 },
+        _skipErrorToast: true,
+      } as any)
       if (res?.evaluation_result || res?.status === 'finished') return true
     } catch {
       // Keep waiting; the evaluation worker may still be committing the result.
@@ -1170,50 +1210,6 @@ const waitForEvaluationReport = async (targetSessionId: string, timeoutMs = 1500
     await new Promise((resolve) => window.setTimeout(resolve, 800))
   }
   return false
-}
-
-const stopMultimodalSampling = () => {
-  multimodalFrameInFlight = false
-  multimodalFramePending = null
-}
-
-const postMultimodalFrame = async (capture: any) => {
-  if (faceVerificationSkipped.value || faceTerminated.value || !sessionId.value) {
-    stopMultimodalSampling()
-    return
-  }
-  const frame = capture?.frame
-  if (!frame) return
-  if (multimodalFrameInFlight) {
-    multimodalFramePending = capture
-    return
-  }
-  multimodalFrameInFlight = true
-  try {
-    await request.post(
-      `/multimodal/session/${sessionId.value}/frame`,
-      { frame, client_signals: capture.client_signals },
-      { _skipErrorToast: true } as any,
-    )
-  } catch {
-    // Multimodal analysis follows the face heartbeat and must not interrupt training.
-  } finally {
-    multimodalFrameInFlight = false
-    if (multimodalFramePending) {
-      const pending = multimodalFramePending
-      multimodalFramePending = null
-      void postMultimodalFrame(pending)
-    }
-  }
-}
-
-const startMultimodalSampling = () => {
-  if (faceVerificationSkipped.value) return
-  faceGuardRef.value?.setMultimodalVision?.(multimodalVision)
-}
-
-const handleMultimodalFrame = (payload: any) => {
-  void postMultimodalFrame(payload)
 }
 
 const interruptAssistantReply = () => {
@@ -1236,14 +1232,12 @@ const handleFaceVerified = () => {
   clearFaceVerificationSkipped()
   faceVerified.value = true
   faceTerminated.value = false
-  startMultimodalSampling()
 }
 
 const handleFaceSkipped = () => {
   faceVerificationSkipped.value = true
   faceVerified.value = false
   faceTerminated.value = false
-  stopMultimodalSampling()
   faceGuardRef.value?.stopCamera?.()
   persistFaceVerificationSkipped()
   showToast({ type: 'success', message: '已跳过人脸验证，本次训练不启用人脸与异常监测' })
@@ -1259,7 +1253,6 @@ const handleFaceTerminated = (payload?: any) => {
   if (isFinishingTraining.value) return
   faceVerified.value = false
   faceTerminated.value = true
-  stopMultimodalSampling()
   const maxFailures = Number(payload?.max_failures || 5)
   const loader = showLoadingToast({
     message: `实训检测异常达到 ${maxFailures} 次，正在生成评估报告...`,
@@ -1268,7 +1261,10 @@ const handleFaceTerminated = (payload?: any) => {
   })
   void waitForEvaluationReport(sessionId.value).finally(() => {
     loader.close()
-    router.replace(`/student/evaluation?session_id=${sessionId.value}`)
+    const sourceQuery = isAssignmentAssessmentMode.value
+      ? `&source=assignment${currentAssignmentId.value ? `&assignment_id=${currentAssignmentId.value}` : ''}`
+      : ''
+    router.replace(`/student/evaluation?session_id=${sessionId.value}${sourceQuery}`)
   })
 }
 
@@ -1289,7 +1285,6 @@ const scrollToBottom = () => {
 }
 
 onMounted(fetchSessionData)
-onBeforeUnmount(stopMultimodalSampling)
 </script>
 
 <style scoped>
@@ -1926,6 +1921,20 @@ onBeforeUnmount(stopMultimodalSampling)
   font-weight: 600;
 }
 
+.training-header__assignment {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.training-header__assignment span {
+  color: #1d4ed8;
+}
+
 .training-header__right {
   margin-left: auto;
   display: flex;
@@ -2047,6 +2056,21 @@ onBeforeUnmount(stopMultimodalSampling)
   font-size: 13px;
   line-height: 1.6;
   color: #475569;
+}
+
+.stage-section--assessment .stage-hero {
+  border-left-color: #b45309;
+  background: #fff7ed;
+}
+
+.stage-section--assessment .stage-tag {
+  background: #fed7aa;
+  color: #9a3412;
+}
+
+.goal-text--assessment {
+  margin-top: 10px;
+  color: #7c2d12;
 }
 
 .left-suggestion-list {

@@ -278,7 +278,7 @@ SCENE_GEN_PROMPT = """你是公安警情训练场景设计专家。你的结果�
    - template_first：先参考候选模块/模板，再按本案人物、地点、证据、风险和矛盾点重组、改名、删减或合并。
    - case_driven：不从模板里找场景，直接根据案件事实自动生成场景；候选模块只能作为现实警情常识参考，不得照搬。
 4. 每个场景都必须有清晰的 stage 列表，stage_name 和 stage_goal 要能支撑多轮问答，不能空泛重复。
-5. 场景目标要鼓励"先核实、再追问、再压实矛盾"，不要让角色一两轮就把全部核心事实说完。
+5. 场景目标以训练为主，既可以训练民警与群众/嫌疑人/证人的对话，也可以训练案件复盘、诈骗话术还原、证据链梳理、笔录制作、协同流转、结果回访等非群众对话任务。
 6. dispatch_brief 只能写该场景开始前警方已知内容；first_impression 只能写该场景一进入时可观察内容。不得把案件完整事实全写在同一个场景的 dispatch_brief 中。
 7. difficulty 要和信息复杂度、人物对抗性、情绪强度匹配，优先使用"低 / 中等 / 高"。
 8. 如果输入材料本身信息不足，也要尽量在现有事实上组织可训练场景，但不能靠脑补补齐。
@@ -293,6 +293,8 @@ SCENE_GEN_PROMPT = """你是公安警情训练场景设计专家。你的结果�
 - 每个场景都应有明确主任务。
 - 角色要有可问询空间、可压实的矛盾点或风险点。
 - 多个场景之间要形成递进，而不是简单改写同一段话。
+- 可以在还原案件后追加“复盘/整理/笔录/协同/回访”类训练场景；这类场景不一定要求学员以民警身份继续询问群众，重点是快速积累同类案件处置经验。
+- 对电诈等案件，可生成“诈骗话术过程还原”“资金流与电子证据核查”“止付冻结协同流转”等训练场景；对盗窃可生成“监控轨迹研判”“证据链梳理”；对纠纷伤害可生成“笔录要素补齐”“调解边界复盘”。
 - 场景名应体现本案任务，不只写流程名。例如电诈可写"涉诈报警与预警劝阻/资金流与证据核查"，盗窃可写"失窃报警核实/盗窃现场勘查/可疑线索询问"，纠纷伤害可写"冲突报警与风险稳控/现场分离与证据固定/双方陈述重点询问"。
 - 如果候选模块与案件事实不一致，以案件事实为准；不要为了使用模块而生成不存在的现场、证据或人物。
 
@@ -1580,10 +1582,17 @@ class WorkflowService:
             for module in scene_modules:
                 scene_name = str(module.get("title") or self._default_scene_name(len(scenes) + 1)).strip()
                 roles = self._pick_scene_roles(case_info, list(module.get("role_types") or []))
+                training_form = str(module.get("training_form") or "dialogue").strip()
+                if training_form in {"case_review", "coordination", "follow_up"}:
+                    scene_description = f"围绕“{case_name}”开展{scene_name}训练，重点复盘处置链条、证据材料和后续风险。"
+                elif training_form == "record":
+                    scene_description = f"围绕“{case_name}”开展{scene_name}训练，重点补齐询问要素和笔录材料。"
+                else:
+                    scene_description = f"围绕“{case_name}”开展{scene_name}训练，重点核实本案已有事实、风险和证据线索。"
                 scenes.append(
                     {
                         "scene_name": scene_name,
-                        "scene_description": f"围绕“{case_name}”开展{scene_name}训练，重点核实本案已有事实、风险和证据线索。",
+                        "scene_description": scene_description,
                         "difficulty": str(module.get("difficulty") or "中等").strip(),
                         "dispatch_brief": dispatch_brief,
                         "first_impression": str(

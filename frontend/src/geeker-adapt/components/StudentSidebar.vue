@@ -1,48 +1,62 @@
 <template>
-  <aside class="student-sidebar">
-    <div class="sidebar-brand flx-align-center">
+  <aside class="student-sidebar" :class="{ 'student-sidebar--collapsed': collapsed }">
+    <div class="sidebar-brand">
       <div class="brand-icon">
         <el-icon :size="22"><Medal /></el-icon>
       </div>
-      <span class="brand-text">警情训练系统</span>
+      <div class="brand-copy">
+        <span class="brand-text">警情训练系统</span>
+        <span class="brand-subtitle">Student Console</span>
+      </div>
     </div>
 
     <nav class="sidebar-nav">
       <template v-for="item in menuItems" :key="item.key">
-        <el-tooltip v-if="item.disabled" content="功能开发中" placement="right">
-          <button type="button" class="nav-item nav-item--disabled" disabled>
-            <el-icon><component :is="item.icon" /></el-icon>
-            <span>{{ item.label }}</span>
-            <el-icon v-if="item.hasChildren" class="nav-arrow"><ArrowDown /></el-icon>
-          </button>
-        </el-tooltip>
         <button
-          v-else
           type="button"
           class="nav-item"
-          :class="{ 'nav-item--active': isActive(item.path, item.activePaths) }"
+          :class="{
+            'nav-item--active': !item.disabled && isActive(item.path, item.activePaths),
+            'nav-item--disabled': item.disabled,
+          }"
+          :disabled="item.disabled"
+          :title="collapsed ? item.label : ''"
           @click="go(item.path)"
         >
-          <el-icon><component :is="item.icon" /></el-icon>
-          <span>{{ item.label }}</span>
+          <span class="nav-icon"><el-icon><component :is="item.icon" /></el-icon></span>
+          <span class="nav-label">{{ item.label }}</span>
           <el-icon v-if="item.hasChildren" class="nav-arrow"><ArrowDown /></el-icon>
         </button>
       </template>
     </nav>
 
-    <div class="sidebar-promo">
-      <div class="promo-shield">
-        <el-icon :size="36"><Medal /></el-icon>
-      </div>
-      <p class="promo-title">守护训练公正-提升实战能力</p>
-      <p class="promo-sub">科技赋能训练管理</p>
+    <div class="sidebar-footer">
+      <button
+        type="button"
+        class="nav-item collapse-button"
+        :title="collapsed ? '展开导航' : '收起导航'"
+        @click="emit('toggle-collapse')"
+      >
+        <span class="nav-icon">
+          <el-icon><component :is="collapsed ? Expand : Fold" /></el-icon>
+        </span>
+        <span class="nav-label">{{ collapsed ? '展开' : '收起' }}</span>
+      </button>
     </div>
   </aside>
 </template>
 
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router'
-import { Aim, ArrowDown, Clock, Files, Grid, Medal, Reading, Setting, VideoPlay } from '@element-plus/icons-vue'
+import { Aim, ArrowDown, Clock, Expand, Files, Fold, Grid, Medal, Reading, Setting, VideoPlay } from '@element-plus/icons-vue'
+
+defineProps<{
+  collapsed: boolean
+}>()
+
+const emit = defineEmits<{
+  (event: 'toggle-collapse'): void
+}>()
 
 const route = useRoute()
 const router = useRouter()
@@ -72,16 +86,37 @@ const go = (path?: string) => {
 .student-sidebar {
   display: flex;
   flex-direction: column;
-  width: 220px;
+  width: 160px;
   min-height: 100vh;
   flex-shrink: 0;
-  background: var(--student-sidebar-bg, #001529);
+  background: var(--police-sidebar-bg, #0f1e3c);
   color: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 10px 32px rgba(15, 30, 60, 0.22);
+  transition: width 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: width;
+
+  &--collapsed {
+    width: 56px;
+  }
 }
 
 .sidebar-brand {
-  gap: 10px;
-  padding: 18px 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 73px;
+  padding: 20px 16px 16px;
+  overflow: hidden;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  transition:
+    gap 0.26s ease,
+    padding 0.26s ease;
+}
+
+.student-sidebar--collapsed .sidebar-brand {
+  justify-content: center;
+  gap: 0;
+  padding-inline: 0;
 }
 
 .brand-icon {
@@ -90,54 +125,100 @@ const go = (path?: string) => {
   justify-content: center;
   width: 36px;
   height: 36px;
+  flex: 0 0 36px;
   border-radius: 8px;
-  background: rgba(0, 102, 255, 0.2);
+  background: var(--police-primary, #003087);
   color: #fff;
+  box-shadow: 0 4px 12px rgba(0, 48, 135, 0.35);
+}
+
+.brand-copy {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition:
+    max-width 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.student-sidebar--collapsed .brand-copy {
+  width: 0;
+  max-width: 0;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: none;
 }
 
 .brand-text {
-  font-size: 15px;
-  font-weight: 700;
+  display: block;
+  overflow: hidden;
   color: #fff;
-  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+}
+
+.brand-subtitle {
+  display: block;
+  margin-top: 2px;
+  color: rgba(219, 234, 254, 0.55);
+  font-size: 10px;
+  line-height: 1.2;
+  text-transform: uppercase;
 }
 
 .sidebar-nav {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 4px;
-  padding: 0 12px;
-  flex: 1;
+  overflow-y: auto;
+  padding: 12px 8px;
+  transition: padding 0.26s ease;
+}
+
+.student-sidebar--collapsed .sidebar-nav {
+  align-items: center;
+  padding: 12px 0;
 }
 
 .nav-item {
-  display: flex;
+  position: relative;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 11px 14px;
+  min-height: 40px;
+  padding: 4px 12px;
+  overflow: hidden;
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 14px;
+  color: rgba(255, 255, 255, 0.65);
   cursor: pointer;
+  font-size: 14px;
   text-align: left;
-  transition: background 0.15s, color 0.15s;
-
-  span {
-    flex: 1;
-  }
+  transition:
+    padding 0.2s ease,
+    gap 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease;
 
   &:hover:not(:disabled) {
+    padding-left: 16px;
+    background: #002d6e;
     color: #fff;
-    background: rgba(255, 255, 255, 0.08);
   }
 
   &--active {
-    color: #fff !important;
-    background: var(--student-sidebar-active, #0066ff) !important;
+    background: var(--police-primary, #003087);
+    color: #fff;
     font-weight: 600;
+    box-shadow: 0 2px 8px rgba(0, 48, 135, 0.4);
   }
 
   &--disabled {
@@ -146,66 +227,123 @@ const go = (path?: string) => {
   }
 }
 
+.student-sidebar--collapsed .nav-item,
+.student-sidebar--collapsed .nav-item:hover {
+  width: 40px;
+  height: 40px;
+  grid-template-columns: 1fr;
+  justify-items: center;
+  gap: 0;
+  padding: 0;
+}
+
+.nav-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.72);
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.nav-item:hover:not(:disabled) .nav-icon,
+.nav-item--active .nav-icon {
+  color: #fff;
+}
+
+.nav-item--active .nav-icon {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.nav-label,
 .nav-arrow {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition:
+    max-width 0.2s ease,
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.nav-label {
+  display: block;
+  text-overflow: ellipsis;
+}
+
+.nav-arrow {
+  position: absolute;
+  right: 10px;
   font-size: 12px;
   opacity: 0.6;
 }
 
-.sidebar-promo {
-  margin: 16px 12px 20px;
-  padding: 18px 14px;
-  border-radius: 10px;
-  background: linear-gradient(145deg, #0a2a5e 0%, #0d3d7a 100%);
-  text-align: center;
+.student-sidebar--collapsed .nav-label,
+.student-sidebar--collapsed .nav-arrow {
+  display: block;
+  width: 0;
+  max-width: 0;
+  visibility: hidden;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: none;
 }
 
-.promo-shield {
+.sidebar-footer {
+  display: block;
+  padding: 12px 12px 16px;
+  transition: padding 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.student-sidebar--collapsed .sidebar-footer {
   display: flex;
-  align-items: center;
   justify-content: center;
-  width: 64px;
-  height: 64px;
-  margin: 0 auto 12px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 30% 30%, #3d8bfd, #0066ff 60%, #0044aa);
-  color: #fff;
-  box-shadow: 0 8px 24px rgba(0, 102, 255, 0.35);
+  padding-inline: 0;
 }
 
-.promo-title {
-  margin: 0 0 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.92);
-  line-height: 1.5;
-}
-
-.promo-sub {
-  margin: 0;
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.55);
+.collapse-button {
+  color: rgba(255, 255, 255, 0.65);
 }
 
 @media (max-width: 960px) {
   .student-sidebar {
-    width: 72px;
-  }
-
-  .brand-text,
-  .nav-item span,
-  .nav-arrow,
-  .sidebar-promo {
-    display: none;
+    width: 56px;
   }
 
   .sidebar-brand {
     justify-content: center;
-    padding-inline: 8px;
+    gap: 0;
+    padding-inline: 0;
   }
 
-  .nav-item {
-    justify-content: center;
-    padding-inline: 10px;
+  .brand-copy,
+  .nav-label,
+  .nav-arrow {
+    display: none;
+  }
+
+  .sidebar-nav {
+    align-items: center;
+    padding-inline: 0;
+  }
+
+  .nav-item,
+  .nav-item:hover {
+    width: 40px;
+    height: 40px;
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 0;
+    padding: 0;
+  }
+
+  .sidebar-footer {
+    display: none;
   }
 }
 </style>

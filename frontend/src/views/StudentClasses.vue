@@ -96,7 +96,7 @@
             </div>
             <div class="assignment-progress">
               <strong>{{ assignment.completed_count }}/{{ assignment.required_count }}</strong>
-              <span>案件完成</span>
+              <span>场景完成</span>
             </div>
           </header>
 
@@ -143,7 +143,7 @@
                       v-if="scene.finished_session_id"
                       plain
                       size="small"
-                      @click="router.push(`/student/evaluation?session_id=${scene.finished_session_id}`)"
+                      @click="router.push(`/student/evaluation?session_id=${scene.finished_session_id}&source=assignment&assignment_id=${assignment.id}`)"
                     >
                       查看报告
                     </el-button>
@@ -282,8 +282,8 @@ const completionStandardText = (assignment: any) => {
   const required = Number(assignment.required_count || assignment.cases?.length || 0)
   const completed = Number(assignment.completed_count || 0)
   const lateText = assignment.allow_late ? '截止后仍可补交' : '截止后将不可继续提交'
-  if (!required) return `${lateText}；当前作业暂无可训练案件，请等待教官补充。`
-  return `需完成 ${required} 个案件训练并生成评估报告，当前已完成 ${completed} 个；${lateText}。`
+  if (!required) return `${lateText}；当前作业暂无可训练场景，请等待教官补充。`
+  return `需完成 ${required} 个训练场景并生成评估报告，当前已完成 ${completed} 个；${lateText}。`
 }
 
 const compactRuleText = (value: any) =>
@@ -385,7 +385,7 @@ const startScene = async (assignmentId: number, scene: any) => {
     if (scene.training_status === 'in_progress') {
       showToast('已恢复上次未完成训练')
     }
-    router.push(`/student/training/${res.id}`)
+    router.push(`/student/training/${res.id}?source=assignment&assignment_id=${assignmentId}`)
   } catch (error: any) {
     showToast(error?.response?.data?.detail || error?.message || '训练环境初始化失败')
   } finally {

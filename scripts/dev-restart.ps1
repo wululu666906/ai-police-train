@@ -10,15 +10,14 @@ $LogsRoot = Join-Path $Root "logs"
 $PythonExe = Join-Path $BackendRoot "venv\Scripts\python.exe"
 $DatabasePath = Join-Path $Root "data\ai_police.db"
 $ChromaPath = Join-Path $Root "data\chroma_db"
-if ($env:LOCALAPPDATA) {
-    $DeepFaceHome = Join-Path $env:LOCALAPPDATA "ai-police-sim\deepface"
-} else {
-    $DeepFaceHome = Join-Path $env:TEMP "ai-police-sim\deepface"
-}
 $BackendLog = Join-Path $LogsRoot "dev-backend.log"
 $FrontendLog = Join-Path $LogsRoot "dev-frontend.log"
 
 . (Join-Path $Root "scripts\fix-terminal-env.ps1")
+
+foreach ($name in @("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")) {
+    Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+}
 
 function Stop-PortListener {
     param([int]$Port)
@@ -70,7 +69,8 @@ Set-Location $Root
 New-Item -ItemType Directory -Force -Path $LogsRoot | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DatabasePath) | Out-Null
 New-Item -ItemType Directory -Force -Path $ChromaPath | Out-Null
-New-Item -ItemType Directory -Force -Path $DeepFaceHome | Out-Null
+Set-Content -Path $BackendLog -Value "" -Encoding UTF8
+Set-Content -Path $FrontendLog -Value "" -Encoding UTF8
 
 if (-not (Test-Path $PythonExe)) {
     Write-Host "未找到后端虚拟环境 Python: $PythonExe" -ForegroundColor Red
@@ -107,9 +107,11 @@ $DatabaseUrl = "sqlite:///$($DatabasePath.Replace('\', '/'))"
 $BackendCommand = @"
 `$env:DATABASE_URL = '$DatabaseUrl'
 `$env:CHROMA_DB_PATH = '$ChromaPath'
-`$env:DEEPFACE_HOME = '$DeepFaceHome'
-`$env:AI_POLICE_DEEPFACE_HOME = '$DeepFaceHome'
 `$env:PYTHONIOENCODING = 'utf-8'
+Remove-Item Env:SSL_CERT_FILE -ErrorAction SilentlyContinue
+Remove-Item Env:SSL_CERT_DIR -ErrorAction SilentlyContinue
+Remove-Item Env:REQUESTS_CA_BUNDLE -ErrorAction SilentlyContinue
+Remove-Item Env:CURL_CA_BUNDLE -ErrorAction SilentlyContinue
 Set-Location '$BackendRoot'
 & '$PythonExe' -m uvicorn main:app --host 0.0.0.0 --port 8000 *> '$BackendLog'
 "@

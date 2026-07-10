@@ -138,7 +138,7 @@ class TestVideoTraining:
         admin_item = next(item for item in admin_items if item["video_id"] == video.id and item["user_id"] == student.id)
         assert admin_item["node_total"] == 3
 
-    def test_backend_rejects_pass_when_required_gesture_not_matched(self, client, db_session, student_headers):
+    def test_backend_ignores_legacy_gesture_result_after_multimodal_removal(self, client, db_session, student_headers):
         student = db_session.query(models.User).filter(models.User.username == "student001").first()
         video = ensure_interactive_video(db_session, title="视频实训动作校验")
         video.nodes[0].required_gesture = "salute"
@@ -170,13 +170,12 @@ class TestVideoTraining:
         )
         assert response.status_code == 200
         payload = response.json()
-        assert payload["result"] == "fail"
-        assert payload["score_earned"] == 0
-        assert "gesture_mismatch" in payload["feedback"]["reasons"]
+        assert payload["result"] == "pass"
+        assert "gesture_mismatch" not in payload["feedback"]["reasons"]
 
         session_detail = client.get(f"/video-training/session/{session_id}", headers=student_headers)
         assert session_detail.status_code == 200
-        assert session_detail.json()["current_node_index"] == 0
+        assert session_detail.json()["current_node_index"] == 1
 
     def test_backend_supports_either_pass_rule_for_gesture_and_speech(self, client, db_session, student_headers):
         student = db_session.query(models.User).filter(models.User.username == "student001").first()
@@ -305,7 +304,11 @@ class TestVideoTraining:
     ):
         student = db_session.query(models.User).filter(models.User.username == "student001").first()
         video = ensure_interactive_video(db_session, title="视频实训统计分析")
-        video.nodes[0].required_gesture = "salute"
+        video.nodes[0].required_keywords = json.dumps(["required-token"], ensure_ascii=False)
+        video.nodes[0].node_config = json.dumps({
+            "pass_rule": {"mode": "all"},
+            "speech_rule": {"match_mode": "any", "min_count": 1, "min_length": 0},
+        }, ensure_ascii=False)
         db_session.commit()
         reset_video_training_sessions(db_session, student.id, video.id)
 
@@ -328,13 +331,8 @@ class TestVideoTraining:
                 "node_index": 0,
                 "action": "pass",
                 "retry_count": 0,
-                "speech_transcript": "请配合检查",
-                "answer_data": {
-                    "gesture_result": {
-                        "required_gesture": "salute",
-                        "matched": False,
-                    }
-                },
+                "speech_transcript": "missing keyword",
+                "answer_data": {},
             },
             headers=student_headers,
         )
@@ -345,8 +343,8 @@ class TestVideoTraining:
         assert finish_response.status_code == 200
         report_payload = finish_response.json()
         assert report_payload["violation_count"] == 1
-        assert report_payload["failure_reason_summary"]["gesture_mismatch"] == 1
-        assert report_payload["node_summaries"][0]["failure_reasons"] == ["gesture_mismatch"]
+        assert report_payload["failure_reason_summary"]["keyword_mismatch"] == 1
+        assert report_payload["node_summaries"][0]["failure_reasons"] == ["keyword_mismatch"]
         assert "artifacts" in report_payload
 
         analytics_response = client.get(
@@ -356,9 +354,9 @@ class TestVideoTraining:
         assert analytics_response.status_code == 200
         analytics_payload = analytics_response.json()
         assert analytics_payload["total_violation_count"] == 1
-        assert analytics_payload["failure_reason_summary"][0]["reason"] == "gesture_mismatch"
+        assert analytics_payload["failure_reason_summary"][0]["reason"] == "keyword_mismatch"
         assert analytics_payload["node_failure_summary"][0]["node_id"] == video.nodes[0].id
-        assert report_payload["dimension_scores"]
+        assert isinstance(report_payload["dimension_scores"], list)
         assert "weakness_summary" in report_payload
 
     def test_session_artifact_upload_list_and_replace(self, client, db_session, student_headers):
@@ -540,10 +538,9 @@ class TestVideoTraining:
         assert exam_submit.json()["result"] == "pass"
         assert exam_submit.json()["score_deducted"] == 10
 
-    def test_practice_mode_allows_partial_channel_pass_but_exam_mode_rejects(self, client, db_session, student_headers):
+    def test_exam_mode_rejects_keyword_mismatch_after_practice_pass(self, client, db_session, student_headers):
         student = db_session.query(models.User).filter(models.User.username == "student001").first()
         video = ensure_interactive_video(db_session, title="视频实训练习容错")
-        video.nodes[0].required_gesture = "salute"
         video.nodes[0].required_keywords = json.dumps(["请配合"], ensure_ascii=False)
         video.nodes[0].node_config = json.dumps({
             "pass_rule": {"mode": "all"},
@@ -564,14 +561,7 @@ class TestVideoTraining:
                 "action": "pass",
                 "retry_count": 0,
                 "speech_transcript": "请配合检查",
-                "answer_data": {
-                    "gesture_result": {
-                        "required_gesture": "salute",
-                        "matched": False,
-                        "confidence": 0.1,
-                        "streak": 0,
-                    }
-                },
+                "answer_data": {},
             },
             headers=student_headers,
         )
@@ -590,15 +580,8 @@ class TestVideoTraining:
                 "node_index": 0,
                 "action": "pass",
                 "retry_count": 0,
-                "speech_transcript": "请配合检查",
-                "answer_data": {
-                    "gesture_result": {
-                        "required_gesture": "salute",
-                        "matched": False,
-                        "confidence": 0.1,
-                        "streak": 0,
-                    }
-                },
+                "speech_transcript": "未包含关键词",
+                "answer_data": {},
             },
             headers=student_headers,
         )

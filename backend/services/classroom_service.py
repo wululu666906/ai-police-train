@@ -47,6 +47,124 @@ def get_assignment_case_ids(assignment: models.TrainingAssignment) -> list[int]:
     return [item.case_id for item in sorted(assignment.cases or [], key=lambda row: row.sort_order or 0)]
 
 
+def get_assignment_scene_rows(db: Session, assignment: models.TrainingAssignment) -> list[models.TrainingAssignmentScene]:
+    rows = (
+        db.query(models.TrainingAssignmentScene)
+        .filter(models.TrainingAssignmentScene.assignment_id == assignment.id)
+        .order_by(models.TrainingAssignmentScene.sort_order.asc(), models.TrainingAssignmentScene.id.asc())
+        .all()
+    )
+    if rows:
+        return rows
+    return backfill_assignment_scenes_from_cases(db, assignment)
+
+
+def get_assignment_scene_ids(db: Session, assignment: models.TrainingAssignment) -> list[int]:
+    return [row.scene_id for row in get_assignment_scene_rows(db, assignment)]
+
+
+def get_assignment_case_ids_from_scenes(db: Session, assignment: models.TrainingAssignment) -> list[int]:
+    case_ids: list[int] = []
+    for row in get_assignment_scene_rows(db, assignment):
+        if row.case_id not in case_ids:
+            case_ids.append(row.case_id)
+    if case_ids:
+        return case_ids
+    return get_assignment_case_ids(assignment)
+
+
+def backfill_assignment_scenes_from_cases(db: Session, assignment: models.TrainingAssignment) -> list[models.TrainingAssignmentScene]:
+    case_ids = get_assignment_case_ids(assignment)
+    if not case_ids:
+        return []
+    scenes = (
+        db.query(models.Scene)
+        .filter(models.Scene.case_id.in_(case_ids))
+        .order_by(models.Scene.case_id.asc(), models.Scene.id.asc())
+        .all()
+    )
+    case_order = {case_id: index for index, case_id in enumerate(case_ids)}
+    scenes.sort(key=lambda scene: (case_order.get(scene.case_id, 999999), scene.id))
+    rows: list[models.TrainingAssignmentScene] = []
+    for index, scene in enumerate(scenes):
+        row = models.TrainingAssignmentScene(
+            assignment_id=assignment.id,
+            scene_id=scene.id,
+            case_id=scene.case_id,
+            sort_order=index,
+        )
+        db.add(row)
+        rows.append(row)
+    if rows:
+        db.flush()
+    return rows
+
+
+def set_assignment_scenes(
+    db: Session,
+    assignment: models.TrainingAssignment,
+    *,
+    scene_ids: list[int] | None = None,
+    case_ids: list[int] | None = None,
+) -> list[models.TrainingAssignmentScene]:
+    normalized_scene_ids: list[int] = []
+    for item in scene_ids or []:
+        try:
+            scene_id = int(item)
+        except (TypeError, ValueError):
+            continue
+        if scene_id not in normalized_scene_ids:
+            normalized_scene_ids.append(scene_id)
+
+    normalized_case_ids: list[int] = []
+    for item in case_ids or []:
+        try:
+            case_id = int(item)
+        except (TypeError, ValueError):
+            continue
+        if case_id not in normalized_case_ids:
+            normalized_case_ids.append(case_id)
+
+    scenes: list[models.Scene] = []
+    if normalized_scene_ids:
+        scene_map = {
+            scene.id: scene
+            for scene in db.query(models.Scene).filter(models.Scene.id.in_(normalized_scene_ids)).all()
+        }
+        missing_scene_ids = [scene_id for scene_id in normalized_scene_ids if scene_id not in scene_map]
+        if missing_scene_ids:
+            raise HTTPException(status_code=400, detail=f"Scenes not found: {missing_scene_ids}")
+        scenes = [scene_map[scene_id] for scene_id in normalized_scene_ids]
+    elif normalized_case_ids:
+        scene_rows = (
+            db.query(models.Scene)
+            .filter(models.Scene.case_id.in_(normalized_case_ids))
+            .order_by(models.Scene.case_id.asc(), models.Scene.id.asc())
+            .all()
+        )
+        case_order = {case_id: index for index, case_id in enumerate(normalized_case_ids)}
+        scenes = sorted(scene_rows, key=lambda scene: (case_order.get(scene.case_id, 999999), scene.id))
+
+    if not scenes:
+        raise HTTPException(status_code=400, detail="Select at least one training scene")
+
+    db.query(models.TrainingAssignmentScene).filter(
+        models.TrainingAssignmentScene.assignment_id == assignment.id
+    ).delete(synchronize_session=False)
+    rows: list[models.TrainingAssignmentScene] = []
+    for index, scene in enumerate(scenes):
+        row = models.TrainingAssignmentScene(
+            assignment_id=assignment.id,
+            scene_id=scene.id,
+            case_id=scene.case_id,
+            sort_order=index,
+        )
+        db.add(row)
+        rows.append(row)
+    db.flush()
+    return rows
+
+
 def get_active_membership(db: Session, class_id: int, user_id: int) -> models.ClassMembership | None:
     return (
         db.query(models.ClassMembership)
@@ -142,7 +260,8 @@ def validate_assignment_training_access(
     if not scene:
         raise HTTPException(status_code=404, detail="Training scene not found")
 
-    if scene.case_id not in set(get_assignment_case_ids(assignment)):
+    assignment_scene_ids = set(get_assignment_scene_ids(db, assignment))
+    if scene.id not in assignment_scene_ids:
         raise HTTPException(status_code=400, detail="This scene does not belong to the assignment")
 
     policy = get_effective_assignment_policy(db, assignment, user.id)
@@ -154,6 +273,40 @@ def validate_assignment_training_access(
         raise HTTPException(status_code=403, detail="Assignment is closed. Ask the administrator to enable late submission.")
 
     return assignment, scene
+
+
+def get_session_assignment_context(
+    db: Session,
+    session_id: int,
+    user_id: int | None = None,
+) -> dict[str, Any] | None:
+    query = (
+        db.query(models.AssignmentSubmission, models.TrainingAssignment, models.TrainingClass)
+        .join(models.TrainingAssignment, models.TrainingAssignment.id == models.AssignmentSubmission.assignment_id)
+        .join(models.TrainingClass, models.TrainingClass.id == models.TrainingAssignment.class_id)
+        .filter(models.AssignmentSubmission.training_session_id == session_id)
+        .order_by(models.AssignmentSubmission.updated_at.desc(), models.AssignmentSubmission.id.desc())
+    )
+    if user_id is not None:
+        query = query.filter(models.AssignmentSubmission.user_id == user_id)
+    row = query.first()
+    if not row:
+        return None
+    submission, assignment, classroom = row
+    policy = get_effective_assignment_policy(db, assignment, submission.user_id)
+    return {
+        "type": "assignment",
+        "assignment_id": assignment.id,
+        "assignment_title": assignment.title,
+        "class_id": classroom.id,
+        "class_name": classroom.name,
+        "due_at": serialize_datetime(policy["due_at"]),
+        "allow_late": policy["allow_late"],
+        "is_overdue": policy["is_overdue"],
+        "submission_id": submission.id,
+        "submission_status": submission.status,
+        "return_path": "/student/classes",
+    }
 
 
 def extract_total_score(evaluation_result: Any) -> int | None:

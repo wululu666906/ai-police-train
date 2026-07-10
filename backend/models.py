@@ -1,6 +1,6 @@
 ﻿from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -168,44 +168,6 @@ class FaceVerificationEvent(Base):
     student = relationship("User")
 
 
-class MultimodalSessionMetric(Base):
-    __tablename__ = "multimodal_session_metrics"
-
-    id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(Integer, ForeignKey("training_sessions.id"), unique=True, nullable=False, index=True)
-    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    summary_json = Column(Text, default="{}")
-    face_score = Column(Integer, nullable=True)
-    behavior_score = Column(Integer, default=0)
-    attention_score = Column(Integer, nullable=True)
-    final_score = Column(Integer, nullable=True)
-    adapter_status_json = Column(Text, default="{}")
-    risk_level = Column(String(20), default="normal")
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    session = relationship("TrainingSession")
-    student = relationship("User")
-
-
-class MultimodalEvent(Base):
-    __tablename__ = "multimodal_events"
-
-    id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(Integer, ForeignKey("training_sessions.id"), nullable=False, index=True)
-    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    event_type = Column(String(40), nullable=False, index=True)
-    category = Column(String(40), nullable=False, index=True)
-    label = Column(String(80), nullable=True)
-    score = Column(Float, nullable=True)
-    duration_ms = Column(Integer, nullable=True)
-    payload_json = Column(Text, default="{}")
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    session = relationship("TrainingSession")
-    student = relationship("User")
-
-
 class Message(Base):
     __tablename__ = "messages"
 
@@ -282,6 +244,21 @@ class TrainingAssignmentCase(Base):
     sort_order = Column(Integer, default=0)
 
     assignment = relationship("TrainingAssignment", back_populates="cases")
+    case = relationship("Case")
+
+
+class TrainingAssignmentScene(Base):
+    __tablename__ = "training_assignment_scenes"
+    __table_args__ = (UniqueConstraint("assignment_id", "scene_id", name="uq_assignment_scene"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    assignment_id = Column(Integer, ForeignKey("training_assignments.id"), nullable=False)
+    scene_id = Column(Integer, ForeignKey("scenes.id"), nullable=False)
+    case_id = Column(Integer, ForeignKey("cases.id"), nullable=False)
+    sort_order = Column(Integer, default=0)
+
+    assignment = relationship("TrainingAssignment")
+    scene = relationship("Scene")
     case = relationship("Case")
 
 

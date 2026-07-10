@@ -68,8 +68,6 @@ const emit = defineEmits<{
   (event: 'skipped'): void
   (event: 'failed', message: string): void
   (event: 'terminated', payload: any): void
-  (event: 'heartbeat-frame', payload: { frame: string, client_signals: any, face_result: any, source?: string }): void
-  (event: 'multimodal-frame', payload: { frame: string, client_signals: any, face_result: any, source?: string }): void
 }>()
 
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -96,7 +94,6 @@ const staticFrameStreak = ref(0)
 const blinkBaseline = ref<number | null>(null)
 const blinkCandidateFrames = ref(0)
 const lastBlinkScore = ref(0)
-let visionAnalyzer: { analyze?: (video: HTMLVideoElement | null, canvas: HTMLCanvasElement | null) => Promise<any> } | undefined
 
 const targetCameraLabel = 'HK 5M CAM 200W'
 const builtInCameraLabel = 'ASUS FHD webcam'
@@ -255,14 +252,14 @@ const stopCamera = () => {
   cameraReady.value = false
 }
 
-const captureFrame = (purpose: 'verify' | 'heartbeat' | 'multimodal' = 'verify') => {
+const captureFrame = (purpose: 'verify' | 'heartbeat' = 'verify') => {
   const video = videoRef.value
   const canvas = canvasRef.value
   if (!video || !canvas || !cameraReady.value || !video.videoWidth) return null
   const sourceSize = Math.min(video.videoWidth, video.videoHeight)
   const sx = Math.max(0, Math.round((video.videoWidth - sourceSize) / 2))
   const sy = Math.max(0, Math.round((video.videoHeight - sourceSize) / 2))
-  const targetSize = purpose === 'multimodal' ? 416 : 640
+  const targetSize = 640
   canvas.width = targetSize
   canvas.height = targetSize
   const ctx = canvas.getContext('2d')
@@ -313,7 +310,7 @@ const captureFrame = (purpose: 'verify' | 'heartbeat' | 'multimodal' = 'verify')
   }
 
   return {
-    frame: canvas.toDataURL('image/jpeg', purpose === 'multimodal' ? 0.72 : 0.9),
+    frame: canvas.toDataURL('image/jpeg', 0.9),
     liveness_score: liveScore,
     liveness_actions: [
       {
@@ -339,15 +336,6 @@ const buildPayload = (endpoint: 'verify' | 'heartbeat') => {
   }
   if (endpoint === 'verify') payload.challenge_id = challengeId.value
   return payload
-}
-
-const buildClientSignals = async (vision = visionAnalyzer) => {
-  return vision?.analyze?.(videoRef.value, canvasRef.value) || {
-    hands: [],
-    pose: { landmarks: [] },
-    motion: {},
-    model_status: { mediapipe: 'unavailable' },
-  }
 }
 
 const applyResult = (result: any, endpoint: 'verify' | 'heartbeat') => {
@@ -402,36 +390,9 @@ const postFrame = async (endpoint: 'verify' | 'heartbeat') => {
     if (endpoint === 'heartbeat') heartbeatInFlight.value = false
     return
   }
-  const frameMeta = {
-    frame_id: `${props.sessionId}-${endpoint}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    timestamp: new Date().toISOString(),
-    source: endpoint,
-  }
   try {
     const result = await request.post(`/face/session/${props.sessionId}/${endpoint}`, payload, { _skipErrorToast: true } as any)
     applyResult(result, endpoint)
-    if (payload?.frame) {
-      const clientSignals = await buildClientSignals().catch((error: any) => ({
-        hands: [],
-        pose: { landmarks: [] },
-        motion: {},
-        model_status: { mediapipe: 'unavailable', error: String(error?.message || error || '') },
-      }))
-      const multimodalPayload = {
-        frame: payload.frame,
-        client_signals: {
-          ...clientSignals,
-          _meta: {
-            ...(clientSignals?._meta || {}),
-            ...frameMeta,
-          },
-        },
-        face_result: result,
-        source: endpoint,
-      }
-      emit('multimodal-frame', multimodalPayload)
-      emit('heartbeat-frame', multimodalPayload)
-    }
   } finally {
     if (endpoint === 'verify') verifyInFlight.value = false
     if (endpoint === 'heartbeat') heartbeatInFlight.value = false
@@ -516,32 +477,7 @@ const fetchStatus = async () => {
   }
 }
 
-const captureMultimodalFrame = async (vision?: { analyze?: (video: HTMLVideoElement | null, canvas: HTMLCanvasElement | null) => Promise<any> }) => {
-  if (vision) visionAnalyzer = vision
-  const payload = captureFrame('multimodal')
-  if (!payload?.frame) return null
-  const clientSignals = await buildClientSignals(vision).catch((error: any) => ({
-    hands: [],
-    pose: { landmarks: [] },
-    motion: {},
-    model_status: { mediapipe: 'unavailable', error: String(error?.message || error || '') },
-  }))
-  return {
-    frame: payload.frame,
-    client_signals: clientSignals || {
-      hands: [],
-      pose: { landmarks: [] },
-      motion: {},
-      model_status: { mediapipe: 'unavailable' },
-    },
-  }
-}
-
-const setMultimodalVision = (vision?: { analyze?: (video: HTMLVideoElement | null, canvas: HTMLCanvasElement | null) => Promise<any> }) => {
-  visionAnalyzer = vision
-}
-
-defineExpose({ runVerify, stopCamera, captureMultimodalFrame, setMultimodalVision })
+defineExpose({ runVerify, stopCamera })
 
 onMounted(async () => {
   await fetchStatus()

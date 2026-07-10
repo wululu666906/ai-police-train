@@ -336,7 +336,7 @@ const reEvaluate = async (sessionId: number) => {
   try {
     await request.post(`/training/re-evaluate/${sessionId}`, null, { _skipErrorToast: true } as any)
     showToast({ type: 'success', message: '评估报告已重新生成' })
-    router.push(`/student/evaluation?session_id=${sessionId}&refresh=1`)
+    router.push(`/student/evaluation?session_id=${sessionId}`)
   } catch (error: any) {
     showToast(error?.response?.data?.detail || '重新评估失败')
   } finally {

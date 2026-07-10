@@ -118,7 +118,7 @@
             <thead>
               <tr>
                 <th>作业名称</th>
-                <th>关联案件</th>
+                <th>指定训练内容</th>
                 <th>状态</th>
                 <th>截止时间</th>
                 <th>补交</th>
@@ -133,7 +133,8 @@
                 </td>
                 <td>
                   <div class="tag-list">
-                    <span v-for="caseItem in assignment.cases" :key="caseItem.id">{{ caseItem.title }}</span>
+                    <span v-for="scene in assignment.scenes || []" :key="scene.id">{{ scene.case_title }} / {{ scene.name }}</span>
+                    <span v-if="!(assignment.scenes || []).length" v-for="caseItem in assignment.cases" :key="caseItem.id">{{ caseItem.title }}</span>
                   </div>
                 </td>
                 <td>
@@ -417,13 +418,28 @@
           <textarea v-model.trim="assignmentForm.scoringRule" rows="3" placeholder="默认使用系统 Adaptive V1 评估，也可补充自定义规则。" />
         </label>
         <div class="field-block">
-          <span>关联案件</span>
+          <span>选择训练内容</span>
           <div class="case-picker">
-            <label v-for="caseItem in cases" :key="caseItem.id" class="case-option">
-              <input v-model="assignmentForm.caseIds" type="checkbox" :value="caseItem.id" />
-              <strong>{{ caseItem.title }}</strong>
-              <small>{{ caseItem.case_type || '未分类' }}</small>
-            </label>
+            <div v-for="caseItem in cases" :key="caseItem.id" class="case-option case-option--stack">
+              <label class="case-option__head">
+                <input
+                  type="checkbox"
+                  :checked="isCaseFullySelected(caseItem)"
+                  :indeterminate.prop="isCasePartiallySelected(caseItem)"
+                  @change="toggleCaseScenes(caseItem, isInputChecked($event))"
+                />
+                <strong>{{ caseItem.title }}</strong>
+                <small>{{ caseItem.case_type || '未分类' }}</small>
+              </label>
+              <div class="scene-option-list">
+                <label v-for="scene in caseScenes(caseItem)" :key="scene.id" class="scene-option">
+                  <input v-model="assignmentForm.sceneIds" type="checkbox" :value="scene.id" @change="syncCaseSelectionFromScenes" />
+                  <span>{{ scene.name }}</span>
+                  <small>{{ scene.difficulty || '中等' }}</small>
+                </label>
+                <span v-if="!caseScenes(caseItem).length" class="scene-option-empty">该案件暂无可训练场景</span>
+              </div>
+            </div>
           </div>
         </div>
         <van-button block type="primary" :loading="savingAssignment" class="!rounded-[6px] !border-none !bg-[#1D3557]" @click="createAssignment">
@@ -678,6 +694,7 @@ const announcementForm = reactive({ title: '', content: '' })
 const assignmentForm = reactive({
   title: '',
   caseIds: [] as number[],
+  sceneIds: [] as number[],
   dueAt: '',
   templateKey: '',
   trainingGoal: '',
@@ -729,6 +746,46 @@ const evaluationPopupStyle = {
 const selectedClass = computed(() => classes.value.find((item) => item.id === selectedClassId.value))
 
 const assignmentRows = computed(() => Array.isArray(classDetail.value?.assignments) ? classDetail.value.assignments : [])
+
+const caseScenes = (caseItem: any) => Array.isArray(caseItem?.scenes) ? caseItem.scenes : []
+
+const selectedSceneIdSet = computed(() => new Set(assignmentForm.sceneIds.map((id) => Number(id))))
+
+const isInputChecked = (event: Event) => Boolean((event.target as HTMLInputElement | null)?.checked)
+
+const isCaseFullySelected = (caseItem: any) => {
+  const scenes = caseScenes(caseItem)
+  return scenes.length > 0 && scenes.every((scene: any) => selectedSceneIdSet.value.has(Number(scene.id)))
+}
+
+const isCasePartiallySelected = (caseItem: any) => {
+  const scenes = caseScenes(caseItem)
+  if (!scenes.length) return false
+  const selectedCount = scenes.filter((scene: any) => selectedSceneIdSet.value.has(Number(scene.id))).length
+  return selectedCount > 0 && selectedCount < scenes.length
+}
+
+const syncCaseSelectionFromScenes = () => {
+  const selectedCaseIds = new Set<number>()
+  for (const caseItem of cases.value) {
+    if (caseScenes(caseItem).some((scene: any) => selectedSceneIdSet.value.has(Number(scene.id)))) {
+      selectedCaseIds.add(Number(caseItem.id))
+    }
+  }
+  assignmentForm.caseIds = Array.from(selectedCaseIds)
+}
+
+const toggleCaseScenes = (caseItem: any, checked: boolean) => {
+  const next = new Set(assignmentForm.sceneIds.map((id) => Number(id)))
+  for (const scene of caseScenes(caseItem)) {
+    const sceneId = Number(scene.id)
+    if (!sceneId) continue
+    if (checked) next.add(sceneId)
+    else next.delete(sceneId)
+  }
+  assignmentForm.sceneIds = Array.from(next)
+  syncCaseSelectionFromScenes()
+}
 
 const assignmentDueState = (assignment: any) => {
   if (!assignment?.due_at) return 'active'
@@ -1098,6 +1155,7 @@ const buildAssignmentScoringRule = () => {
 const resetAssignmentForm = () => {
   assignmentForm.title = ''
   assignmentForm.caseIds = []
+  assignmentForm.sceneIds = []
   assignmentForm.dueAt = ''
   assignmentForm.templateKey = ''
   assignmentForm.trainingGoal = ''
@@ -1115,8 +1173,8 @@ const createAssignment = async () => {
     showToast('请输入作业名称')
     return
   }
-  if (!assignmentForm.caseIds.length) {
-    showToast('请选择关联案件')
+  if (!assignmentForm.sceneIds.length) {
+    showToast('请选择训练场景')
     return
   }
   savingAssignment.value = true
@@ -1124,6 +1182,7 @@ const createAssignment = async () => {
     const res: any = await request.post(`/classes/${selectedClassId.value}/assignments`, {
       title: assignmentForm.title.trim(),
       case_ids: assignmentForm.caseIds,
+      scene_ids: assignmentForm.sceneIds,
       due_at: assignmentForm.dueAt || null,
       instructions: buildAssignmentInstructions(),
       scoring_rule: buildAssignmentScoringRule(),
@@ -2325,6 +2384,19 @@ onMounted(async () => {
   color: #334155;
 }
 
+.case-option--stack {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+  gap: 9px;
+}
+
+.case-option__head {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
 .case-option strong {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2334,6 +2406,37 @@ onMounted(async () => {
 
 .case-option small {
   color: #64748b;
+  font-size: 12px;
+}
+
+.scene-option-list {
+  display: grid;
+  gap: 6px;
+  padding-left: 26px;
+}
+
+.scene-option {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 7px 8px;
+}
+
+.scene-option span {
+  min-width: 0;
+  overflow: hidden;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-option-empty {
+  color: #94a3b8;
   font-size: 12px;
 }
 

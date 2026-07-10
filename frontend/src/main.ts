@@ -77,7 +77,6 @@ router.onError((error, to) => {
   const targetPath = typeof to?.fullPath === 'string' ? to.fullPath : window.location.pathname
   const lastRecoveredPath = sessionStorage.getItem(DYNAMIC_IMPORT_RECOVERY_KEY)
   if (lastRecoveredPath === targetPath) {
-    sessionStorage.removeItem(DYNAMIC_IMPORT_RECOVERY_KEY)
     console.error('Dynamic import recovery failed after reload:', message)
     return
   }
@@ -87,10 +86,6 @@ router.onError((error, to) => {
 })
 
 router.beforeEach((to) => {
-  if (sessionStorage.getItem(DYNAMIC_IMPORT_RECOVERY_KEY) === to.fullPath) {
-    sessionStorage.removeItem(DYNAMIC_IMPORT_RECOVERY_KEY)
-  }
-
   if (to.path === '/login') {
     resetLoginRedirectState()
   }
@@ -117,6 +112,10 @@ router.beforeEach((to) => {
   }
 
   return true
+})
+
+router.afterEach(() => {
+  sessionStorage.removeItem(DYNAMIC_IMPORT_RECOVERY_KEY)
 })
 
 const app = createApp(App)

@@ -221,6 +221,7 @@ class SessionDetail(BaseModel):
     completed_action_ids: List[str] = []
     auto_finish_ready: bool = False
     closure_summary: Optional[dict] = None
+    assignment_context: Optional[dict] = None
     messages: List[Message] = []
     model_config = ConfigDict(from_attributes=True)
 

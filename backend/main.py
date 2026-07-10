@@ -11,9 +11,8 @@ from sqlalchemy import inspect, text
 
 import database
 import models
-from routers import auth, cases, classes, dashboard, face, knowledge, multimodal, speech, student, training, videos, video_training
+from routers import auth, cases, classes, dashboard, face, knowledge, speech, student, training, videos, video_training
 from services.face_service import warmup_face_engine_async
-from services.multimodal_service import warmup_deepface_async
 
 load_dotenv()
 
@@ -149,6 +148,7 @@ def ensure_classroom_schema_compatibility():
             models.ClassMembership.__table__,
             models.TrainingAssignment.__table__,
             models.TrainingAssignmentCase.__table__,
+            models.TrainingAssignmentScene.__table__,
             models.AssignmentSubmission.__table__,
             models.AssignmentStudentOverride.__table__,
             models.ClassAnnouncement.__table__,
@@ -239,34 +239,6 @@ def ensure_face_schema_compatibility():
                     connection.execute(text(statement))
     except Exception as error:
         print(f"Face schema compatibility check failed: {error}")
-
-
-def ensure_multimodal_schema_compatibility():
-    try:
-        for table in (
-            models.MultimodalSessionMetric.__table__,
-            models.MultimodalEvent.__table__,
-        ):
-            table.create(bind=database.engine, checkfirst=True)
-        metric_columns = inspect(database.engine).get_columns("multimodal_session_metrics")
-        existing = {column["name"] for column in metric_columns}
-        column_defs = {
-            "face_score": "INTEGER",
-            "attention_score": "INTEGER",
-            "final_score": "INTEGER",
-            "adapter_status_json": "TEXT",
-        }
-        statements = [
-            f"ALTER TABLE multimodal_session_metrics ADD COLUMN {name} {column_type}"
-            for name, column_type in column_defs.items()
-            if name not in existing
-        ]
-        if statements:
-            with database.engine.begin() as connection:
-                for statement in statements:
-                    connection.execute(text(statement))
-    except Exception as error:
-        print(f"Multimodal schema compatibility check failed: {error}")
 
 
 def ensure_training_session_schema_compatibility():
@@ -446,7 +418,6 @@ app.include_router(classes.router)
 app.include_router(videos.router)
 app.include_router(video_training.router)
 app.include_router(face.router)
-app.include_router(multimodal.router)
 app.include_router(speech.router)
 
 # 兼容 Docker 静态前端的 /api 前缀调用（frontend/.env.production 默认 VITE_API_URL=/api）
@@ -460,7 +431,6 @@ app.include_router(classes.router, prefix="/api")
 app.include_router(videos.router, prefix="/api")
 app.include_router(video_training.router, prefix="/api")
 app.include_router(face.router, prefix="/api")
-app.include_router(multimodal.router, prefix="/api")
 app.include_router(speech.router, prefix="/api")
 
 
@@ -562,12 +532,9 @@ def on_startup():
     ensure_classroom_schema_compatibility()
     ensure_video_schema_compatibility()
     ensure_face_schema_compatibility()
-    ensure_multimodal_schema_compatibility()
     ensure_default_users()
     if os.getenv("FACE_ENGINE_WARMUP", "0").strip().lower() in {"1", "true", "yes", "on"}:
         warmup_face_engine_async()
-    if os.getenv("MULTIMODAL_DEEPFACE_WARMUP", "0").strip().lower() in {"1", "true", "yes", "on"}:
-        warmup_deepface_async()
 
 
 @app.get("/{catchall:path}")
@@ -585,7 +552,6 @@ def serve_vue_app(catchall: str):
         "videos",
         "video-training",
         "face",
-        "multimodal",
         "speech",
         "static",
     }

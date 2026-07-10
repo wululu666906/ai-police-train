@@ -43,6 +43,14 @@ class _FakeCase:
     }"""
 
 
+class _FakeMessage:
+    def __init__(self, role: str, content: str, speaker_name: str = ""):
+        self.role = role
+        self.content = content
+        self.speaker_name = speaker_name
+        self.inner_thought = ""
+
+
 def test_director_rule_plan_limits_two_speakers():
     roles = [_FakeRole(1, "张某"), _FakeRole(2, "李某")]
     plan = run_director(
@@ -215,3 +223,24 @@ def test_actor_can_have_multiple_reactions_in_one_turn():
     assert "defensive_denial" in reaction_types
     assert "topic_shift_bargain" in reaction_types
     assert output["reaction_type"] == reaction_types[0]
+
+
+def test_actor_extreme_loss_control_does_not_repeat_previous_line():
+    role = _FakeRole(2, "刘军", "违法嫌疑人")
+    repeated = "你先别靠太近……我听见了，你一句一句说，别一上来就围着我。"
+    output = generate_role_dialogue(
+        role=role,
+        cast_entry={"participation": "primary_respond", "utterance_count": 1, "intent": "respond"},
+        director_plan={"interaction_mode": "address_named", "scene_mood": "edge_loss_control"},
+        scene=_FakeScene(),
+        case=_FakeCase(),
+        history=[_FakeMessage("assistant", repeated, "刘军")],
+        user_text="你先冷静，别激动，我在听你说。",
+        current_stage="现场控制",
+        role_snapshot={"emotion": 100, "cooperation": 0, "risk": 96, "clarity": 0},
+        use_llm=False,
+    )
+    contents = [item["content"] for item in output["utterances"]]
+    assert contents
+    assert repeated not in contents
+    assert any("脑子" in item or "缓" in item or "别吼我" in item for item in contents)
