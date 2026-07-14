@@ -57,7 +57,7 @@ class _FakeMessage:
         self.inner_thought = ""
 
 
-def test_director_rule_plan_limits_one_speaker():
+def test_director_rule_plan_orders_multiple_speakers():
     roles = [_FakeRole(1, "张某"), _FakeRole(2, "李某")]
     plan = run_director(
         scene=_FakeScene(),
@@ -69,8 +69,25 @@ def test_director_rule_plan_limits_one_speaker():
         use_llm=False,
     )
     assert plan is not None
-    assert len(plan["cast_plan"]) == 1
-    assert plan["cast_plan"][0]["utterance_count"] == 1
+    assert 1 <= len(plan["cast_plan"]) <= 2
+    assert plan["cast_plan"][0]["utterance_count"] >= 1
+
+
+def test_director_rule_plan_understands_chinese_multi_speaker_prompt():
+    roles = [_FakeRole(1, "张某"), _FakeRole(2, "李某"), _FakeRole(3, "王某")]
+    plan = run_director(
+        scene=_FakeScene(),
+        roles=roles,
+        history=[],
+        user_text="大家都冷静点，你们分别说一下刚才发生了什么。",
+        current_stage="现场控制",
+        current_stage_goal="分离双方",
+        use_llm=False,
+    )
+    assert plan is not None
+    assert len(plan["cast_plan"]) == 2
+    assert [item["speaker_name"] for item in plan["cast_plan"]] == ["张某", "李某"]
+    assert plan["interaction_mode"] in {"calm_scene", "interrupt_chain", "public_question"}
 
 
 def test_actor_respects_utterance_count_cap():
@@ -94,7 +111,7 @@ def test_actor_respects_utterance_count_cap():
         role_snapshot={"emotion": 60, "cooperation": 30, "risk": 50, "clarity": 50},
         use_llm=False,
     )
-    assert len(output["utterances"]) == 1
+    assert 1 <= len(output["utterances"]) <= 3
 
 
 def test_actor_rule_fallback_uses_case_facts_for_common_questions():
@@ -136,7 +153,7 @@ def test_actor_rule_fallback_uses_case_facts_for_common_questions():
     assert "反正我说的都是实话" not in suspect_text
 
 
-def test_scene_engine_keeps_single_reply_turn():
+def test_scene_engine_keeps_ordered_multiple_reply_turns():
     role = _FakeRole(1, "张某")
     actor_outputs = [
         {
@@ -159,7 +176,7 @@ def test_scene_engine_keeps_single_reply_turn():
         role_snapshots=snapshots,
         previous_primary_role=role,
     )
-    assert len(merged["reply_turns"]) == 1
+    assert len(merged["reply_turns"]) == 2
     assert merged["reply_turns"][0]["speaker_name"] == "张某"
     assert snapshots["1"]["cooperation"] == 32
 

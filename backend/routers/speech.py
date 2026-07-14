@@ -38,18 +38,47 @@ def speech_status(_: models.User = Depends(get_current_user)) -> dict[str, Any]:
 @router.post("/transcribe")
 def transcribe_speech(
     payload: SpeechTranscriptionRequest,
-    _: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(get_current_user),
 ) -> dict[str, Any]:
+    db = database.SessionLocal()
     try:
-        return transcribe_audio_data_url(
+        result = transcribe_audio_data_url(
             payload.audio_data_url,
             language=payload.language,
             enable_itn=payload.enable_itn,
         )
+        db.add(models.SpeechUsageLog(
+            user_id=current_user.id,
+            mode="transcribe",
+            status="success",
+            language=payload.language,
+            model=str(result.get("model") or ""),
+            text_length=len(str(result.get("text") or result.get("transcript") or "")),
+        ))
+        db.commit()
+        return result
     except SpeechRecognitionError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        db.add(models.SpeechUsageLog(
+            user_id=current_user.id,
+            mode="transcribe",
+            status="failed",
+            language=payload.language,
+            error_message=str(error),
+        ))
+        db.commit()
+        raise HTTPException(status_code=400, detail=f"语音识别失败：{error}") from error
     except Exception as error:
+        db.add(models.SpeechUsageLog(
+            user_id=current_user.id,
+            mode="transcribe",
+            status="failed",
+            language=payload.language,
+            error_message=str(error),
+        ))
+        db.commit()
         raise HTTPException(status_code=502, detail=f"语音识别失败：{error}") from error
+    finally:
+        db.close()
 
 
 def _resolve_ws_user(token: str | None) -> models.User | None:
@@ -76,13 +105,30 @@ async def speech_realtime(
 ):
     user = _resolve_ws_user(token)
     if not user:
-        await websocket.close(code=1008, reason="Invalid authentication credentials")
+        await websocket.close(code=1008, reason="登录凭证无效")
         return
     if not QWEN_ASR_API_KEY:
-        await websocket.close(code=1011, reason="DASHSCOPE_API_KEY is not configured")
+        await websocket.close(code=1011, reason="语音识别服务未配置")
         return
 
     await websocket.accept()
+    speech_log_id = None
+    db = database.SessionLocal()
+    try:
+        status_payload = get_speech_status()
+        log = models.SpeechUsageLog(
+            user_id=user.id,
+            mode="realtime",
+            status="connected",
+            language=language,
+            model=str(status_payload.get("realtime_model") or ""),
+        )
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+        speech_log_id = log.id
+    finally:
+        db.close()
     dashscope_headers = {
         "Authorization": f"Bearer {QWEN_ASR_API_KEY}",
         "OpenAI-Beta": "realtime=v1",
@@ -162,6 +208,17 @@ async def speech_realtime(
     except WebSocketDisconnect:
         return
     except Exception as error:
+        if speech_log_id:
+            db = database.SessionLocal()
+            try:
+                log = db.query(models.SpeechUsageLog).filter(models.SpeechUsageLog.id == speech_log_id).first()
+                if log:
+                    log.status = "failed"
+                    log.error_message = str(error)
+                    db.add(log)
+                    db.commit()
+            finally:
+                db.close()
         try:
             await websocket.send_json({"type": "error", "message": f"实时语音连接失败：{error}"})
         finally:

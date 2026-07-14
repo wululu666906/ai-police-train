@@ -75,7 +75,12 @@
               :class="message.role === 'human' ? 'message-row--human' : 'message-row--assistant'"
             >
               <div v-if="message.role === 'assistant'" class="avatar" :style="{ background: getAvatarColor(message) }">
-                <img v-if="message.avatarUrl" :src="message.avatarUrl" :alt="message.speakerName" />
+                <img
+                  v-if="shouldShowMessageAvatar(message)"
+                  :src="resolveAvatarUrl(message.avatarUrl)"
+                  :alt="message.speakerName"
+                  @error="markAvatarFailed(message.avatarUrl)"
+                />
                 <span v-else>{{ getInitial(message.speakerName) }}</span>
               </div>
 
@@ -103,6 +108,7 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import request from '../utils/request'
+import { resolveMediaUrl } from '../utils/media'
 
 type DialogueRole = 'assistant' | 'human' | 'system'
 
@@ -138,6 +144,7 @@ const loading = ref(true)
 const loadError = ref('')
 const sessionDetail = ref<any>(null)
 const scrollContainer = ref<HTMLElement | null>(null)
+const failedAvatarUrls = ref<Set<string>>(new Set())
 
 const sessionId = computed(() => {
   const raw = route.params.id
@@ -234,6 +241,19 @@ const goBack = () => {
 const getInitial = (name: string) => {
   const text = String(name || '').trim()
   return text ? text.slice(0, 1) : '?'
+}
+
+const resolveAvatarUrl = (value: unknown) => resolveMediaUrl(value)
+
+const shouldShowMessageAvatar = (message: { avatarUrl?: string | null }) => {
+  const url = resolveAvatarUrl(message.avatarUrl)
+  return Boolean(url && !failedAvatarUrls.value.has(url))
+}
+
+const markAvatarFailed = (value: unknown) => {
+  const url = resolveAvatarUrl(value)
+  if (!url) return
+  failedAvatarUrls.value = new Set([...failedAvatarUrls.value, url])
 }
 
 const getAvatarColor = (message: DialogueMessage) => {

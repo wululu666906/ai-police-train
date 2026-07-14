@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5556 --strictPort",
+    "dev:ops": "vite --host 0.0.0.0 --port 6670 --strictPort",
     "build": "vite build --configLoader runner",
     "preview": "vite preview"
   },

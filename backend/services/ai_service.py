@@ -902,39 +902,39 @@ def _format_scene_boundary_block(persona_profile: dict[str, Any]) -> str:
     if not isinstance(boundary, dict):
         boundary = {}
     labels = {
-        "known_key_points": "֪���Ĺؼ���",
-        "withheld_key_points": "����������",
-        "conflict_core": "��ͻ����",
-        "acceptable_outcomes": "�ɽ��ܵĽ��",
-        "no_go_topics": "������Ļ���",
-        "trigger_sources": "����Դ",
-        "concerned_targets": "�ر����ĵ���",
-        "taboo_actions": "�������Ĵ���",
-        "escalation_actions": "�������⵼��ʧ�ص���Ϊ",
-        "deescalation_conditions": "�пɽ����Ĺ���",
+        "known_key_points": "可直接说出的关键点",
+        "withheld_key_points": "不会主动交代的关键点",
+        "conflict_core": "冲突核心",
+        "acceptable_outcomes": "可接受结果",
+        "no_go_topics": "绝对不愿碰的话题",
+        "trigger_sources": "容易被什么刺激",
+        "concerned_targets": "特别在意的对象",
+        "taboo_actions": "不能接受的处置",
+        "escalation_actions": "容易导致失控的行为",
+        "deescalation_conditions": "有可能缓和的条件",
     }
     lines: list[str] = []
     for key, label in labels.items():
         values = [str(item).strip() for item in (boundary.get(key) or []) if str(item).strip()]
         if values:
-            lines.append(f"- {label}��{'��'.join(values[:4])}")
-    return "\n".join(lines) if lines else "- ��ǰδ���ö�̬��Ϣ�߽磬����ԭʼ��֪/δ֪/�������ݡ�"
+            lines.append(f"- {label}：{'；'.join(values[:4])}")
+    return "\n".join(lines) if lines else "- 当前还没有补充专属边界信息，先以角色诉求、顾虑和旧事实边界自然作答。"
 
 
 def _role_state_label(cooperation: int, emotion: int, risk: int | None = None, clarity: int | None = None) -> str:
     risk = _clamp_score(risk, 50) if risk is not None else 50
     clarity = _clamp_score(clarity, 50) if clarity is not None else 50
     if risk >= 78 or emotion >= 82:
-        return "����ʧ�ر�Ե"
+        return "接近失控边缘"
     if clarity <= 32 and emotion >= 70:
-        return "������������"
+        return "表达混乱，需要安抚"
     if cooperation >= 68 and risk <= 45:
-        return "���ȶ���ͨ"
+        return "相对稳定沟通"
     if cooperation <= 30 and risk >= 60:
-        return "ǿ�������"
+        return "强防御状态"
     if clarity >= 68 and cooperation >= 55:
-        return "��Ϣ���𽥹���"
-    return "����Ӧ��"
+        return "信息正在逐渐公开"
+    return "正常应答"
 
 
 def _build_feedback(
@@ -952,29 +952,29 @@ def _build_feedback(
     clarity = _clamp_score(clarity, 50) if clarity is not None else 50
 
     if len(user_message.strip()) < 12:
-        notes.append("��һ���ʷ�ƫ�̣����鲹��ʱ�䡢�ص������ê�㡣")
+        notes.append("这一轮问法偏短，建议补上时间、地点或人物锚点。")
         tags.append("question_too_short")
-    if any(token in user_message for token in ["Ϊʲô", "��ô����", "����", "˭", "����", "����"]):
-        notes.append("��һ���ʷ��Ѿ���ʼ�ƽ��ؼ���ʵ��")
+    if any(token in user_message for token in ["为什么", "怎么回事", "经过", "谁", "时间", "地点"]):
+        notes.append("这一轮问法已经开始逼近关键事实。")
         tags.append("fact_probe")
-    if any(token in user_message for token in ["�侲", "�𼤶�", "����˵", "�����ż�"]):
-        notes.append("���ڳ�����ס�Է��������������ں����������ʡ�")
+    if any(token in user_message for token in ["冷静", "别激动", "慢慢说", "不用着急"]):
+        notes.append("你在尝试稳住对方情绪，这有助于后续继续深问。")
         tags.append("rapport")
     if risk >= 72:
-        notes.append("��ǰ��ɫʧ�ط���ƫ�ߣ����ȿ����ȶ�������Χ�ۻ��ڶԿ���")
+        notes.append("当前角色失控风险偏高，优先考虑稳定情绪，再围绕核心点对话。")
         tags.append("high_risk")
     if clarity <= 35:
-        notes.append("�Է���ǰ�������Ƚϵͣ������ö̾䡢�����Ⱥ�˳������")
+        notes.append("对方当前表达清晰度较低，建议用短句、封闭问题和顺序追问。")
         tags.append("low_clarity")
     if truth_stage == "guarded_denial":
-        notes.append("��ǰ��ɫ��ƫ��������������С���ⷶΧ����Ҫһ����̫ɢ��")
+        notes.append("当前角色仍偏防御，建议先缩小问题范围，不要一次问太散。")
         tags.append("guarded")
     elif truth_stage == "mostly_open":
-        notes.append("�Է��Ѿ���ʼ�ɿڣ��ʺ�˳��ʱ����׷ϸ�ں�ì�ܵ㡣")
+        notes.append("对方已经开始松口，适合顺着时间线追细节和矛盾点。")
         tags.append("disclosure")
 
     if not notes:
-        notes.append("��ѯ�������������Լ���Χ����֪������ѹʵ��")
+        notes.append("问询节奏正常，可以继续围绕已知线索逐步压实。")
         tags.append("steady")
 
     level = "warning" if emotion >= 75 or risk >= 72 else "good" if cooperation >= 65 and clarity >= 50 else "info"
@@ -997,10 +997,10 @@ def _build_plain_text_result(
     truth_stage = _infer_truth_stage(state_snapshot["cooperation"], ts.current_emotion)
     runtime_state = load_runtime_state(ts.revealed_info)
     revealed_info = runtime_state.get("revealed_info") or []
-    salvage_message = "ģ�ͷ����˷� JSON �ı���ϵͳ���Զ�ת��Ϊ�ɼ���ѵ���Ľṹ���ظ���"
+    salvage_message = "模型返回了非 JSON 文本，系统已自动转换为可继续训练的结构化回复。"
     return {
         "response": raw_content[:420].rstrip(),
-        "inner_thought": f"�Ȱ���ǰ�ھ��ش���ʱ����������Ĳ�����ȫ˵͸����ǰ����׶Σ�{truth_stage}",
+        "inner_thought": f"先按当前语境回答，暂时不把最在意的部分完全说透。当前真相阶段：{truth_stage}",
         "updated_emotion": ts.current_emotion,
         "updated_cooperation": state_snapshot["cooperation"],
         "updated_risk": state_snapshot["risk"],
@@ -1425,6 +1425,25 @@ def _run_training_turn(
             user_text=prompt_text,
             use_llm=True,
         )
+        role_brains = runtime_state.get("role_brains") if isinstance(runtime_state.get("role_brains"), dict) else {}
+        if role_brains:
+            from .multi_role_actor import _sanitize_identity_confusion
+
+            role_by_id = {str(getattr(item, "id", "")): item for item in conversation_roles if getattr(item, "id", None)}
+            for item in normalized_turns:
+                role_id = str(item.get("speaker_role_id") or "")
+                turn_role_obj = role_by_id.get(role_id)
+                brain = role_brains.get(role_id) if isinstance(role_brains.get(role_id), dict) else {}
+                if not turn_role_obj or not brain:
+                    continue
+                cleaned = _sanitize_identity_confusion(
+                    [{"content": item.get("content") or "", "delivery": item.get("delivery") or "normal"}],
+                    role=turn_role_obj,
+                    identity_anchor=str(brain.get("identity_anchor") or ""),
+                    role_brain=brain,
+                )
+                if cleaned:
+                    item["content"] = cleaned[0].get("content") or item.get("content") or ""
         reply_turns = normalized_turns
         reply_sequence = [item["content"] for item in reply_turns]
     else:
@@ -1451,9 +1470,6 @@ def _run_training_turn(
             }
             for index, content in enumerate(reply_sequence)
         ]
-
-    reply_turns = reply_turns[:1]
-    reply_sequence = [item["content"] for item in reply_turns if item.get("content")]
 
     stage_transition_message = None
     active_stage_goal = current_stage_goal

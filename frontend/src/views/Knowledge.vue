@@ -651,18 +651,18 @@ onMounted(() => {
   <div class="knowledge-page">
     <section class="page-head">
       <div>
-        <h1>???????</h1>
-        <p>?????????????????????????????? RAG ???</p>
+        <h1>知识库分类管理</h1>
+        <p>按案件知识、角色剧本、法律法规、处置流程、教学资料等分类维护 RAG 内容。</p>
       </div>
       <div class="head-actions">
-        <van-button plain icon="replay" :loading="loading" @click="fetchKnowledge">??</van-button>
-        <van-button plain icon="search" :loading="searchLoading" @click="openSearchView()">????</van-button>
-        <van-button plain icon="description" @click="openFileUpload">????</van-button>
-        <van-button type="primary" icon="plus" @click="openManualUpload">????</van-button>
+        <van-button plain icon="replay" :loading="loading" @click="fetchKnowledge">刷新</van-button>
+        <van-button plain icon="search" :loading="searchLoading" @click="openSearchView()">检索测试</van-button>
+        <van-button plain icon="description" @click="openFileUpload">导入文件</van-button>
+        <van-button type="primary" icon="plus" @click="openManualUpload">新增知识</van-button>
       </div>
     </section>
 
-<section class="overview-grid">
+    <section class="overview-grid">
       <button
         v-for="item in overviewCards"
         :key="item.value"

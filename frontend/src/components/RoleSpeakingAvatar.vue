@@ -17,8 +17,8 @@
     </span>
     <div class="role-speaking-avatar__circle">
       <img
-        v-if="avatarUrl"
-        :src="avatarUrl"
+        v-if="!showFallback"
+        :src="resolvedAvatarUrl"
         :alt="name"
         class="role-speaking-avatar__img"
         @error="onImageError"
@@ -32,6 +32,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { resolveMediaUrl } from '../utils/media'
 
 const AVATAR_PALETTE = [
   '#4F46E5', '#0891B2', '#059669', '#D97706', '#DC2626',
@@ -68,15 +69,17 @@ const initial = computed(() => {
 })
 
 const avatarBgColor = computed(() => {
-  if (props.avatarId != null && props.avatarId >= 0 && props.avatarId < AVATAR_PALETTE.length) {
-    return AVATAR_PALETTE[props.avatarId]
+  if (props.avatarId != null && props.avatarId >= 1 && props.avatarId <= AVATAR_PALETTE.length) {
+    return AVATAR_PALETTE[props.avatarId - 1]
   }
   const hash = props.name.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
   return AVATAR_PALETTE[hash % AVATAR_PALETTE.length]
 })
 
+const resolvedAvatarUrl = computed(() => resolveMediaUrl(props.avatarUrl))
+
 const showFallback = computed(() => {
-  return !props.avatarUrl || imageLoadFailed.value
+  return !resolvedAvatarUrl.value || imageLoadFailed.value
 })
 
 function onImageError() {

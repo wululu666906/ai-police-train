@@ -90,7 +90,7 @@ def _clamp_count(value: Any, default: int = 1) -> int:
         numeric = int(value)
     except (TypeError, ValueError):
         numeric = default
-    return 1
+    return max(1, min(8, numeric))
 
 
 def _default_role_snapshot(role: models.Role) -> dict[str, int]:
@@ -142,6 +142,29 @@ def _build_cast_entries(
 
 def _multi_speaker_prompt(user_text: str) -> bool:
     return any(token in user_text for token in ("你们", "双方", "两个人", "俩人", "两个", "都", "他们"))
+
+def _multi_speaker_prompt(user_text: str) -> bool:
+    text = _text(user_text)
+    return any(
+        token in text
+        for token in (
+            "你们",
+            "双方",
+            "两个人",
+            "两位",
+            "俩人",
+            "两个",
+            "大家",
+            "都说",
+            "分别",
+            "轮流",
+            "一个一个",
+            "他们",
+            "她们",
+            "各自",
+            "每个人",
+        )
+    )
 
 
 def _pick_witness_responder(roles: list[models.Role]) -> Optional[models.Role]:
@@ -214,6 +237,8 @@ def _rule_based_director_plan(
         mode = "address_named"
     elif _multi_speaker_prompt(user_text):
         mode = "interrupt_chain"
+    if any(token in _text(user_text) for token in ("冷静", "别激动", "慢慢来", "控制", "安抚", "坐下来", "商量")):
+        mode = "calm_scene"
     human_context = build_director_human_context(
         roles=roles,
         role_snapshots=role_snapshots or {},
@@ -354,33 +379,9 @@ def _normalize_cast_plan(raw_plan: Any, roles: list[models.Role]) -> list[dict[s
                 "reaction_hint": _text(item.get("reaction_hint")) or "",
             }
         )
-        if len(normalized) >= 1:
+        if len(normalized) >= 2:
             break
     return normalized
-
-
-def _force_single_bubble_plan(plan: dict[str, Any], roles: list[models.Role]) -> dict[str, Any]:
-    cast_plan = plan.get("cast_plan") if isinstance(plan.get("cast_plan"), list) else []
-    single: list[dict[str, Any]] = []
-    for item in cast_plan:
-        if not isinstance(item, dict):
-            continue
-        role = item.get("role") or _match_role_by_name(item.get("speaker_name"), roles)
-        if not role:
-            continue
-        normalized = dict(item)
-        normalized["role"] = role
-        normalized["speaker_name"] = _role_display_name(role)
-        normalized["speaker_role_id"] = role.id
-        normalized["utterance_count"] = 1
-        single.append(normalized)
-        break
-    plan["cast_plan"] = single
-    if single:
-        summary = _text(plan.get("routing_summary"))
-        guard = "本轮限制为一个角色一条气泡，并要求发言只回应最新输入。"
-        plan["routing_summary"] = f"{summary} {guard}".strip() if summary else guard
-    return plan
 
 
 def run_director(
@@ -482,7 +483,6 @@ def run_director(
         plan["cast_plan"] = fallback["cast_plan"]
 
     plan = _enforce_cast_plan(plan, addressed=addressed, roles=roles, user_text=user_text)
-    plan = _force_single_bubble_plan(plan, roles)
     plan["scene_mood"] = _text(plan.get("scene_mood")) or human_context["scene_mood"]
     plan["scene_mood_shift"] = _text(plan.get("scene_mood_shift")) or scene_mood_shift(plan["scene_mood"])
     plan["addressed_targets"] = addressed_targets

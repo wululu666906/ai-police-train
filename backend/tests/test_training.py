@@ -253,7 +253,14 @@ class TestFinishTraining:
         data = response.json()
         assert "total_score" in data
         assert "scores" in data
-        assert len(data["scores"]) == 5
+        common_scores = [item for item in data["scores"] if item.get("group") == "common"]
+        assessment_scores = [item for item in data["scores"] if item.get("group") == "assessment"]
+        other_scores = [item for item in data["scores"] if item.get("group") not in {"common", "assessment"}]
+        assert len(common_scores) == 4
+        assert not other_scores
+        assert all(item.get("assessment_point_id") for item in assessment_scores)
+        assert sum(1 for item in data["scores"] if item.get("group") == "common") == 4
+        assert len(data["scores"]) == len(common_scores) + len(assessment_scores)
 
     def test_finish_training_no_messages(self, client, student_headers):
         # Use student002 who has no active sessions from prior tests

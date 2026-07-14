@@ -20,6 +20,9 @@ from services.import_isolation import isolated_sys_path
 
 def _find_project_root() -> Path:
     for parent in Path(__file__).resolve().parents:
+        if (parent / "backend").exists() and (parent / "frontend").exists():
+            return parent
+    for parent in Path(__file__).resolve().parents:
         if (parent / "data").exists():
             return parent
     return Path(__file__).resolve().parents[2]
@@ -127,7 +130,12 @@ def _load_engine():
         with isolated_sys_path(INSIGHTFACE_MODEL_DIR):
             from insightface.app import FaceAnalysis
 
-        app = FaceAnalysis(name=EMBEDDING_MODEL, root=str(INSIGHTFACE_MODEL_DIR), providers=["CPUExecutionProvider"])
+        app = FaceAnalysis(
+            name=EMBEDDING_MODEL,
+            root=str(INSIGHTFACE_MODEL_DIR),
+            allowed_modules=["detection", "recognition"],
+            providers=["CPUExecutionProvider"],
+        )
         app.prepare(ctx_id=-1, det_size=(640, 640))
         _face_app = app
         _face_engine_error = ""

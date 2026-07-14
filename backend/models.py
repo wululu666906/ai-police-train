@@ -25,6 +25,37 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class OpsAuditLog(Base):
+    __tablename__ = "ops_audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    actor_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    target_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    action = Column(String(60), nullable=False)
+    detail = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    actor = relationship("User", foreign_keys=[actor_id])
+    target_user = relationship("User", foreign_keys=[target_user_id])
+
+
+class SpeechUsageLog(Base):
+    __tablename__ = "speech_usage_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    mode = Column(String(30), nullable=False, default="transcribe")
+    status = Column(String(30), nullable=False, default="success")
+    language = Column(String(20), nullable=True)
+    model = Column(String(120), nullable=True)
+    duration_seconds = Column(Integer, nullable=True)
+    text_length = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
+
+
 class Case(Base):
     __tablename__ = "cases"
 

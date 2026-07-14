@@ -73,6 +73,7 @@ def _populate_test_db():
     models.Base.metadata.create_all(bind=_db_engine)
 
     db = SessionLocal()
+    db.add(models.User(username="maintainer", hashed_password=hash_password("123456"), role="maintainer"))
     db.add(models.User(username="admin", hashed_password=hash_password("123456"), role="admin"))
     db.add(models.User(username="student001", hashed_password=hash_password("123456"), role="student"))
     db.add(models.User(username="student002", hashed_password=hash_password("123456"), role="student"))
@@ -241,6 +242,12 @@ def admin_token(client):
 
 
 @pytest.fixture(scope="module")
+def maintainer_token(client):
+    response = client.post("/auth/token", data={"username": "maintainer", "password": "123456"})
+    return response.json()["access_token"]
+
+
+@pytest.fixture(scope="module")
 def student_token(client):
     response = client.post("/auth/token", data={"username": "student001", "password": "123456"})
     return response.json()["access_token"]
@@ -249,6 +256,11 @@ def student_token(client):
 @pytest.fixture(scope="module")
 def admin_headers(admin_token):
     return {"Authorization": f"Bearer {admin_token}"}
+
+
+@pytest.fixture(scope="module")
+def maintainer_headers(maintainer_token):
+    return {"Authorization": f"Bearer {maintainer_token}"}
 
 
 @pytest.fixture(scope="module")

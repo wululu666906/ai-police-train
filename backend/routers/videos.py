@@ -832,9 +832,9 @@ def _get_video_for_access(
 ) -> models.TrainingVideo:
     video = db.query(models.TrainingVideo).filter(models.TrainingVideo.id == video_id).first()
     if not video:
-        raise HTTPException(status_code=404, detail="?????")
+        raise HTTPException(status_code=404, detail="视频不存在")
     if current_user.role != "admin" and video.status != "published":
-        raise HTTPException(status_code=403, detail="???????")
+        raise HTTPException(status_code=403, detail="该视频暂未开放")
     return video
 
 
@@ -1009,7 +1009,7 @@ def student_video_hall(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """??????????????????"""
+    """学员端视频展厅：只返回已发布的视频"""
     _sync_auto_import_videos(db)
     query = db.query(models.TrainingVideo).filter(
         models.TrainingVideo.status == "published"
@@ -1051,7 +1051,7 @@ def auto_configure_video(
     video = _load_video_or_404(db, video_id)
     video_path = os.path.join(VIDEOS_DIR, video.file_path or "")
     if not os.path.exists(video_path):
-        raise HTTPException(status_code=404, detail="???????")
+        raise HTTPException(status_code=404, detail="视频文件不存在")
 
     payload = payload or {}
     overwrite_meta = bool(payload.get("overwrite_meta", True))
@@ -1106,18 +1106,18 @@ def get_video_detail(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """??????????????"""
+    """获取单个视频详情（含节点）"""
     _sync_auto_import_videos(db)
     video = _load_video_or_404(db, video_id)
     if current_user.role != "admin" and video.status != "published":
-        raise HTTPException(status_code=403, detail="???????")
+        raise HTTPException(status_code=403, detail="该视频暂未开放")
     completed_case_ids: set[int] = set()
     completed_video_ids: set[int] = set()
     if current_user.role != "admin" and video.video_type == "teaching":
         completed_case_ids, completed_video_ids = _load_finished_interactive_unlock_scope(db, current_user.id)
         unlocked, _ = _get_teaching_unlock_state(video, current_user, completed_case_ids, completed_video_ids)
         if not unlocked:
-            raise HTTPException(status_code=403, detail="???????????????????")
+            raise HTTPException(status_code=403, detail="完成对应交互实训后解锁完整教学视频")
     _ensure_video_thumbnail(video, db)
     if current_user.role == "admin":
         return _serialize_video(video, include_nodes=True)

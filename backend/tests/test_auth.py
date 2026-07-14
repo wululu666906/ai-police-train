@@ -262,6 +262,201 @@ class TestAuthGuard:
         assert response.status_code == 401
 
 
+class TestOpsAccounts:
+    def test_maintainer_login_and_list_accounts(self, client, maintainer_headers):
+        response = client.post("/auth/token", data={"username": "maintainer", "password": "123456"})
+        assert response.status_code == 200
+        assert response.json()["role"] == "maintainer"
+
+        response = client.get("/ops/accounts", headers=maintainer_headers)
+        assert response.status_code == 200
+        usernames = {item["username"] for item in response.json()}
+        assert "maintainer" in usernames
+        assert "admin" in usernames
+
+    def test_ops_accounts_forbidden_for_admin_and_student(self, client, admin_headers, student_headers):
+        assert client.get("/ops/accounts", headers=admin_headers).status_code == 403
+        assert client.get("/ops/accounts", headers=student_headers).status_code == 403
+
+    def test_ops_create_admin_and_student(self, client, maintainer_headers):
+        admin_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_admin_01", "password": "admin123", "role": "admin"},
+            headers=maintainer_headers,
+        )
+        assert admin_response.status_code == 200
+        assert admin_response.json()["role"] == "admin"
+
+        student_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_student_01", "password": "student123", "role": "student"},
+            headers=maintainer_headers,
+        )
+        assert student_response.status_code == 200
+        assert student_response.json()["role"] == "student"
+
+        duplicate_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_student_01", "password": "student123", "role": "student"},
+            headers=maintainer_headers,
+        )
+        assert duplicate_response.status_code == 400
+
+    def test_ops_cannot_create_maintainer(self, client, maintainer_headers):
+        response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_maintainer_01", "password": "secret123", "role": "maintainer"},
+            headers=maintainer_headers,
+        )
+        assert response.status_code == 400
+
+    def test_ops_reset_password(self, client, maintainer_headers):
+        create_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_reset_01", "password": "oldpass1", "role": "admin"},
+            headers=maintainer_headers,
+        )
+        account_id = create_response.json()["id"]
+        response = client.post(
+            f"/ops/accounts/{account_id}/reset-password",
+            json={"new_password": "newpass1"},
+            headers=maintainer_headers,
+        )
+        assert response.status_code == 200
+        assert client.post("/auth/token", data={"username": "ops_reset_01", "password": "oldpass1"}).status_code == 401
+        assert client.post("/auth/token", data={"username": "ops_reset_01", "password": "newpass1"}).status_code == 200
+
+    def test_ops_delete_student_cleans_training_records(self, client, maintainer_headers, db_session):
+        create_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_delete_student", "password": "student123", "role": "student"},
+            headers=maintainer_headers,
+        )
+        student_id = create_response.json()["id"]
+        session = models.TrainingSession(
+            user_id=student_id,
+            scene_id=1,
+            status="active",
+            current_stage="test",
+            current_emotion=50,
+            current_trust=50,
+            revealed_info="[]",
+        )
+        db_session.add(session)
+        db_session.commit()
+        db_session.refresh(session)
+        session_id = session.id
+
+        response = client.delete(f"/ops/accounts/{student_id}", headers=maintainer_headers)
+        assert response.status_code == 200
+        assert db_session.query(models.User).filter(models.User.id == student_id).first() is None
+        assert db_session.query(models.TrainingSession).filter(models.TrainingSession.id == session_id).first() is None
+
+    def test_ops_delete_admin_keeps_student_training_records(self, client, maintainer_headers, db_session):
+        create_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_delete_admin", "password": "admin123", "role": "admin"},
+            headers=maintainer_headers,
+        )
+        admin_id = create_response.json()["id"]
+        student = db_session.query(models.User).filter(models.User.username == "student001").first()
+        session = models.TrainingSession(
+            user_id=student.id,
+            scene_id=1,
+            status="active",
+            current_stage="test",
+            current_emotion=50,
+            current_trust=50,
+            revealed_info="[]",
+        )
+        db_session.add(session)
+        db_session.commit()
+        db_session.refresh(session)
+
+        response = client.delete(f"/ops/accounts/{admin_id}", headers=maintainer_headers)
+        assert response.status_code == 200
+        assert db_session.query(models.User).filter(models.User.id == admin_id).first() is None
+        assert db_session.query(models.TrainingSession).filter(models.TrainingSession.id == session.id).first() is not None
+
+    def test_ops_cannot_delete_current_maintainer(self, client, maintainer_headers, db_session):
+        maintainer = db_session.query(models.User).filter(models.User.username == "maintainer").first()
+        response = client.delete(f"/ops/accounts/{maintainer.id}", headers=maintainer_headers)
+        assert response.status_code == 400
+
+    def test_ops_import_preview_and_commit_csv(self, client, maintainer_headers):
+        csv_content = (
+            "username,password,role,display_name,real_name,phone,email,unit,department,bio\n"
+            "ops_import_student,student123,student,导入学员,张三,13800000000,student@example.com,测试单位,训练部,备注\n"
+            "ops_import_admin,admin123,admin,导入管理员,李四,13900000000,admin@example.com,测试单位,维护部,\n"
+        ).encode("utf-8")
+        preview = client.post(
+            "/ops/accounts/import/preview",
+            files={"file": ("accounts.csv", csv_content, "text/csv")},
+            headers=maintainer_headers,
+        )
+        assert preview.status_code == 200
+        data = preview.json()
+        assert data["ready_count"] == 2
+        assert data["error_count"] == 0
+
+        commit = client.post(
+            "/ops/accounts/import/commit",
+            json={"accounts": data["items"]},
+            headers=maintainer_headers,
+        )
+        assert commit.status_code == 200
+        assert commit.json()["created_count"] == 2
+        assert client.post("/auth/token", data={"username": "ops_import_student", "password": "student123"}).status_code == 200
+        assert client.post("/auth/token", data={"username": "ops_import_admin", "password": "admin123"}).status_code == 200
+
+    def test_ops_import_preview_marks_duplicates_and_invalid_roles(self, client, maintainer_headers):
+        csv_content = (
+            "账号,初始密码,角色\n"
+            "admin,123456,admin\n"
+            "ops_bad_role,123456,maintainer\n"
+            "ops_duplicate,123456,student\n"
+            "ops_duplicate,123456,student\n"
+        ).encode("utf-8")
+        response = client.post(
+            "/ops/accounts/import/preview",
+            files={"file": ("accounts.csv", csv_content, "text/csv")},
+            headers=maintainer_headers,
+        )
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert response.json()["ready_count"] == 1
+        assert "账号已存在" in items[0]["errors"]
+        assert "角色只能是管理端账号或学员端账号" in items[1]["errors"]
+        assert "文件内账号重复" in items[3]["errors"]
+
+    def test_ops_import_forbidden_for_admin(self, client, admin_headers):
+        response = client.post(
+            "/ops/accounts/import/preview",
+            files={"file": ("accounts.csv", b"username,password\nx,123456\n", "text/csv")},
+            headers=admin_headers,
+        )
+        assert response.status_code == 403
+
+    def test_ops_usage_list_and_detail(self, client, maintainer_headers):
+        response = client.get("/ops/accounts/usage", headers=maintainer_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        assert data
+        first = data[0]
+        assert "stats" in first
+        assert "recent_activities" in first
+
+        detail = client.get(f"/ops/accounts/{first['id']}/usage", headers=maintainer_headers)
+        assert detail.status_code == 200
+        detail_data = detail.json()
+        assert "activities" in detail_data
+
+    def test_ops_usage_forbidden_for_admin_and_student(self, client, admin_headers, student_headers):
+        assert client.get("/ops/accounts/usage", headers=admin_headers).status_code == 403
+        assert client.get("/ops/accounts/usage", headers=student_headers).status_code == 403
+
+
 class TestTokenRoleVerification:
     def test_token_contains_correct_role(self, admin_token, student_token):
         from jose import jwt as pyjwt

@@ -388,3 +388,76 @@ class BatchStudentDeleteResponse(BaseModel):
 class StudentImportCreateRequest(BaseModel):
     usernames: List[str]
     password: str
+
+
+class OpsAccountCreate(BaseModel):
+    username: str
+    password: str
+    role: str = "student"
+    display_name: Optional[str] = None
+    real_name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    unit: Optional[str] = None
+    department: Optional[str] = None
+    bio: Optional[str] = None
+
+
+class OpsAccountUpdate(BaseModel):
+    username: Optional[str] = None
+    role: Optional[str] = None
+    display_name: Optional[str] = None
+    real_name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    unit: Optional[str] = None
+    department: Optional[str] = None
+    bio: Optional[str] = None
+
+
+class OpsPasswordResetRequest(BaseModel):
+    new_password: str
+
+
+class OpsAccountOverview(User):
+    pass
+
+
+class OpsAccountImportItem(BaseModel):
+    row_number: int = 0
+    username: str
+    password: Optional[str] = None
+    role: str = "student"
+    display_name: Optional[str] = None
+    real_name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    unit: Optional[str] = None
+    department: Optional[str] = None
+    bio: Optional[str] = None
+
+
+class OpsAccountImportPreviewItem(OpsAccountImportItem):
+    status: str
+    errors: List[str] = []
+
+
+class OpsAccountImportPreviewResponse(BaseModel):
+    filename: str
+    total_count: int
+    ready_count: int
+    error_count: int
+    items: List[OpsAccountImportPreviewItem] = []
+
+
+class OpsAccountImportCommitRequest(BaseModel):
+    accounts: List[OpsAccountImportItem]
+
+
+class OpsAccountImportCommitResponse(BaseModel):
+    created_count: int
+    skipped_count: int
+    failed_count: int
+    created_usernames: List[str] = []
+    skipped_usernames: List[str] = []
+    failed_items: List[OpsAccountImportPreviewItem] = []

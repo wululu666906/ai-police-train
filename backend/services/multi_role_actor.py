@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from typing import Any, Optional
 
@@ -43,7 +44,7 @@ ROLE_ACTOR_PROMPT = """
 【导演编排】
 - 互动模式：{interaction_mode}
 - 你的参与方式：{participation}
-- 本次只能发言 1 条台词；不得替其他角色继续补充，不得输出第二个气泡
+- 本次连续发言最多 {utterance_count} 条台词（可少于该数，不可超过）；多条之间学员无需回复，你应顺着同一段思路往下说
 - 发言意图：{intent}
 - 触发原因：{trigger_reason}
 
@@ -52,6 +53,12 @@ ROLE_ACTOR_PROMPT = """
 
 【你的人设与状态】
 {persona_block}
+
+【当前角色大脑 / 身体绑定（最高优先级，不得借给其他角色）】
+{role_brain_block}
+
+【身份锚点（最高优先级，不得违反）】
+{identity_anchor_block}
 
 【本轮表现契约（必须严格遵守）】
 {state_contract_block}
@@ -83,8 +90,8 @@ ROLE_ACTOR_PROMPT = """
 {perspective_hint}
 
 要求：
-1. 一次生成 utterances 数组，且数组长度必须为 1；这一条就是界面唯一气泡。
-2. 这条台词必须先读【学员刚才说】和【近期对话】，只回应最新输入，不要把前几轮的话当成本轮刚发生。
+1. 一次生成 utterances 数组，含 1 到 utterance_count 条连续台词；每条对应界面一个气泡，条与条之间是同一角色接着说完，不是等学员回话再说下一句。
+2. 生成前必须先读【当前角色大脑 / 身体绑定】、【学员刚才说】、【近期对话】、【案件库与角色剧本库】和【本轮已发言角色】；如果你是第二个开口的人，必须像已经听见前一个角色发言一样回应或补充，不能无视前文。
 3. 必须符合你的人设、情绪、配合度；不能串戏、不能全知。
 4. 严禁用第一人称「我」冒充学员点名的其他角色作答；若你是证人/家属且学员在问别人，请用第三人称转述你观察到的情况。
 5. 若 participation=interrupt，第一句可带打断感；若 calm_scene 模式，情绪应略有缓和但仍保角色性格。
@@ -108,9 +115,11 @@ ROLE_ACTOR_PROMPT = """
 16. state_delta 是四个轴的变化量（范围-15 到 +15），不是绝对值；没有明显变化时写 0，不要整条不填。
 17. 注意：以下输出格式中的值为示例（delivery、数字等），请根据角色状态和本轮互动动态决定，不要照搬。只输出 JSON：
 18. 若【真人化反应策略】要求你回避、沉默、争执、转移或求保护，要通过自然口语表现出来；不要直接说“我是争执型/回避型”。
-19. 如果本轮已有人先发言，必须像听见了对方的话一样回应：同意、反驳、补充、纠正、沉默回避均可，但不能无视明显冲突。
-20. 角色身份、家庭排行、亲属关系、哥哥/弟弟称谓必须以【你的人设与状态】和【案件基准事实】为准，不能一会儿当哥哥一会儿当弟弟；不确定时只说姓名，不强行使用哥哥/弟弟称谓。
+19. 如果本轮已有人先发言，必须像听见了对方的话一样回应：同意、反驳、补充、纠正、沉默回避均可，但不能无视明显冲突；但不要把前一个角色没有说过的话强行安到对方头上。
+20. 角色身份、职业/案件角色、亲属关系、社会关系和称谓必须以【身份锚点】为准；不确定时只说姓名或“对方”，禁止自编哥哥/弟弟、父母子女、夫妻、朋友、同事、邻居、证人/嫌疑人/被害人等身份。
 21. 若你指责“对方诬赖/栽赃/让你背锅/他说你动手”，必须能在【学员刚才说】或最近 2 条对方发言里找到依据；找不到依据时改为回答学员当前问题。
+22. 如果你前几轮已经围绕同一件事抱怨或辩解过，本轮除非学员继续明确追问这件事，否则必须切换：回答学员当前问点、补充一个尚未说清的新细节、或反问民警下一步要核实哪项，不能继续抓着旧争点打转。
+23. 你不是一个共享演员在临时换皮；你是【当前角色大脑 / 身体绑定】里的唯一角色。其他角色的话只是你听到的外部声音，不能变成你的身份、记忆、经历或第一人称立场。
 
 {{
   "utterances": [
@@ -140,6 +149,258 @@ def _format_facts(value: Any) -> str:
             pass
         return value or "（无）"
     return "（无）"
+
+
+def _safe_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _safe_case_structured(case: Optional[models.Case]) -> dict[str, Any]:
+    return _safe_json_dict(getattr(case, "structured_data", None))
+
+
+_IDENTITY_TERMS = (
+    "哥哥",
+    "弟弟",
+    "姐姐",
+    "妹妹",
+    "兄弟",
+    "姐妹",
+    "父亲",
+    "母亲",
+    "爸爸",
+    "妈妈",
+    "儿子",
+    "女儿",
+    "丈夫",
+    "妻子",
+    "老公",
+    "老婆",
+    "叔叔",
+    "阿姨",
+    "舅舅",
+    "姑姑",
+    "伯父",
+    "伯母",
+    "侄子",
+    "侄女",
+    "外甥",
+    "外甥女",
+    "亲戚",
+    "家属",
+    "朋友",
+    "同事",
+    "邻居",
+    "同学",
+    "证人",
+    "目击者",
+    "旁观者",
+    "嫌疑人",
+    "违法嫌疑人",
+    "被害人",
+    "受害人",
+    "报警人",
+    "当事人",
+    "民警",
+    "警察",
+    "辅警",
+    "保安",
+    "店员",
+    "老板",
+    "司机",
+    "乘客",
+    "医生",
+    "护士",
+    "老师",
+    "学生",
+    "房东",
+    "租客",
+)
+
+
+def _format_identity_anchor(role: models.Role, case: Optional[models.Case], profile: dict[str, Any]) -> str:
+    meta = _safe_json_dict(getattr(role, "persona_meta", None))
+    structured = _safe_case_structured(case)
+    fact_sheet = structured.get("fact_sheet") if isinstance(structured.get("fact_sheet"), dict) else {}
+    relationships = fact_sheet.get("relationships") or structured.get("relationships") or []
+    role_name = _role_display_name(role)
+    lines = [
+        f"- 当前发言人姓名：{role_name}",
+        f"- 当前发言人角色类型：{_text(getattr(role, 'role_type', '')) or '相关人员'}",
+    ]
+    if _text(getattr(role, "person_id", "")):
+        lines.append(f"- 当前发言人 person_id：{_text(getattr(role, 'person_id', ''))}")
+    for key, label in (
+        ("identity", "人设身份"),
+        ("role", "人设角色"),
+        ("self_image", "自我定位"),
+    ):
+        if _text(meta.get(key)):
+            lines.append(f"- {label}：{_text(meta.get(key))}")
+    direct_links = (profile.get("relationship_map") or {}).get("direct_links") or []
+    if direct_links:
+        lines.append(f"- 与他人的案件关系：{'；'.join(str(item) for item in direct_links[:6])}")
+    relation_rows: list[str] = []
+    for item in relationships:
+        if not isinstance(item, dict):
+            continue
+        from_name = _text(item.get("from"))
+        to_name = _text(item.get("to"))
+        relation = _text(item.get("relation"))
+        if role_name in {from_name, to_name} and (from_name or to_name or relation):
+            relation_rows.append(f"{from_name or '?'} -> {to_name or '?'}：{relation or '关系待核实'}")
+    if relation_rows:
+        lines.append(f"- 原始关系记录：{'；'.join(relation_rows[:6])}")
+    lines.append("- 身份规则：亲属、朋友、同事、邻居、证人、嫌疑人、被害人、报警人、民警等身份/关系，只有本锚点明确支持时才可使用；否则只用姓名或“对方”。")
+    lines.append("- 禁止把其他人的身份、排行、关系、职业、案件角色或经历说成自己的第一人称经历。")
+    return "\n".join(lines)
+
+
+def _role_brain_signature(role: models.Role, case: Optional[models.Case], scene: Optional[models.Scene], script: str) -> str:
+    raw = "|".join(
+        [
+            _text(getattr(role, "id", "")),
+            _role_display_name(role),
+            _text(getattr(role, "person_id", "")),
+            _text(getattr(role, "role_type", "")),
+            _text(getattr(case, "id", "")) if case else "",
+            _text(getattr(scene, "id", "")) if scene else "",
+            _text(script)[:1200],
+        ]
+    )
+    return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _identity_terms_from_text(text: str) -> list[str]:
+    return [term for term in _IDENTITY_TERMS if term in _text(text)]
+
+
+def _allowed_identity_terms_for_role(role: models.Role, identity_anchor: str, profile: dict[str, Any]) -> list[str]:
+    evidence_lines: list[str] = []
+    for line in identity_anchor.splitlines():
+        clean = _text(line)
+        if not clean or clean.startswith("- 身份规则") or clean.startswith("- 禁止"):
+            continue
+        evidence_lines.append(clean)
+
+    role_type = _text(getattr(role, "role_type", ""))
+    if any(token in role_type for token in ("嫌疑", "违法", "主犯", "从犯", "嫌疑对象")):
+        evidence_lines.append("嫌疑人 违法嫌疑人 当事人")
+    if any(token in role_type for token in ("证人", "目击", "旁观")):
+        evidence_lines.append("证人 目击者 旁观者")
+    if any(token in role_type for token in ("被害", "受害")):
+        evidence_lines.append("被害人 受害人 当事人")
+    if "报警" in role_type:
+        evidence_lines.append("报警人 当事人")
+    if any(token in role_type for token in ("民警", "警察", "辅警")):
+        evidence_lines.append("民警 警察 辅警")
+
+    direct_links = (profile.get("relationship_map") or {}).get("direct_links") or []
+    evidence_lines.extend(str(item) for item in direct_links[:8])
+    return sorted(set(_identity_terms_from_text("\n".join(evidence_lines))))
+
+
+def _build_role_brain(
+    *,
+    role: models.Role,
+    case: Optional[models.Case],
+    scene: Optional[models.Scene],
+    profile: Optional[dict[str, Any]] = None,
+    script: str = "",
+    history: Optional[list[Any]] = None,
+    previous_brain: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    profile = profile or build_persona_profile(role, case, scene)
+    script = script or build_role_script(role, case, scene, profile)
+    identity_anchor = _format_identity_anchor(role, case, profile)
+    previous = previous_brain if isinstance(previous_brain, dict) else {}
+    role_id = getattr(role, "id", None)
+    role_name = _role_display_name(role)
+    role_type = _text(getattr(role, "role_type", ""))
+    person_id = _text(getattr(role, "person_id", ""))
+    recent_self_utterances = _recent_role_contents(history or [], role)
+    last_topics = list(previous.get("last_topics") or [])
+    for content in recent_self_utterances:
+        topic = _topic_label(content)
+        if topic:
+            last_topics.append(topic)
+    allowed_identity_terms = _allowed_identity_terms_for_role(role, identity_anchor, profile)
+    return {
+        **previous,
+        "brain_id": f"role:{role_id or role_name}",
+        "role_id": role_id,
+        "role_name": role_name,
+        "person_id": person_id,
+        "role_type": role_type,
+        "brain_signature": _role_brain_signature(role, case, scene, script),
+        "identity_anchor": identity_anchor,
+        "allowed_identity_terms": allowed_identity_terms,
+        "known_facts": merge_role_knows_facts(role, case),
+        "hidden_truths": _format_facts(getattr(role, "hidden_truths", [])),
+        "does_not_know": _format_facts(getattr(role, "does_not_know", [])),
+        "script_excerpt": _text(script)[:1600],
+        "last_self_utterances": recent_self_utterances[-4:] or list(previous.get("last_self_utterances") or [])[-4:],
+        "last_topics": last_topics[-8:],
+    }
+
+
+def _format_role_brain_block(role_brain: dict[str, Any]) -> str:
+    brain = role_brain if isinstance(role_brain, dict) else {}
+    lines = [
+        f"- brain_id：{_text(brain.get('brain_id')) or '未绑定'}",
+        f"- 这颗大脑只属于：{_text(brain.get('role_name')) or '当前角色'}",
+        f"- 身体/姓名：{_text(brain.get('role_name')) or '当前角色'}",
+        f"- person_id：{_text(brain.get('person_id')) or '未配置'}",
+        f"- 案件角色：{_text(brain.get('role_type')) or '相关人员'}",
+        f"- 剧本签名：{_text(brain.get('brain_signature')) or '未生成'}",
+        "- 第一人称“我”只能指向这具身体和这个姓名，不能指向其他任何角色。",
+        "- 其他角色发言只属于外部声音；你可以回应、反驳、补充，但不能继承对方身份、关系、记忆或经历。",
+    ]
+    allowed_terms = brain.get("allowed_identity_terms") if isinstance(brain.get("allowed_identity_terms"), list) else []
+    lines.append(f"- 可使用身份/关系称谓：{'、'.join(_text(item) for item in allowed_terms if _text(item)) or '无明确称谓，优先说姓名或“对方”'}")
+    last_topics = brain.get("last_topics") if isinstance(brain.get("last_topics"), list) else []
+    if last_topics:
+        lines.append(f"- 你最近已说过的话题：{'、'.join(_text(item) for item in last_topics[-4:] if _text(item))}")
+    last_self = brain.get("last_self_utterances") if isinstance(brain.get("last_self_utterances"), list) else []
+    if last_self:
+        lines.append(f"- 你自己最近说过：{' / '.join(_text(item)[:80] for item in last_self[-2:] if _text(item))}")
+    script_excerpt = _text(brain.get("script_excerpt"))
+    if script_excerpt:
+        lines.append(f"- 你的专属剧本摘录：{script_excerpt}")
+    return "\n".join(lines)
+
+
+def _update_role_brain_after_output(
+    role_brain: dict[str, Any],
+    utterances: list[dict[str, str]],
+    user_text: str,
+) -> dict[str, Any]:
+    brain = dict(role_brain or {})
+    topics = list(brain.get("last_topics") or [])
+    user_topic = _topic_label(user_text)
+    if user_topic:
+        topics.append(user_topic)
+    self_utterances = list(brain.get("last_self_utterances") or [])
+    for item in utterances or []:
+        content = _text(item.get("content") if isinstance(item, dict) else item)
+        if not content:
+            continue
+        self_utterances.append(content)
+        topic = _topic_label(content)
+        if topic:
+            topics.append(topic)
+    brain["last_topics"] = topics[-8:]
+    brain["last_self_utterances"] = self_utterances[-4:]
+    return brain
+
 
 
 def _clamp_delta(value: Any, low: int = -15, high: int = 15) -> int:
@@ -209,6 +470,94 @@ def _recent_dialogue_text(history: list[Any], limit: int = 4) -> str:
     return "\n".join(lines)
 
 
+def _topic_label(text: str) -> str:
+    content = _text(text)
+    if not content:
+        return ""
+    topic_map = [
+        ("身份", ("身份", "你是谁", "叫什么", "关系", "哥哥", "弟弟", "姐姐", "妹妹", "你哥", "你弟", "你姐", "你妹", "亲属")),
+        ("时间", ("时间", "几点", "什么时候", "多久", "何时")),
+        ("地点", ("地点", "哪里", "哪儿", "位置", "现场", "门口", "路口")),
+        ("经过", ("经过", "怎么回事", "起因", "原因", "过程", "打架", "冲突")),
+        ("责任", ("责任", "诬赖", "栽赃", "背锅", "谁先", "动手", "认定")),
+        ("赔偿", ("赔偿", "赔钱", "补偿", "损失", "医药费", "钱怎么算")),
+        ("安全", ("安全", "120", "救护车", "报警", "保护", "别碰")),
+        ("关系", ("关系", "谁和谁", "亲戚", "家属", "朋友", "同事")),
+    ]
+    for label, keywords in topic_map:
+        if any(keyword in content for keyword in keywords):
+            return label
+    return ""
+
+
+def _extract_recent_topics(
+    history: list[Any],
+    role: models.Role,
+    limit: int = 6,
+    role_brain: Optional[dict[str, Any]] = None,
+) -> list[str]:
+    brain_topics = (
+        role_brain.get("last_topics")
+        if isinstance(role_brain, dict) and isinstance(role_brain.get("last_topics"), list)
+        else []
+    )
+    topics = [_text(item) for item in brain_topics if _text(item)]
+    if len(topics) >= 2:
+        return topics[-limit:]
+    topics: list[str] = []
+    role_name = _role_display_name(role)
+    for message in history[-limit:]:
+        if _text(getattr(message, "role", "")) not in {"assistant", "ai"}:
+            continue
+        speaker = _text(getattr(message, "speaker_name", ""))
+        if speaker and speaker != role_name:
+            continue
+        topic = _topic_label(_text(getattr(message, "content", "")))
+        if topic:
+            topics.append(topic)
+    return topics
+
+
+def _last_user_topic(user_text: str) -> str:
+    return _topic_label(user_text)
+
+
+def _needs_topic_shift(
+    history: list[Any],
+    role: models.Role,
+    user_text: str,
+    role_brain: Optional[dict[str, Any]] = None,
+) -> bool:
+    recent_topics = _extract_recent_topics(history, role, role_brain=role_brain)
+    if len(recent_topics) < 2:
+        return False
+    user_topic = _last_user_topic(user_text)
+    if not user_topic:
+        return True
+    if recent_topics[-1] == user_topic:
+        return False
+    return recent_topics[-1] == recent_topics[-2]
+
+
+def _topic_shift_reply(role: models.Role, user_text: str) -> str:
+    role_type = _text(getattr(role, "role_type", ""))
+    if any(token in _text(user_text) for token in ("诬赖", "冤枉", "栽赃", "背锅", "垫背", "拉我下水")):
+        return "你问的是刚才那句话有没有依据，我先按实际听到的说，别再把没说过的话往谁身上套。"
+    if any(token in _text(user_text) for token in ("身份", "你是谁", "叫什么", "关系", "哥哥", "弟弟", "你哥", "你弟", "你姐", "你妹")):
+        return "身份我先按我自己的情况说明，别把别人的话套到我身上。"
+    if any(token in _text(user_text) for token in ("时间", "几点", "什么时候")):
+        return "时间我先说能确认的那部分，别让我一直卡在同一个点上。"
+    if any(token in _text(user_text) for token in ("地点", "哪里", "哪儿", "位置")):
+        return "地点我先补清楚，后面你再问下一项。"
+    if any(token in _text(user_text) for token in ("赔偿", "赔钱", "补偿", "损失", "医药费")):
+        return "赔偿这块可以后面说，先把眼前的事说清。"
+    if "嫌疑" in role_type:
+        return "你先问一个新点，我把刚才没说清的补上。"
+    if "证" in role_type:
+        return "我换个我亲眼看到的细节说，免得一直绕同一件事。"
+    return "这件事我先换个角度说，别一直绕在同一个点上。"
+
+
 def _sanitize_unsupported_accusations(
     utterances: list[dict[str, str]],
     *,
@@ -240,6 +589,195 @@ def _sanitize_unsupported_accusations(
             continue
         cleaned.append(item)
     return cleaned or utterances
+
+
+def _sanitize_identity_confusion(
+    utterances: list[dict[str, str]],
+    *,
+    role: models.Role,
+    identity_anchor: str,
+    role_brain: Optional[dict[str, Any]] = None,
+) -> list[dict[str, str]]:
+    role_name = _role_display_name(role)
+    brain_allowed = (
+        role_brain.get("allowed_identity_terms")
+        if isinstance(role_brain, dict) and isinstance(role_brain.get("allowed_identity_terms"), list)
+        else []
+    )
+    if isinstance(role_brain, dict):
+        supported_terms = {_text(token) for token in brain_allowed if _text(token)}
+    else:
+        anchor_evidence = "\n".join(
+            line
+            for line in identity_anchor.splitlines()
+            if not _text(line).startswith("- 身份规则") and not _text(line).startswith("- 禁止")
+        )
+        supported_terms = set(_identity_terms_from_text(anchor_evidence))
+    rewrite_rules: list[tuple[str, str]] = [
+        ("我哥哥", role_name),
+        ("我弟弟", role_name),
+        ("我姐姐", role_name),
+        ("我妹妹", role_name),
+        ("我是哥哥", role_name),
+        ("我是弟弟", role_name),
+        ("我是姐姐", role_name),
+        ("我是妹妹", role_name),
+        ("我是父亲", role_name),
+        ("我是母亲", role_name),
+        ("我是丈夫", role_name),
+        ("我是妻子", role_name),
+        ("我是老公", role_name),
+        ("我是老婆", role_name),
+        ("我是证人", role_name),
+        ("我是目击者", role_name),
+        ("我是旁观者", role_name),
+        ("我是嫌疑人", role_name),
+        ("我是违法嫌疑人", role_name),
+        ("我是被害人", role_name),
+        ("我是受害人", role_name),
+        ("我是报警人", role_name),
+        ("我是当事人", role_name),
+        ("我是家属", role_name),
+        ("我是亲戚", role_name),
+        ("我是朋友", role_name),
+        ("我是同事", role_name),
+        ("我是邻居", role_name),
+        ("我是民警", role_name),
+        ("我是警察", role_name),
+        ("我是辅警", role_name),
+        ("我是保安", role_name),
+        ("我是店员", role_name),
+        ("我是老板", role_name),
+        ("我是司机", role_name),
+        ("我是乘客", role_name),
+        ("我是医生", role_name),
+        ("我是护士", role_name),
+        ("我是老师", role_name),
+        ("我是学生", role_name),
+        ("我是房东", role_name),
+        ("我是租客", role_name),
+        ("我爸", role_name),
+        ("我妈", role_name),
+        ("我哥", role_name),
+        ("我弟", role_name),
+        ("我姐", role_name),
+        ("我妹", role_name),
+        ("他爸", "对方"),
+        ("他妈", "对方"),
+        ("他哥", "对方"),
+        ("他弟", "对方"),
+        ("她爸", "对方"),
+        ("她妈", "对方"),
+        ("她哥", "对方"),
+        ("她弟", "对方"),
+        ("哥哥", "对方"),
+        ("弟弟", "对方"),
+        ("姐姐", "对方"),
+        ("妹妹", "对方"),
+        ("兄弟", "对方"),
+        ("姐妹", "对方"),
+        ("父亲", "对方"),
+        ("母亲", "对方"),
+        ("爸爸", "对方"),
+        ("妈妈", "对方"),
+        ("儿子", "对方"),
+        ("女儿", "对方"),
+        ("丈夫", "对方"),
+        ("妻子", "对方"),
+        ("老公", "对方"),
+        ("老婆", "对方"),
+        ("叔叔", "对方"),
+        ("阿姨", "对方"),
+        ("舅舅", "对方"),
+        ("姑姑", "对方"),
+        ("伯父", "对方"),
+        ("伯母", "对方"),
+        ("侄子", "对方"),
+        ("侄女", "对方"),
+        ("外甥", "对方"),
+        ("外甥女", "对方"),
+        ("亲戚", "对方"),
+        ("家属", "对方"),
+        ("朋友", "对方"),
+        ("同事", "对方"),
+        ("邻居", "对方"),
+        ("同学", "对方"),
+        ("证人", "对方"),
+        ("目击者", "对方"),
+        ("旁观者", "对方"),
+        ("嫌疑人", "对方"),
+        ("违法嫌疑人", "对方"),
+        ("被害人", "对方"),
+        ("受害人", "对方"),
+        ("报警人", "对方"),
+        ("当事人", "对方"),
+        ("民警", "对方"),
+        ("警察", "对方"),
+        ("辅警", "对方"),
+        ("保安", "对方"),
+        ("店员", "对方"),
+        ("老板", "对方"),
+        ("司机", "对方"),
+        ("乘客", "对方"),
+        ("医生", "对方"),
+        ("护士", "对方"),
+        ("老师", "对方"),
+        ("学生", "对方"),
+        ("房东", "对方"),
+        ("租客", "对方"),
+    ]
+    cleaned: list[dict[str, str]] = []
+    for item in utterances:
+        content = _text(item.get("content"))
+        if not content:
+            continue
+        if any(token in content for token in _IDENTITY_TERMS):
+            for token, replacement in sorted(rewrite_rules, key=lambda pair: len(pair[0]), reverse=True):
+                if token in content and token not in supported_terms:
+                    content = content.replace(token, replacement)
+        cleaned.append({**item, "content": content})
+    return cleaned or utterances
+
+
+def _sanitize_topic_fixation(
+    utterances: list[dict[str, str]],
+    *,
+    role: models.Role,
+    history: list[Any],
+    user_text: str,
+    role_brain: Optional[dict[str, Any]] = None,
+) -> list[dict[str, str]]:
+    if not utterances:
+        return utterances
+    user_topic = _last_user_topic(user_text)
+    first_topic = _topic_label(_text(utterances[0].get("content")))
+    if user_topic and first_topic and first_topic != user_topic:
+        repaired = list(utterances)
+        repaired[0] = {
+            **repaired[0],
+            "content": _topic_shift_reply(role, user_text),
+            "delivery": repaired[0].get("delivery") or "normal",
+        }
+        return repaired
+    if not _needs_topic_shift(history, role, user_text, role_brain=role_brain):
+        return utterances
+
+    recent_topics = _extract_recent_topics(history, role, role_brain=role_brain)
+    target_topic = user_topic or (recent_topics[-1] if recent_topics else "")
+    if not target_topic:
+        return utterances
+
+    first_topic = _topic_label(_text(utterances[0].get("content")))
+    if first_topic and first_topic == target_topic:
+        return utterances
+
+    repaired = list(utterances)
+    repaired[0] = {
+        **repaired[0],
+        "content": _topic_shift_reply(role, user_text),
+        "delivery": repaired[0].get("delivery") or "normal",
+    }
+    return repaired
 
 
 def _normalize_repeat_key(text: str) -> str:
@@ -710,11 +1248,21 @@ def generate_role_dialogue(
     role_snapshot: dict[str, int],
     addressed_targets: Optional[list[str]] = None,
     peer_utterances: Optional[list[dict[str, Any]]] = None,
+    role_brain: Optional[dict[str, Any]] = None,
     use_llm: bool = True,
 ) -> dict[str, Any]:
-    utterance_count = 1
+    utterance_count = max(1, min(8, int(cast_entry.get("utterance_count") or 1)))
     profile = build_persona_profile(role, case, scene)
     script = build_role_script(role, case, scene, profile)
+    role_brain = _build_role_brain(
+        role=role,
+        case=case,
+        scene=scene,
+        profile=profile,
+        script=script,
+        history=history,
+        previous_brain=role_brain,
+    )
     knowledge_bundle = load_case_knowledge_bundle(case, role)
     retrieval_query = rag_service.build_retrieval_query(
         user_text,
@@ -740,6 +1288,8 @@ def generate_role_dialogue(
     momentum = enrich_momentum_with_axis_deltas(momentum, user_text, [], profile)
     state_contract = build_state_contract(role_snapshot, momentum, profile)
     persona_block = format_persona_block(profile, script, {}, momentum)
+    role_brain_block = _format_role_brain_block(role_brain)
+    identity_anchor_block = _text(role_brain.get("identity_anchor")) or _format_identity_anchor(role, case, profile)
     state_contract_block = format_state_contract_block(state_contract)
     reaction = choose_role_reaction(
         role=role,
@@ -773,6 +1323,8 @@ def generate_role_dialogue(
             current_stage=current_stage or "训练中",
             user_text=user_text or "（学员沉默）",
             persona_block=persona_block,
+            role_brain_block=role_brain_block,
+            identity_anchor_block=identity_anchor_block,
             state_contract_block=state_contract_block,
             human_reaction_block=human_reaction_block,
             perspective_hint=perspective_hint,
@@ -810,6 +1362,19 @@ def generate_role_dialogue(
                     role=role,
                     user_text=user_text,
                     history=history,
+                )
+                cleaned = _sanitize_identity_confusion(
+                    cleaned,
+                    role=role,
+                    identity_anchor=identity_anchor_block,
+                    role_brain=role_brain,
+                )
+                cleaned = _sanitize_topic_fixation(
+                    cleaned,
+                    role=role,
+                    history=history,
+                    user_text=user_text,
+                    role_brain=role_brain,
                 )
                 delta = payload.get("state_delta") if isinstance(payload.get("state_delta"), dict) else {}
                 output = {
@@ -851,6 +1416,19 @@ def generate_role_dialogue(
         user_text=user_text,
         history=history,
     )
+    output["utterances"] = _sanitize_identity_confusion(
+        output["utterances"],
+        role=role,
+        identity_anchor=identity_anchor_block,
+        role_brain=role_brain,
+    )
+    output["utterances"] = _sanitize_topic_fixation(
+        output["utterances"],
+        role=role,
+        history=history,
+        user_text=user_text,
+        role_brain=role_brain,
+    )
     output["utterances"] = _dedupe_and_repair_utterances(
         output["utterances"],
         role=role,
@@ -860,12 +1438,14 @@ def generate_role_dialogue(
         state_contract=state_contract,
     )
 
+    role_brain = _update_role_brain_after_output(role_brain, output["utterances"], user_text)
+
     return {
         "speaker_name": _role_display_name(role),
         "speaker_role_id": role.id,
         "role": role,
         "participation": cast_entry.get("participation"),
-        "utterances": output["utterances"][:1],
+        "utterances": output["utterances"][:utterance_count],
         "inner_thought": output.get("inner_thought") or "",
         "state_delta": output.get("state_delta") or {},
         "new_fact_revealed": output.get("new_fact_revealed"),
@@ -875,6 +1455,7 @@ def generate_role_dialogue(
         "reaction_label": reaction.get("label"),
         "reaction_types": reaction.get("keys") or [reaction.get("key")],
         "reaction_labels": reaction.get("labels") or [reaction.get("label")],
+        "role_brain": role_brain,
     }
 
 

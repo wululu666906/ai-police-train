@@ -13,6 +13,17 @@ import { clearAuth, getStoredRole, isLoggedIn, resetLoginRedirectState } from '.
 // 配置路由
 const routes = [
   { path: '/login', component: () => import('./views/Login.vue'), meta: { guestOnly: true } },
+  { path: '/ops/login', component: () => import('./views/OpsLogin.vue'), meta: { opsGuestOnly: true } },
+  {
+    path: '/ops',
+    component: () => import('./views/OpsLayout.vue'),
+    redirect: '/ops/accounts',
+    meta: { requiresAuth: true, roles: ['maintainer'] },
+    children: [
+      { path: 'accounts', component: () => import('./views/OpsAccounts.vue') },
+      { path: 'usage', component: () => import('./views/OpsUsage.vue') },
+    ],
+  },
   { 
     path: '/admin',
     component: () => import('./views/AdminLayout.vue'),
@@ -37,7 +48,10 @@ const routes = [
       { path: 'profile', component: () => import('./views/Profile.vue') }
     ]
   },
-  { path: '/', redirect: () => (getStoredRole() === 'student' ? '/student/hall' : '/admin/dashboard') },
+  { path: '/', redirect: () => {
+    if (window.location.port === '6670') return getStoredRole() === 'maintainer' ? '/ops/accounts' : '/ops/login'
+    return getStoredRole() === 'student' ? '/student/hall' : '/admin/dashboard'
+  } },
   {
     path: '/student',
     component: () => import('./views/StudentLayout.vue'),
@@ -86,7 +100,7 @@ router.onError((error, to) => {
 })
 
 router.beforeEach((to) => {
-  if (to.path === '/login') {
+  if (to.path === '/login' || to.path === '/ops/login') {
     resetLoginRedirectState()
   }
 
@@ -95,20 +109,30 @@ router.beforeEach((to) => {
   const requiredRoles = to.meta.roles as string[] | undefined
 
   if (to.meta.guestOnly && token) {
+    if (role === 'maintainer') return '/ops/accounts'
+    return role === 'student' ? '/student/hall' : '/admin/dashboard'
+  }
+
+  if (to.meta.opsGuestOnly && token) {
+    if (role === 'maintainer') return '/ops/accounts'
     return role === 'student' ? '/student/hall' : '/admin/dashboard'
   }
 
   if (to.meta.requiresAuth && !isLoggedIn()) {
-    return '/login'
+    return to.path.startsWith('/ops') ? '/ops/login' : '/login'
   }
 
   if (requiredRoles && role && !requiredRoles.includes(role)) {
+    if (requiredRoles.includes('maintainer')) {
+      return role === 'student' ? '/student/hall' : '/admin/dashboard'
+    }
+    if (role === 'maintainer') return '/ops/accounts'
     return role === 'student' ? '/student/hall' : '/admin/dashboard'
   }
 
   if (requiredRoles && !role && token) {
     clearAuth()
-    return '/login'
+    return to.path.startsWith('/ops') ? '/ops/login' : '/login'
   }
 
   return true

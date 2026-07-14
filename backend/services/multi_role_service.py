@@ -58,6 +58,38 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+class _TransientActorMessage:
+    def __init__(self, speaker_name: str, speaker_role_id: int | None, content: str, inner_thought: str = ""):
+        self.role = "assistant"
+        self.speaker_name = speaker_name
+        self.speaker_role_id = speaker_role_id
+        self.content = content
+        self.inner_thought = inner_thought
+
+
+def _append_actor_output_to_history(history: list[Any], actor_outputs: list[dict[str, Any]]) -> list[Any]:
+    augmented = list(history)
+    for actor in actor_outputs:
+        speaker_name = actor.get("speaker_name") or ""
+        speaker_role_id = actor.get("speaker_role_id")
+        thought = actor.get("inner_thought") or ""
+        first = True
+        for utterance in actor.get("utterances") or []:
+            content = _text(utterance.get("content") if isinstance(utterance, dict) else utterance)
+            if not content:
+                continue
+            augmented.append(
+                _TransientActorMessage(
+                    speaker_name=speaker_name,
+                    speaker_role_id=speaker_role_id,
+                    content=content,
+                    inner_thought=thought if first else "",
+                )
+            )
+            first = False
+    return augmented
+
+
 def _role_display_name(role: models.Role) -> str:
     return _text(role.name) or "相关人员"
 
@@ -222,7 +254,7 @@ def generate_multi_role_turn(
     runtime_state: Optional[dict[str, Any]] = None,
     use_llm: bool = True,
 ) -> Optional[dict[str, Any]]:
-    from .multi_role_actor import generate_role_dialogue
+    from .multi_role_actor import _build_role_brain, generate_role_dialogue
     from .multi_role_director import run_director
     from .scene_conversation_engine import consolidate_scene_conversation
 
@@ -231,6 +263,8 @@ def generate_multi_role_turn(
 
     runtime_state = runtime_state if isinstance(runtime_state, dict) else {}
     role_snapshots: dict[str, dict[str, int]] = dict(runtime_state.get("role_state_snapshots") or {})
+    raw_role_brains = runtime_state.get("role_brains")
+    role_brains: dict[str, dict[str, Any]] = dict(raw_role_brains) if isinstance(raw_role_brains, dict) else {}
     for role in roles:
         key = str(role.id)
         if key not in role_snapshots:
@@ -262,31 +296,44 @@ def generate_multi_role_turn(
         role = cast_entry.get("role")
         if not role:
             continue
+        brain_key = str(role.id)
         snap = role_snapshots.get(str(role.id)) or {
             "emotion": int(getattr(role, "init_emotion", None) or 50),
             "cooperation": int(getattr(role, "init_trust", None) or 30),
             "risk": 50,
             "clarity": 50,
         }
+        prior_brain = role_brains.get(brain_key) or {}
+        actor_history = _append_actor_output_to_history(history, actor_outputs)
+        built_brain = _build_role_brain(
+            role=role,
+            case=case,
+            scene=scene,
+            history=actor_history,
+            previous_brain=prior_brain,
+        )
         actor_output = generate_role_dialogue(
             role=role,
             cast_entry=cast_entry,
             director_plan=director_plan,
             scene=scene,
             case=case,
-            history=history,
+            history=actor_history,
             user_text=user_text,
             current_stage=current_stage,
             role_snapshot=snap,
             addressed_targets=director_plan.get("addressed_targets") or [],
             peer_utterances=actor_outputs,
+            role_brain=built_brain,
             use_llm=use_llm,
         )
+        role_brains[brain_key] = actor_output.get("role_brain") or built_brain
         actor_outputs.append(actor_output)
 
     if not actor_outputs:
         return None
 
+    runtime_state["role_brains"] = role_brains
     previous_primary = actor_outputs[0].get("role") or roles[0]
     return consolidate_scene_conversation(
         director_plan=director_plan,

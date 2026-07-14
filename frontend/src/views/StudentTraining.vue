@@ -184,13 +184,12 @@
 
     <div class="chat-area">
       <TrainingFaceGuard
-        v-if="sessionId && !faceVerificationSkipped"
+        v-if="sessionId"
         ref="faceGuardRef"
         class="training-face-guard"
         :session-id="sessionId"
         :mode="faceVerified ? 'monitor' : 'gate'"
         @verified="handleFaceVerified"
-        @skipped="handleFaceSkipped"
         @failed="handleFaceFailed"
         @terminated="handleFaceTerminated"
       />
@@ -212,10 +211,11 @@
               :style="{ background: getAvatarBg(msg.avatarId), border: 'none' }"
             >
               <img
-                v-if="msg.avatarUrl"
-                :src="msg.avatarUrl"
+                v-if="shouldShowMessageAvatar(msg)"
+                :src="resolveAvatarUrl(msg.avatarUrl)"
                 :alt="msg.speakerName || roleInfo.name"
                 class="avatar-img"
+                @error="markAvatarFailed(msg.avatarUrl)"
               />
               <span v-else class="avatar-initial">{{ (msg.speakerName || roleInfo.name).slice(0, 1) }}</span>
             </div>
@@ -374,6 +374,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showLoadingToast, showToast } from 'vant'
 import request from '../utils/request'
+import { resolveMediaUrl } from '../utils/media'
 import TrainingInputBar from '../components/TrainingInputBar.vue'
 import RoleSpeakingAvatar from '../components/RoleSpeakingAvatar.vue'
 import TrainingFaceGuard from '../components/TrainingFaceGuard.vue'
@@ -392,6 +393,19 @@ function getAvatarBg(avatarId?: number | null): string {
   return '#e2e8f0'
 }
 
+const resolveAvatarUrl = (value: unknown) => resolveMediaUrl(value)
+
+const shouldShowMessageAvatar = (message: { avatarUrl?: string | null }) => {
+  const url = resolveAvatarUrl(message.avatarUrl)
+  return Boolean(url && !failedAvatarUrls.value.has(url))
+}
+
+const markAvatarFailed = (value: unknown) => {
+  const url = resolveAvatarUrl(value)
+  if (!url) return
+  failedAvatarUrls.value = new Set([...failedAvatarUrls.value, url])
+}
+
 const route = useRoute()
 const router = useRouter()
 
@@ -403,13 +417,13 @@ const trainingLoadError = ref('')
 const showCaseBrief = ref(false)
 const suppressedBriefThisSession = ref(false)
 const isReturningToHall = ref(false)
-const faceVerificationSkipped = ref(false)
 const faceVerified = ref(false)
 const faceTerminated = ref(false)
 const isFinishingTraining = ref(false)
 const assignmentContext = ref<any | null>(null)
 const faceGuardRef = ref<InstanceType<typeof TrainingFaceGuard> | null>(null)
-const canUseConversation = computed(() => faceVerificationSkipped.value || (faceVerified.value && !faceTerminated.value))
+const failedAvatarUrls = ref<Set<string>>(new Set())
+const canUseConversation = computed(() => faceVerified.value && !faceTerminated.value)
 const routeMarksAssignment = computed(() => route.query.source === 'assignment' || Boolean(route.query.assignment_id))
 const isAssignmentAssessmentMode = computed(() => Boolean(assignmentContext.value) || routeMarksAssignment.value)
 const currentAssignmentId = computed(() => {
@@ -896,7 +910,6 @@ const fetchSessionData = async () => {
 
     // 进入对话即展示案件信息（学员若选择“本次不再提示”则本会话内不再自动弹出）
     suppressedBriefThisSession.value = isBriefSuppressedInSession()
-    faceVerificationSkipped.value = isFaceVerificationSkippedInSession()
     if (!suppressedBriefThisSession.value) {
       showCaseBrief.value = true
     }
@@ -937,32 +950,6 @@ const clearBriefSuppressedInSession = () => {
   suppressedBriefThisSession.value = false
   try {
     sessionStorage.removeItem(getBriefSuppressKey())
-  } catch {
-    // ignore
-  }
-}
-
-const getFaceSkipKey = () => `student_training_face_skipped_${String(sessionId.value || '')}`
-
-const clearFaceVerificationSkipped = () => {
-  try {
-    sessionStorage.removeItem(getFaceSkipKey())
-  } catch {
-    // ignore
-  }
-}
-
-const isFaceVerificationSkippedInSession = () => {
-  try {
-    return sessionStorage.getItem(getFaceSkipKey()) === '1'
-  } catch {
-    return false
-  }
-}
-
-const persistFaceVerificationSkipped = () => {
-  try {
-    sessionStorage.setItem(getFaceSkipKey(), '1')
   } catch {
     // ignore
   }
@@ -1228,19 +1215,8 @@ const handleFaceVerified = () => {
   if (!faceVerified.value) {
     showToast({ type: 'success', message: '身份验证通过，可以开始训练' })
   }
-  faceVerificationSkipped.value = false
-  clearFaceVerificationSkipped()
   faceVerified.value = true
   faceTerminated.value = false
-}
-
-const handleFaceSkipped = () => {
-  faceVerificationSkipped.value = true
-  faceVerified.value = false
-  faceTerminated.value = false
-  faceGuardRef.value?.stopCamera?.()
-  persistFaceVerificationSkipped()
-  showToast({ type: 'success', message: '已跳过人脸验证，本次训练不启用人脸与异常监测' })
 }
 
 const handleFaceFailed = (message: string) => {

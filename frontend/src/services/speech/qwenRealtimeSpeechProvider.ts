@@ -10,9 +10,15 @@ const TARGET_SAMPLE_RATE = 16000
 const getApiBaseUrl = () =>
   import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '')
 
-const getRealtimeWsUrl = (language = 'zh') => {
+const getRealtimeHttpBase = () => {
   const apiBase = getApiBaseUrl().replace(/\/$/, '')
-  const httpBase = apiBase || window.location.origin
+  if (!apiBase || apiBase === '/api') return window.location.origin
+  if (/\/api$/i.test(apiBase)) return apiBase.slice(0, -4) || window.location.origin
+  return apiBase
+}
+
+const getRealtimeWsUrl = (language = 'zh') => {
+  const httpBase = getRealtimeHttpBase()
   const wsBase = httpBase.replace(/^http/i, 'ws')
   const token = encodeURIComponent(localStorage.getItem('token') || '')
   return `${wsBase}/speech/realtime?language=${encodeURIComponent(language)}&token=${token}`

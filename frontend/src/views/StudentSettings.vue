@@ -18,7 +18,12 @@
       <div class="settings-card account-card">
         <div class="avatar-block">
           <div class="avatar-preview">
-            <img v-if="faceProfile?.registered && faceProfile.face_image_url" :src="faceProfile.face_image_url" alt="学员照片" />
+            <img
+              v-if="facePhotoReady"
+              :src="faceProfile?.face_image_url"
+              alt="学员照片"
+              @error="markFacePhotoFailed"
+            />
             <span v-else>{{ initials }}</span>
           </div>
           <div>
@@ -113,7 +118,12 @@
 
         <div class="face-upload-panel">
           <div class="face-preview">
-            <img v-if="faceProfile?.registered && faceProfile.face_image_url" :src="faceProfile.face_image_url" alt="学员人脸照片" />
+            <img
+              v-if="facePhotoReady"
+              :src="faceProfile?.face_image_url"
+              alt="学员人脸照片"
+              @error="markFacePhotoFailed"
+            />
             <div v-else class="face-preview-empty">
               <van-icon name="contact" size="42" />
               <span>{{ initials }}</span>
@@ -202,6 +212,7 @@ import { useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import request from '../utils/request'
 import { clearAuth } from '../utils/auth'
+import { resolveMediaUrl } from '../utils/media'
 
 type SettingsUser = {
   id: number
@@ -242,6 +253,7 @@ const faceProfile = ref<FaceProfile | null>(null)
 const faceEngine = ref<FaceEngine | null>(null)
 const faceLoading = ref(false)
 const faceUploading = ref(false)
+const failedFacePhotoUrl = ref('')
 const savingProfile = ref(false)
 const changingPassword = ref(false)
 const showPasswordPopup = ref(false)
@@ -271,6 +283,10 @@ const initials = computed(() => headerName.value.trim().slice(0, 2).toUpperCase(
 const classLabel = computed(() => settings.value?.classes?.length ? settings.value.classes.join('、') : '暂未加入班级')
 const roleLabel = computed(() => settings.value?.user.role === 'admin' ? '管理员' : '学员')
 const faceEngineLabel = computed(() => (faceEngine.value?.model ? `insightface:${faceEngine.value.model}` : 'insightface:buffalo_l'))
+const facePhotoReady = computed(() => {
+  const url = faceProfile.value?.face_image_url || ''
+  return Boolean(faceProfile.value?.registered && url && url !== failedFacePhotoUrl.value)
+})
 
 const fillProfileForm = (user: SettingsUser) => {
   profileForm.display_name = user.display_name || ''
@@ -283,15 +299,19 @@ const fillProfileForm = (user: SettingsUser) => {
 }
 
 const normalizeFaceProfile = (payload: any): FaceProfile => {
-  const imageUrl = String(payload?.face_image_url || '')
-  const apiBase = String((request as any).defaults?.baseURL || '').replace(/\/$/, '')
+  const imageUrl = resolveMediaUrl(payload?.face_image_url)
+  failedFacePhotoUrl.value = ''
   return {
     registered: Boolean(payload?.registered),
     student_id: payload?.student_id,
-    face_image_url: imageUrl && imageUrl.startsWith('/') && apiBase ? `${apiBase}${imageUrl}` : imageUrl,
+    face_image_url: imageUrl,
     embedding_model: payload?.embedding_model,
     updated_at: payload?.updated_at,
   }
+}
+
+const markFacePhotoFailed = () => {
+  failedFacePhotoUrl.value = faceProfile.value?.face_image_url || ''
 }
 
 const fmtDateTime = (value: string | null | undefined) => {

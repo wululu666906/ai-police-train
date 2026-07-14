@@ -30,6 +30,7 @@ DEFAULT_RUNTIME_STATE = {
     },
     "role_state_snapshots": {},
     "role_state_deltas": {},
+    "role_brains": {},
     "last_active_role_ids": [],
     "last_target_role_name": "",
     "state_influence_turn_log": [],
@@ -139,6 +140,28 @@ def _normalize_role_state_deltas(value: Any) -> dict[str, dict[str, int]]:
     return deltas
 
 
+def _normalize_role_brains(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    brains: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_brain in value.items():
+        key = str(raw_key or "").strip()
+        if not key or not isinstance(raw_brain, dict):
+            continue
+        brain = dict(raw_brain)
+        brain["role_id"] = brain.get("role_id")
+        brain["role_name"] = str(brain.get("role_name") or "").strip()
+        brain["person_id"] = str(brain.get("person_id") or "").strip()
+        brain["role_type"] = str(brain.get("role_type") or "").strip()
+        brain["brain_id"] = str(brain.get("brain_id") or "").strip()
+        brain["brain_signature"] = str(brain.get("brain_signature") or "").strip()
+        brain["last_topics"] = _dedupe_strings(brain.get("last_topics") or [])
+        brain["last_self_utterances"] = _dedupe_strings(brain.get("last_self_utterances") or [])
+        brain["allowed_identity_terms"] = _dedupe_strings(brain.get("allowed_identity_terms") or [])
+        brains[key] = brain
+    return brains
+
+
 def _normalize_role_id_list(value: Any) -> list[int]:
     result: list[int] = []
     seen: set[int] = set()
@@ -172,6 +195,7 @@ def load_runtime_state(raw_value: Any) -> dict[str, Any]:
     state["state_snapshot"] = _normalize_state_snapshot(parsed.get("state_snapshot"))
     state["role_state_snapshots"] = _normalize_role_state_snapshots(parsed.get("role_state_snapshots"))
     state["role_state_deltas"] = _normalize_role_state_deltas(parsed.get("role_state_deltas"))
+    state["role_brains"] = _normalize_role_brains(parsed.get("role_brains"))
     state["last_active_role_ids"] = _normalize_role_id_list(parsed.get("last_active_role_ids"))
     state["last_target_role_name"] = str(parsed.get("last_target_role_name") or "").strip()
     progress = parsed.get("assessment_progress")
@@ -200,6 +224,7 @@ def dump_runtime_state(state: dict[str, Any]) -> str:
         "state_snapshot": _normalize_state_snapshot((state or {}).get("state_snapshot")),
         "role_state_snapshots": _normalize_role_state_snapshots((state or {}).get("role_state_snapshots")),
         "role_state_deltas": _normalize_role_state_deltas((state or {}).get("role_state_deltas")),
+        "role_brains": _normalize_role_brains((state or {}).get("role_brains")),
         "last_active_role_ids": _normalize_role_id_list((state or {}).get("last_active_role_ids")),
         "last_target_role_name": str((state or {}).get("last_target_role_name") or "").strip(),
     }

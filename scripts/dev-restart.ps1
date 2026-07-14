@@ -8,10 +8,12 @@ $BackendRoot = Join-Path $Root "backend"
 $FrontendRoot = Join-Path $Root "frontend"
 $LogsRoot = Join-Path $Root "logs"
 $PythonExe = Join-Path $BackendRoot "venv\Scripts\python.exe"
+$BundledNodeExe = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
 $DatabasePath = Join-Path $Root "data\ai_police.db"
 $ChromaPath = Join-Path $Root "data\chroma_db"
 $BackendLog = Join-Path $LogsRoot "dev-backend.log"
 $FrontendLog = Join-Path $LogsRoot "dev-frontend.log"
+$OpsFrontendLog = Join-Path $LogsRoot "dev-ops-frontend.log"
 
 . (Join-Path $Root "scripts\fix-terminal-env.ps1")
 
@@ -46,6 +48,24 @@ function Wait-HttpOk {
     return $null
 }
 
+function Start-HiddenPowerShell {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "powershell.exe"
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
+    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encodedCommand"
+    $psi.WorkingDirectory = $WorkingDirectory
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    if ($psi.EnvironmentVariables.ContainsKey("Path") -and $psi.EnvironmentVariables.ContainsKey("PATH")) {
+        $psi.EnvironmentVariables.Remove("PATH")
+    }
+    [System.Diagnostics.Process]::Start($psi) | Out-Null
+}
+
 function Stop-BackendDevProcesses {
     try {
         $processes = Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
@@ -69,8 +89,6 @@ Set-Location $Root
 New-Item -ItemType Directory -Force -Path $LogsRoot | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DatabasePath) | Out-Null
 New-Item -ItemType Directory -Force -Path $ChromaPath | Out-Null
-Set-Content -Path $BackendLog -Value "" -Encoding UTF8
-Set-Content -Path $FrontendLog -Value "" -Encoding UTF8
 
 if (-not (Test-Path $PythonExe)) {
     Write-Host "未找到后端虚拟环境 Python: $PythonExe" -ForegroundColor Red
@@ -78,30 +96,24 @@ if (-not (Test-Path $PythonExe)) {
     exit 1
 }
 
-Write-Host "停止 Docker compose 服务，释放 5555 给稳定部署模式 ..." -ForegroundColor Cyan
-$previousErrorActionPreference = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-docker info *> $null
-$dockerInfoExitCode = $LASTEXITCODE
-$ErrorActionPreference = $previousErrorActionPreference
-if ($dockerInfoExitCode -eq 0) {
-    $ErrorActionPreference = "Continue"
-    docker compose down --remove-orphans *> $null
-    $composeDownExitCode = $LASTEXITCODE
-    $ErrorActionPreference = $previousErrorActionPreference
-    if ($composeDownExitCode -ne 0) {
-        Write-Host "Docker compose 停止失败，请检查 Docker Desktop 状态。" -ForegroundColor Red
-        exit $composeDownExitCode
-    }
-} else {
-    Write-Host "Docker Desktop 引擎未就绪，跳过 compose down，仅启动本地开发服务。" -ForegroundColor Yellow
+$HasBundledNode = Test-Path -LiteralPath $BundledNodeExe
+if (-not $HasBundledNode) {
+    Write-Host "未找到 bundled Node: $BundledNodeExe" -ForegroundColor Red
+    Write-Host "请先安装 Node.js，或确认 Codex bundled Node 可用。" -ForegroundColor Yellow
+    exit 1
 }
 
 Stop-PortListener 8000
 Stop-PortListener 5556
+Stop-PortListener 6666
+Stop-PortListener 6670
 Stop-PortListener 5175
 Stop-BackendDevProcesses
 Start-Sleep -Seconds 2
+
+Set-Content -Path $BackendLog -Value "" -Encoding UTF8
+Set-Content -Path $FrontendLog -Value "" -Encoding UTF8
+Set-Content -Path $OpsFrontendLog -Value "" -Encoding UTF8
 
 $DatabaseUrl = "sqlite:///$($DatabasePath.Replace('\', '/'))"
 $BackendCommand = @"
@@ -118,20 +130,22 @@ Set-Location '$BackendRoot'
 
 $FrontendCommand = @"
 Set-Location '$FrontendRoot'
-npm run dev *> '$FrontendLog'
+& '$BundledNodeExe' node_modules\vite\bin\vite.js --host 0.0.0.0 --port 5556 --strictPort *> '$FrontendLog'
+"@
+
+$OpsFrontendCommand = @"
+Set-Location '$FrontendRoot'
+& '$BundledNodeExe' node_modules\vite\bin\vite.js --host 0.0.0.0 --port 6670 --strictPort *> '$OpsFrontendLog'
 "@
 
 Write-Host "启动后端热重载服务 ..." -ForegroundColor Cyan
-Start-Process -FilePath "powershell.exe" `
-    -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $BackendCommand `
-    -WorkingDirectory $BackendRoot `
-    -WindowStyle Hidden
+Start-HiddenPowerShell -Command $BackendCommand -WorkingDirectory $BackendRoot
 
 Write-Host "启动前端 Vite 服务 ..." -ForegroundColor Cyan
-Start-Process -FilePath "powershell.exe" `
-    -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $FrontendCommand `
-    -WorkingDirectory $FrontendRoot `
-    -WindowStyle Hidden
+Start-HiddenPowerShell -Command $FrontendCommand -WorkingDirectory $FrontendRoot
+
+Write-Host "启动维护端 Vite 服务 ..." -ForegroundColor Cyan
+Start-HiddenPowerShell -Command $OpsFrontendCommand -WorkingDirectory $FrontendRoot
 
 Write-Host "检查后端 /healthz ..." -ForegroundColor Cyan
 $backendResp = Wait-HttpOk -Url "http://127.0.0.1:8000/healthz" -Seconds 45
@@ -147,10 +161,18 @@ if (-not $frontendResp -or ($frontendResp.Content -notmatch "/@vite/client")) {
     exit 1
 }
 
+Write-Host "检查维护端 Vite 热更新客户端 ..." -ForegroundColor Cyan
+$opsFrontendResp = Wait-HttpOk -Url "http://127.0.0.1:6670/" -Seconds 45
+if (-not $opsFrontendResp -or ($opsFrontendResp.Content -notmatch "/@vite/client")) {
+    Write-Host "维护端热更新校验失败，请查看 $OpsFrontendLog" -ForegroundColor Red
+    exit 1
+}
+
 Write-Host ""
 Write-Host "本地开发环境已启动。" -ForegroundColor Green
-Write-Host "  热更新前端: http://localhost:5556/" -ForegroundColor Green
+Write-Host "  管理端/学员端: http://localhost:5556/" -ForegroundColor Green
+Write-Host "  维护端: http://localhost:6670/" -ForegroundColor Green
 Write-Host "  后端接口文档: http://127.0.0.1:8000/docs" -ForegroundColor Green
-Write-Host "  稳定 Docker 入口: http://localhost:5555/ （当前已停止，需运行 scripts\docker-deploy.ps1）" -ForegroundColor DarkGray
 Write-Host "  后端日志: $BackendLog" -ForegroundColor DarkGray
 Write-Host "  前端日志: $FrontendLog" -ForegroundColor DarkGray
+Write-Host "  维护端日志: $OpsFrontendLog" -ForegroundColor DarkGray

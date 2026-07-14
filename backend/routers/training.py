@@ -387,6 +387,10 @@ def _trigger_auto_evaluation_if_needed(
         db.commit()
         report = evaluate_session(db, session_id, user_id)
         if report and "error" not in report:
+            session.status = "finished"
+            if not session.evaluation_result:
+                session.evaluation_result = json.dumps(report, ensure_ascii=False)
+            db.commit()
             try:
                 sync_assignment_submission_for_session(db, session_id, user_id, report)
             except Exception as error:

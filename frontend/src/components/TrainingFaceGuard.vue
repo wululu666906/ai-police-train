@@ -21,7 +21,6 @@
       </p>
       <div v-if="mode === 'gate'" class="face-guard__actions">
         <van-button size="small" type="primary" :loading="verifying" @click="runVerify">开始验证</van-button>
-        <van-button size="small" plain hairline type="default" :disabled="verifying" @click="skipVerify">跳过验证</van-button>
       </div>
     </div>
 
@@ -39,6 +38,19 @@
         </div>
         <strong>请正对摄像头</strong>
         <p>{{ verifyHint }}</p>
+        <div class="face-verify__feedback" :class="verifyFeedbackClass" aria-live="polite">
+          <div class="face-verify__feedback-row">
+            <span class="face-verify__dot" :class="{ 'is-active': verifyInFlight }"></span>
+            <span>{{ verifyStatusText }}</span>
+          </div>
+          <div class="face-verify__progress" aria-hidden="true">
+            <span :style="{ width: `${verifyProgressPercent}%` }"></span>
+          </div>
+          <div class="face-verify__feedback-row face-verify__feedback-row--muted">
+            <span>已采集 {{ verifyAttemptCount }} 帧</span>
+            <span v-if="lastSimilarityText">匹配度 {{ lastSimilarityText }}</span>
+          </div>
+        </div>
         <van-button size="small" plain hairline type="default" @click="cancelVerify">退出验证</van-button>
       </div>
     </van-dialog>
@@ -57,7 +69,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'verified'): void
-  (event: 'skipped'): void
   (event: 'failed', message: string): void
   (event: 'terminated', payload: any): void
 }>()
@@ -77,6 +88,10 @@ const verifyInFlight = ref(false)
 const heartbeatInFlight = ref(false)
 const verifyDialogVisible = ref(false)
 const verifyHint = ref('请将脸部放在圆形区域内，系统正在识别本人身份。')
+const verifyStatusText = ref('等待启动人脸识别模型')
+const verifyAttemptCount = ref(0)
+const lastSimilarityText = ref('')
+const lastSimilarityScore = ref(0)
 
 const targetCameraLabel = 'HK 5M CAM 200W'
 const builtInCameraLabel = 'ASUS FHD webcam'
@@ -89,6 +104,19 @@ const badgeText = computed(() => {
   if (verified.value) return '已通过'
   if (verifying.value) return '验证中'
   return '待验证'
+})
+
+const verifyFeedbackClass = computed(() => ({
+  'face-verify__feedback--matching': verifyInFlight.value,
+  'face-verify__feedback--success': verified.value,
+  'face-verify__feedback--warning': verifying.value && verifyAttemptCount.value > 0 && !verifyInFlight.value && !verified.value,
+}))
+
+const verifyProgressPercent = computed(() => {
+  if (verified.value) return 100
+  if (lastSimilarityScore.value > 0) return Math.max(12, Math.min(96, Math.round(lastSimilarityScore.value * 100)))
+  if (verifyInFlight.value) return Math.min(72, 18 + verifyAttemptCount.value * 10)
+  return verifyAttemptCount.value > 0 ? 18 : 8
 })
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
@@ -270,6 +298,10 @@ const applyResult = (result: any, endpoint: 'verify' | 'heartbeat') => {
     return
   }
   if (result?.passed) {
+    if (endpoint === 'verify') {
+      verifyStatusText.value = '人脸匹配成功，正在进入训练'
+      lastSimilarityText.value = formatSimilarity(result?.similarity)
+    }
     verified.value = true
     stopVerifyLoop()
     verifyDialogVisible.value = false
@@ -280,7 +312,19 @@ const applyResult = (result: any, endpoint: 'verify' | 'heartbeat') => {
   }
   if (endpoint === 'verify') {
     verifyHint.value = localizeFaceMessage(result?.reason)
+    verifyStatusText.value = result?.reason ? '本帧未通过，正在继续匹配' : '正在比对本人身份'
+    lastSimilarityText.value = formatSimilarity(result?.similarity)
   }
+}
+
+const formatSimilarity = (value: any) => {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    lastSimilarityScore.value = 0
+    return ''
+  }
+  lastSimilarityScore.value = numeric
+  return `${Math.round(numeric * 100)}%`
 }
 
 const postFrame = async (endpoint: 'verify' | 'heartbeat') => {
@@ -291,11 +335,16 @@ const postFrame = async (endpoint: 'verify' | 'heartbeat') => {
   const payload = buildPayload(endpoint)
   if (!payload) {
     if (endpoint === 'verify') verifyHint.value = '摄像头画面尚未就绪，请稍候。'
+    if (endpoint === 'verify') verifyStatusText.value = '等待摄像头画面稳定'
     if (endpoint === 'verify') verifyInFlight.value = false
     if (endpoint === 'heartbeat') heartbeatInFlight.value = false
     return
   }
   try {
+    if (endpoint === 'verify') {
+      verifyAttemptCount.value += 1
+      verifyStatusText.value = `正在调用人脸识别模型，第 ${verifyAttemptCount.value} 次匹配`
+    }
     const result = await request.post(`/face/session/${props.sessionId}/${endpoint}`, payload, { _skipErrorToast: true } as any)
     applyResult(result, endpoint)
   } finally {
@@ -310,6 +359,10 @@ const runVerify = async () => {
   verified.value = false
   verifyDialogVisible.value = true
   verifyHint.value = '请将脸部放在圆形区域内，系统正在识别本人身份。'
+  verifyStatusText.value = '正在启动摄像头和人脸识别模型'
+  verifyAttemptCount.value = 0
+  lastSimilarityText.value = ''
+  lastSimilarityScore.value = 0
   try {
     await nextTick()
     await startCamera()
@@ -322,11 +375,13 @@ const runVerify = async () => {
       if (!verifying.value || !verifyDialogVisible.value || verified.value) return
       void postFrame('verify').catch((error: any) => {
         verifyHint.value = localizeFaceMessage(error?.response?.data?.detail, '检测失败，请调整后继续。')
+        verifyStatusText.value = '本次识别请求失败，正在继续尝试'
       })
     }, verifyRetryMs)
   } catch (error: any) {
     const message = localizeFaceMessage(error?.response?.data?.detail || error?.message)
     verifyHint.value = message
+    verifyStatusText.value = '人脸识别未启动成功'
     emit('failed', message)
   }
 }
@@ -335,14 +390,7 @@ const cancelVerify = () => {
   stopVerifyLoop()
   verifying.value = false
   verifyDialogVisible.value = false
-}
-
-const skipVerify = () => {
-  stopCamera()
-  verified.value = false
-  verifying.value = false
-  verifyDialogVisible.value = false
-  emit('skipped')
+  verifyStatusText.value = '已退出验证'
 }
 
 const startHeartbeat = () => {
@@ -554,6 +602,97 @@ onBeforeUnmount(stopCamera)
   color: #475569;
   font-size: 14px;
   line-height: 1.6;
+}
+
+.face-verify__feedback {
+  display: grid;
+  gap: 8px;
+  width: min(100%, 260px);
+  padding: 10px 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #f8fbff;
+  color: #1e3a8a;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.face-verify__feedback--matching {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.face-verify__feedback--warning {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.face-verify__feedback--success {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #047857;
+}
+
+.face-verify__feedback-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 18px;
+}
+
+.face-verify__progress {
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.face-verify__progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #2563eb;
+  transition: width 0.2s ease;
+}
+
+.face-verify__feedback--warning .face-verify__progress span {
+  background: #f59e0b;
+}
+
+.face-verify__feedback--success .face-verify__progress span {
+  background: #10b981;
+}
+
+.face-verify__feedback-row--muted {
+  justify-content: space-between;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.face-verify__dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #93c5fd;
+}
+
+.face-verify__dot.is-active {
+  background: #2563eb;
+  box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35);
+  animation: verify-pulse 1s ease-out infinite;
+}
+
+@keyframes verify-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35);
+  }
+  100% {
+    box-shadow: 0 0 0 8px rgba(37, 99, 235, 0);
+  }
 }
 
 @media (max-width: 720px) {

@@ -26,6 +26,22 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "720"))
 
 
+def write_account_audit(
+    db: Session,
+    *,
+    actor: models.User | None,
+    action: str,
+    target_user: models.User | None = None,
+    detail: dict | None = None,
+) -> None:
+    db.add(models.OpsAuditLog(
+        actor_id=actor.id if actor else None,
+        target_user_id=target_user.id if target_user else None,
+        action=action,
+        detail=json.dumps(detail or {}, ensure_ascii=False),
+    ))
+
+
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
@@ -125,6 +141,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 def require_admin_user(current_user: models.User = Depends(get_current_user)) -> models.User:
     if current_user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin permission required")
+    return current_user
+
+
+def require_maintainer_user(current_user: models.User = Depends(get_current_user)) -> models.User:
+    if current_user.role != "maintainer":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Maintainer permission required")
     return current_user
 
 
@@ -575,6 +597,11 @@ def register(
         role=user.role,
     )
     db.add(new_user)
+    db.flush()
+    write_account_audit(db, actor=current_user, action="admin_register_account", target_user=new_user, detail={
+        "username": new_user.username,
+        "role": new_user.role,
+    })
     db.commit()
     db.refresh(new_user)
     return new_user
@@ -758,13 +785,14 @@ def batch_create_students(
             skipped_usernames.append(username)
             continue
 
-        db.add(
-            models.User(
-                username=username,
-                hashed_password=hash_password(password),
-                role="student",
-            )
+        new_user = models.User(
+            username=username,
+            hashed_password=hash_password(password),
+            role="student",
         )
+        db.add(new_user)
+        db.flush()
+        write_account_audit(db, actor=current_user, action="admin_batch_create_student", target_user=new_user, detail={"username": username})
         created_usernames.append(username)
 
     if created_usernames:
@@ -803,13 +831,14 @@ def import_students(
             skipped_usernames.append(username)
             continue
 
-        db.add(
-            models.User(
-                username=username,
-                hashed_password=hash_password(password),
-                role="student",
-            )
+        new_user = models.User(
+            username=username,
+            hashed_password=hash_password(password),
+            role="student",
         )
+        db.add(new_user)
+        db.flush()
+        write_account_audit(db, actor=current_user, action="admin_import_student", target_user=new_user, detail={"username": username})
         created_usernames.append(username)
 
     if created_usernames:

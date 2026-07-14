@@ -133,6 +133,10 @@ const onSubmit = async () => {
     persistAuth(res)
 
     showToast({ type: 'success', message: '登录成功' })
+    if (res.role === 'maintainer') {
+      await router.push('/ops/accounts')
+      return
+    }
     await router.push(res.role === 'student' ? '/student/hall' : '/admin/dashboard')
   } catch (error: any) {
     console.error('Login error:', error)

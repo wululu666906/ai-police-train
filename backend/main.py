@@ -11,7 +11,7 @@ from sqlalchemy import inspect, text
 import database
 import models
 from env_loader import load_backend_env
-from routers import auth, cases, classes, dashboard, face, knowledge, speech, student, training, videos, video_training
+from routers import auth, cases, classes, dashboard, face, knowledge, ops, speech, student, training, videos, video_training
 from services.face_service import warmup_face_engine_async
 
 load_backend_env()
@@ -33,6 +33,7 @@ def ensure_default_users():
                 updated = True
 
         default_accounts = [
+            ("maintainer", "maintainer"),
             ("admin", "admin"),
             ("student001", "student"),
             ("student002", "student"),
@@ -428,6 +429,8 @@ else:
     cors_allow_origins = [
         "http://localhost:5556",
         "http://127.0.0.1:5556",
+        "http://localhost:6670",
+        "http://127.0.0.1:6670",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
@@ -453,6 +456,7 @@ app.include_router(videos.router)
 app.include_router(video_training.router)
 app.include_router(face.router)
 app.include_router(speech.router)
+app.include_router(ops.router)
 
 # 兼容 Docker 静态前端的 /api 前缀调用（frontend/.env.production 默认 VITE_API_URL=/api）
 app.include_router(auth.router, prefix="/api")
@@ -466,6 +470,7 @@ app.include_router(videos.router, prefix="/api")
 app.include_router(video_training.router, prefix="/api")
 app.include_router(face.router, prefix="/api")
 app.include_router(speech.router, prefix="/api")
+app.include_router(ops.router, prefix="/api")
 
 
 @app.get("/healthz")
@@ -476,6 +481,14 @@ def health_check():
 @app.get("/api/healthz")
 def health_check_api():
     return {"status": "ok"}
+
+
+def ensure_ops_audit_schema_compatibility():
+    try:
+        models.OpsAuditLog.__table__.create(bind=database.engine, checkfirst=True)
+        models.SpeechUsageLog.__table__.create(bind=database.engine, checkfirst=True)
+    except Exception as error:
+        print(f"Ops audit/speech usage schema compatibility check failed: {error}")
 
 
 # 像素风头像静态文件
@@ -526,7 +539,7 @@ async def serve_spa_routes_before_api_prefixes(request, call_next):
     if (
         request.method == "GET"
         and _is_browser_navigation(request)
-        and path.startswith(("/admin", "/student"))
+        and path.startswith(("/admin", "/student", "/ops"))
         and not path.startswith("/api/")
     ):
         index_path = _frontend_index_path()
@@ -539,7 +552,7 @@ async def serve_spa_routes_before_api_prefixes(request, call_next):
 async def apply_frontend_cache_headers(request, call_next):
     response = await call_next(request)
     path = request.url.path
-    if path == "/" or path.startswith(("/admin", "/student", "/assets/")):
+    if path == "/" or path.startswith(("/admin", "/student", "/ops", "/assets/")):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -566,6 +579,7 @@ def on_startup():
     ensure_classroom_schema_compatibility()
     ensure_video_schema_compatibility()
     ensure_face_schema_compatibility()
+    ensure_ops_audit_schema_compatibility()
     ensure_default_users()
     if os.getenv("FACE_ENGINE_WARMUP", "0").strip().lower() in {"1", "true", "yes", "on"}:
         warmup_face_engine_async()
@@ -587,6 +601,7 @@ def serve_vue_app(catchall: str):
         "video-training",
         "face",
         "speech",
+        "ops",
         "static",
     }
     if first_segment in api_like_prefixes:

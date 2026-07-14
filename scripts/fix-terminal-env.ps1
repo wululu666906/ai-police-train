@@ -57,6 +57,10 @@ Remove-Item Env:BT_PYTHON -ErrorAction SilentlyContinue
 Remove-Item Env:UNRAR_LIB_PATH -ErrorAction SilentlyContinue
 Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
 Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+Remove-Item Env:SSL_CERT_FILE -ErrorAction SilentlyContinue
+Remove-Item Env:SSL_CERT_DIR -ErrorAction SilentlyContinue
+Remove-Item Env:REQUESTS_CA_BUNDLE -ErrorAction SilentlyContinue
+Remove-Item Env:CURL_CA_BUNDLE -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "Current session cleaned. Restart Cursor terminal for full effect." -ForegroundColor Cyan

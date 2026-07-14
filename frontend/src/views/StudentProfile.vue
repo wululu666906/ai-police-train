@@ -105,10 +105,11 @@
         <div class="mt-4 grid gap-4" style="grid-template-columns: 120px 1fr auto;">
           <div class="w-[120px] h-[120px] rounded-xl overflow-hidden bg-slate-100 border border-slate-200 flex items-center justify-center">
             <img
-              v-if="faceProfile?.registered && faceProfile.face_image_url"
-              :src="faceProfile.face_image_url"
+              v-if="facePhotoReady"
+              :src="faceProfile?.face_image_url"
               alt="学员人脸档案"
               class="w-full h-full object-cover"
+              @error="markFacePhotoFailed"
             />
             <van-icon v-else name="contact" size="38" class="text-slate-300" />
           </div>
@@ -493,6 +494,7 @@ import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { showToast } from 'vant'
 import { useRoute, useRouter } from 'vue-router'
 import request from '../utils/request'
+import { resolveMediaUrl } from '../utils/media'
 
 // ─── 类型 ─────────────────────────────────────────────────────
 type SceneItem = {
@@ -540,8 +542,13 @@ const faceProfile = ref<FaceProfile | null>(null)
 const faceEngine = ref<FaceEngine | null>(null)
 const faceLoading = ref(false)
 const faceUploading = ref(false)
+const failedFacePhotoUrl = ref('')
 const faceFileInput = ref<HTMLInputElement | null>(null)
 const faceEngineLabel = computed(() => (faceEngine.value?.model ? `insightface:${faceEngine.value.model}` : 'insightface:buffalo_l'))
+const facePhotoReady = computed(() => {
+  const url = faceProfile.value?.face_image_url || ''
+  return Boolean(faceProfile.value?.registered && url && url !== failedFacePhotoUrl.value)
+})
 
 // ─── 工具 ─────────────────────────────────────────────────────
 const studentId = computed(() => Number(route.params.id || 0))
@@ -714,15 +721,19 @@ const fetchProfile = async () => {
 }
 
 const normalizeFaceProfile = (payload: any): FaceProfile => {
-  const imageUrl = String(payload?.face_image_url || '')
-  const apiBase = String((request as any).defaults?.baseURL || '').replace(/\/$/, '')
+  const imageUrl = resolveMediaUrl(payload?.face_image_url)
+  failedFacePhotoUrl.value = ''
   return {
     registered: Boolean(payload?.registered),
     student_id: payload?.student_id,
-    face_image_url: imageUrl && imageUrl.startsWith('/') && apiBase ? `${apiBase}${imageUrl}` : imageUrl,
+    face_image_url: imageUrl,
     embedding_model: payload?.embedding_model,
     updated_at: payload?.updated_at,
   }
+}
+
+const markFacePhotoFailed = () => {
+  failedFacePhotoUrl.value = faceProfile.value?.face_image_url || ''
 }
 
 const fetchFaceEngine = async () => {
