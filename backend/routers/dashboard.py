@@ -10,6 +10,8 @@ import database
 import models
 from routers.auth import require_admin_user
 from services.rag_service import rag_service
+from services.state_influence_metrics import build_calibration_report
+from services.training_runtime_service import load_runtime_state
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"], dependencies=[Depends(require_admin_user)])
 
@@ -145,3 +147,26 @@ def get_stats(db: Session = Depends(database.get_db)):
         "trend": trend,
         "updated_at": now.isoformat(),
     }
+
+
+@router.get("/state-calibration")
+def get_state_calibration(
+    scene_id: int | None = None,
+    limit: int = 100,
+    db: Session = Depends(database.get_db),
+):
+    limit = max(1, min(500, int(limit or 100)))
+    query = db.query(models.TrainingSession).order_by(models.TrainingSession.created_at.desc())
+    if scene_id is not None:
+        query = query.filter(models.TrainingSession.scene_id == scene_id)
+    sessions = query.limit(limit).all()
+    return build_calibration_report(
+        [
+            {
+                "session_id": session.id,
+                "scene_id": session.scene_id,
+                "runtime_state": load_runtime_state(session.revealed_info),
+            }
+            for session in sessions
+        ]
+    )

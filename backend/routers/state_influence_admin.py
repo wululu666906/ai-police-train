@@ -10,6 +10,7 @@ from services.training_runtime_service import load_runtime_state
 from services.state_contract_postcheck import validate_response_against_contract
 from services.state_influence_config import export_tables_for_admin, save_overrides
 from services.state_influence_metrics import (
+    build_calibration_report,
     build_session_metrics,
     run_regression_suite,
     simulate_state_influence,
@@ -80,3 +81,29 @@ def get_session_state_influence_metrics(
         "metrics": build_session_metrics(runtime_state),
         "turn_log": runtime_state.get("state_influence_turn_log") or [],
     }
+
+
+@router.get("/metrics/calibration")
+def get_calibration_metrics(
+    scene_id: int | None = None,
+    limit: int = 100,
+    db: Session = Depends(database.get_db),
+    _user=Depends(require_admin_user),
+) -> dict[str, Any]:
+    """Return aggregate evidence for calibrating state thresholds."""
+    limit = max(1, min(500, int(limit or 100)))
+    query = db.query(models.TrainingSession).order_by(models.TrainingSession.created_at.desc())
+    if scene_id is not None:
+        query = query.filter(models.TrainingSession.scene_id == scene_id)
+    sessions = query.limit(limit).all()
+    records = []
+    for session in sessions:
+        runtime_state = load_runtime_state(session.revealed_info)
+        records.append(
+            {
+                "session_id": session.id,
+                "scene_id": session.scene_id,
+                "runtime_state": runtime_state,
+            }
+        )
+    return build_calibration_report(records)

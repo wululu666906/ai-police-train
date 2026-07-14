@@ -4,6 +4,7 @@ from services.state_contract_postcheck import (
     apply_contract_postcheck,
     validate_response_against_contract,
 )
+from services.dialogue_sanitize_service import repair_repetitive_spoken_line
 
 
 def test_validate_angry_contract_flags_long_plain_reply():
@@ -26,6 +27,31 @@ def test_validate_fearful_contract_requires_fear_markers():
     bad_text = "事情就是这样，没有别的了。"
     assert validate_response_against_contract(ok_text, contract)["ok"] is True
     assert validate_response_against_contract(bad_text, contract)["ok"] is False
+
+
+def test_high_arousal_with_clear_control_does_not_require_broken_markers():
+    contract = {
+        "primary_affect": "angry",
+        "expression_control": 68,
+        "interruption_allowed": True,
+        "disclosure_level": 0.45,
+        "max_sentences": 3,
+        "max_chars": 94,
+        "must_include": [],
+        "must_avoid": [],
+    }
+    text = "我现在确实很生气，但时间和地点我都记得。你先问哪一项，我就回答哪一项。"
+    assert validate_response_against_contract(text, contract)["ok"] is True
+
+
+def test_single_role_repetition_repair_adds_new_information():
+    repaired, changed = repair_repetitive_spoken_line(
+        "我现在不想说这件事。",
+        ["这件事我现在不想讲。"],
+        "那你先说一下时间。",
+    )
+    assert changed is True
+    assert "时间" in repaired
 
 
 def test_validate_low_disclosure_flags_timeline():

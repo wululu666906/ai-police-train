@@ -2,7 +2,6 @@
 import os
 from datetime import datetime
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -11,10 +10,11 @@ from sqlalchemy import inspect, text
 
 import database
 import models
+from env_loader import load_backend_env
 from routers import auth, cases, classes, dashboard, face, knowledge, speech, student, training, videos, video_training
 from services.face_service import warmup_face_engine_async
 
-load_dotenv()
+load_backend_env()
 
 # 不在启动时强制初始化数据库，因为项目已经提供 init_db.py。
 # models.Base.metadata.create_all(bind=database.engine)
@@ -202,6 +202,22 @@ def ensure_video_schema_compatibility():
             with database.engine.begin() as conn:
                 for statement in statements:
                     conn.execute(text(statement))
+        if "training_session_artifacts" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("training_session_artifacts")}
+            statements = []
+            if "artifact_type" not in cols:
+                statements.append("ALTER TABLE training_session_artifacts ADD COLUMN artifact_type VARCHAR(30) DEFAULT 'screenshot'")
+            if "file_path" not in cols:
+                statements.append("ALTER TABLE training_session_artifacts ADD COLUMN file_path VARCHAR(500)")
+            if "mime_type" not in cols:
+                statements.append("ALTER TABLE training_session_artifacts ADD COLUMN mime_type VARCHAR(120)")
+            if "file_size" not in cols:
+                statements.append("ALTER TABLE training_session_artifacts ADD COLUMN file_size INTEGER")
+            if "duration_seconds" not in cols:
+                statements.append("ALTER TABLE training_session_artifacts ADD COLUMN duration_seconds INTEGER")
+            with database.engine.begin() as conn:
+                for statement in statements:
+                    conn.execute(text(statement))
     except Exception as error:
         print(f"Video schema compatibility check failed: {error}")
 
@@ -243,6 +259,7 @@ def ensure_face_schema_compatibility():
 
 def ensure_training_session_schema_compatibility():
     try:
+        models.TrainingSessionArtifact.__table__.create(bind=database.engine, checkfirst=True)
         inspector = inspect(database.engine)
         if "training_sessions" not in inspector.get_table_names():
             return
@@ -258,6 +275,23 @@ def ensure_training_session_schema_compatibility():
             with database.engine.begin() as connection:
                 for statement in statements:
                     connection.execute(text(statement))
+        if "training_session_artifacts" in inspector.get_table_names():
+            cols = {column["name"] for column in inspector.get_columns("training_session_artifacts")}
+            statements = []
+            if "artifact_type" not in cols:
+                statements.append("ALTER TABLE training_session_artifacts ADD COLUMN artifact_type VARCHAR(30) DEFAULT 'screenshot'")
+            if "file_path" not in cols:
+                statements.append("ALTER TABLE training_session_artifacts ADD COLUMN file_path VARCHAR(500)")
+            if "mime_type" not in cols:
+                statements.append("ALTER TABLE training_session_artifacts ADD COLUMN mime_type VARCHAR(120)")
+            if "file_size" not in cols:
+                statements.append("ALTER TABLE training_session_artifacts ADD COLUMN file_size INTEGER")
+            if "duration_seconds" not in cols:
+                statements.append("ALTER TABLE training_session_artifacts ADD COLUMN duration_seconds INTEGER")
+            if statements:
+                with database.engine.begin() as connection:
+                    for statement in statements:
+                        connection.execute(text(statement))
         _backfill_training_session_timer_fields()
     except Exception as error:
         print(f"Training session schema compatibility check failed: {error}")

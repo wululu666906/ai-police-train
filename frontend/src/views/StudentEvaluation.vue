@@ -97,16 +97,45 @@
           </div>
           <table class="report-table assessment-table">
             <thead>
-              <tr><th>考察点</th><th>难度</th><th>属性</th><th>状态</th><th>权重</th><th>得分</th></tr>
+              <tr>
+                <th>考察点</th>
+                <th>相关聊天记录</th>
+                <th>状态</th>
+                <th>权重</th>
+                <th>得分</th>
+              </tr>
             </thead>
             <tbody>
-              <tr v-for="item in dedupedAssessmentPointResults" :key="assessmentPointKey(item)">
-                <td><strong>{{ item.label }}</strong><p :title="assessmentPointContent(item)">{{ assessmentPointContent(item) }}</p></td>
-                <td>{{ item.difficulty_level || difficultyFromWeight(item.weight) }}</td>
-                <td>{{ item.required ? '必考' : '选考' }}</td>
-                <td>{{ statusLabel(item.status) }}</td>
-                <td>{{ percent(item.score_share) }}</td>
-                <td class="col-score">{{ item.weighted_score ?? item.score }}/{{ item.full_score ?? '-' }}</td>
+              <tr v-for="item in assessmentPointDisplayItems" :key="item.displayKey">
+                <td class="assessment-point-cell">
+                  <strong>{{ item.shortLabel }}</strong>
+                  <p>{{ item.summary }}</p>
+                </td>
+                <td class="assessment-chat-cell">
+                  <div v-if="item.chatRecords.length" class="chat-records">
+                    <article
+                      v-for="record in item.chatRecords"
+                      :key="record.key"
+                      class="chat-evidence-message"
+                      :class="`chat-evidence-message--${record.role}`"
+                    >
+                      <div v-if="record.role === 'assistant'" class="chat-evidence-avatar">
+                        {{ record.avatarText }}
+                      </div>
+                      <div class="chat-evidence-body">
+                        <div class="chat-evidence-speaker">{{ record.speakerName }}</div>
+                        <div class="chat-evidence-bubble">{{ record.text }}</div>
+                      </div>
+                      <div v-if="record.role === 'user'" class="chat-evidence-avatar chat-evidence-avatar--user">学</div>
+                    </article>
+                  </div>
+                  <div v-else class="chat-records-empty">未截取到足够明确的聊天凭证</div>
+                </td>
+                <td class="assessment-state-cell">
+                  <span class="assessment-item__state" :data-state="item.status">{{ statusLabel(item.status) }}</span>
+                </td>
+                <td class="assessment-number-cell">{{ percent(item.score_share) }}</td>
+                <td class="assessment-number-cell">{{ item.weighted_score ?? item.score }}/{{ item.full_score ?? '-' }}</td>
               </tr>
             </tbody>
           </table>
@@ -135,21 +164,46 @@
           <div v-if="studentNoticeItems.length" class="notice-list"><p v-for="item in studentNoticeItems" :key="item">{{ item }}</p></div>
         </section>
 
+        <section v-if="reportArtifacts.length" class="report-section">
+          <div class="section-title"><i></i><span>凭证留痕</span></div>
+          <div class="artifact-grid">
+            <article v-for="item in reportArtifacts" :key="item.id" class="artifact-item">
+              <div>
+                <strong>{{ artifactLabel(item.artifact_type) }}</strong>
+                <p>{{ item.mime_type || '附件' }}</p>
+              </div>
+              <a :href="resolveMediaUrl(item.file_url)" target="_blank" rel="noreferrer">打开凭证</a>
+            </article>
+          </div>
+        </section>
+
         <section class="report-section"><div class="section-title"><i></i><span>综合点评</span></div><p class="report-text">{{ enhancedOverallComment }}</p></section>
         <section class="report-section"><div class="section-title"><i></i><span>反馈建议</span></div><ol class="report-list advice-list"><li v-for="item in actionableAdviceItems" :key="item">{{ item }}</li></ol></section>
 
         <section class="report-section">
           <div class="section-title"><i></i><span>对话分析</span></div>
-          <table v-if="deductionDialogueItems.length" class="report-table dialogue-table">
-            <thead><tr><th>学员发言</th><th>问题类型</th><th>改善建议</th></tr></thead>
-            <tbody>
-              <tr v-for="item in deductionDialogueItems" :key="item.key">
-                <td>{{ item.utterance }}</td>
-                <td>{{ item.reason }}</td>
-                <td>{{ item.advice }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <div v-if="deductionDialogueItems.length" class="dialogue-list">
+            <article v-for="item in deductionDialogueItems" :key="item.key" class="dialogue-item">
+              <div class="dialogue-item__head">
+                <strong>{{ item.utterance }}</strong>
+                <span>{{ item.reason }}</span>
+              </div>
+              <div class="dialogue-item__columns">
+                <div>
+                  <label>问题类型</label>
+                  <ul>
+                    <li v-for="line in item.reasonItems" :key="line">{{ line }}</li>
+                  </ul>
+                </div>
+                <div>
+                  <label>改善建议</label>
+                  <ul>
+                    <li v-for="line in item.adviceItems" :key="line">{{ line }}</li>
+                  </ul>
+                </div>
+              </div>
+            </article>
+          </div>
           <p v-else class="all-clear-text">本次报告未识别到需要单独展开的扣分发言，可重点查看能力指标结果。</p>
         </section>
       </main>
@@ -359,10 +413,10 @@ const promotionSuggestion = computed(() => {
   }
 })
 
-const gaugeOption = computed(() => ({
+const gaugeOption = computed<any>(() => ({
   series: [
     {
-      type: 'gauge',
+      type: 'gauge' as const,
       startAngle: 200,
       endAngle: -20,
       min: 0,
@@ -685,8 +739,179 @@ const assessmentPointContent = (item: any) =>
     '暂无考核目标',
   ).trim()
 
+const splitBulletLines = (value: any, limit = 3) => {
+  const text = String(value || '').trim()
+  if (!text) return []
+  const parts = text
+    .split(/[。！？；;\n]+/)
+    .map((item) => item.trim().replace(/^[：:、\-\s]+|[：:、\-\s]+$/g, ''))
+    .filter(Boolean)
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const part of (parts.length ? parts : [text])) {
+    if (seen.has(part)) continue
+    seen.add(part)
+    result.push(part)
+    if (result.length >= limit) break
+  }
+  return result
+}
+
+const shortAssessmentText = (value: any, limit = 48) => {
+  const text = String(value || '').replace(/^(学员应|应当|需要|需|具体要求|怎样算完成|完成标准|考察点)[:：\s]*/g, '')
+  const compact = text.split(/[。！？；;\n]+/)[0].replace(/\s+/g, '').trim()
+  if (!compact) return ''
+  return compact.length > limit ? `${compact.slice(0, Math.max(1, limit - 1))}…` : compact
+}
+
+const normalizeEvidenceItems = (value: any) => {
+  const items = Array.isArray(value) ? value : []
+  return items
+    .map((item) => {
+      if (item && typeof item === 'object') {
+        return {
+          kind: String(item.kind || 'text'),
+          text: String(item.text || item.label || item.content || '').trim(),
+          label: String(item.label || item.text || item.content || '').trim(),
+        }
+      }
+      const text = String(item || '').trim()
+      return { kind: 'text', text, label: text }
+    })
+    .filter((item) => item.text)
+}
+
+const dialogueMessages = computed(() =>
+  (Array.isArray(sessionDetail.value?.messages) ? sessionDetail.value.messages : [])
+    .filter((message: any) => ['user', 'assistant'].includes(String(message?.role || '')) && String(message?.content || '').trim())
+    .map((message: any, index: number) => ({
+      index,
+      role: String(message.role || ''),
+      text: String(message.content || '').trim(),
+      speakerName: String(message.speaker_name || '').trim() || (message.role === 'user' ? '执法民警' : sessionDetail.value?.role_name || 'AI角色'),
+    })),
+)
+
+const chatRecordText = (value: any) =>
+  stripSpeakerPrefix(String(value || ''))
+    .replace(/^(AI角色|AI|助手|assistant)[:：]\s*/i, '')
+    .replace(/^动作[:：]\s*/i, '')
+    .trim()
+
+const evidenceRole = (value: string) => {
+  const text = String(value || '').trim()
+  if (/^(AI角色|AI|助手|assistant)[:：]/i.test(text)) return 'assistant'
+  if (/^(学员|民警|用户|user)[:：]/i.test(text)) return 'user'
+  if (/^动作[:：]/i.test(text)) return 'action'
+  return 'text'
+}
+
+const roleLabel = (role: string) => {
+  if (role === 'user') return '学员'
+  if (role === 'assistant') return 'AI角色'
+  if (role === 'action') return '动作'
+  return '凭证'
+}
+
+const speakerNameForRole = (role: string, fallback = '') => {
+  if (role === 'user') return '执法民警'
+  if (role === 'assistant') return fallback || sessionDetail.value?.role_name || 'AI角色'
+  if (role === 'action') return '动作日志'
+  return '凭证'
+}
+
+const avatarTextForRole = (role: string, speakerName = '') => {
+  if (role === 'user') return '学'
+  if (role === 'assistant') return String(speakerName || 'AI').slice(0, 1)
+  if (role === 'action') return '动'
+  return '证'
+}
+
+const findDialogueIndex = (needle: string, preferredRole?: string) => {
+  const normalizedNeedle = normalizeDialogueText(chatRecordText(needle))
+  if (!normalizedNeedle) return -1
+  return dialogueMessages.value.findIndex((message: { role: string; text: string }) => {
+    if (preferredRole && preferredRole !== 'text' && preferredRole !== 'action' && message.role !== preferredRole) return false
+    const normalizedMessage = normalizeDialogueText(message.text)
+    return normalizedMessage.includes(normalizedNeedle) || normalizedNeedle.includes(normalizedMessage)
+  })
+}
+
+const pushChatRecord = (
+  output: Array<{ key: string; role: string; roleLabel: string; speakerName: string; avatarText: string; text: string }>,
+  role: string,
+  text: string,
+  key: string,
+  speakerName = '',
+) => {
+  const clean = chatRecordText(text)
+  if (!clean) return
+  const dedupeKey = `${role}:${normalizeDialogueText(clean)}`
+  if (output.some((item) => `${item.role}:${normalizeDialogueText(item.text)}` === dedupeKey)) return
+  const resolvedSpeaker = speakerNameForRole(role, speakerName)
+  output.push({ key, role, roleLabel: roleLabel(role), speakerName: resolvedSpeaker, avatarText: avatarTextForRole(role, resolvedSpeaker), text: clean })
+}
+
+const buildAssessmentChatRecords = (item: any, evidenceItems: Array<{ kind: string; text: string }>) => {
+  const records: Array<{ key: string; role: string; roleLabel: string; speakerName: string; avatarText: string; text: string }> = []
+  for (const evidence of evidenceItems) {
+    const rawText = String(evidence.text || '').trim()
+    const role = evidence.kind === 'student_utterance'
+      ? 'user'
+      : evidence.kind === 'assistant_reply' || evidence.kind === 'context'
+        ? 'assistant'
+        : evidenceRole(rawText)
+    const messageIndex = findDialogueIndex(rawText, role === 'action' ? undefined : role)
+    if (messageIndex >= 0) {
+      const message = dialogueMessages.value[messageIndex]
+      if (message.role === 'user') {
+        pushChatRecord(records, message.role, message.text, `${item.id || item.label}-msg-${message.index}`, message.speakerName)
+        const nextAssistant = dialogueMessages.value.slice(messageIndex + 1).find((next: { role: string }) => next.role === 'assistant')
+        if (nextAssistant) {
+          pushChatRecord(records, 'assistant', nextAssistant.text, `${item.id || item.label}-reply-${nextAssistant.index}`, nextAssistant.speakerName)
+        }
+      } else if (message.role === 'assistant') {
+        const previousUser = [...dialogueMessages.value.slice(0, messageIndex)].reverse().find((prev: { role: string }) => prev.role === 'user')
+        if (previousUser) {
+          pushChatRecord(records, 'user', previousUser.text, `${item.id || item.label}-prev-${previousUser.index}`, previousUser.speakerName)
+        }
+        pushChatRecord(records, message.role, message.text, `${item.id || item.label}-msg-${message.index}`, message.speakerName)
+      }
+    } else {
+      pushChatRecord(records, role, rawText, `${item.id || item.label}-ev-${records.length}`)
+    }
+    if (records.length >= 4) break
+  }
+  return records.slice(0, 4)
+}
+
+const assessmentPointDisplayItems = computed(() =>
+  dedupedAssessmentPointResults.value.map((item: any) => {
+    const shortLabel = String(item.short_label || item.label || '场景考察点').trim()
+    const summary = String(item.summary || shortAssessmentText(item.feedback || assessmentPointContent(item)) || shortLabel).trim()
+    const fullText = String(item.full_text || assessmentPointContent(item)).trim()
+    const evidenceItems = normalizeEvidenceItems(item.evidence_items || item.evidence)
+    const contextEvidenceItems = normalizeEvidenceItems(item.context_evidence_items || item.context_evidence)
+    const allEvidenceItems = [...evidenceItems, ...contextEvidenceItems]
+    const mediaRefs = Array.isArray(item.media_refs) ? item.media_refs : []
+    const feedbackItems = Array.isArray(item.feedback_items) ? item.feedback_items : splitBulletLines(item.feedback, 3)
+    return {
+      ...item,
+      shortLabel,
+      summary,
+      fullText,
+      evidenceItems,
+      contextEvidenceItems,
+      chatRecords: buildAssessmentChatRecords(item, allEvidenceItems),
+      mediaRefs,
+      feedbackItems,
+      displayKey: assessmentPointKey(item),
+    }
+  }),
+)
+
 const deductionDialogueItems = computed(() => {
-  const items: Array<{ key: string; utterance: string; reason: string; advice: string }> = []
+  const items: Array<{ key: string; utterance: string; reason: string; advice: string; reasonItems: string[]; adviceItems: string[] }> = []
   for (const score of weakCommonScoreItems.value) {
     const reason = String(score.reason || `${score.dimension}存在不足。`)
     if (!hasNegativeReason(reason) && scoreRatio(score) > 0.75) continue
@@ -695,6 +920,8 @@ const deductionDialogueItems = computed(() => {
       utterance: findUtteranceFromEvidence(score.evidence || []),
       reason,
       advice: adviceForReason(reason),
+      reasonItems: splitBulletLines(reason, 3),
+      adviceItems: splitBulletLines(adviceForReason(reason), 3),
     })
   }
 
@@ -708,6 +935,8 @@ const deductionDialogueItems = computed(() => {
       utterance: findUtteranceFromEvidence(point.evidence || []),
       reason,
       advice: adviceForReason(`${label} ${reason}`),
+      reasonItems: splitBulletLines(reason, 3),
+      adviceItems: splitBulletLines(adviceForReason(`${label} ${reason}`), 3),
     })
   }
 
@@ -722,6 +951,28 @@ const deductionDialogueItems = computed(() => {
     seenReasons.add(reasonKey)
     return true
   }).slice(0, 6)
+})
+
+const resolveMediaUrl = (value: string) => {
+  if (!value) return ''
+  if (/^https?:\/\//i.test(value) || value.startsWith('blob:') || value.startsWith('data:')) return value
+  return value.startsWith('/') ? value : `/${value}`
+}
+
+const artifactLabel = (type: string) => {
+  const mapping: Record<string, string> = {
+    screenshot: '截图凭证',
+    screen_capture: '截图凭证',
+    camera_recording: '视频留痕',
+    microphone_recording: '语音留痕',
+    audio_recording: '语音留痕',
+  }
+  return mapping[String(type || '').toLowerCase()] || '会话凭证'
+}
+
+const reportArtifacts = computed(() => {
+  const items = Array.isArray(sessionDetail.value?.artifacts) ? sessionDetail.value.artifacts : []
+  return items.filter((item: any) => item?.file_url)
 })
 
 const percent = (value: any) => {
@@ -971,13 +1222,49 @@ onUnmounted(() => {
 .assessment-summary span { color: #6d7890; }
 .assessment-summary strong { color: #15213b; font-size: 26px; line-height: 1; font-weight: 900; }
 .assessment-summary em { color: #6d7890; font-style: normal; }
+.assessment-table th:nth-child(1), .assessment-table td:nth-child(1) { width: 26%; text-align: left; }
+.assessment-table th:nth-child(2), .assessment-table td:nth-child(2) { width: 42%; text-align: left; }
+.assessment-table th:nth-child(n + 3), .assessment-table td:nth-child(n + 3) { text-align: center; vertical-align: middle; }
+.assessment-point-cell strong { display: block; color: #15213b; font-weight: 900; }
+.assessment-point-cell p { margin: 6px 0 0; color: #667085; line-height: 1.55; overflow-wrap: anywhere; }
+.assessment-state-cell { white-space: nowrap; }
+.assessment-number-cell { color: #15213b; font-weight: 900; white-space: nowrap; }
+.assessment-item__state { display: inline-flex; align-items: center; justify-content: center; min-width: 64px; padding: 3px 9px; border-radius: 999px; font-style: normal; font-size: 12px; font-weight: 900; white-space: nowrap; }
+.assessment-item__state[data-state="hit"] { background: #ecfdf3; color: #067647; }
+.assessment-item__state[data-state="partial"] { background: #fff6e8; color: #9a5b13; }
+.assessment-item__state[data-state="missed"] { background: #fef3f2; color: #b42318; }
+.chat-records { display: grid; gap: 10px; padding: 2px 0; }
+.chat-evidence-message { display: flex; align-items: flex-start; gap: 8px; }
+.chat-evidence-message--user { justify-content: flex-end; }
+.chat-evidence-message--action { justify-content: center; }
+.chat-evidence-avatar { width: 28px; height: 28px; flex: 0 0 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: #0f766e; color: #fff; font-size: 12px; font-weight: 900; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12); }
+.chat-evidence-avatar--user { background: #123b76; }
+.chat-evidence-body { max-width: min(360px, 78%); display: flex; flex-direction: column; gap: 3px; }
+.chat-evidence-message--user .chat-evidence-body { align-items: flex-end; }
+.chat-evidence-message--action .chat-evidence-body { max-width: 90%; align-items: center; }
+.chat-evidence-speaker { max-width: 160px; color: #64748b; font-size: 12px; font-weight: 700; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-evidence-message--user .chat-evidence-speaker { text-align: right; }
+.chat-evidence-bubble { padding: 7px 10px; border-radius: 8px; background: #f8fafc; color: #0f172a; border: 1px solid #e2e8f0; font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; text-align: left; }
+.chat-evidence-message--user .chat-evidence-bubble { background: #d9f7be; color: #102a18; border-color: #b7eb8f; }
+.chat-evidence-message--action .chat-evidence-bubble { background: #fff7ed; color: #9a3412; border-color: #fed7aa; }
+.chat-records-empty { color: #98a2b3; font-size: 13px; }
+.artifact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.artifact-item { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 14px 16px; border: 1px solid #e2e8f2; border-radius: 8px; background: #fff; }
+.artifact-item strong { color: #15213b; font-size: 14px; font-weight: 900; }
+.artifact-item p { margin: 4px 0 0; color: #667085; font-size: 12px; }
+.artifact-item a { color: #2f6df6; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.dialogue-list { display: grid; gap: 14px; }
+.dialogue-item { padding: 16px 18px; border: 1px solid #e2e8f2; border-radius: 8px; background: #fff; }
+.dialogue-item__head strong { display: block; color: #15213b; font-weight: 900; overflow-wrap: anywhere; }
+.dialogue-item__head span { display: block; margin-top: 6px; color: #667085; line-height: 1.6; overflow-wrap: anywhere; }
+.dialogue-item__columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 12px; }
+.dialogue-item__columns label { display: block; margin-bottom: 6px; color: #2f6df6; font-size: 12px; font-weight: 900; }
+.dialogue-item__columns li { margin-bottom: 4px; color: #344054; line-height: 1.65; overflow-wrap: anywhere; }
 .report-table { width: 100%; border-collapse: collapse; table-layout: fixed; border: 1px solid #e2e8f2; }
 .report-table th, .report-table td { border-bottom: 1px solid #e2e8f2; border-right: 1px solid #e2e8f2; padding: 13px 18px; vertical-align: top; }
 .report-table th:last-child, .report-table td:last-child { border-right: 0; }
 .report-table tr:last-child td { border-bottom: 0; }
 .report-table th { color: #5d6980; font-size: 13px; font-weight: 900; background: #f7f9fd; text-align: left; }
-.assessment-table th:nth-child(n + 2), .assessment-table td:nth-child(n + 2) { text-align: center; vertical-align: middle; }
-.assessment-table th:first-child, .assessment-table td:first-child { width: 42%; text-align: left; }
 .assessment-table td:first-child strong { display: block; color: #15213b; font-weight: 900; }
 .assessment-table td p { margin-top: 4px; line-height: 1.55; }
 .col-score { color: #d3382b; font-weight: 900; white-space: nowrap; }
@@ -1012,8 +1299,9 @@ onUnmounted(() => {
   .summary-metrics, .score-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .summary-metrics { border-left: 0; }
   .summary-metrics article { border-left: 1px solid #e1e7f2; }
-  .overview-table, .insight-grid, .assessment-summary, .calibration-strip { grid-template-columns: 1fr; }
+  .overview-table, .insight-grid, .assessment-summary, .calibration-strip, .artifact-grid, .dialogue-item__columns { grid-template-columns: 1fr; }
   .calibration-strip div { border-right: 0; border-bottom: 1px solid #e6ebf3; }
+  .artifact-item { flex-direction: column; align-items: flex-start; }
 }
 @media (max-width: 720px) {
   .evaluation-page { padding-bottom: 18px; }
@@ -1024,8 +1312,9 @@ onUnmounted(() => {
   .summary-metrics, .score-grid { grid-template-columns: 1fr; }
   .overview-table div { grid-template-columns: 82px minmax(0, 1fr); }
   .page-actions, .page-actions .el-button { width: 100%; }
-  .report-table { min-width: 760px; }
-  .report-section { overflow-x: auto; }
+  .chat-evidence-body { max-width: 82%; }
+  .dialogue-item__columns { display: grid; }
+  .report-section { overflow-x: hidden; }
 }
 @media print {
   .evaluation-page { padding: 0; background: #fff; }

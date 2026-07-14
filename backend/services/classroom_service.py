@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 import models
+from services.evaluation_service import enforce_final_score_policy, is_current_evaluation_report
 
 
 ACTIVE_SUBMISSION_STATUSES = {"in_progress", "evaluating"}
@@ -394,8 +395,11 @@ def link_session_to_assignment(
     submission.status = resolve_submission_status(db, assignment, user.id, session, submitted_at=submitted_at)
     submission.updated_at = utcnow()
     if session.evaluation_result:
-        submission.evaluation_result = session.evaluation_result
-        submission.score = extract_total_score(session.evaluation_result)
+        session_report = safe_json_loads(session.evaluation_result, {})
+        if is_current_evaluation_report(session_report):
+            session.evaluation_result = json.dumps(enforce_final_score_policy(session_report, policy_source="assignment_link"), ensure_ascii=False)
+            submission.evaluation_result = session.evaluation_result
+            submission.score = extract_total_score(session.evaluation_result)
     if submission.status in FINAL_SUBMISSION_STATUSES and not submission.submitted_at:
         submission.submitted_at = submitted_at or utcnow()
 
@@ -420,7 +424,12 @@ def sync_assignment_submission_for_session(
     if not submissions:
         return []
 
-    report_json = json.dumps(report, ensure_ascii=False) if isinstance(report, dict) else session.evaluation_result
+    if isinstance(report, dict):
+        report = enforce_final_score_policy(report, policy_source="assignment_sync")
+        report_json = json.dumps(report, ensure_ascii=False)
+    else:
+        session_report = safe_json_loads(session.evaluation_result, {})
+        report_json = session.evaluation_result if is_current_evaluation_report(session_report) else None
     updated_ids: list[int] = []
     for submission in submissions:
         assignment = (

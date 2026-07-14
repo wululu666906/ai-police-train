@@ -2,19 +2,23 @@ from datetime import datetime, timedelta
 
 from services.evaluation_service import (
     COMMON_DIMENSIONS,
+    CURRENT_EVALUATION_POLICY_VERSION,
     DIMENSIONS,
     SCORING_VERSION,
     build_adaptive_report,
     build_rule_checks,
     calculate_adaptive_weighting,
     compute_grade_level,
+    enforce_final_score_policy,
     finalize_evaluation_report,
     format_dialogue,
     infer_scene_type,
+    is_current_evaluation_report,
     merge_assessment_point_results,
     reconcile_dimension_scores,
     render_rule_summary,
 )
+from services.training_runtime_service import collect_stage_progress
 
 
 COMMON_DIMENSION_NAMES = {name for name, _ in COMMON_DIMENSIONS}
@@ -162,6 +166,14 @@ class TestAdaptiveWeighting:
         assert len(weighting["point_weights"]) == 1
         assert weighting["point_weights"][0]["full_score"] == weighting["assessment_full_score"]
 
+    def test_semantic_duplicate_with_different_label_counts_once(self):
+        points = [
+            {**self.make_point(1, weight=12), "label": "确认报警人身份信息", "content": "学员应主动核实报警人姓名、身份及联系方式。"},
+            {**self.make_point(2, weight=10), "label": "核实报警人身份", "content": "主动确认报警人的身份、姓名和电话。"},
+        ]
+        weighting = calculate_adaptive_weighting(points)
+        assert weighting["assessment_point_count"] == 1
+
 
 class TestFormalScoringHelpers:
     def test_compute_grade_level(self):
@@ -169,14 +181,122 @@ class TestFormalScoringHelpers:
         assert compute_grade_level(75) == "良好"
         assert compute_grade_level(40) == "需改进"
 
+    def test_final_score_policy_uses_lowest_cap(self):
+        report = {
+            "total_score": 78,
+            "scores": [{"dimension": "a", "score": 78, "full_score": 100}],
+            "evaluation_meta": {
+                "scoring_version": SCORING_VERSION,
+                "score_caps": {
+                    "caps": [
+                        {"type": "turn_count", "cap": 78, "reason": "轮次不足"},
+                        {"type": "required_completion", "cap": 58, "reason": "必考不足"},
+                    ],
+                    "final_cap": 78,
+                },
+            },
+        }
+
+        result = enforce_final_score_policy(report, policy_source="test")
+
+        assert result["total_score"] == 58
+        assert result["evaluation_meta"]["score_caps"]["final_cap"] == 58
+        assert result["evaluation_meta"]["cap_audit"]["applied_cap"] == 58
+        assert result["evaluation_meta"]["cap_audit"]["valid"] is True
+        assert result["evaluation_meta"]["policy_version"] == CURRENT_EVALUATION_POLICY_VERSION
+
+    def test_old_report_is_not_current_without_cap_audit(self):
+        report = {"total_score": 78, "evaluation_meta": {"scoring_version": SCORING_VERSION}}
+        assert is_current_evaluation_report(report) is False
+
     def test_merge_assessment_point_results_prefers_runtime_hit(self):
-        runtime = [{"id": "ap_1", "label": "核实身份", "status": "hit", "weight": 10, "score": 10, "evidence": ["学员: 请出示证件"]}]
+        runtime = [{"id": "ap_1", "label": "核实身份", "status": "hit", "weight": 10, "score": 10, "evidence": ["学员: 请出示证件", "AI角色: 这是我的身份证"]}]
         llm = [{"id": "ap_1", "label": "核实身份", "status": "missed", "reason": "模型误判"}]
         rows = [{"id": "ap_1", "label": "核实身份", "content": "确认身份", "stage_name": "现场控制"}]
         merged = merge_assessment_point_results(runtime, llm, rows)
         assert merged[0]["status"] == "hit"
         assert merged[0]["score"] == 10
         assert "模型误判" in merged[0]["feedback"]
+        assert merged[0]["short_label"]
+        assert merged[0]["summary"]
+        assert merged[0]["full_text"] == "确认身份"
+        assert isinstance(merged[0]["evidence_items"], list)
+        assert isinstance(merged[0]["media_refs"], list)
+
+    def test_hit_requires_student_question_and_ai_feedback_pair(self):
+        runtime = [{"id": "ap_1", "label": "确认时间", "status": "missed", "weight": 10, "evidence": []}]
+        llm = [{
+            "id": "ap_1",
+            "label": "确认时间",
+            "status": "hit",
+            "full_score": 10,
+            "score": 9,
+            "evidence": ["学员: 请问是什么时候发生的？", "AI角色: 大概是今天上午九点。"],
+            "reason": "学员主动询问时间，AI 给出明确反馈。",
+        }]
+        rows = [{"id": "ap_1", "label": "确认时间", "content": "确认事件发生时间", "stage_name": "接警"}]
+
+        merged = merge_assessment_point_results(runtime, llm, rows)
+
+        assert merged[0]["status"] == "hit"
+        assert merged[0]["score"] == 9
+        assert any("AI角色" in item for item in merged[0]["evidence"])
+
+    def test_student_only_hit_is_downgraded_to_missed(self):
+        runtime = [{"id": "ap_1", "label": "确认时间", "status": "missed", "weight": 10, "evidence": []}]
+        llm = [{
+            "id": "ap_1",
+            "label": "确认时间",
+            "status": "hit",
+            "full_score": 10,
+            "score": 9,
+            "evidence": ["学员: 请问是什么时候发生的？"],
+            "reason": "缺少 AI 反馈证据。",
+        }]
+        rows = [{"id": "ap_1", "label": "确认时间", "content": "确认事件发生时间", "stage_name": "接警"}]
+
+        merged = merge_assessment_point_results(runtime, llm, rows)
+
+        assert merged[0]["status"] == "missed"
+        assert merged[0]["score"] == 0
+
+    def test_merge_assessment_point_results_uses_llm_score_when_present(self):
+        runtime = [{"id": "ap_1", "label": "核实身份", "status": "missed", "weight": 10, "evidence": []}]
+        llm = [{
+            "id": "ap_1",
+            "label": "核实身份",
+            "status": "partial",
+            "full_score": 10,
+            "score": 7,
+            "score_ratio": 0.7,
+            "reason": "模型给出部分命中",
+            "evidence": ["学员: 请问您怎么称呼？"],
+        }]
+        rows = [{"id": "ap_1", "label": "核实身份", "content": "确认身份", "stage_name": "现场控制"}]
+
+        merged = merge_assessment_point_results(runtime, llm, rows)
+
+        assert merged[0]["status"] == "partial"
+        assert merged[0]["score"] == 7
+        assert merged[0]["completion_ratio"] == 0.7
+
+    def test_merge_assessment_point_results_missed_forces_zero_score(self):
+        runtime = [{"id": "ap_1", "label": "核实身份", "status": "missed", "weight": 10, "evidence": []}]
+        llm = [{
+            "id": "ap_1",
+            "label": "核实身份",
+            "status": "missed",
+            "full_score": 10,
+            "score": 8,
+            "reason": "模型误打分",
+            "evidence": [],
+        }]
+        rows = [{"id": "ap_1", "label": "核实身份", "content": "确认身份", "stage_name": "现场控制"}]
+
+        merged = merge_assessment_point_results(runtime, llm, rows)
+
+        assert merged[0]["status"] == "missed"
+        assert merged[0]["score"] == 0
 
     def test_merge_assessment_point_results_dedupes_semantic_duplicates(self):
         runtime = [
@@ -193,7 +313,73 @@ class TestFormalScoringHelpers:
         assert len(merged) == 1
         assert merged[0]["status"] == "partial"
         assert merged[0]["weight"] == 15
-        assert merged[0]["score"] == 7
+        assert 0 < merged[0]["score"] < 15
+        assert merged[0]["score"] != 15 // 2
+
+    def test_partial_score_uses_completion_ratio_not_fixed_half(self):
+        runtime = [
+            {
+                "id": "ap_identity",
+                "label": "确认报警人身份",
+                "content": "核实报警人姓名、身份及联系方式",
+                "status": "partial",
+                "weight": 12,
+                "keywords": ["姓名", "身份", "联系方式"],
+                "keyword_matches": ["身份"],
+                "evidence": ["学员: 你是什么身份？"],
+            },
+            {
+                "id": "ap_risk",
+                "label": "确认现场风险",
+                "content": "确认是否受伤、是否仍有危险",
+                "status": "partial",
+                "weight": 12,
+                "keywords": ["受伤", "危险"],
+                "keyword_matches": ["受伤", "危险"],
+                "evidence": ["学员: 有人受伤吗？", "学员: 现在还有危险吗？"],
+            },
+        ]
+
+        merged = merge_assessment_point_results(runtime, [], runtime)
+
+        scores = {item["id"]: item["score"] for item in merged}
+        assert scores["ap_identity"] != scores["ap_risk"]
+        assert any(score != 6 for score in scores.values())
+
+    def test_merge_does_not_upgrade_without_student_or_action_evidence(self):
+        runtime = [{"id": "ap_1", "label": "确认时间与报警人身份", "status": "missed", "weight": 11, "evidence": []}]
+        llm = [{"id": "ap_1", "label": "确认时间与报警人身份", "status": "partial", "reason": "模型认为部分达成", "evidence": ["AI角色: 配合？你们说的配合就是让我认罪是吧？"]}]
+        rows = [{"id": "ap_1", "label": "确认时间与报警人身份", "content": "学员应主动确认事件发生时间和报警人身份。", "weight": 11}]
+
+        merged = merge_assessment_point_results(runtime, llm, rows)
+
+        assert merged[0]["status"] == "missed"
+        assert merged[0]["score"] == 0
+        assert merged[0]["evidence"] == []
+
+    def test_runtime_progress_ignores_assistant_keyword_only(self):
+        stage = {
+            "assessment_points": [
+                {
+                    "id": "ap_time_identity",
+                    "label": "确认时间与报警人身份",
+                    "content": "学员应主动确认事件发生时间和报警人身份。",
+                    "required": True,
+                    "weight": 11,
+                    "keywords": ["时间", "身份"],
+                }
+            ],
+            "action_catalog": [],
+        }
+        messages = [
+            MockMsg("user", "是。"),
+            MockMsg("assistant", "配合？你们说的配合就是让我认罪是吧？身份我不想说。"),
+        ]
+
+        progress = collect_stage_progress(stage, messages, [], [])
+
+        assert progress["points"][0]["status"] == "missed"
+        assert progress["points"][0]["score"] == 0
 
     def test_reconcile_dimension_scores(self):
         report = {
@@ -280,6 +466,71 @@ class TestAdaptiveReport:
         )
         assert report["total_score"] <= 58
         assert report["evaluation_meta"]["score_caps"]["final_cap"] <= 58
+
+    def test_common_scores_are_capped_when_required_points_all_missed(self):
+        points = self.make_points(["missed", "missed", "missed"])
+        report = build_adaptive_report(
+            {
+                "common_reviews": [
+                    {"dimension": "主动询问与逻辑推进", "level": "excellent", "reason": "模型高估"},
+                    {"dimension": "关键信息整理能力", "level": "excellent", "reason": "模型高估"},
+                    {"dimension": "处置闭环意识", "level": "excellent", "reason": "模型高估"},
+                ]
+            },
+            points,
+            [],
+            ["是。", "好的。", "明白。"],
+            [MockMsg("user", "是。"), MockMsg("assistant", "我还没说时间和身份。")],
+            {"findings": [], "deductions": {}},
+            "接警",
+        )
+        common = {item["dimension"]: item for item in report["scores"] if item["group"] == "common"}
+        assert common["主动询问与逻辑推进"]["status"] == "weak"
+        assert common["关键信息整理能力"]["status"] == "weak"
+        assert common["处置闭环意识"]["status"] == "weak"
+
+    def test_common_scores_use_rule_rubric_not_plain_llm_level(self):
+        points = self.make_points(["hit", "partial", "missed"])
+        report = build_adaptive_report(
+            {
+                "common_reviews": [
+                    {"dimension": "沟通表达与执法语言", "level": "excellent", "reason": "模型档位"},
+                    {"dimension": "主动询问与逻辑推进", "level": "excellent", "reason": "模型档位"},
+                    {"dimension": "关键信息整理能力", "level": "excellent", "reason": "模型档位"},
+                    {"dimension": "处置闭环意识", "level": "excellent", "reason": "模型档位"},
+                ]
+            },
+            points,
+            [],
+            ["您好，请说明情况", "在哪里", "后续我们会处理"],
+            [MockMsg("user", "您好，请说明情况"), MockMsg("assistant", "在小区门口")],
+            {"findings": [], "deductions": {}},
+            "接警",
+        )
+        common_scores = [item for item in report["scores"] if item["group"] == "common"]
+        assert any(item["score"] < item["full_score"] for item in common_scores)
+        assert len({item["score"] for item in common_scores}) > 1
+
+    def test_common_scores_use_llm_score_when_present(self):
+        report = build_adaptive_report(
+            {
+                "common_reviews": [
+                    {"dimension": "沟通表达与执法语言", "full_score": 25, "score": 21, "level": "excellent", "reason": "模型给分", "evidence": ["学员: 请说明情况"]},
+                    {"dimension": "主动询问与逻辑推进", "full_score": 25, "score": 17, "level": "good", "reason": "模型给分", "evidence": ["学员: 还有谁在场"]},
+                    {"dimension": "关键信息整理能力", "full_score": 25, "score": 13, "level": "fair", "reason": "模型给分", "evidence": ["学员: 地点在三号楼"]},
+                    {"dimension": "处置闭环意识", "full_score": 25, "score": 9, "level": "weak", "reason": "模型给分", "evidence": ["学员: 我们后续会处理"]},
+                ]
+            },
+            [],
+            [],
+            ["请说明情况", "还有谁在场", "地点在三号楼", "后续我们会处理"],
+            [MockMsg("user", "请说明情况"), MockMsg("assistant", "地点在三号楼")],
+            {"findings": [], "deductions": {}},
+            "接警",
+        )
+        common_scores = {item["dimension"]: item for item in report["scores"] if item["group"] == "common"}
+        assert common_scores["沟通表达与执法语言"]["score"] == 21
+        assert common_scores["处置闭环意识"]["score"] == 9
 
     def test_red_flag_cap(self):
         points = self.make_points(["hit", "hit", "hit", "hit"])

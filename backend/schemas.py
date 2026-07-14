@@ -222,6 +222,7 @@ class SessionDetail(BaseModel):
     auto_finish_ready: bool = False
     closure_summary: Optional[dict] = None
     assignment_context: Optional[dict] = None
+    artifacts: List[dict] = []
     messages: List[Message] = []
     model_config = ConfigDict(from_attributes=True)
 

@@ -4,10 +4,11 @@ import re
 import time
 from typing import Any, List, Optional
 
-from dotenv import load_dotenv
 from openai import OpenAI
 
-load_dotenv()
+from env_loader import load_backend_env
+
+load_backend_env()
 
 PROVIDER = (os.getenv("LLM_PROVIDER") or "").strip().lower()
 EMBEDDING_PROVIDER = (os.getenv("EMBEDDING_PROVIDER") or "").strip().lower()

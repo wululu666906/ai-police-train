@@ -1,7 +1,7 @@
 """Unit tests for director / actor / scene engine pipeline."""
 
 from services.multi_role_director import run_director
-from services.multi_role_actor import generate_role_dialogue
+from services.multi_role_actor import generate_role_dialogue, _repeat_similarity, _repetition_repair
 from services.scene_conversation_engine import consolidate_scene_conversation
 
 
@@ -23,6 +23,12 @@ class _FakeScene:
     name = "纠纷调解现场"
     dispatch_brief = "建设路夜市烧烤店门口有人打架，现场人员较多，请立即处置。"
     first_impression = "赵阳捂着眉弓站在店门口，刘军坐在路边椅子上，语速快且带酒气。"
+
+
+def test_paraphrase_repeat_detection_and_repair_change_move():
+    assert _repeat_similarity("我现在不想说这件事", "这件事我现在不想讲") >= 0.58
+    repaired = _repetition_repair("你具体说一下时间和地点")
+    assert "时间" in repaired or "地点" in repaired
     description = "接警后到达烧烤店门口。"
 
 
@@ -51,7 +57,7 @@ class _FakeMessage:
         self.inner_thought = ""
 
 
-def test_director_rule_plan_limits_two_speakers():
+def test_director_rule_plan_limits_one_speaker():
     roles = [_FakeRole(1, "张某"), _FakeRole(2, "李某")]
     plan = run_director(
         scene=_FakeScene(),
@@ -63,8 +69,8 @@ def test_director_rule_plan_limits_two_speakers():
         use_llm=False,
     )
     assert plan is not None
-    assert len(plan["cast_plan"]) <= 2
-    assert plan["cast_plan"][0]["utterance_count"] >= 1
+    assert len(plan["cast_plan"]) == 1
+    assert plan["cast_plan"][0]["utterance_count"] == 1
 
 
 def test_actor_respects_utterance_count_cap():
@@ -88,7 +94,7 @@ def test_actor_respects_utterance_count_cap():
         role_snapshot={"emotion": 60, "cooperation": 30, "risk": 50, "clarity": 50},
         use_llm=False,
     )
-    assert 1 <= len(output["utterances"]) <= 3
+    assert len(output["utterances"]) == 1
 
 
 def test_actor_rule_fallback_uses_case_facts_for_common_questions():
@@ -130,7 +136,7 @@ def test_actor_rule_fallback_uses_case_facts_for_common_questions():
     assert "反正我说的都是实话" not in suspect_text
 
 
-def test_scene_engine_merges_multiple_utterances():
+def test_scene_engine_keeps_single_reply_turn():
     role = _FakeRole(1, "张某")
     actor_outputs = [
         {
@@ -153,7 +159,7 @@ def test_scene_engine_merges_multiple_utterances():
         role_snapshots=snapshots,
         previous_primary_role=role,
     )
-    assert len(merged["reply_turns"]) == 2
+    assert len(merged["reply_turns"]) == 1
     assert merged["reply_turns"][0]["speaker_name"] == "张某"
     assert snapshots["1"]["cooperation"] == 32
 
@@ -180,7 +186,7 @@ def test_actor_reacts_to_peer_utterance_like_argument():
     )
     text = " ".join(item["content"] for item in output["utterances"])
     assert output["reaction_type"] in {"argumentative_dispute", "provocative_challenge"}
-    assert "不是" in text or "认定" in text or "责任" in text
+    assert "赵阳" in text or "不是" in text or "认定" in text or "责任" in text
     assert output["updated_snapshot"]["risk"] >= 78
 
 

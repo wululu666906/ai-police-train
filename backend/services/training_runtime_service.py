@@ -223,6 +223,20 @@ def _keyword_hits(text: str, keywords: list[str]) -> list[str]:
     return [keyword for keyword in keywords if keyword and keyword in text]
 
 
+def _prefixed_evidence(role: str, content: str, keyword: str = "") -> str:
+    role_label = {
+        "user": "学员",
+        "assistant": "AI角色",
+        "action": "动作",
+        "context": "上下文",
+    }.get(role, "证据")
+    return f"{role_label}: {_message_snippet(content, keyword)}"
+
+
+def _is_student_query(text: str) -> bool:
+    return any(marker in text for marker in ["?", "？", "吗", "什么", "哪里", "几", "是否", "有没有", "谁", "怎么", "为何", "为什么", "请问"])
+
+
 def collect_stage_progress(
     stage_config: dict[str, Any],
     messages: list[Any],
@@ -284,9 +298,28 @@ def collect_stage_progress(
     total_weight = 0
     earned_weight = 0
 
-    corpus = list(extra_texts)
-    corpus.extend(str(item) for item in revealed_info if str(item).strip())
-    corpus.extend(str(getattr(message, "content", "") or "") for message in messages if getattr(message, "role", "") in {"user", "assistant", "action"})
+    scoring_corpus: list[tuple[str, str]] = []
+    context_corpus: list[tuple[str, str]] = []
+    dialogue_pairs: list[tuple[str, str]] = []
+    for text in extra_texts:
+        clean = str(text or "").strip()
+        if clean:
+            scoring_corpus.append(("user", clean))
+    previous_user = ""
+    for message in messages:
+        role = str(getattr(message, "role", "") or "")
+        content = str(getattr(message, "content", "") or "").strip()
+        if not content:
+            continue
+        if role in {"user", "action"}:
+            scoring_corpus.append((role, content))
+            if role == "user":
+                previous_user = content
+        elif role == "assistant":
+            if previous_user:
+                dialogue_pairs.append((previous_user, content))
+            context_corpus.append((role, content))
+    context_corpus.extend(("context", str(item)) for item in revealed_info if str(item).strip())
 
     for point in assessment_points:
         point_id = str(point.get("id") or "").strip()
@@ -303,29 +336,53 @@ def collect_stage_progress(
 
         keyword_matches: list[str] = []
         evidence: list[str] = []
-        for text in corpus:
+        context_evidence: list[str] = []
+        paired_evidence: list[str] = []
+        paired_keyword_matches: list[str] = []
+        for role, text in scoring_corpus:
             hits = _keyword_hits(text, keywords)
             if hits:
                 keyword_matches.extend(hits)
-                evidence.append(_message_snippet(text, hits[0]))
+                evidence.append(_prefixed_evidence(role, text, hits[0]))
+        for role, text in context_corpus:
+            hits = _keyword_hits(text, keywords)
+            if hits:
+                context_evidence.append(_prefixed_evidence(role, text, hits[0]))
+        for user_text, assistant_text in dialogue_pairs:
+            user_hits = _keyword_hits(user_text, keywords)
+            assistant_hits = _keyword_hits(assistant_text, keywords)
+            if assistant_hits and (user_hits or _is_student_query(user_text)):
+                paired_keyword_matches.extend(_dedupe_strings(user_hits + assistant_hits))
+                paired_evidence.append(_prefixed_evidence("user", user_text, (user_hits or assistant_hits)[0]))
+                paired_evidence.append(_prefixed_evidence("assistant", assistant_text, assistant_hits[0]))
 
         linked_actions = [item for item in completed_action_ids if item in counts_for_actions]
-        hit_count = len(set(keyword_matches))
+        effective_keyword_matches = _dedupe_strings(keyword_matches + paired_keyword_matches)
+        hit_count = len(set(effective_keyword_matches))
         keyword_target = min(len(keywords), 2) if keywords else 1
         has_action_credit = bool(linked_actions)
+        has_paired_credit = bool(paired_evidence)
         status = "missed"
-        if hit_count >= keyword_target or has_action_credit:
+        if (hit_count >= keyword_target and has_paired_credit) or has_action_credit:
             status = "hit"
         elif hit_count > 0:
             status = "partial"
 
-        score = weight if status == "hit" else max(1, weight // 2) if status == "partial" else 0
+        if status == "hit":
+            completion_ratio = 1.0
+        elif status == "partial":
+            evidence_bonus = min(0.18, len(_dedupe_strings(evidence)) * 0.06)
+            completion_ratio = max(0.25, min(0.85, 0.3 + min(0.32, (hit_count / max(1, keyword_target)) * 0.28) + evidence_bonus))
+        else:
+            completion_ratio = 0.0
+
+        score = int(round(weight * completion_ratio))
         if status == "hit":
             completed_point_ids.append(point_id)
             satisfied.append(label)
             earned_weight += weight
         elif status == "partial":
-            earned_weight += max(1, weight // 2)
+            earned_weight += score
         else:
             missing.append(label)
 
@@ -340,8 +397,11 @@ def collect_stage_progress(
                 "weight": weight,
                 "status": status,
                 "score": score,
-                "evidence": _dedupe_strings(evidence)[:3],
-                "feedback": "",
+                "completion_ratio": completion_ratio,
+                "keyword_matches": effective_keyword_matches,
+                "evidence": _dedupe_strings(evidence + paired_evidence)[:4],
+                "context_evidence": _dedupe_strings(context_evidence)[:2],
+                "feedback": "" if status != "missed" else "未发现学员主动完成该考察点的有效发言或动作。",
                 "knowledge_refs": knowledge_refs,
                 "linked_action_ids": counts_for_actions,
                 "linked_actions_completed": linked_actions,

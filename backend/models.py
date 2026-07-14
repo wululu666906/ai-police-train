@@ -127,6 +127,12 @@ class TrainingSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     messages = relationship("Message", back_populates="session")
+    artifacts = relationship(
+        "TrainingSessionArtifact",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="TrainingSessionArtifact.created_at",
+    )
 
 
 class FaceProfile(Base):
@@ -166,6 +172,22 @@ class FaceVerificationEvent(Base):
 
     session = relationship("TrainingSession")
     student = relationship("User")
+
+
+class TrainingSessionArtifact(Base):
+    """普通训练会话留痕：截图、语音、录屏等附件"""
+    __tablename__ = "training_session_artifacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("training_sessions.id"), nullable=False)
+    artifact_type = Column(String(30), nullable=False, default="screenshot")
+    file_path = Column(String(500), nullable=False)
+    mime_type = Column(String(120), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    duration_seconds = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("TrainingSession", back_populates="artifacts")
 
 
 class Message(Base):

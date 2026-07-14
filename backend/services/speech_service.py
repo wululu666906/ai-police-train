@@ -1,13 +1,11 @@
 import os
-from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
 from openai import OpenAI
 
-load_dotenv()
-load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
-load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+from env_loader import load_backend_env
+
+load_backend_env()
 
 QWEN_ASR_API_KEY = os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_API_KEY", "")
 QWEN_ASR_BASE_URL = os.getenv("QWEN_ASR_BASE_URL") or os.getenv(

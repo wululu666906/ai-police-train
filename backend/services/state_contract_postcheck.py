@@ -48,6 +48,10 @@ def validate_response_against_contract(text: str, contract: dict[str, Any]) -> d
     max_sentences = int(contract.get("max_sentences") or 3)
     disclosure = float(contract.get("disclosure_level") or 0.45)
     max_chars = int(contract.get("max_chars") or max_chars_for_disclosure(disclosure))
+    # Older callers do not provide the derived field; retain strict legacy
+    # validation for those contracts while new contracts carry an explicit
+    # control score.
+    expression_control = int(contract.get("expression_control", 0) or 0)
     sentence_count = len([part for part in re.split(r"[。！？!?…]+", content) if part.strip()]) or 1
 
     if sentence_count > max_sentences + 1:
@@ -58,16 +62,16 @@ def validate_response_against_contract(text: str, contract: dict[str, Any]) -> d
         issues.append("too_many_sentences_for_low_disclosure")
     if disclosure <= 0.35 and _TIMELINE_PATTERN.search(content):
         issues.append("timeline_forbidden_at_low_disclosure")
-    if primary in {"angry", "agitated", "fearful"} and (
+    if primary in {"angry", "agitated", "fearful"} and expression_control < 42 and (
         len(content) > min(140, max_chars + 20) or len(content) > 48 or sentence_count > max_sentences
     ):
         issues.append("too_long_for_high_arousal")
     if float(contract.get("escalation_bias") or 0) >= 0.65 and len(content) > max_chars:
         issues.append("too_long_for_high_escalation")
-    if primary in {"angry", "agitated"} and contract.get("interruption_allowed"):
+    if primary in {"angry", "agitated"} and contract.get("interruption_allowed") and expression_control < 48:
         if not re.search(r"[？?！!]", content) and len(content) > 18:
             issues.append("missing_interrupt_markers")
-    if primary == "fearful" and not re.search(r"(不确定|不敢|害怕|怕|慌|记不清|不知道|怎么办)", content):
+    if primary == "fearful" and expression_control < 34 and not re.search(r"(不确定|不敢|害怕|怕|慌|记不清|不知道|怎么办)", content):
         issues.append("missing_fear_markers")
     if primary in {"cold", "guarded"} and disclosure <= 0.28 and len(content) > 48:
         issues.append("too_expansive_for_cold_guarded")

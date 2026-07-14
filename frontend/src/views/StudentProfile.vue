@@ -93,7 +93,7 @@
         <div class="flex items-center justify-between gap-4">
           <div>
             <div class="text-sm font-black text-gray-800">人脸档案</div>
-            <div class="mt-1 text-xs text-gray-400">用于训练开始前身份校验、活体检测和训练过程持续监控。</div>
+            <div class="mt-1 text-xs text-gray-400">用于训练开始前身份校验和训练过程持续监控。</div>
           </div>
           <div class="flex items-center gap-2">
             <input ref="faceFileInput" class="hidden" type="file" accept="image/*" @change="handleFaceFileChange" />

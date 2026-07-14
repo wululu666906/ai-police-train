@@ -15,6 +15,7 @@ from .stage_config_service import normalize_stages
 from .training_runtime_service import collect_stage_progress, load_runtime_state
 
 SCORING_VERSION = "adaptive_v1"
+CURRENT_EVALUATION_POLICY_VERSION = "adaptive_v1_llm_cap_audit_v2"
 
 COMMUNICATION_DIMENSION = "沟通表达与执法语言"
 INQUIRY_DIMENSION = "主动询问与逻辑推进"
@@ -133,7 +134,7 @@ SCENE_RUBRICS = {
 EVALUATION_PROMPT_TEMPLATE = """
 你是一名严格、公正、专业的警务训练评估官，需要根据完整对话、动作执行和“考察点要求表”逐条核查结果给出结构化评估。
 
-本系统使用 adaptive_v1 评分制度：总分由后端按“通用能力 + 动态考察点”确定性计算。你不要输出旧版固定维度评分。
+本系统使用 adaptive_v1 评分制度：你必须依据下方“评分模板”对所有指标逐项打分。后端只负责校验范围、去重、证据有效性和落库，不会替你完成主要评分。
 
 通用能力只评价以下 4 项：
 1. 沟通表达与执法语言：礼貌克制、身份立场清晰，避免压迫、诱导或激化。
@@ -169,6 +170,9 @@ EVALUATION_PROMPT_TEMPLATE = """
 - 每个考察点按难度和 required 属性形成动态评分单位。
 - 学员有效发言轮次、必考点命中率和严重红线会触发总分上限。
 
+评分模板（必须逐项打分，score 不得只机械给半分或整档分）：
+{scoring_template}
+
 动作执行评估：
 - 训练日志中的"动作"行（以"动作："开头）代表学员完成的现场操作（如开启执法记录仪、拍照取证、分离双方等）。
 - 动作只在相关考察点或通用闭环意识中作为证据引用，不作为旧固定维度评分。
@@ -183,22 +187,22 @@ EVALUATION_PROMPT_TEMPLATE = """
 - 判断依据：观察对话中谁在主导信息流动——学员提问→AI角色回答→学员追问问细节，这是主动；AI角色长篇陈述→学员仅应答，这是被动。
 
 输出要求：
-1. common_reviews 必须覆盖 4 个通用能力，每项包含 dimension、level、reason、evidence。level 只能为 excellent/good/fair/weak。
-2. assessment_check_results 必须与“考察点要求表”逐条对应，不得遗漏 id。status 只能为 hit/partial/missed。
-3. evidence 必须引用具体学员发言、动作日志或“学员提问后紧邻 AI 回答”；不得把 AI 主动长篇交代直接算作学员主动得分。
+1. common_reviews 必须覆盖 4 个通用能力，每项包含 dimension、full_score、score、level、reason、evidence。level 只能为 excellent/good/fair/weak。
+2. assessment_check_results 必须与“考察点要求表”逐条对应，不得遗漏 id，每项包含 id、label、full_score、score、status、evidence、reason。status 只能为 hit/partial/missed。
+3. evidence 必须引用具体学员发言/动作，以及学员提问后紧邻的 AI 回答。考察点命中需要同时看到学员主动触发和 AI 反馈结果；不得把 AI 主动长篇交代或学员简单应答直接算作命中。
 4. strengths 是学员表现亮点（2-4 条），improvements 是具体不足（2-4 条），suggestions 给出下一轮训练建议。
 5. 只输出合法 JSON。
 
 严格输出 JSON：
 {{
   "common_reviews": [
-    {{"dimension": "沟通表达与执法语言", "level": "good", "reason": "学员语气总体克制。", "evidence": ["学员: 请您先说明情况"]}},
-    {{"dimension": "主动询问与逻辑推进", "level": "fair", "reason": "追问不足。", "evidence": []}},
-    {{"dimension": "关键信息整理能力", "level": "fair", "reason": "未形成完整事实归纳。", "evidence": []}},
-    {{"dimension": "处置闭环意识", "level": "weak", "reason": "未说明下一步处置。", "evidence": []}}
+    {{"dimension": "沟通表达与执法语言", "full_score": 12, "score": 9, "level": "good", "reason": "学员语气总体克制。", "evidence": ["学员: 请您先说明情况"]}},
+    {{"dimension": "主动询问与逻辑推进", "full_score": 12, "score": 7, "level": "fair", "reason": "追问不足。", "evidence": []}},
+    {{"dimension": "关键信息整理能力", "full_score": 12, "score": 6, "level": "fair", "reason": "未形成完整事实归纳。", "evidence": []}},
+    {{"dimension": "处置闭环意识", "full_score": 12, "score": 4, "level": "weak", "reason": "未说明下一步处置。", "evidence": []}}
   ],
   "assessment_check_results": [
-    {{"id": "ap_001", "label": "核实报警人身份", "content": "学员应主动询问报警人姓名、身份及与事件的关系", "status": "hit", "evidence": ["学员: 请问您怎么称呼？"], "reason": "学员主动核实身份。"}}
+    {{"id": "ap_001", "label": "核实报警人身份", "content": "学员应主动询问报警人姓名、身份及与事件的关系", "full_score": 8, "score": 6, "status": "partial", "evidence": ["学员: 请问您怎么称呼？"], "reason": "学员主动核实身份，但未确认联系方式。"}}
   ],
   "strengths": ["表达较克制"],
   "improvements": ["需要补齐关键事实追问"],
@@ -228,7 +232,48 @@ def _assessment_core_content(value: Any) -> str:
     text = str(value or "").strip()
     text = re.sub(r"（.*?）|\(.*?\)", "", text)
     text = re.split(r"怎样算完成|具体要求|回放时|回放训练", text, maxsplit=1)[0]
+    text = re.sub(r"^(学员应|学员应当|应当|需要|需|要求|目标)[:：\s]*", "", text)
     return text
+
+
+ASSESSMENT_KEY_TERMS = [
+    "报警人", "身份", "姓名", "联系方式", "电话", "关系",
+    "时间", "地点", "地址", "位置", "几号楼", "房间",
+    "人员", "在场", "对方", "嫌疑人", "当事人",
+    "经过", "原因", "诉求", "矛盾", "冲突",
+    "伤情", "受伤", "危险", "风险", "安全", "救助", "120",
+    "证据", "监控", "录像", "记录", "物证", "现场",
+    "处置", "派警", "控制", "分离", "告知", "闭环",
+]
+
+ASSESSMENT_TERM_ALIASES = {
+    "电话": "联系方式",
+    "位置": "地点",
+    "地址": "地点",
+    "几号楼": "地点",
+    "房间": "地点",
+    "人员": "在场",
+    "对方": "当事人",
+    "嫌疑人": "当事人",
+    "冲突": "矛盾",
+    "受伤": "伤情",
+    "救助": "伤情",
+    "120": "伤情",
+    "录像": "监控",
+    "记录": "证据",
+    "物证": "证据",
+}
+
+
+def _assessment_term_set(point: dict) -> set[str]:
+    text = _normalize_assessment_identity_text(
+        " ".join(
+            str(point.get(key) or "")
+            for key in ("label", "content", "requirement", "description", "target", "assessment_target", "goal")
+        )
+    )
+    terms = {term for term in ASSESSMENT_KEY_TERMS if _normalize_assessment_identity_text(term) in text}
+    return {ASSESSMENT_TERM_ALIASES.get(term, term) for term in terms}
 
 
 def _assessment_semantic_key(point: dict) -> str:
@@ -258,16 +303,36 @@ def _assessment_points_equivalent(left: dict, right: dict) -> bool:
 
     left_label = _normalize_assessment_identity_text(left.get("label"))
     right_label = _normalize_assessment_identity_text(right.get("label"))
-    if not left_label or left_label != right_label:
-        return False
-
     left_content = _normalize_assessment_identity_text(_assessment_core_content(left.get("content") or left.get("requirement") or left.get("description")))
     right_content = _normalize_assessment_identity_text(_assessment_core_content(right.get("content") or right.get("requirement") or right.get("description")))
-    if not left_content or not right_content:
+
+    left_terms = _assessment_term_set(left)
+    right_terms = _assessment_term_set(right)
+    term_union = left_terms | right_terms
+    term_overlap = (len(left_terms & right_terms) / len(term_union)) if term_union else 0.0
+    label_similarity = SequenceMatcher(None, left_label, right_label).ratio() if left_label and right_label else 0.0
+    content_similarity = SequenceMatcher(None, left_content, right_content).ratio() if left_content and right_content else 0.0
+
+    if left_label and right_label and left_label == right_label:
+        if not left_content or not right_content:
+            return True
+        if left_content in right_content or right_content in left_content:
+            return True
+        return content_similarity >= 0.62 or term_overlap >= 0.75
+
+    if term_overlap >= 0.85 and (label_similarity >= 0.5 or content_similarity >= 0.5):
         return True
+    if term_overlap >= 0.6 and (label_similarity >= 0.72 or content_similarity >= 0.62):
+        return True
+    if label_similarity >= 0.88 and content_similarity >= 0.58:
+        return True
+    if content_similarity >= 0.82 and term_overlap >= 0.5:
+        return True
+    if not left_label or not right_label:
+        return bool(left_content and right_content and content_similarity >= 0.86)
     if left_content in right_content or right_content in left_content:
-        return True
-    return SequenceMatcher(None, left_content, right_content).ratio() >= 0.72
+        return term_overlap >= 0.5 or min(len(left_content), len(right_content)) >= 8
+    return False
 
 
 def _assessment_point_quality(point: dict) -> int:
@@ -297,6 +362,40 @@ def _best_point_status(*statuses: Any) -> str:
     return best
 
 
+def _clamp_ratio(value: Any, default: float = 0.0) -> float:
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        ratio = default
+    return max(0.0, min(1.0, ratio))
+
+
+def _point_completion_ratio(point: dict) -> float:
+    status = str(point.get("status") or "").strip()
+    if status == "hit":
+        return 1.0
+    if status in {"missed", "miss"}:
+        return 0.0
+    explicit = point.get("completion_ratio")
+    if explicit is not None:
+        return max(0.25, min(0.85, _clamp_ratio(explicit, 0.5)))
+
+    keywords = _dedupe_strings(point.get("keywords") or [])
+    matched = _dedupe_strings(point.get("keyword_matches") or [])
+    evidence_count = len(_valid_student_or_action_evidence(point.get("evidence") or []))
+    linked_actions = point.get("linked_actions_completed") or []
+    keyword_target = min(len(keywords), 2) if keywords else 1
+    keyword_ratio = (len(matched) / keyword_target) if keyword_target else 0.0
+    evidence_bonus = min(0.18, evidence_count * 0.06)
+    action_bonus = 0.18 if linked_actions else 0.0
+    ratio = 0.3 + min(0.32, keyword_ratio * 0.28) + evidence_bonus + action_bonus
+    return max(0.25, min(0.85, ratio))
+
+
+def _score_from_point(point: dict, weight: int) -> int:
+    return max(0, min(max(1, int(weight or 10)), int(round(max(1, int(weight or 10)) * _point_completion_ratio(point)))))
+
+
 def _merge_duplicate_assessment_points(current: dict, incoming: dict) -> dict:
     preferred, other = (incoming, current) if _assessment_point_quality(incoming) > _assessment_point_quality(current) else (current, incoming)
     merged = {**other, **preferred}
@@ -308,8 +407,12 @@ def _merge_duplicate_assessment_points(current: dict, incoming: dict) -> dict:
     merged["required"] = bool(preferred.get("required", other.get("required", True)))
     merged["weight"] = max(1, int(preferred.get("weight") or other.get("weight") or 10))
     merged["status"] = _best_point_status(current.get("status"), incoming.get("status"))
-    merged["score"] = _score_from_point_status(merged["status"], merged["weight"])
+    merged["keywords"] = _dedupe_strings((current.get("keywords") or []) + (incoming.get("keywords") or []))
+    merged["keyword_matches"] = _dedupe_strings((current.get("keyword_matches") or []) + (incoming.get("keyword_matches") or []))
+    merged["linked_actions_completed"] = _dedupe_strings((current.get("linked_actions_completed") or []) + (incoming.get("linked_actions_completed") or []))
     merged["evidence"] = _dedupe_strings((current.get("evidence") or []) + (incoming.get("evidence") or []))[:3]
+    merged["completion_ratio"] = max(_point_completion_ratio(current), _point_completion_ratio(incoming))
+    merged["score"] = _score_from_point(merged, merged["weight"])
     merged["feedback"] = "；".join(_dedupe_strings([current.get("feedback"), incoming.get("feedback")]))
     merged["knowledge_refs"] = _dedupe_strings((current.get("knowledge_refs") or []) + (incoming.get("knowledge_refs") or []))
     return merged
@@ -585,10 +688,10 @@ def render_rule_summary(rule_checks: Dict[str, Any]) -> str:
 
 def _level_ratio(level: Any) -> float:
     return {
-        "excellent": 1.0,
-        "good": 0.85,
-        "fair": 0.65,
-        "weak": 0.4,
+        "excellent": 0.92,
+        "good": 0.78,
+        "fair": 0.58,
+        "weak": 0.34,
     }.get(str(level or "").strip(), 0.65)
 
 
@@ -604,6 +707,114 @@ def _ratio_level(ratio: float) -> str:
 
 def _round_score(value: float) -> int:
     return max(0, min(100, int(round(value))))
+
+
+def _score_items_total(report: Dict[str, Any]) -> int:
+    scores = report.get("scores") if isinstance(report, dict) else []
+    if not isinstance(scores, list):
+        return 0
+    return sum(int(item.get("score") or 0) for item in scores if isinstance(item, dict))
+
+
+def _extract_cap_sources(report: Dict[str, Any]) -> List[dict]:
+    meta = report.get("evaluation_meta") if isinstance(report, dict) else {}
+    score_caps = meta.get("score_caps") if isinstance(meta, dict) else {}
+    caps: List[dict] = []
+    raw_caps = score_caps.get("caps") if isinstance(score_caps, dict) else []
+    if isinstance(raw_caps, list):
+        for item in raw_caps:
+            if not isinstance(item, dict):
+                continue
+            try:
+                cap = int(item.get("cap"))
+            except (TypeError, ValueError):
+                continue
+            caps.append(
+                {
+                    "type": str(item.get("type") or "unknown"),
+                    "cap": max(0, min(100, cap)),
+                    "reason": str(item.get("reason") or "").strip(),
+                }
+            )
+    if isinstance(score_caps, dict):
+        try:
+            final_cap = int(score_caps.get("final_cap"))
+        except (TypeError, ValueError):
+            final_cap = None
+        if final_cap is not None and not any(item["type"] == "reported_final_cap" for item in caps):
+            caps.append({"type": "reported_final_cap", "cap": max(0, min(100, final_cap)), "reason": "报告已有最终上限"})
+    return caps
+
+
+def enforce_final_score_policy(report: Dict[str, Any], *, policy_source: str = "unknown") -> Dict[str, Any]:
+    if not isinstance(report, dict):
+        return report
+    if "evaluation_meta" not in report or not isinstance(report.get("evaluation_meta"), dict):
+        report["evaluation_meta"] = {}
+    meta = report["evaluation_meta"]
+    if "score_caps" not in meta or not isinstance(meta.get("score_caps"), dict):
+        meta["score_caps"] = {"caps": [], "final_cap": 100}
+
+    cap_sources = _extract_cap_sources(report)
+    if not cap_sources:
+        cap_sources = [{"type": "no_cap", "cap": 100, "reason": "未触发上限规则"}]
+    applied_cap = min(int(item["cap"]) for item in cap_sources)
+
+    try:
+        before_score = int(round(float(report.get("total_score"))))
+    except (TypeError, ValueError):
+        before_score = _score_items_total(report)
+    before_score = max(0, min(100, before_score))
+    if report.get("uncapped_total_score") is None:
+        report["uncapped_total_score"] = before_score
+
+    after_score = min(before_score, applied_cap)
+    if after_score != before_score and isinstance(report.get("scores"), list):
+        adjusted = reconcile_dimension_scores({"scores": report.get("scores") or [], "total_score": after_score})
+        report["scores"] = adjusted.get("scores") or report.get("scores")
+        after_score = int(adjusted.get("total_score") or after_score)
+
+    report["total_score"] = max(0, min(100, after_score))
+    report["grade_level"] = compute_grade_level(report["total_score"])
+    meta["scoring_version"] = SCORING_VERSION
+    meta["policy_version"] = CURRENT_EVALUATION_POLICY_VERSION
+    meta["score_caps"]["caps"] = [item for item in cap_sources if item["type"] != "reported_final_cap"]
+    meta["score_caps"]["final_cap"] = applied_cap
+    meta["cap_audit"] = {
+        "policy_version": CURRENT_EVALUATION_POLICY_VERSION,
+        "policy_source": policy_source,
+        "cap_sources": cap_sources,
+        "applied_cap": applied_cap,
+        "before_cap_score": before_score,
+        "after_cap_score": report["total_score"],
+        "score_items_total": _score_items_total(report),
+        "valid": report["total_score"] <= applied_cap,
+        "enforced_at": datetime.utcnow().isoformat(timespec="microseconds"),
+    }
+    return report
+
+
+def is_current_evaluation_report(report: Any) -> bool:
+    if not isinstance(report, dict):
+        return False
+    meta = report.get("evaluation_meta")
+    if not isinstance(meta, dict):
+        return False
+    audit = meta.get("cap_audit")
+    try:
+        total_score = int(round(float(report.get("total_score"))))
+        applied_cap = int(audit.get("applied_cap")) if isinstance(audit, dict) else -1
+        after_cap_score = int(audit.get("after_cap_score")) if isinstance(audit, dict) else -1
+    except (TypeError, ValueError):
+        return False
+    return (
+        meta.get("scoring_version") == SCORING_VERSION
+        and meta.get("policy_version") == CURRENT_EVALUATION_POLICY_VERSION
+        and isinstance(audit, dict)
+        and audit.get("valid") is True
+        and 0 <= total_score <= applied_cap <= 100
+        and after_cap_score == total_score
+    )
 
 
 def _infer_point_difficulty(point: dict) -> Tuple[str, float]:
@@ -669,6 +880,39 @@ def calculate_adaptive_weighting(point_results: List[dict]) -> Dict[str, Any]:
     }
 
 
+def _render_scoring_template(weighting: Dict[str, Any], requirement_rows: List[dict], scene_type: str) -> str:
+    common_full = _round_score(float(weighting.get("common_full_score") or 0))
+    common_each_full = _round_score(common_full / max(1, len(COMMON_DIMENSIONS))) if COMMON_DIMENSIONS else 0
+    lines = [
+        f"总分：100 分；场景类型：{scene_type}",
+        f"通用指标总分：{common_full} 分；考察点总分：{_round_score(float(weighting.get('assessment_full_score') or 0))} 分。",
+        "通用指标：",
+    ]
+    for dimension, focus in COMMON_DIMENSIONS:
+        lines.append(f"- {dimension}：满分 {common_each_full} 分。评分依据：{focus}")
+
+    point_weight_map = {str(item.get("id") or "").strip(): item for item in weighting.get("point_weights") or []}
+    lines.append("场景考察点：")
+    if not requirement_rows:
+        lines.append("- 当前场景未配置考察点，考察点总分为 0。")
+    for row in requirement_rows:
+        point_id = str(row.get("id") or "").strip()
+        weight = point_weight_map.get(point_id) or {}
+        full_score = int(weight.get("full_score") or 0)
+        required_label = "必考" if row.get("required", True) else "选考"
+        content = str(row.get("content") or "").strip() or "无补充说明"
+        lines.append(
+            f"- id={point_id or '未配置'}；{row.get('label') or '未命名考察点'}：满分 {full_score} 分；{required_label}；要求：{content}"
+        )
+    lines.extend(
+        [
+            "命中状态换算原则：hit 通常应接近满分；missed 必须为 0 分；partial 需要按完成比例给 25%-85% 区间内的具体分值，不能固定给一半。",
+            "证据原则：学员主动提问/动作与 AI 紧邻反馈需要成对判断；AI 角色反馈可作为命中证据的一部分，但 AI 单独主动透露不能作为学员得分。",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _assistant_after_user_evidence(msgs: List[models.Message]) -> List[str]:
     evidence = []
     previous_was_user = False
@@ -685,15 +929,59 @@ def _sample_evidence(items: List[str], limit: int = 2) -> List[str]:
     return _dedupe_strings(items)[:limit]
 
 
+def _student_fact_category_count(joined: str) -> int:
+    categories = [
+        ["姓名", "身份", "你是谁", "叫什么", "关系", "联系方式", "电话"],
+        ["什么时候", "几点", "时间", "何时", "刚刚"],
+        ["哪里", "地址", "地点", "位置", "几号楼", "房间"],
+        ["谁在场", "还有谁", "哪些人", "对方是谁", "人物"],
+        ["怎么回事", "什么情况", "经过", "发生了什么", "具体"],
+        ["受伤", "危险", "安全", "120", "风险", "还在现场"],
+        ["证据", "现场", "监控", "录像", "记录", "物证"],
+    ]
+    return sum(1 for keywords in categories if contains_any(joined, keywords))
+
+
+def _required_point_rate(point_results: List[dict]) -> float:
+    required_points = [point for point in point_results if point.get("required", True)]
+    if not required_points:
+        return 1.0
+    return sum(_point_completion_ratio(point) for point in required_points) / len(required_points)
+
+
+def _common_ratio_cap_by_points(dimension: str, point_results: List[dict]) -> float:
+    required_rate = _required_point_rate(point_results)
+    if dimension == COMMUNICATION_DIMENSION:
+        return 0.9 if required_rate >= 0.35 else 0.75
+    if required_rate <= 0:
+        return 0.5
+    if required_rate < 0.35:
+        return 0.62
+    if required_rate < 0.55:
+        return 0.72
+    if required_rate < 0.75:
+        return 0.82
+    return 1.0
+
+
 def _common_dimension_reviews(
     llm_report: Dict[str, Any],
     student_lines: List[str],
     msgs: List[models.Message],
     rule_checks: Dict[str, Any],
+    point_results: List[dict] | None = None,
 ) -> List[dict]:
     joined = "\n".join(student_lines)
     user_evidence = [f"学员: {line[:120]}" for line in student_lines if str(line).strip()]
     adjacent_ai_evidence = _assistant_after_user_evidence(msgs)
+    point_results = point_results or []
+    fact_category_count = _student_fact_category_count(joined)
+    question_turns = sum(1 for line in student_lines if contains_any(line, ["?", "？", "吗", "什么", "哪里", "几", "是否", "有没有", "谁", "怎么", "为何", "为什么"]))
+    total_turns = len([line for line in student_lines if str(line).strip()])
+    polite_hits = sum(1 for line in student_lines if contains_any(line, ["请", "麻烦", "您", "你好", "配合", "说明"]))
+    red_language_hits = sum(1 for line in student_lines if contains_any(line, RED_FLAG_RULES["coercive_language"]["keywords"]))
+    closure_hits = sum(1 for line in student_lines if contains_any(line, ["下一步", "后续", "处理", "结束", "带回", "笔录", "移交", "我们会", "请等待"]))
+    required_rate = _required_point_rate(point_results)
     llm_reviews = {
         str(item.get("dimension") or "").strip(): item
         for item in (llm_report.get("common_reviews") or [])
@@ -703,22 +991,22 @@ def _common_dimension_reviews(
 
     seed = {
         COMMUNICATION_DIMENSION: {
-            "ratio": 0.82 if contains_any(joined, ["请", "麻烦", "您", "说明", "是否", "你好"]) else 0.68,
+            "ratio": min(0.93, 0.58 + polite_hits * 0.055 + min(total_turns, 6) * 0.018 - red_language_hits * 0.22),
             "reason": "学员表达总体可控，未见明显激化表达。" if student_lines else "缺少有效学员表达，无法体现规范沟通。",
             "evidence": _sample_evidence(user_evidence),
         },
         INQUIRY_DIMENSION: {
-            "ratio": min(0.9, 0.45 + len(student_lines) * 0.08),
-            "reason": "学员能够持续发问推进对话。" if len(student_lines) >= 4 else "学员追问轮次偏少，逻辑推进不足。",
+            "ratio": min(0.9, 0.32 + question_turns * 0.075 + min(fact_category_count, 6) * 0.052 + required_rate * 0.08),
+            "reason": "学员能够围绕关键信息持续发问推进对话。" if question_turns >= 4 and fact_category_count >= 3 else "学员追问轮次或关键要素覆盖不足。",
             "evidence": _sample_evidence(user_evidence),
         },
         SUMMARY_DIMENSION: {
-            "ratio": 0.78 if len(adjacent_ai_evidence) >= 2 else 0.6,
-            "reason": "学员通过提问获得了部分关键事实。" if adjacent_ai_evidence else "缺少由学员主动触发的关键信息证据。",
+            "ratio": min(0.88, 0.30 + fact_category_count * 0.072 + required_rate * 0.16),
+            "reason": "学员主动覆盖了多类关键事实要素。" if fact_category_count >= 4 else "学员主动触发的关键信息类别不足。",
             "evidence": _sample_evidence(user_evidence + adjacent_ai_evidence),
         },
         CLOSURE_DIMENSION: {
-            "ratio": 0.75 if contains_any(joined, ["下一步", "后续", "处理", "结束", "带回", "笔录", "移交"]) else 0.55,
+            "ratio": min(0.86, 0.42 + closure_hits * 0.12 + required_rate * 0.12 + min(total_turns, 5) * 0.015),
             "reason": "学员体现了后续处置或收尾安排。" if contains_any(joined, ["下一步", "后续", "处理", "结束", "带回", "笔录", "移交"]) else "未充分说明下一步安排或阶段收尾。",
             "evidence": _sample_evidence(user_evidence),
         },
@@ -727,7 +1015,18 @@ def _common_dimension_reviews(
     reviews = []
     for dimension, focus in COMMON_DIMENSIONS:
         llm_item = llm_reviews.get(dimension) or {}
-        ratio = _level_ratio(llm_item.get("level")) if llm_item else seed[dimension]["ratio"]
+        base_ratio = seed[dimension]["ratio"]
+        if llm_item:
+            llm_full = float(llm_item.get("full_score") or 0)
+            llm_score = float(llm_item.get("score") or -1)
+            if llm_full > 0 and llm_score >= 0:
+                ratio = max(0.0, min(1.0, llm_score / llm_full))
+            else:
+                llm_ratio = _level_ratio(llm_item.get("level"))
+                ratio = base_ratio * 0.35 + llm_ratio * 0.65
+        else:
+            ratio = base_ratio
+        ratio = min(ratio, _common_ratio_cap_by_points(dimension, point_results))
         deduct_ratio = min(0.35, float(deductions.get(dimension) or 0) / 25.0)
         ratio = max(0.0, min(1.0, ratio - deduct_ratio))
         reason = str(llm_item.get("reason") or seed[dimension]["reason"]).strip()
@@ -742,6 +1041,8 @@ def _common_dimension_reviews(
                 "ratio": ratio,
                 "reason": reason,
                 "evidence": evidence,
+                "llm_score": llm_item.get("score") if llm_item else None,
+                "llm_full_score": llm_item.get("full_score") if llm_item else None,
             }
         )
     return reviews
@@ -776,13 +1077,13 @@ def _score_cap_summary(student_lines: List[str], point_results: List[dict], red_
 
     required_points = [point for point in point_results if point.get("required", True)]
     required_hit = [point for point in required_points if point.get("status") == "hit"]
-    required_rate = (len(required_hit) / len(required_points)) if required_points else 1.0
+    required_rate = (sum(_point_completion_ratio(point) for point in required_points) / len(required_points)) if required_points else 1.0
     if required_rate < 0.35:
-        caps.append({"type": "required_rate", "cap": 58, "reason": "必考点 hit 率低于 35%"})
+        caps.append({"type": "required_completion", "cap": 58, "reason": "必考点完成度低于 35%"})
     elif required_rate < 0.55:
-        caps.append({"type": "required_rate", "cap": 70, "reason": "必考点 hit 率低于 55%"})
+        caps.append({"type": "required_completion", "cap": 70, "reason": "必考点完成度低于 55%"})
     elif required_rate < 0.75:
-        caps.append({"type": "required_rate", "cap": 82, "reason": "必考点 hit 率低于 75%"})
+        caps.append({"type": "required_completion", "cap": 82, "reason": "必考点完成度低于 75%"})
 
     for flag in red_flags:
         caps.append({"type": "red_flag", "cap": int(flag.get("cap") or 100), "reason": flag.get("label")})
@@ -793,6 +1094,7 @@ def _score_cap_summary(student_lines: List[str], point_results: List[dict], red_
         "required_total": len(required_points),
         "required_hit": len(required_hit),
         "required_rate": required_rate,
+        "required_completion_rate": required_rate,
         "caps": caps,
         "final_cap": final_cap,
     }
@@ -809,7 +1111,7 @@ def build_adaptive_report(
 ) -> Dict[str, Any]:
     point_results = dedupe_assessment_result_points(point_results)
     weighting = calculate_adaptive_weighting(point_results)
-    common_reviews = _common_dimension_reviews(llm_report, student_lines, msgs, rule_checks)
+    common_reviews = _common_dimension_reviews(llm_report, student_lines, msgs, rule_checks, point_results)
     common_full = weighting["common_full_score"]
     common_each_full = common_full / max(1, len(common_reviews))
 
@@ -840,8 +1142,15 @@ def build_adaptive_report(
         share = float(point_weight.get("score_share") or 0)
         full_score = _round_score(share * 100)
         status = str(point.get("status") or "missed")
-        ratio = 1.0 if status == "hit" else 0.5 if status == "partial" else 0.0
-        score = _round_score(full_score * ratio)
+        llm_score = point.get("llm_score")
+        llm_full_score = int(point.get("llm_full_score") or full_score or 0)
+        if isinstance(llm_score, (int, float)) and llm_full_score > 0:
+            score = max(0, min(llm_full_score, _round_score(float(llm_score))))
+            ratio = score / llm_full_score
+            full_score = llm_full_score
+        else:
+            ratio = _point_completion_ratio(point)
+            score = _round_score(full_score * ratio)
         running_total += score
         enriched = {
             **point,
@@ -850,6 +1159,7 @@ def build_adaptive_report(
             "score_share": share,
             "weighted_score": score,
             "full_score": full_score,
+            "completion_ratio": ratio,
         }
         enriched_points.append(enriched)
         scores.append(
@@ -865,6 +1175,7 @@ def build_adaptive_report(
                 "assessment_point_id": point_id,
                 "difficulty_level": enriched["difficulty_level"],
                 "required": bool(point.get("required", True)),
+                "score_ratio": ratio,
             }
         )
 
@@ -896,7 +1207,7 @@ def build_adaptive_report(
     if len(suggestions) < 12:
         suggestions = "建议按通用能力和本场景考察点逐项复训，先补齐必考点，再提升追问质量与收尾表达。"
 
-    return {
+    report = {
         "scores": scores,
         "total_score": total_score,
         "uncapped_total_score": uncapped_total,
@@ -919,16 +1230,17 @@ def build_adaptive_report(
             "assessment_completion": {
                 "required_total": len(required_points),
                 "required_hit": len(required_hit),
-                "required_rate": (len(required_hit) / len(required_points)) if required_points else 1.0,
+                "required_rate": (sum(_point_completion_ratio(point) for point in required_points) / len(required_points)) if required_points else 1.0,
                 "overall_total": len(enriched_points),
                 "overall_hit": len(all_hit),
-                "overall_rate": (len(all_hit) / len(enriched_points)) if enriched_points else 1.0,
+                "overall_rate": (sum(_point_completion_ratio(point) for point in enriched_points) / len(enriched_points)) if enriched_points else 1.0,
                 "total_weight": total_weight,
                 "earned_weight": earned_weight,
                 "weight_rate": (earned_weight / total_weight) if total_weight else 1.0,
             },
         },
     }
+    return enforce_final_score_policy(report, policy_source="build_adaptive_report")
 
 
 def build_knowledge_hits(case: Any, scene: Any, scene_type: str, limit: int = 5, knowledge_refs: List[str] | None = None) -> List[str]:
@@ -975,13 +1287,64 @@ def compute_grade_level(total_score: int) -> str:
     return "需改进"
 
 
-def _resolve_point_status(runtime_status: str | None, llm_status: str | None) -> str:
-    runtime_rank = _STATUS_RANK.get(str(runtime_status or "").strip(), 0)
-    llm_rank = _STATUS_RANK.get(str(llm_status or "").strip(), 0)
-    best = max(runtime_rank, llm_rank)
-    if best >= 3:
+def _valid_student_or_action_evidence(values: List[Any]) -> List[str]:
+    weak_replies = {"是", "是的", "不是", "好的", "好", "嗯", "哦", "没有", "对", "不对", "知道", "明白"}
+    result: List[str] = []
+    for value in values or []:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        if text.startswith(("AI角色:", "AI角色：", "AI:", "AI：", "助手:", "助手：")):
+            continue
+        is_prefixed_signal = text.startswith(("学员:", "学员：", "用户:", "用户：", "user:", "user：", "动作:", "动作："))
+        clean = re.sub(r"^(学员|用户|user|动作)[:：]\s*", "", text, flags=re.I).strip()
+        if clean in weak_replies or len(clean) < 3:
+            continue
+        if is_prefixed_signal:
+            result.append(text)
+    return _dedupe_strings(result)
+
+
+def _is_ai_evidence(text: Any) -> bool:
+    value = str(text or "").strip()
+    return value.startswith(("AI角色:", "AI角色：", "AI:", "AI：", "助手:", "助手：", "assistant:", "assistant："))
+
+
+def _valid_paired_scoring_evidence(values: List[Any]) -> List[str]:
+    items = [str(value or "").strip() for value in values or [] if str(value or "").strip()]
+    student_or_action = _valid_student_or_action_evidence(items)
+    ai_items = _dedupe_strings([item for item in items if _is_ai_evidence(item)])
+    if not student_or_action:
+        return []
+    return _dedupe_strings(student_or_action + ai_items)
+
+
+def _has_paired_ai_feedback(values: List[Any]) -> bool:
+    paired = _valid_paired_scoring_evidence(values)
+    return bool(paired) and any(_is_ai_evidence(item) for item in paired)
+
+
+def _resolve_point_status(runtime_point: dict, llm_point: dict) -> str:
+    runtime_status = str(runtime_point.get("status") or "").strip()
+    llm_status = str(llm_point.get("status") or "").strip()
+    runtime_rank = _STATUS_RANK.get(runtime_status, 0)
+    llm_rank = _STATUS_RANK.get(llm_status, 0)
+
+    runtime_evidence = (runtime_point.get("evidence") or []) + (runtime_point.get("context_evidence") or [])
+    llm_evidence = (llm_point.get("evidence") or []) + (llm_point.get("context_evidence") or [])
+    runtime_has_action = bool(runtime_point.get("linked_actions_completed"))
+    runtime_has_pair = _has_paired_ai_feedback(runtime_evidence)
+    llm_has_pair = _has_paired_ai_feedback(llm_evidence)
+
+    if runtime_rank >= 3 and (runtime_has_pair or runtime_has_action):
         return "hit"
-    if best == 2:
+    if runtime_rank == 2:
+        return "partial"
+
+    llm_valid_evidence = _valid_paired_scoring_evidence(llm_evidence)
+    if llm_rank >= 3 and llm_has_pair:
+        return "hit"
+    if llm_rank == 2 and llm_valid_evidence:
         return "partial"
     return "missed"
 
@@ -1004,6 +1367,109 @@ def _default_point_feedback(point: dict) -> str:
     if status == "partial":
         return f"部分达成，仍需补全关键环节。{('已出现：' + evidence_text) if evidence_text else ''}".strip()
     return "未在对话或动作中发现有效完成痕迹，建议按阶段要求补做。"
+
+
+def _strip_requirement_prefix(text: Any) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    value = re.sub(r"^(学员应|应当|需要|需|具体要求|怎样算完成|完成标准|考察点)[:：\s]*", "", value)
+    value = re.sub(r"^(学员应完成|具体要求|怎样算完成)[:：\s]*", "", value)
+    value = re.sub(r"^(目标|要求)[:：\s]*", "", value)
+    return value.strip(" 　\t\r\n，。；;：:")
+
+
+def _compact_text(text: Any, *, limit: int = 48, keep_sentences: int = 1) -> str:
+    value = _strip_requirement_prefix(text)
+    if not value:
+        return ""
+    parts = [part.strip() for part in re.split(r"[。！？；;\n]+", value) if part.strip()]
+    if parts:
+        value = "。".join(parts[:keep_sentences])
+    value = re.sub(r"\s+", "", value)
+    if len(value) <= limit:
+        return value
+    return f"{value[: max(1, limit - 1)]}…"
+
+
+def _split_bullets(text: Any, *, limit: int = 3) -> List[str]:
+    value = str(text or "").strip()
+    if not value:
+        return []
+    parts = [part.strip(" \t\r\n，。；;:：") for part in re.split(r"[。！？；;\n]+", value) if part.strip()]
+    if not parts:
+        parts = [value]
+    normalized: List[str] = []
+    seen = set()
+    for part in parts:
+        if not part or part in seen:
+            continue
+        seen.add(part)
+        normalized.append(part)
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _classify_evidence_item(text: Any) -> dict:
+    value = str(text or "").strip()
+    prefix = value[:16]
+    if prefix.startswith(("学员:", "学员：", "用户:", "用户：", "user:", "user：")):
+        kind = "student_utterance"
+    elif prefix.startswith(("AI:", "AI：", "助手:", "助手：", "assistant:", "assistant：")):
+        kind = "assistant_reply"
+    elif "动作" in prefix or value.startswith(("动作:", "动作：", "日志:", "日志：")):
+        kind = "action_log"
+    elif prefix.startswith(("上下文:", "上下文：")):
+        kind = "context"
+    else:
+        kind = "text"
+    return {"kind": kind, "text": value}
+
+
+def _normalize_media_refs(point: dict) -> List[dict]:
+    refs: List[dict] = []
+    for key in ("media_refs", "media_evidence", "artifacts"):
+        items = point.get(key)
+        if not items:
+            continue
+        if isinstance(items, dict):
+            items = [items]
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict):
+                refs.append({k: item.get(k) for k in ("id", "artifact_type", "file_url", "mime_type", "duration_seconds", "label") if item.get(k) is not None})
+            else:
+                refs.append({"label": str(item).strip()})
+    return refs
+
+
+def _build_assessment_point_display(point: dict) -> dict:
+    full_text = str(
+        point.get("content")
+        or point.get("requirement")
+        or point.get("description")
+        or point.get("target")
+        or point.get("assessment_target")
+        or point.get("goal")
+        or "",
+    ).strip()
+    feedback = str(point.get("feedback") or "").strip()
+    summary_source = feedback or full_text
+    short_label = _compact_text(point.get("label") or full_text, limit=20) or str(point.get("label") or "未命名考察点").strip()
+    summary = _compact_text(summary_source, limit=48, keep_sentences=2) or short_label
+    evidence = [_classify_evidence_item(item) for item in _dedupe_strings(point.get("evidence") or [])]
+    context_evidence = [_classify_evidence_item(item) for item in _dedupe_strings(point.get("context_evidence") or [])]
+    return {
+        "short_label": short_label,
+        "summary": summary,
+        "full_text": full_text,
+        "evidence_items": evidence,
+        "context_evidence_items": context_evidence,
+        "media_refs": _normalize_media_refs(point),
+        "feedback_items": _split_bullets(feedback, limit=3),
+    }
 
 
 def merge_assessment_point_results(
@@ -1040,11 +1506,59 @@ def merge_assessment_point_results(
         req_row = req_map.get(point_id) or {}
         label = str(runtime_point.get("label") or llm_point.get("label") or req_row.get("label") or "未命名考察点").strip()
         weight = max(1, int(req_row.get("weight") or runtime_point.get("weight") or 10))
-        status = _resolve_point_status(runtime_point.get("status"), llm_point.get("status"))
-        evidence = _dedupe_strings((runtime_point.get("evidence") or []) + (llm_point.get("evidence") or []))[:3]
+        status = _resolve_point_status(runtime_point, llm_point)
+        runtime_scoring_source = (runtime_point.get("evidence") or []) + (runtime_point.get("context_evidence") or [])
+        llm_scoring_source = (llm_point.get("evidence") or []) + (llm_point.get("context_evidence") or [])
+        runtime_evidence = _valid_paired_scoring_evidence(runtime_scoring_source)
+        llm_evidence = _valid_paired_scoring_evidence(llm_scoring_source)
+        evidence = _dedupe_strings(runtime_evidence + llm_evidence)[:4]
+        context_evidence = _dedupe_strings(
+            [
+                item
+                for item in (runtime_point.get("context_evidence") or []) + (llm_point.get("context_evidence") or [])
+                if item not in evidence
+            ]
+        )[:3]
         feedback = str(llm_point.get("reason") or llm_point.get("feedback") or runtime_point.get("feedback") or "").strip()
         if not feedback:
             feedback = _default_point_feedback({"status": status, "evidence": evidence})
+        if status == "missed":
+            feedback = runtime_point.get("feedback") or "未发现学员主动完成该考察点的有效发言或动作。"
+        llm_full_score = int(llm_point.get("full_score") or 0)
+        llm_score = int(llm_point.get("score") or -1)
+        llm_ratio = llm_point.get("score_ratio")
+        if llm_full_score > 0 and llm_score >= 0:
+            llm_score = max(0, min(llm_full_score, llm_score))
+            completion_ratio = max(0.0, min(1.0, llm_score / llm_full_score))
+        else:
+            completion_ratio = _point_completion_ratio({**runtime_point, **llm_point, "status": status, "evidence": evidence})
+            llm_score = _score_from_point({**runtime_point, **llm_point, "status": status, "evidence": evidence}, weight)
+        if llm_ratio is not None:
+            try:
+                completion_ratio = max(0.0, min(1.0, float(llm_ratio)))
+            except (TypeError, ValueError):
+                pass
+        display = _build_assessment_point_display(
+            {
+                **req_row,
+                **runtime_point,
+                **llm_point,
+                "label": label,
+                "content": str(req_row.get("content") or llm_point.get("content") or "").strip(),
+                "feedback": feedback,
+                "evidence": evidence,
+                "context_evidence": context_evidence,
+            }
+        )
+        score = llm_score if llm_full_score > 0 and llm_score >= 0 else _score_from_point({**runtime_point, **llm_point, "status": status, "evidence": evidence, "completion_ratio": completion_ratio}, weight)
+        if llm_full_score > 0:
+            score = min(score, llm_full_score)
+        if status == "missed":
+            score = 0
+            completion_ratio = 0.0
+        elif status == "partial" and llm_full_score > 0:
+            score = min(score, int(round(llm_full_score * 0.85)))
+            completion_ratio = min(completion_ratio, score / llm_full_score if llm_full_score else completion_ratio)
         merged.append(
             {
                 "id": point_id,
@@ -1055,10 +1569,15 @@ def merge_assessment_point_results(
                 "required": bool(req_row.get("required", runtime_point.get("required", True))),
                 "weight": weight,
                 "status": status,
-                "score": _score_from_point_status(status, weight),
+                "score": score,
+                "llm_score": llm_score if llm_full_score > 0 else None,
+                "llm_full_score": llm_full_score or None,
+                "completion_ratio": completion_ratio,
                 "evidence": evidence,
+                "context_evidence": context_evidence,
                 "feedback": feedback,
                 "knowledge_refs": _dedupe_strings(runtime_point.get("knowledge_refs") or req_row.get("knowledge_refs") or []),
+                **display,
             }
         )
     return dedupe_assessment_result_points(merged)
@@ -1348,6 +1867,13 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
 
     if not force_recompute and session.status == "finished" and session.evaluation_result:
         cached_report = json.loads(session.evaluation_result)
+        if not is_current_evaluation_report(cached_report):
+            force_recompute = True
+        else:
+            return cached_report
+
+    if not force_recompute and session.status == "finished" and session.evaluation_result:
+        cached_report = json.loads(session.evaluation_result)
         scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
         case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
         msgs = (
@@ -1405,6 +1931,7 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
     if case:
         case_info = f"案件标题：{case.title}\n案件类型：{case.case_type}\n案件背景：{case.background}"
     scene_info = _build_scene_info(scene, scene_type, role, case)
+    scoring_template = _render_scoring_template(calculate_adaptive_weighting(runtime_point_results), requirement_rows, scene_type)
 
     full_prompt = EVALUATION_PROMPT_TEMPLATE.format(
         scene_info=scene_info,
@@ -1414,6 +1941,7 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
         dialogue_history=dialogue_history or "暂无对话内容",
         assessment_requirements=assessment_requirements,
         knowledge_base=knowledge_base,
+        scoring_template=scoring_template,
     )
 
     try:
@@ -1423,7 +1951,7 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
                 {"role": "system", "content": "你是一名公正、严格、专业的警务训练教官，必须输出合法 JSON。"},
                 {"role": "user", "content": full_prompt},
             ],
-            max_tokens=2600,
+            max_tokens=4200,
         )
 
         raw_content = _extract_response_text(response)
@@ -1458,10 +1986,14 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
         report["evaluation_meta"]["scene_type"] = scene_type
         report["evaluation_meta"]["knowledge_hits"] = knowledge
         report["evaluation_meta"]["stage_gap_summary"] = structured_assessment["stage_gap_summary"] or build_stage_gap_summary(scene, student_lines)
+        report["evaluation_meta"]["scoring_source"] = "llm_structured_scoring"
+        report["evaluation_meta"]["evaluation_run_id"] = f"{session_id}-{datetime.utcnow().isoformat(timespec='microseconds')}"
+        report["evaluation_meta"]["force_recompute"] = bool(force_recompute)
         if isinstance(llm_report.get("evaluation_meta"), dict):
             report["evaluation_meta"]["llm_fallback"] = bool(llm_report["evaluation_meta"].get("llm_fallback", False))
             if llm_report["evaluation_meta"].get("raw_summary"):
                 report["evaluation_meta"]["raw_summary"] = llm_report["evaluation_meta"]["raw_summary"]
+        report = enforce_final_score_policy(report, policy_source="evaluate_session_success")
         report = finalize_evaluation_report(report, session, scene, case, student_lines)
         report_json = json.dumps(report, ensure_ascii=False)
         session.status = "finished"
@@ -1471,4 +2003,41 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
         return report
     except Exception as e:
         print(f"Evaluation error: {e}")
-        return {"error": str(e)}
+        llm_report = {
+            "common_reviews": [],
+            "assessment_check_results": [],
+            "strengths": [],
+            "improvements": [],
+            "suggestions": "模型评估暂不可用，系统已依据运行时考察点、动作记录和规则校验生成兜底报告。",
+            "evaluation_meta": {"llm_fallback": True, "raw_summary": str(e)[:220]},
+        }
+        knowledge_docs = _knowledge_index(structured_assessment["knowledge_ref_ids"])
+        merged_points = merge_assessment_point_results(runtime_point_results, [], requirement_rows)
+        merged_points = _attach_knowledge_titles(merged_points, knowledge_docs)
+        report = build_adaptive_report(
+            llm_report,
+            merged_points,
+            action_results,
+            student_lines,
+            msgs,
+            rule_checks,
+            scene_type,
+        )
+        report["closure_summary"] = structured_assessment["closure_summary"]
+        if "evaluation_meta" not in report:
+            report["evaluation_meta"] = {}
+        report["evaluation_meta"]["scene_type"] = scene_type
+        report["evaluation_meta"]["knowledge_hits"] = knowledge
+        report["evaluation_meta"]["stage_gap_summary"] = structured_assessment["stage_gap_summary"] or build_stage_gap_summary(scene, student_lines)
+        report["evaluation_meta"]["scoring_source"] = "fallback_rule_scoring_after_llm_error"
+        report["evaluation_meta"]["evaluation_run_id"] = f"{session_id}-{datetime.utcnow().isoformat(timespec='microseconds')}"
+        report["evaluation_meta"]["force_recompute"] = bool(force_recompute)
+        report["evaluation_meta"]["llm_fallback"] = True
+        report["evaluation_meta"]["raw_summary"] = str(e)[:220]
+        report = enforce_final_score_policy(report, policy_source="evaluate_session_fallback")
+        report = finalize_evaluation_report(report, session, scene, case, student_lines)
+        report_json = json.dumps(report, ensure_ascii=False)
+        session.status = "finished"
+        session.evaluation_result = report_json
+        db.commit()
+        return report

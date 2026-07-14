@@ -1,10 +1,11 @@
 import os
 
-from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-load_dotenv()
+from env_loader import load_backend_env
+
+load_backend_env()
 
 # 锁定数据库根目录，避免因启动目录不同而连接到不同的 SQLite 文件。
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

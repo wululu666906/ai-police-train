@@ -43,7 +43,7 @@ ROLE_ACTOR_PROMPT = """
 【导演编排】
 - 互动模式：{interaction_mode}
 - 你的参与方式：{participation}
-- 本次连续发言最多 {utterance_count} 条台词（可少于该数，不可超过）；多条之间学员无需回复，你应顺着同一段思路往下说
+- 本次只能发言 1 条台词；不得替其他角色继续补充，不得输出第二个气泡
 - 发言意图：{intent}
 - 触发原因：{trigger_reason}
 
@@ -83,8 +83,8 @@ ROLE_ACTOR_PROMPT = """
 {perspective_hint}
 
 要求：
-1. 一次生成 utterances 数组，含 1 到 utterance_count 条连续台词；每条对应界面一个气泡，条与条之间是同一角色接着说完，不是等学员回话再说下一句。
-2. 多条台词应语义连贯、递进或补充，像真人一口气把话讲完，不要每条都重复同义。
+1. 一次生成 utterances 数组，且数组长度必须为 1；这一条就是界面唯一气泡。
+2. 这条台词必须先读【学员刚才说】和【近期对话】，只回应最新输入，不要把前几轮的话当成本轮刚发生。
 3. 必须符合你的人设、情绪、配合度；不能串戏、不能全知。
 4. 严禁用第一人称「我」冒充学员点名的其他角色作答；若你是证人/家属且学员在问别人，请用第三人称转述你观察到的情况。
 5. 若 participation=interrupt，第一句可带打断感；若 calm_scene 模式，情绪应略有缓和但仍保角色性格。
@@ -109,6 +109,8 @@ ROLE_ACTOR_PROMPT = """
 17. 注意：以下输出格式中的值为示例（delivery、数字等），请根据角色状态和本轮互动动态决定，不要照搬。只输出 JSON：
 18. 若【真人化反应策略】要求你回避、沉默、争执、转移或求保护，要通过自然口语表现出来；不要直接说“我是争执型/回避型”。
 19. 如果本轮已有人先发言，必须像听见了对方的话一样回应：同意、反驳、补充、纠正、沉默回避均可，但不能无视明显冲突。
+20. 角色身份、家庭排行、亲属关系、哥哥/弟弟称谓必须以【你的人设与状态】和【案件基准事实】为准，不能一会儿当哥哥一会儿当弟弟；不确定时只说姓名，不强行使用哥哥/弟弟称谓。
+21. 若你指责“对方诬赖/栽赃/让你背锅/他说你动手”，必须能在【学员刚才说】或最近 2 条对方发言里找到依据；找不到依据时改为回答学员当前问题。
 
 {{
   "utterances": [
@@ -192,8 +194,85 @@ def _sanitize_utterances_for_last_user(utterances: list[dict[str, str]], user_te
     return sanitized or utterances
 
 
+def _recent_dialogue_text(history: list[Any], limit: int = 4) -> str:
+    lines: list[str] = []
+    for message in history[-limit:]:
+        role = _text(getattr(message, "role", ""))
+        speaker = _text(getattr(message, "speaker_name", ""))
+        content = _text(getattr(message, "content", ""))
+        if not content:
+            continue
+        if speaker:
+            lines.append(f"{speaker}: {content}")
+        else:
+            lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def _sanitize_unsupported_accusations(
+    utterances: list[dict[str, str]],
+    *,
+    role: models.Role,
+    user_text: str,
+    history: list[Any],
+) -> list[dict[str, str]]:
+    evidence_text = f"{user_text}\n{_recent_dialogue_text(history, limit=3)}"
+    accusation_terms = ("诬赖", "冤枉", "栽赃", "背锅", "拉我下水", "他说我动手", "非说我动手", "他说的不算数")
+    has_evidence = any(term in evidence_text for term in accusation_terms) or any(
+        phrase in evidence_text for phrase in ("说你", "说我", "指认", "指责", "动手")
+    )
+    if has_evidence:
+        return utterances
+
+    cleaned: list[dict[str, str]] = []
+    replaced = False
+    for item in utterances:
+        content = _text(item.get("content"))
+        if any(term in content for term in accusation_terms):
+            if not replaced:
+                cleaned.append(
+                    {
+                        "content": _vague_reply(role),
+                        "delivery": item.get("delivery") or "defensive",
+                    }
+                )
+                replaced = True
+            continue
+        cleaned.append(item)
+    return cleaned or utterances
+
+
 def _normalize_repeat_key(text: str) -> str:
     return re.sub(r"[\s，。！？,.!?、；;：“”\"'（）()…]+", "", _text(text))
+
+
+def _repeat_similarity(left: str, right: str) -> float:
+    """Cheap character n-gram similarity for paraphrased repeat detection."""
+    a = _normalize_repeat_key(left)
+    b = _normalize_repeat_key(right)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    grams_a = {a[index:index + 2] for index in range(max(0, len(a) - 1))}
+    grams_b = {b[index:index + 2] for index in range(max(0, len(b) - 1))}
+    if not grams_a or not grams_b:
+        return 0.0
+    return len(grams_a & grams_b) / max(1, len(grams_a | grams_b))
+
+
+def _repetition_repair(user_text: str, delivery: str = "defensive") -> str:
+    """Change the interaction move when a role keeps paraphrasing itself."""
+    text = _text(user_text)
+    if _contains_any(text, ("时间", "几点", "什么时候")):
+        return "时间我先说我记得的：大概就在那会儿。具体分钟我不敢乱讲，你再问我地点。"
+    if _contains_any(text, ("哪里", "地点")):
+        return "地点我可以先说大概范围，细的位置我得再想一下，别一下把几个问题混在一起。"
+    if _looks_like_question(text):
+        return "这句我听明白了。具体事实我先回答一个，别让我重复刚才那段：你要先问时间、地点，还是谁先动手？"
+    if _contains_any(text, ("安全", "救护", "120", "分开", "保护")):
+        return "安全这件事我听到了。你先告诉我现在谁在旁边、距离多远，我再继续说。"
+    return "我不是不回应。刚才那句我说过了，这次我补一个具体点：你先把问题拆开，我能答清楚。"
 
 
 def _recent_role_contents(history: list[Any], role: models.Role) -> list[str]:
@@ -288,11 +367,17 @@ def _dedupe_and_repair_utterances(
         if not content:
             continue
         key = _normalize_repeat_key(content)
-        if key and (key in seen or key in recent_keys):
-            if loss_control and not repaired:
+        # Chinese paraphrases often share only a few bigrams; keep this below
+        # exact-match territory while requiring a reasonably long utterance.
+        semantically_repeated = len(key) >= 8 and any(_repeat_similarity(content, previous) >= 0.58 for previous in recent)
+        if key and (key in seen or key in recent_keys or semantically_repeated):
+            if not repaired:
                 repaired.append(
                     {
-                        "content": _loss_control_reply(role, user_text, recent),
+                        "content": _loss_control_reply(role, user_text, recent) if loss_control else _repetition_repair(
+                            user_text,
+                            item.get("delivery") or (state_contract or {}).get("delivery") or "defensive",
+                        ),
                         "delivery": item.get("delivery") or (state_contract or {}).get("delivery") or "anxious",
                     }
                 )
@@ -494,6 +579,20 @@ def _rule_based_utterances(
     if _is_loss_control_snapshot(dict(cast_entry.get("role_snapshot") or {})):
         lines.append(_loss_control_reply(role, text, []))
     preface = reaction_preface(role, reaction, peer_utterances)
+    self_name = _role_display_name(role)
+    if preface.startswith(f"{self_name}，") or preface.startswith(f"{self_name}锛"):
+        peer_name = ""
+        for item in reversed(peer_utterances or []):
+            candidate = _text(item.get("speaker_name") if isinstance(item, dict) else "")
+            if candidate and candidate != self_name:
+                peer_name = candidate
+                break
+        if "别把话说成" in preface or "妸璇濊" in preface:
+            preface = f"{peer_name}，你别把话说成那样。" if peer_name else "你别把话说成那样。"
+        elif peer_name:
+            preface = re.sub(rf"^{re.escape(self_name)}[，锛][^你]*", f"{peer_name}，", preface, count=1)
+        else:
+            preface = re.sub(rf"^{re.escape(self_name)}[，锛]\s*", "", preface, count=1)
     direct_fact_question = _contains_any(
         text,
         ("身份", "你是谁", "叫什么", "关系", "几点", "时间", "什么时候", "哪里", "地点", "位置", "在哪"),
@@ -613,7 +712,7 @@ def generate_role_dialogue(
     peer_utterances: Optional[list[dict[str, Any]]] = None,
     use_llm: bool = True,
 ) -> dict[str, Any]:
-    utterance_count = max(1, min(8, int(cast_entry.get("utterance_count") or 1)))
+    utterance_count = 1
     profile = build_persona_profile(role, case, scene)
     script = build_role_script(role, case, scene, profile)
     knowledge_bundle = load_case_knowledge_bundle(case, role)
@@ -706,6 +805,12 @@ def generate_role_dialogue(
             if cleaned:
                 cleaned = sanitize_utterances(cleaned)
                 cleaned = _sanitize_utterances_for_last_user(cleaned, user_text)
+                cleaned = _sanitize_unsupported_accusations(
+                    cleaned,
+                    role=role,
+                    user_text=user_text,
+                    history=history,
+                )
                 delta = payload.get("state_delta") if isinstance(payload.get("state_delta"), dict) else {}
                 output = {
                     "utterances": cleaned,
@@ -740,6 +845,12 @@ def generate_role_dialogue(
         sanitize_utterances(_sanitize_utterances_for_last_user(output.get("utterances") or [], user_text)),
         state_contract,
     )
+    output["utterances"] = _sanitize_unsupported_accusations(
+        output["utterances"],
+        role=role,
+        user_text=user_text,
+        history=history,
+    )
     output["utterances"] = _dedupe_and_repair_utterances(
         output["utterances"],
         role=role,
@@ -754,7 +865,7 @@ def generate_role_dialogue(
         "speaker_role_id": role.id,
         "role": role,
         "participation": cast_entry.get("participation"),
-        "utterances": output["utterances"][:utterance_count],
+        "utterances": output["utterances"][:1],
         "inner_thought": output.get("inner_thought") or "",
         "state_delta": output.get("state_delta") or {},
         "new_fact_revealed": output.get("new_fact_revealed"),

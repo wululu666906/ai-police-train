@@ -1,6 +1,6 @@
-"""Scene engine: merge multi-role outputs into consecutive reply_turns (bubbles).
+"""Scene engine: merge role outputs into reply_turns (bubbles).
 
-Each role may contribute 1-8 utterances in one burst before the student speaks again.
+Current training UX requires exactly one AI role bubble per learner turn.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def consolidate_scene_conversation(
         if str(key).strip()
     }
 
-    for actor in actor_outputs:
+    for actor in actor_outputs[:1]:
         role = actor.get("role")
         role_id = actor.get("speaker_role_id") or getattr(role, "id", None)
         speaker_name = actor.get("speaker_name") or _role_display_name(role)
@@ -75,7 +75,7 @@ def consolidate_scene_conversation(
             new_facts.append(_text(fact))
 
         first = True
-        for utterance in actor.get("utterances") or []:
+        for utterance in (actor.get("utterances") or [])[:1]:
             content = _text(utterance.get("content") if isinstance(utterance, dict) else utterance)
             if not content:
                 continue

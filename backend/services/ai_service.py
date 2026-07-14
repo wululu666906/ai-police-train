@@ -26,7 +26,7 @@ from .multi_role_service import (
 )
 from .role_resolver import is_role_speakable, resolve_scene_role, resolve_scene_roles
 from .dialogue_sequence_service import build_intake_sequence_feedback, merge_sequence_feedback
-from .dialogue_sanitize_service import sanitize_spoken_line
+from .dialogue_sanitize_service import repair_repetitive_spoken_line, sanitize_spoken_line
 from .opening_turn_service import infer_session_scene_kind
 from .stage_config_service import find_stage_config, infer_scene_kind, normalize_stages
 from .state_contract_postcheck import apply_contract_postcheck, postcheck_reply_turns, validate_response_against_contract
@@ -1121,6 +1121,9 @@ def _run_training_turn(
         ts.current_emotion,
     )
     momentum = enrich_momentum_with_axis_deltas(momentum, prompt_text, recognized_actions, persona_profile)
+    previous_contract = runtime_state.get("state_contract") if isinstance(runtime_state.get("state_contract"), dict) else {}
+    if isinstance(previous_contract.get("bands"), dict):
+        momentum["previous_bands"] = previous_contract["bands"]
     current_axis_scores = {
         "emotion": ts.current_emotion,
         "cooperation": current_state_snapshot["cooperation"],
@@ -1333,6 +1336,16 @@ def _run_training_turn(
 
     ai_reply = sanitize_spoken_line(str(result.get("response") or "……").strip() or "……")
     if not planned_reply_turns:
+        recent_role_lines = [
+            str(getattr(message, "content", "") or "")
+            for message in history
+            if str(getattr(message, "role", "") or "") in {"assistant", "ai"}
+            and (
+                not str(getattr(message, "speaker_name", "") or "")
+                or str(getattr(message, "speaker_name", "") or "") == str(getattr(role, "name", "") or "")
+            )
+        ]
+        ai_reply, repetition_repaired = repair_repetitive_spoken_line(ai_reply, recent_role_lines, prompt_text)
         postcheck = apply_contract_postcheck(
             ai_reply,
             state_contract,
@@ -1346,6 +1359,7 @@ def _run_training_turn(
         runtime_state["last_postcheck"] = {
             "adjusted": postcheck.get("adjusted"),
             "validation": postcheck.get("validation"),
+            "repetition_repaired": repetition_repaired,
         }
     ai_thought = str(result.get("inner_thought") or "保持谨慎，继续观察警方问法。").strip()
     new_fact = cap_new_fact_for_contract(result.get("new_fact_revealed"), state_contract)
@@ -1438,6 +1452,9 @@ def _run_training_turn(
             for index, content in enumerate(reply_sequence)
         ]
 
+    reply_turns = reply_turns[:1]
+    reply_sequence = [item["content"] for item in reply_turns if item.get("content")]
+
     stage_transition_message = None
     active_stage_goal = current_stage_goal
     if stage_completed and not auto_finished:
@@ -1470,6 +1487,8 @@ def _run_training_turn(
         postcheck=runtime_state.get("last_postcheck") if isinstance(runtime_state.get("last_postcheck"), dict) else None,
         stage_missing=stage_coverage.get("missing"),
         stage_satisfied=stage_coverage.get("satisfied"),
+        behavior_archetype=persona_profile.get("behavior_archetype"),
+        role_type=getattr(role, "role_type", None),
     )
     ts.revealed_info = dump_runtime_state(runtime_state)
 

@@ -200,6 +200,38 @@
         <div v-else class="text-sm text-gray-400">当前暂无场景缺口聚合数据。</div>
       </div>
     </div>
+
+    <section class="border-t border-gray-200 pt-8">
+      <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h3 class="text-lg font-bold text-gray-800">角色状态校准</h3>
+          <p class="mt-2 text-xs text-gray-400">最近 {{ calibrationData.session_count || 0 }} 次训练的表达稳定性与重复修复情况</p>
+        </div>
+        <div class="text-xs text-gray-500">待复核会话 {{ calibrationData.review_session_ids?.length || 0 }} 个</div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <div v-for="item in calibrationSummary" :key="item.label" class="border-l-4 bg-white px-5 py-4 shadow-sm" :class="item.borderClass">
+          <div class="text-xs text-gray-400">{{ item.label }}</div>
+          <div class="mt-2 text-xl font-black text-gray-800">{{ item.value }}</div>
+        </div>
+      </div>
+
+      <div class="mt-6 overflow-hidden border border-gray-200 bg-white">
+        <div class="grid grid-cols-[minmax(120px,1fr)_90px_110px_110px] gap-3 border-b border-gray-100 bg-gray-50 px-5 py-3 text-xs font-bold text-gray-500">
+          <span>角色原型</span><span>对话轮次</span><span>重复修复率</span><span>契约一致率</span>
+        </div>
+        <div v-if="calibrationArchetypes.length">
+          <div v-for="item in calibrationArchetypes" :key="item.name" class="grid grid-cols-[minmax(120px,1fr)_90px_110px_110px] gap-3 border-b border-gray-100 px-5 py-4 text-sm last:border-b-0">
+            <span class="font-semibold text-gray-700">{{ item.name }}</span>
+            <span class="text-gray-500">{{ item.turn_count }}</span>
+            <span :class="item.repetition_repair_rate > 0.15 ? 'text-red-600 font-bold' : 'text-gray-600'">{{ toPercent(item.repetition_repair_rate) }}</span>
+            <span :class="item.consistency_rate < 0.85 ? 'text-amber-600 font-bold' : 'text-emerald-600'">{{ toPercent(item.consistency_rate) }}</span>
+          </div>
+        </div>
+        <div v-else class="px-5 py-8 text-center text-sm text-gray-400">完成更多训练后将形成角色原型校准数据。</div>
+      </div>
+    </section>
     </template>
   </div>
 </template>
@@ -229,6 +261,16 @@ const statsData = ref<any>({
   avg_daily_sessions: 0,
   trend: [],
   updated_at: '',
+})
+const calibrationData = ref<any>({
+  session_count: 0,
+  turn_count: 0,
+  consistency_rate: 0,
+  postcheck_adjustment_rate: 0,
+  repetition_repair_rate: 0,
+  high_arousal_clear_rate: 0,
+  by_archetype: {},
+  review_session_ids: [],
 })
 
 const stats = computed(() => [
@@ -285,6 +327,19 @@ const avgDailySessions = computed(() => Number(statsData.value.avg_daily_session
 const stageGapReports = computed(() => Number(statsData.value.stage_gap_reports || 0))
 const topMissing = computed(() => (Array.isArray(statsData.value.stage_gap_top_missing) ? statsData.value.stage_gap_top_missing : []))
 const sceneRisk = computed(() => (Array.isArray(statsData.value.stage_gap_scene_risk) ? statsData.value.stage_gap_scene_risk : []))
+const calibrationSummary = computed(() => [
+  { label: '契约一致率', value: toPercent(calibrationData.value.consistency_rate), borderClass: 'border-emerald-500' },
+  { label: '重复修复率', value: toPercent(calibrationData.value.repetition_repair_rate), borderClass: 'border-red-500' },
+  { label: '后处理调整率', value: toPercent(calibrationData.value.postcheck_adjustment_rate), borderClass: 'border-amber-500' },
+  { label: '高情绪清晰表达率', value: toPercent(calibrationData.value.high_arousal_clear_rate), borderClass: 'border-[#1D3557]' },
+])
+const calibrationArchetypes = computed(() =>
+  Object.entries(calibrationData.value.by_archetype || {})
+    .map(([name, metrics]: [string, any]) => ({ name, ...metrics }))
+    .filter((item: any) => item.name !== 'unknown')
+    .sort((left: any, right: any) => Number(right.turn_count || 0) - Number(left.turn_count || 0))
+    .slice(0, 8)
+)
 
 const completionRate = computed(() => clampPercent(statsData.value.completion_rate))
 const activeRate = computed(() => clampPercent(statsData.value.active_rate))
@@ -308,6 +363,10 @@ function clampPercent(value: any) {
   return Math.max(0, Math.min(100, num))
 }
 
+function toPercent(value: any) {
+  return `${(clampPercent(Number(value || 0) * 100)).toFixed(1)}%`
+}
+
 function getBarHeight(count: number) {
   const maxCount = Math.max(...trend.value.map((item: { count: number }) => item.count), 1)
   return Math.max(24, (count / maxCount) * 160)
@@ -323,11 +382,15 @@ async function fetchStats(options: { background?: boolean } = {}) {
     loading.value = true
   }
   try {
-    const res: any = await request.get('/dashboard/stats')
+    const [res, calibration]: any[] = await Promise.all([
+      request.get('/dashboard/stats'),
+      request.get('/dashboard/state-calibration?limit=100'),
+    ])
     statsData.value = {
       ...statsData.value,
       ...res,
     }
+    calibrationData.value = calibration || calibrationData.value
     pageError.value = ''
     staleMessage.value = ''
   } catch (error) {

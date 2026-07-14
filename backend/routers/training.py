@@ -1,9 +1,11 @@
 import json
+import os
+import uuid
 import time
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -25,7 +27,7 @@ from services.ai_service import (
     apply_training_action,
     generate_dialogue,
 )
-from services.evaluation_service import evaluate_session
+from services.evaluation_service import evaluate_session, is_current_evaluation_report
 from services.classroom_service import (
     get_session_assignment_context,
     link_session_to_assignment,
@@ -54,6 +56,19 @@ from services.training_runtime_service import dump_runtime_state, load_runtime_s
 
 router = APIRouter(prefix="/training", tags=["Training"])
 
+SESSION_MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "session_media")
+ALLOWED_ARTIFACT_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "audio/webm": ".webm",
+    "audio/mp4": ".m4a",
+    "audio/mpeg": ".mp3",
+    "video/webm": ".webm",
+    "video/mp4": ".mp4",
+}
+
 
 def safe_json_loads(value, default):
     if value in (None, ""):
@@ -64,6 +79,39 @@ def safe_json_loads(value, default):
         return json.loads(value)
     except Exception:
         return default
+
+
+def _artifact_url(file_path: str | None) -> str | None:
+    if not file_path:
+        return None
+    return f"/static/session_media/{file_path.replace(os.sep, '/')}"
+
+
+def _serialize_artifact(artifact: models.TrainingSessionArtifact) -> dict[str, Any]:
+    return {
+        "id": artifact.id,
+        "session_id": artifact.session_id,
+        "artifact_type": artifact.artifact_type,
+        "file_url": _artifact_url(artifact.file_path),
+        "mime_type": artifact.mime_type,
+        "file_size": artifact.file_size,
+        "duration_seconds": artifact.duration_seconds,
+        "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
+    }
+
+
+def _get_accessible_training_session(db: Session, session_id: int, current_user: models.User) -> models.TrainingSession:
+    session = (
+        db.query(models.TrainingSession)
+        .filter(
+            models.TrainingSession.id == session_id,
+            models.TrainingSession.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found or not accessible")
+    return session
 
 
 def _clamp_score(value, fallback):
@@ -684,10 +732,14 @@ def get_session(
     repaired_evaluation_result = session.evaluation_result
     if repaired_evaluation_result:
         try:
-            repaired_evaluation_result = json.dumps(
-                repair_payload(json.loads(repaired_evaluation_result)),
-                ensure_ascii=False,
-            )
+            repaired_payload = repair_payload(json.loads(repaired_evaluation_result))
+            if for_report and not is_current_evaluation_report(repaired_payload):
+                refreshed_report = evaluate_session(db, session.id, current_user.id, force_recompute=True)
+                if isinstance(refreshed_report, dict) and not refreshed_report.get("error"):
+                    repaired_payload = refreshed_report
+                    session.evaluation_result = json.dumps(refreshed_report, ensure_ascii=False)
+                    db.commit()
+            repaired_evaluation_result = json.dumps(repaired_payload, ensure_ascii=False)
         except Exception:
             repaired_evaluation_result = repair_text(repaired_evaluation_result)
 
@@ -776,8 +828,65 @@ def get_session(
         auto_finish_ready=guidance_payload["auto_finish_ready"],
         closure_summary=guidance_payload["closure_summary"],
         assignment_context=get_session_assignment_context(db, session.id, current_user.id),
+        artifacts=[_serialize_artifact(item) for item in (session.artifacts or [])],
         messages=repaired_messages,
     )
+
+
+@router.get("/session/{session_id}/artifacts")
+def get_session_artifacts(
+    session_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    session = _get_accessible_training_session(db, session_id, current_user)
+    return {
+        "items": [_serialize_artifact(item) for item in (session.artifacts or [])],
+    }
+
+
+@router.post("/session/{session_id}/artifacts/upload")
+async def upload_session_artifact(
+    session_id: int,
+    artifact_file: UploadFile = File(...),
+    artifact_type: str = Form("screenshot"),
+    duration_seconds: int | None = Form(default=None),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    session = _get_accessible_training_session(db, session_id, current_user)
+    content_type = (artifact_file.content_type or "").strip().lower()
+    if content_type not in ALLOWED_ARTIFACT_TYPES:
+        raise HTTPException(status_code=400, detail="不支持的附件格式")
+
+    data = await artifact_file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="附件为空")
+
+    os.makedirs(SESSION_MEDIA_DIR, exist_ok=True)
+    safe_type = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in artifact_type).strip("_") or "screenshot"
+    relative_dir = os.path.join(str(session.user_id), str(session.id))
+    abs_dir = os.path.join(SESSION_MEDIA_DIR, relative_dir)
+    os.makedirs(abs_dir, exist_ok=True)
+    ext = ALLOWED_ARTIFACT_TYPES[content_type]
+    filename = f"{safe_type}_{uuid.uuid4().hex}{ext}"
+    rel_path = os.path.join(relative_dir, filename)
+    abs_path = os.path.join(SESSION_MEDIA_DIR, rel_path)
+    with open(abs_path, "wb") as file_handle:
+        file_handle.write(data)
+
+    artifact = models.TrainingSessionArtifact(
+        session_id=session.id,
+        artifact_type=safe_type,
+        file_path=rel_path,
+        mime_type=content_type,
+        file_size=len(data),
+        duration_seconds=duration_seconds if duration_seconds and duration_seconds > 0 else None,
+    )
+    db.add(artifact)
+    db.commit()
+    db.refresh(artifact)
+    return _serialize_artifact(artifact)
 
 
 @router.post("/finish/{session_id}")
@@ -838,6 +947,10 @@ def re_evaluate_training(
     if session.training_started_at is None or session.training_finished_at is None:
         _mark_session_training_finished(session)
         db.commit()
+
+    session.status = "evaluating"
+    session.evaluation_result = None
+    db.commit()
 
     report = evaluate_session(db, session.id, current_user.id, force_recompute=True)
     if not report:

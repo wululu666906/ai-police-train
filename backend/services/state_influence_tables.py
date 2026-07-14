@@ -60,7 +60,9 @@ AXIS_EMOTION: dict[str, dict[str, Any]] = {
         "sentence_style": "short",
         "max_sentences": 2,
         "tone_hint": "愤怒或强烈激动：短句、打断感、重复核心不满。",
-        "must_include": ["你别", "凭什么"],
+        # These are optional natural expressions, not mandatory trigger words.
+        # Forcing them caused repetitive, theatrical replies at the boundary.
+        "must_include": [],
         "must_avoid": ["完整时间线", "主动自证全部细节"],
         "interruption_allowed": True,
     },
@@ -107,7 +109,7 @@ COMBINATION_RULES: list[dict[str, Any]] = [
             "delivery": "fearful",
             "sentence_style": "broken",
             "tone_hint": "高情绪+高风险+低清晰度：表现为害怕、慌乱、语无伦次，而非强硬对抗。",
-            "must_include": ["我不确定", "怎么办"],
+            "must_include": [],
             "must_avoid": ["强硬顶撞", "条理清晰长段"],
         },
     },

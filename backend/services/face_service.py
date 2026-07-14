@@ -1,10 +1,8 @@
 import base64
 import json
 import os
-import random
-import shutil
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -16,7 +14,7 @@ from sqlalchemy.orm import Session
 
 import models
 from services.classroom_service import sync_assignment_submission_for_session
-from services.evaluation_service import evaluate_session
+from services.evaluation_service import enforce_final_score_policy, evaluate_session
 from services.import_isolation import isolated_sys_path
 
 
@@ -29,10 +27,6 @@ def _find_project_root() -> Path:
 
 PROJECT_ROOT = _find_project_root()
 DEFAULT_FACE_MODEL_DIR = PROJECT_ROOT / "data" / "face_models"
-VENDOR_FACE_ANTISPOOF_ROOT = PROJECT_ROOT / "vendor" / "face_antispoof_onnx_src"
-VENDOR_FACE_LIVENESS_MODEL_PATH = (
-    VENDOR_FACE_ANTISPOOF_ROOT / "models" / "best" / "98.20" / "best_model_quantized.onnx"
-)
 
 
 def _resolve_path(value: str | Path) -> Path:
@@ -49,26 +43,14 @@ def _resolve_path(value: str | Path) -> Path:
     return (PROJECT_ROOT / "data" / path.name).resolve()
 
 
-FACE_SIMILARITY_THRESHOLD = float(os.getenv("FACE_SIMILARITY_THRESHOLD", "0.72"))
+FACE_SIMILARITY_THRESHOLD = float(os.getenv("FACE_SIMILARITY_THRESHOLD", "0.68"))
+FACE_FAST_VERIFY_SIMILARITY_THRESHOLD = float(os.getenv("FACE_FAST_VERIFY_SIMILARITY_THRESHOLD", "0.64"))
 FACE_HEARTBEAT_SIMILARITY_THRESHOLD = float(os.getenv("FACE_HEARTBEAT_SIMILARITY_THRESHOLD", "0.68"))
 FACE_MAX_FAILURES = int(os.getenv("FACE_MAX_FAILURES", "5"))
 FACE_SERIOUS_MAX_FAILURES = int(os.getenv("FACE_SERIOUS_MAX_FAILURES", "5"))
 FACE_VOTE_WINDOW = int(os.getenv("FACE_VOTE_WINDOW", "3"))
 FACE_VOTE_FAIL_LIMIT = int(os.getenv("FACE_VOTE_FAIL_LIMIT", "2"))
 FACE_CONSECUTIVE_MAX_FAILURES = int(os.getenv("FACE_CONSECUTIVE_MAX_FAILURES", "5"))
-FACE_CHALLENGE_TURN_DELTA = float(os.getenv("FACE_CHALLENGE_TURN_DELTA", "0.055"))
-FACE_CHALLENGE_DISTANCE_DELTA = float(os.getenv("FACE_CHALLENGE_DISTANCE_DELTA", "0.18"))
-FACE_CHALLENGE_CONSECUTIVE_HITS = int(os.getenv("FACE_CHALLENGE_CONSECUTIVE_HITS", "3"))
-FACE_CHALLENGE_BLINK_SCORE = float(os.getenv("FACE_CHALLENGE_BLINK_SCORE", "0.45"))
-FACE_LIVENESS_MODEL_PATH = _resolve_path(
-    os.getenv("FACE_LIVENESS_MODEL_PATH", str(PROJECT_ROOT / "backend" / "assets" / "face_liveness_model.onnx"))
-)
-FACE_LIVENESS_THRESHOLD = float(os.getenv("FACE_LIVENESS_THRESHOLD", "0.50"))
-FACE_LIVENESS_REAL_INDEX = int(os.getenv("FACE_LIVENESS_REAL_INDEX", "0"))
-FACE_LIVENESS_MODEL_SIZE = int(os.getenv("FACE_LIVENESS_MODEL_SIZE", "128"))
-FACE_LIVENESS_VENDOR_MODEL_PATH = _resolve_path(
-    os.getenv("FACE_LIVENESS_VENDOR_MODEL_PATH", str(VENDOR_FACE_LIVENESS_MODEL_PATH))
-)
 FACE_ENGINE_REQUIRED = os.getenv("FACE_ENGINE_REQUIRED", "1").strip().lower() in {"1", "true", "yes", "on"}
 FACE_IMAGE_DIR = _resolve_path(os.getenv("FACE_IMAGE_DIR", Path(__file__).resolve().parents[1] / "static" / "face_profiles"))
 INSIGHTFACE_MODEL_DIR = _resolve_path(
@@ -77,23 +59,7 @@ INSIGHTFACE_MODEL_DIR = _resolve_path(
 EMBEDDING_MODEL = os.getenv("INSIGHTFACE_MODEL_NAME", "buffalo_l")
 
 _face_app = None
-_face_liveness_app = None
-_face_liveness_input_name = ""
 _face_engine_error = ""
-_face_liveness_error = ""
-_challenge_store: dict[str, dict[str, Any]] = {}
-
-ACTION_LABELS = {
-    "blink": "眨眼",
-    "turn_left": "向左转头",
-    "turn_right": "向右转头",
-    "move_closer": "靠近摄像头",
-    "move_farther": "远离摄像头",
-}
-
-
-def _action_labels(actions: list[str]) -> list[str]:
-    return [ACTION_LABELS.get(action, action) for action in actions]
 
 
 def _face_service_unavailable_detail(error: Exception | str) -> str:
@@ -135,8 +101,6 @@ def localize_face_reason(reason: Any) -> str:
         return "人脸档案无效，请重新注册。"
     if "no registered face profile" in lowered or "registered face profile" in lowered:
         return "当前账号尚未注册人脸档案。"
-    if "liveness failed" in lowered or "liveness" in lowered:
-        return "活体识别未通过，请移除照片、屏幕或其他攻击介质后重试。"
     if "face mismatch" in lowered or "mismatch" in lowered:
         return "当前人脸与注册学员不一致，请确认由本人参加训练。"
     if lowered == "passed":
@@ -173,43 +137,6 @@ def _load_engine():
         raise HTTPException(status_code=503, detail=_face_engine_error)
 
 
-def _ensure_liveness_model_file() -> Path:
-    if FACE_LIVENESS_MODEL_PATH.exists():
-        return FACE_LIVENESS_MODEL_PATH
-    if FACE_LIVENESS_VENDOR_MODEL_PATH.exists():
-        FACE_LIVENESS_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(FACE_LIVENESS_VENDOR_MODEL_PATH, FACE_LIVENESS_MODEL_PATH)
-        return FACE_LIVENESS_MODEL_PATH
-    return FACE_LIVENESS_MODEL_PATH
-
-
-def _load_liveness_engine():
-    global _face_liveness_app, _face_liveness_error, _face_liveness_input_name
-    if _face_liveness_app is not None:
-        return _face_liveness_app
-    try:
-        with isolated_sys_path(VENDOR_FACE_ANTISPOOF_ROOT):
-            import onnxruntime as ort
-    except Exception as error:
-        _face_liveness_error = _face_service_unavailable_detail(error)
-        raise HTTPException(status_code=503, detail=_face_liveness_error)
-    model_path = _ensure_liveness_model_file()
-    if not model_path.exists():
-        _face_liveness_error = f"活体识别模型不存在：{FACE_LIVENESS_MODEL_PATH}"
-        raise HTTPException(status_code=503, detail=_face_liveness_error)
-    try:
-        session_options = ort.SessionOptions()
-        session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        session = ort.InferenceSession(str(model_path), sess_options=session_options, providers=["CPUExecutionProvider"])
-        _face_liveness_app = session
-        _face_liveness_input_name = session.get_inputs()[0].name
-        _face_liveness_error = ""
-        return session
-    except Exception as error:
-        _face_liveness_error = _face_service_unavailable_detail(error)
-        raise HTTPException(status_code=503, detail=_face_liveness_error)
-
-
 def engine_status() -> dict[str, Any]:
     model_path = Path(INSIGHTFACE_MODEL_DIR) / "models" / EMBEDDING_MODEL
     expected_files = ["det_10g.onnx", "w600k_r50.onnx"]
@@ -221,25 +148,16 @@ def engine_status() -> dict[str, Any]:
         "model_path": str(model_path),
         "model_files_ready": all((model_path / filename).exists() for filename in expected_files),
         "expected_files": expected_files,
-        "liveness_model_path": str(FACE_LIVENESS_MODEL_PATH),
-        "liveness_vendor_model_path": str(FACE_LIVENESS_VENDOR_MODEL_PATH),
-        "liveness_model_ready": _ensure_liveness_model_file().exists(),
-        "liveness_model_size": FACE_LIVENESS_MODEL_SIZE,
+        "verification_mode": "identity_only",
         "dependencies": dependency_status,
         "engine_required": FACE_ENGINE_REQUIRED,
         "degraded_allowed": not FACE_ENGINE_REQUIRED,
         "loaded": _face_app is not None,
-        "liveness_loaded": _face_liveness_app is not None,
         "last_error": _face_engine_error,
-        "liveness_last_error": _face_liveness_error,
         "similarity_threshold": FACE_SIMILARITY_THRESHOLD,
+        "fast_verify_similarity_threshold": FACE_FAST_VERIFY_SIMILARITY_THRESHOLD,
         "heartbeat_similarity_threshold": FACE_HEARTBEAT_SIMILARITY_THRESHOLD,
-        "liveness_threshold": FACE_LIVENESS_THRESHOLD,
         "max_failures": FACE_MAX_FAILURES,
-        "challenge_turn_delta": FACE_CHALLENGE_TURN_DELTA,
-        "challenge_distance_delta": FACE_CHALLENGE_DISTANCE_DELTA,
-        "challenge_consecutive_hits": FACE_CHALLENGE_CONSECUTIVE_HITS,
-        "challenge_blink_score": FACE_CHALLENGE_BLINK_SCORE,
     }
 
 
@@ -247,7 +165,7 @@ def _face_dependency_status() -> dict[str, Any]:
     import importlib.util
 
     dependencies = {}
-    for module_name in ("insightface", "onnxruntime", "cv2", "numpy"):
+    for module_name in ("insightface", "cv2", "numpy"):
         spec = importlib.util.find_spec(module_name)
         dependencies[module_name] = {
             "available": spec is not None,
@@ -262,160 +180,12 @@ def warmup_face_engine_async() -> None:
     def _warmup() -> None:
         try:
             _load_engine()
-            _load_liveness_engine()
         except Exception as error:
             print(f"Face engine warmup failed: {error}")
 
     thread = threading.Thread(target=_warmup, name="face-engine-warmup", daemon=True)
     thread.start()
 
-
-def create_liveness_challenge(session_id: int, student_id: int) -> dict[str, Any]:
-    actions = ["blink", random.choice(["turn_left", "turn_right"])]
-    challenge_id = uuid4().hex
-    expires_at = datetime.utcnow() + timedelta(minutes=5)
-    _challenge_store[challenge_id] = {
-        "session_id": session_id,
-        "student_id": student_id,
-        "actions": actions,
-        "baseline": None,
-        "completed": {},
-        "hits": {},
-        "expires_at": expires_at,
-    }
-    return {
-        "challenge_id": challenge_id,
-        "actions": actions,
-        "action_labels": _action_labels(actions),
-        "expires_at": expires_at.isoformat(),
-        "mode": "action_challenge",
-        "notice": "请按顺序完成动作挑战，系统会同时使用 MiniFAS ONNX 模型判断是否为真人。",
-    }
-
-
-def validate_liveness_challenge(
-    *,
-    session_id: int,
-    student_id: int,
-    challenge_id: str | None,
-    liveness_actions: list[dict[str, Any]] | None,
-) -> tuple[bool, dict[str, Any], str]:
-    if not challenge_id:
-        return False, {"mode": "action_challenge", "passed": False, "reason": "missing_challenge"}, "活体挑战尚未创建，请重新开始验证。"
-    challenge = _challenge_store.get(challenge_id)
-    if not challenge:
-        return False, {"mode": "action_challenge", "passed": False, "reason": "invalid_challenge"}, "活体挑战已失效，请重新开始验证。"
-    if challenge["session_id"] != session_id or challenge["student_id"] != student_id:
-        return False, {"mode": "action_challenge", "passed": False, "reason": "challenge_mismatch"}, "活体挑战与当前会话不匹配。"
-    if datetime.utcnow() > challenge["expires_at"]:
-        _challenge_store.pop(challenge_id, None)
-        return False, {"mode": "action_challenge", "passed": False, "reason": "challenge_expired"}, "活体挑战已超时，请重新开始验证。"
-
-    completed = {
-        str(item.get("action")): bool(item.get("passed"))
-        for item in (liveness_actions or [])
-        if isinstance(item, dict)
-    }
-    required = challenge["actions"]
-    missing = [action for action in required if not completed.get(action)]
-    payload = {
-        "mode": "action_challenge",
-        "challenge_id": challenge_id,
-        "required_actions": required,
-        "completed_actions": completed,
-        "passed": not missing,
-        "missing_actions": missing,
-        "missing_action_labels": _action_labels(missing),
-    }
-    if missing:
-        return False, payload, f"请继续完成动作：{'、'.join(_action_labels(missing))}"
-    _challenge_store.pop(challenge_id, None)
-    return True, payload, "活体动作验证通过"
-
-
-def update_liveness_challenge_from_quality(
-    *,
-    session_id: int,
-    student_id: int,
-    challenge_id: str | None,
-    quality: dict[str, Any],
-) -> tuple[bool, dict[str, Any], str]:
-    if not challenge_id:
-        return False, {"mode": "server_action_challenge", "passed": False, "reason": "missing_challenge"}, "活体挑战尚未创建。"
-    challenge = _challenge_store.get(challenge_id)
-    if not challenge:
-        return False, {"mode": "server_action_challenge", "passed": False, "reason": "invalid_challenge"}, "活体挑战不存在或已失效。"
-    if challenge["session_id"] != session_id or challenge["student_id"] != student_id:
-        return False, {"mode": "server_action_challenge", "passed": False, "reason": "challenge_mismatch"}, "活体挑战与当前会话不匹配。"
-    if datetime.utcnow() > challenge["expires_at"]:
-        _challenge_store.pop(challenge_id, None)
-        return False, {"mode": "server_action_challenge", "passed": False, "reason": "challenge_expired"}, "活体挑战已超时，请重新开始验证。"
-
-    required = list(challenge.get("actions") or [])
-    bbox = quality.get("bbox") or [0, 0, 0, 0]
-    frame_width = float(quality.get("frame_width") or 640)
-    x1, _y1, x2, _y2 = [float(item) for item in bbox[:4]]
-    center_x = ((x1 + x2) / 2) / max(frame_width, 1)
-    area_ratio = float(quality.get("face_area_ratio") or 0)
-    client_quality = quality.get("client_quality") if isinstance(quality.get("client_quality"), dict) else {}
-    client_liveness_actions = client_quality.get("liveness_actions") if isinstance(client_quality, dict) else None
-    client_completed = {
-        str(item.get("action")): bool(item.get("passed"))
-        for item in (client_liveness_actions or [])
-        if isinstance(item, dict)
-    }
-    blink_score = float(client_quality.get("blink_score") or 0)
-
-    if not challenge.get("baseline"):
-        challenge["baseline"] = {"center_x": center_x, "area_ratio": area_ratio}
-        payload = {
-            "mode": "server_action_challenge",
-            "challenge_id": challenge_id,
-            "required_actions": required,
-            "completed_actions": {},
-            "passed": False,
-            "missing_actions": required,
-            "missing_action_labels": _action_labels(required),
-        }
-        return False, payload, "请保持正对摄像头，系统正在建立动作基准。"
-
-    baseline = challenge["baseline"]
-    completed = dict(challenge.get("completed") or {})
-    hits = dict(challenge.get("hits") or {})
-    base_x = float(baseline.get("center_x") or 0.5)
-    base_area = max(float(baseline.get("area_ratio") or area_ratio), 0.001)
-    action_matched = {
-        "blink": client_completed.get("blink") or blink_score >= FACE_CHALLENGE_BLINK_SCORE,
-        "turn_left": center_x > base_x + FACE_CHALLENGE_TURN_DELTA,
-        "turn_right": center_x < base_x - FACE_CHALLENGE_TURN_DELTA,
-        "move_closer": area_ratio > base_area * (1 + FACE_CHALLENGE_DISTANCE_DELTA),
-        "move_farther": area_ratio < base_area * (1 - FACE_CHALLENGE_DISTANCE_DELTA),
-    }
-    for action in required:
-        if action_matched.get(action):
-            hits[action] = hits.get(action, 0) + 1
-        else:
-            hits[action] = 0
-    for action, count in hits.items():
-        if count >= FACE_CHALLENGE_CONSECUTIVE_HITS:
-            completed[action] = True
-    challenge["hits"] = hits
-    challenge["completed"] = completed
-
-    missing = [action for action in required if not completed.get(action)]
-    payload = {
-        "mode": "server_action_challenge",
-        "challenge_id": challenge_id,
-        "required_actions": required,
-        "completed_actions": completed,
-        "passed": not missing,
-        "missing_actions": missing,
-        "missing_action_labels": _action_labels(missing),
-    }
-    if missing:
-        return False, payload, f"请继续完成动作：{'、'.join(_action_labels(missing))}"
-    _challenge_store.pop(challenge_id, None)
-    return True, payload, "活体动作验证通过。"
 
 def _image_to_array(raw: bytes) -> np.ndarray:
     try:
@@ -500,54 +270,6 @@ def _face_crop(frame: np.ndarray, bbox: list[float], *, margin: float = 0.2) -> 
         crop = frame
     image = Image.fromarray(crop).convert("RGB")
     return np.asarray(image, dtype=np.float32)
-
-
-def _preprocess_liveness_face(crop: np.ndarray) -> np.ndarray:
-    with isolated_sys_path(VENDOR_FACE_ANTISPOOF_ROOT):
-        from src.inference.preprocess import preprocess_batch
-
-    return preprocess_batch([crop.astype(np.uint8)], FACE_LIVENESS_MODEL_SIZE)
-
-
-def _liveness_probability_threshold_to_logit(threshold: float) -> float:
-    probability = max(1e-6, min(1 - 1e-6, float(threshold)))
-    return float(np.log(probability / (1 - probability)))
-
-
-def _predict_liveness(frame: np.ndarray, face: Any) -> dict[str, Any]:
-    session = _load_liveness_engine()
-    bbox = [float(v) for v in np.asarray(getattr(face, "bbox", [0, 0, frame.shape[1], frame.shape[0]]), dtype=np.float32)[:4]]
-    crop = _face_crop(frame, bbox)
-    input_tensor = _preprocess_liveness_face(crop)
-    input_name = _face_liveness_input_name or session.get_inputs()[0].name
-    outputs = session.run(None, {input_name: input_tensor})
-    scores = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
-    if scores.size < 2:
-        raise HTTPException(status_code=503, detail="活体识别模型输出异常。")
-    real_index = min(max(FACE_LIVENESS_REAL_INDEX, 0), scores.size - 1)
-    spoof_index = 0 if real_index == 1 else 1
-    real_logit = float(scores[real_index])
-    spoof_logit = float(scores[spoof_index])
-    logit_diff = real_logit - spoof_logit
-    logit_threshold = _liveness_probability_threshold_to_logit(FACE_LIVENESS_THRESHOLD)
-    real_score = float(1 / (1 + np.exp(-logit_diff)))
-    spoof_score = float(1 - real_score)
-    passed = logit_diff >= logit_threshold
-    return {
-        "passed": passed,
-        "score": round(real_score, 4),
-        "spoof_score": round(spoof_score, 4),
-        "raw_scores": [round(float(item), 4) for item in scores.tolist()],
-        "real_logit": round(real_logit, 4),
-        "spoof_logit": round(spoof_logit, 4),
-        "logit_diff": round(float(logit_diff), 4),
-        "threshold": FACE_LIVENESS_THRESHOLD,
-        "decision_threshold": round(logit_threshold, 4),
-        "model_path": str(FACE_LIVENESS_MODEL_PATH),
-        "input_shape": [1, 3, FACE_LIVENESS_MODEL_SIZE, FACE_LIVENESS_MODEL_SIZE],
-        "engine": "MiniFAS ONNX",
-        "mode": "logit_diff",
-    }
 
 
 def _merge_client_quality(quality: dict[str, Any], client_quality: dict[str, Any] | None) -> dict[str, Any]:
@@ -897,6 +619,7 @@ def _finalize_face_termination(
             "failure_count": failure_count,
             "last_reason": localize_face_reason(reason),
         }
+        report = enforce_final_score_policy(report, policy_source="face_termination_success")
         session.status = "finished"
         session.evaluation_result = json.dumps(report, ensure_ascii=False)
         db.commit()
@@ -914,6 +637,7 @@ def _finalize_face_termination(
             "failure_count": failure_count,
             "last_reason": localize_face_reason(reason),
         }
+        report = enforce_final_score_policy(report, policy_source="face_termination_fallback")
         session.status = "finished"
         session.evaluation_result = json.dumps(report, ensure_ascii=False)
         db.commit()
@@ -933,11 +657,9 @@ def record_event(
     status: str,
     reason: str,
     similarity: float | None = None,
-    liveness_score: float | None = None,
     auto_finalize: bool = True,
     reason_code: str | None = None,
     quality: dict[str, Any] | None = None,
-    liveness: dict[str, Any] | None = None,
     abnormal_level: str | None = None,
 ) -> models.FaceVerificationEvent:
     if auto_finalize:
@@ -953,9 +675,7 @@ def record_event(
         reason=localize_face_reason(reason),
         reason_code=reason_code,
         similarity=None if similarity is None else int(round(similarity * 100)),
-        liveness_score=None if liveness_score is None else int(round(liveness_score * 100)),
         quality_json=json.dumps(quality or {}, ensure_ascii=False),
-        liveness_json=json.dumps(liveness or {}, ensure_ascii=False),
         abnormal_level=abnormal_level,
         failure_count=failure_count,
     )
@@ -988,9 +708,6 @@ def verify_frame(
     session: models.TrainingSession,
     frame_data_url: str,
     event_type: str = "verify",
-    liveness_score: float | None = None,
-    challenge_id: str | None = None,
-    liveness_actions: list[dict[str, Any]] | None = None,
     client_quality: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     auto_finalize = event_type != "verify"
@@ -1003,7 +720,6 @@ def verify_frame(
             event_type=event_type,
             status="failed",
             reason=reason,
-            liveness_score=liveness_score,
             auto_finalize=auto_finalize,
             reason_code="no_registered_profile",
             abnormal_level="serious" if auto_finalize else "medium",
@@ -1022,7 +738,6 @@ def verify_frame(
             event_type=event_type,
             status="failed",
             reason=localize_face_reason(error.detail),
-            liveness_score=liveness_score,
             auto_finalize=auto_finalize,
             reason_code=reason_code,
             abnormal_level=abnormal_level,
@@ -1035,38 +750,30 @@ def verify_frame(
     similarity = max(similarities) if similarities else 0.0
     best_template_index = similarities.index(similarity) if similarities else -1
 
-    similarity_threshold = FACE_HEARTBEAT_SIMILARITY_THRESHOLD if event_type == "heartbeat" else FACE_SIMILARITY_THRESHOLD
+    if event_type == "verify":
+        similarity_threshold = FACE_FAST_VERIFY_SIMILARITY_THRESHOLD
+    elif event_type == "heartbeat":
+        similarity_threshold = FACE_HEARTBEAT_SIMILARITY_THRESHOLD
+    else:
+        similarity_threshold = FACE_SIMILARITY_THRESHOLD
     if quality_payload.get("blur", 0) < 22 and quality_payload.get("detection_score", 0) >= 0.5:
-        similarity_threshold -= 0.03 if event_type == "heartbeat" else 0.04
+        similarity_threshold -= 0.03 if event_type == "heartbeat" else 0.02
     similarity_threshold = max(0.58 if event_type == "heartbeat" else 0.62, similarity_threshold)
     identity_passed = similarity >= similarity_threshold
 
-    liveness_result = _predict_liveness(extraction.frame, extraction)
-    live_score = float(liveness_result["score"])
-    passed = identity_passed and liveness_result["passed"] and not quality_reason
+    verify_quality_soft_pass = (
+        event_type == "verify"
+        and identity_passed
+        and quality_reason is not None
+        and quality_reason[2] == "minor"
+        and similarity >= similarity_threshold + 0.03
+    )
+    passed = identity_passed and (not quality_reason or verify_quality_soft_pass)
 
     reason_code = None
     abnormal_level = None
-    challenge_payload: dict[str, Any] | None = None
-    if not liveness_result["passed"]:
-        reason = "活体识别未通过，请移除照片、屏幕或其他攻击介质后重试。"
-        reason_code = "liveness_failed"
-        abnormal_level = "serious"
-    elif event_type == "verify" and identity_passed and not quality_reason:
-        challenge_passed, challenge_payload, challenge_reason = update_liveness_challenge_from_quality(
-            session_id=session.id,
-            student_id=session.user_id,
-            challenge_id=challenge_id,
-            quality=quality_payload,
-        )
-        if challenge_passed:
-            passed = True
-            reason = "人脸验证通过"
-        else:
-            passed = False
-            reason = challenge_reason
-            reason_code = "liveness_challenge_pending"
-            abnormal_level = "minor"
+    if event_type == "verify" and passed:
+        reason = "人脸验证通过"
     elif passed:
         reason = "人脸已回到识别区域。"
     elif quality_reason:
@@ -1084,11 +791,9 @@ def verify_frame(
         status="passed" if passed else "failed",
         reason=reason,
         similarity=similarity,
-        liveness_score=live_score,
         auto_finalize=auto_finalize,
         reason_code=reason_code,
         quality={**quality_payload, "best_template_index": best_template_index},
-        liveness={**liveness_result, "challenge": challenge_payload, "mode": "model_antispoof"},
         abnormal_level=abnormal_level,
     )
     vote = _vote_window(db, session.id) if auto_finalize else None
@@ -1100,12 +805,10 @@ def verify_frame(
         reason,
         detection_score=extraction.detection_score,
         similarity_threshold=similarity_threshold,
-        liveness_score=live_score,
         quality=quality_payload,
         vote_window=vote,
         abnormal_level=abnormal_level,
         reason_code=reason_code,
-        liveness=challenge_payload or liveness_result,
         terminated=terminated,
     )
 
@@ -1118,12 +821,10 @@ def _verification_response(
     *,
     detection_score: float | None = None,
     similarity_threshold: float | None = None,
-    liveness_score: float | None = None,
     quality: dict[str, Any] | None = None,
     vote_window: dict[str, Any] | None = None,
     abnormal_level: str | None = None,
     reason_code: str | None = None,
-    liveness: dict[str, Any] | None = None,
     terminated: bool = False,
 ) -> dict[str, Any]:
     return {
@@ -1133,12 +834,10 @@ def _verification_response(
         "similarity": similarity,
         "similarity_threshold": similarity_threshold,
         "detection_score": detection_score,
-        "liveness_score": liveness_score,
         "quality_metrics": quality,
         "vote_window": vote_window,
         "abnormal_level": abnormal_level,
         "reason_code": reason_code,
-        "liveness": liveness,
         "failure_count": event.failure_count,
         "monitor_failure_count": event.failure_count,
         "max_failures": FACE_MAX_FAILURES,

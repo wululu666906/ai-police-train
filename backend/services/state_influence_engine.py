@@ -23,8 +23,16 @@ def clamp_score(value: Any, fallback: int = 50) -> int:
     return max(0, min(100, numeric))
 
 
-def resolve_band(score: Any) -> str:
+def resolve_band(score: Any, previous_band: str | None = None) -> str:
     numeric = clamp_score(score, 50)
+    if previous_band in _BAND_RANK:
+        current_rank = _BAND_RANK[previous_band]
+        # Require a five-point overshoot to leave a band. This prevents a
+        # role from flickering between adjacent language modes across turns.
+        lower = 0 if current_rank == 0 else _tables()["BAND_THRESHOLDS"][current_rank - 1][1] + 1
+        upper = _tables()["BAND_THRESHOLDS"][current_rank][1]
+        if lower - 5 <= numeric <= upper + 5:
+            return previous_band
     for name, upper in _tables()["BAND_THRESHOLDS"]:
         if numeric <= upper:
             return name
@@ -127,6 +135,41 @@ def max_new_facts_for_disclosure(disclosure_level: float) -> int:
     if level < 0.65:
         return 2
     return 3
+
+
+def expression_control_score(
+    clarity: Any,
+    cooperation: Any,
+    risk: Any,
+    emotion: Any,
+    persona_profile: dict[str, Any] | None = None,
+) -> int:
+    """Estimate language control separately from emotional arousal.
+
+    High emotion changes tone and stance, but does not by itself make a person
+    incoherent. Clarity, risk, and persona reserve determine whether syntax
+    should become fragmented.
+    """
+    clarity_value = clamp_score(clarity, 50)
+    cooperation_value = clamp_score(cooperation, 30)
+    risk_value = clamp_score(risk, 50)
+    emotion_value = clamp_score(emotion, 50)
+    profile = persona_profile or {}
+    archetype = str(profile.get("behavior_archetype") or "")
+    reserve = 52
+    if archetype in {"利益算计型", "权威敏感型", "防御切责型"}:
+        reserve += 10
+    elif archetype in {"精神危机型", "醉酒失控型", "绝望封闭型"}:
+        reserve -= 14
+    # Arousal reduces control gradually; it is never a hard switch.
+    score = (
+        clarity_value * 0.55
+        + cooperation_value * 0.10
+        + (100 - risk_value) * 0.15
+        + reserve * 0.12
+        + (100 - emotion_value) * 0.08
+    )
+    return max(0, min(100, int(round(score))))
 
 
 def cap_new_fact_for_contract(fact: Any, contract: dict[str, Any] | None) -> Any:
@@ -380,11 +423,12 @@ def build_state_contract(
     risk = clamp_score(scores.get("risk"), 50)
     clarity = clamp_score(scores.get("clarity"), 50)
 
+    previous_bands = momentum.get("previous_bands") if isinstance(momentum.get("previous_bands"), dict) else {}
     bands = {
-        "emotion": resolve_band(emotion),
-        "cooperation": resolve_band(cooperation),
-        "risk": resolve_band(risk),
-        "clarity": resolve_band(clarity),
+        "emotion": resolve_band(emotion, previous_bands.get("emotion")),
+        "cooperation": resolve_band(cooperation, previous_bands.get("cooperation")),
+        "risk": resolve_band(risk, previous_bands.get("risk")),
+        "clarity": resolve_band(clarity, previous_bands.get("clarity")),
     }
 
     tables = _tables()
@@ -415,6 +459,7 @@ def build_state_contract(
         default=0,
         as_int=True,
     )
+    control = expression_control_score(clarity, cooperation, risk, emotion, persona_profile)
 
     contract: dict[str, Any] = {
         "scores": {"emotion": emotion, "cooperation": cooperation, "risk": risk, "clarity": clarity},
@@ -434,10 +479,20 @@ def build_state_contract(
         "must_avoid": list(emotion_cfg.get("must_avoid") or []),
         "interruption_allowed": bool(emotion_cfg.get("interruption_allowed", False)),
         "self_correction_min": int(self_correction_min),
+        "expression_control": control,
+        "control_mode": "fragmented" if control < 32 else "strained" if control < 48 else "clear",
     }
 
     if clarity_cfg.get("style") in {"broken", "fragmented"}:
         contract["sentence_style"] = clarity_cfg["style"]
+
+    # Keep high-arousal speakers intelligible when their clarity reserve is
+    # intact. Fragmentation is reserved for genuinely low expression control.
+    if control >= 48 and contract["sentence_style"] in {"broken", "fragmented"}:
+        contract["sentence_style"] = "short"
+        contract["self_correction_min"] = 0
+    if control >= 60 and emotion >= 78:
+        contract["max_sentences"] = max(3, int(contract["max_sentences"]))
 
     combo = _match_combination(
         {"emotion": emotion, "cooperation": cooperation, "risk": risk, "clarity": clarity},
@@ -521,8 +576,9 @@ def format_state_contract_block(contract: dict[str, Any]) -> str:
         f"- 硬性披露：本轮 new_fact_revealed 最多 {fact_cap} 条；配合度低时禁止主动交代完整时间线或自证全部细节",
         f"- 失控风险倾向：{contract.get('escalation_bias')}（{contract.get('risk_hint')}）",
         f"- 表达清晰度：{contract.get('clarity_hint')}",
+        f"- 表达控制度：{contract.get('expression_control')}/100（{contract.get('control_mode')}）；情绪高不等于语言失控",
         f"- 语气指引：{contract.get('tone_hint')}",
-        "- 若与案情、人设其它描述冲突，以本契约为准，宁可少说、短说、情绪化，也不要写成冷静说明书",
+        "- 若与案情、人设其它描述冲突，以本契约为准；情绪影响语气和态度，不自动损害记忆、逻辑和语言能力",
     ]
     if contract.get("must_include"):
         lines.append(f"- 台词中宜体现：{'、'.join(contract['must_include'])}")
@@ -581,9 +637,17 @@ def blend_four_axis_state(
     }
 
     deescalation_strength = _deescalation_strength(momentum)
+    pressure = str(momentum.get("pressure") or "medium")
+    tags = {str(item or "") for item in (momentum.get("strategy_tags") or [])}
+    passively_recovers = pressure != "high" and not tags.intersection({"pressure", "hard_pressure", "labeling"})
     blended: dict[str, int] = {}
     for axis in ("emotion", "cooperation", "risk", "clarity"):
         target = proposed[axis] + deltas[axis]
+        if passively_recovers and deltas[axis] == 0:
+            if axis == "emotion" and base[axis] >= 82:
+                target = min(target, base[axis] - 2)
+            elif axis == "risk" and base[axis] >= 82:
+                target = min(target, base[axis] - 1)
         target = _apply_deescalation_floor(
             axis,
             base=base[axis],

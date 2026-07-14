@@ -5,6 +5,7 @@ from services.state_influence_engine import (
     build_state_contract,
     compute_trigger_axis_deltas,
     enrich_momentum_with_axis_deltas,
+    expression_control_score,
     resolve_band,
 )
 
@@ -15,6 +16,13 @@ def test_resolve_band_tiers():
     assert resolve_band(50) == "mid"
     assert resolve_band(75) == "high"
     assert resolve_band(95) == "very_high"
+
+
+def test_resolve_band_uses_hysteresis_near_boundary():
+    assert resolve_band(82, "high") == "high"
+    assert resolve_band(86, "high") == "very_high"
+    assert resolve_band(58, "high") == "high"
+    assert resolve_band(54, "high") == "mid"
 
 
 def test_high_emotion_clear_risk_angry_not_fearful():
@@ -34,6 +42,22 @@ def test_high_emotion_high_risk_low_clarity_fearful():
     assert contract["primary_affect"] == "fearful"
     assert contract["delivery"] == "fearful"
     assert contract["sentence_style"] in {"broken", "fragmented"}
+
+
+def test_high_emotion_with_clear_expression_keeps_language_control():
+    contract = build_state_contract(
+        {"emotion": 92, "cooperation": 28, "risk": 82, "clarity": 78},
+        {"rapport": "neutral", "pressure": "high"},
+    )
+    assert contract["expression_control"] >= 48
+    assert contract["sentence_style"] == "short"
+    assert contract["self_correction_min"] == 0
+
+
+def test_expression_control_is_more_sensitive_to_clarity_than_emotion():
+    clear = expression_control_score(78, 28, 82, 92)
+    confused = expression_control_score(22, 28, 82, 92)
+    assert clear - confused >= 25
 
 
 def test_soft_contact_reduces_risk_and_raises_clarity_delta():
@@ -112,6 +136,19 @@ def test_blend_four_axis_guarantees_deescalation_on_effective_comfort():
     assert blended["emotion"] <= current["emotion"] - 8
     assert blended["risk"] <= current["risk"] - 7
     assert blended["cooperation"] >= current["cooperation"] + 5
+
+
+def test_extreme_state_passively_recovers_without_new_pressure():
+    current = {"emotion": 94, "cooperation": 20, "risk": 90, "clarity": 30}
+    unchanged = {
+        "updated_emotion": 94,
+        "updated_cooperation": 20,
+        "updated_risk": 90,
+        "updated_clarity": 30,
+    }
+    blended = blend_four_axis_state(current, unchanged, {"pressure": "medium", "strategy_tags": []})
+    assert blended["emotion"] == 92
+    assert blended["risk"] == 89
 
 
 def test_low_cooperation_low_emotion_cold_guarded():

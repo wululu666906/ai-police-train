@@ -14,9 +14,11 @@
         <span class="face-guard__badge">{{ badgeText }}</span>
       </div>
       <div class="face-guard__meta">
-        <span>累计异常次数 {{ failureCount }}/{{ maxFailures }}</span>
+        <span>连续异常次数 {{ failureCount }}/{{ maxFailures }}</span>
       </div>
-      <p v-if="failureCount >= maxFailures">学员离开或人脸异常已连续达到上限，系统将自动终止训练并进入评估报告。</p>
+      <p v-if="failureCount >= maxFailures">
+        人脸异常已连续达到上限，系统将自动终止训练并进入评估报告。
+      </p>
       <div v-if="mode === 'gate'" class="face-guard__actions">
         <van-button size="small" type="primary" :loading="verifying" @click="runVerify">开始验证</van-button>
         <van-button size="small" plain hairline type="default" :disabled="verifying" @click="skipVerify">跳过验证</van-button>
@@ -24,29 +26,19 @@
     </div>
 
     <van-dialog
-      v-model:show="challengeDialogVisible"
+      v-model:show="verifyDialogVisible"
       title="人脸验证"
       :show-confirm-button="false"
       :close-on-click-overlay="false"
-      class-name="face-challenge-dialog"
+      class-name="face-verify-dialog"
     >
-      <div class="face-challenge">
-        <div class="face-challenge__circle">
+      <div class="face-verify">
+        <div class="face-verify__circle">
           <video ref="dialogVideoRef" autoplay muted playsinline></video>
-          <div v-if="!cameraReady" class="face-challenge__mask">正在打开摄像头...</div>
+          <div v-if="!cameraReady" class="face-verify__mask">正在打开摄像头...</div>
         </div>
-        <strong>{{ challengeTitle }}</strong>
-        <p>{{ challengeHint }}</p>
-        <div v-if="challengeActions.length" class="face-challenge__steps">
-          <span
-            v-for="action in challengeActions"
-            :key="action"
-            class="face-challenge__step"
-            :class="{ 'face-challenge__step--done': completedActions[action] }"
-          >
-            {{ completedActions[action] ? '已完成' : '待完成' }}：{{ actionLabels[action] || action }}
-          </span>
-        </div>
+        <strong>请正对摄像头</strong>
+        <p>{{ verifyHint }}</p>
         <van-button size="small" plain hairline type="default" @click="cancelVerify">退出验证</van-button>
       </div>
     </van-dialog>
@@ -83,27 +75,13 @@ const heartbeatTimer = ref<number | null>(null)
 const verifyTimer = ref<number | null>(null)
 const verifyInFlight = ref(false)
 const heartbeatInFlight = ref(false)
-const challengeDialogVisible = ref(false)
-const challengeId = ref('')
-const challengeActions = ref<string[]>([])
-const completedActions = ref<Record<string, boolean>>({})
-const challengeHint = ref('请将脸部放在圆形区域内，系统正在检测。')
-const lastFrameAverage = ref<number | null>(null)
-const lastFrameSignature = ref<number[] | null>(null)
-const staticFrameStreak = ref(0)
-const blinkBaseline = ref<number | null>(null)
-const blinkCandidateFrames = ref(0)
-const lastBlinkScore = ref(0)
+const verifyDialogVisible = ref(false)
+const verifyHint = ref('请将脸部放在圆形区域内，系统正在识别本人身份。')
 
 const targetCameraLabel = 'HK 5M CAM 200W'
 const builtInCameraLabel = 'ASUS FHD webcam'
-const actionLabels: Record<string, string> = {
-  blink: '眨眼',
-  turn_left: '向左转头',
-  turn_right: '向右转头',
-  move_closer: '靠近摄像头',
-  move_farther: '远离摄像头',
-}
+const verifyRetryMs = 350
+const heartbeatRetryMs = 1500
 
 const mode = computed(() => props.mode || (verified.value ? 'monitor' : 'gate'))
 const badgeText = computed(() => {
@@ -112,16 +90,13 @@ const badgeText = computed(() => {
   if (verifying.value) return '验证中'
   return '待验证'
 })
-const challengeTitle = computed(() => {
-  if (!challengeActions.value.length) return '请正对摄像头'
-  return `请完成：${challengeActions.value.map((item) => actionLabels[item] || item).join('、')}`
-})
+
+const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
 const localizeFaceMessage = (value: any, fallback = '人脸验证失败，请调整后继续') => {
   const text = String(value || '').trim()
   const lowered = text.toLowerCase()
-  if (!text) return fallback
-  if (/^\?+$/.test(text)) return fallback
+  if (!text || /^\?+$/.test(text)) return fallback
   if (lowered.includes('no registered face profile')) return '当前账号尚未注册人脸档案'
   if (lowered.includes('no face detected') || lowered.includes('no face')) return '未检测到人脸，请正对摄像头'
   if (lowered.includes('multiple faces') || lowered.includes('multiple')) return '检测到多人入镜，请保持单人验证'
@@ -129,15 +104,13 @@ const localizeFaceMessage = (value: any, fallback = '人脸验证失败，请调
   if (lowered.includes('invalid camera frame')) return '摄像头画面无效，请继续调整'
   if (lowered.includes('invalid image')) return '画面格式无效，请继续调整'
   if (lowered.includes('embedding extraction')) return '人脸特征提取失败，请调整光线后继续'
-  if (lowered.includes('blur')) return '画面略有模糊，请稍微调整摄像头或保持稳定'
+  if (lowered.includes('blur')) return '画面略有模糊，请调整摄像头或保持稳定'
   if (lowered.includes('insightface') || lowered.includes('model init') || lowered.includes('face engine unavailable')) {
-    return '人脸识别模型暂不可用，请检查后端模型服务。'
+    return '人脸识别模型暂不可用，请检查后端模型服务'
   }
   if (lowered === 'passed') return '人脸验证通过'
   return text
 }
-
-const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
 const waitForVideoReady = async (video: HTMLVideoElement | null, timeoutMs = 3000) => {
   const startedAt = Date.now()
@@ -145,7 +118,7 @@ const waitForVideoReady = async (video: HTMLVideoElement | null, timeoutMs = 300
     if (video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.videoHeight > 0) {
       return true
     }
-    await sleep(80)
+    await sleep(40)
   }
   return false
 }
@@ -223,7 +196,7 @@ const startCamera = async () => {
   } catch {
     fallbackStream?.getTracks().forEach((track) => track.stop())
     const message = '无法打开摄像头，请检查浏览器权限或摄像头占用情况。'
-    challengeHint.value = message
+    verifyHint.value = message
     emit('failed', message)
   }
 }
@@ -252,90 +225,32 @@ const stopCamera = () => {
   cameraReady.value = false
 }
 
-const captureFrame = (purpose: 'verify' | 'heartbeat' = 'verify') => {
+const captureFrame = (size = 640, jpegQuality = 0.9) => {
   const video = videoRef.value
   const canvas = canvasRef.value
   if (!video || !canvas || !cameraReady.value || !video.videoWidth) return null
   const sourceSize = Math.min(video.videoWidth, video.videoHeight)
   const sx = Math.max(0, Math.round((video.videoWidth - sourceSize) / 2))
   const sy = Math.max(0, Math.round((video.videoHeight - sourceSize) / 2))
-  const targetSize = 640
-  canvas.width = targetSize
-  canvas.height = targetSize
+  canvas.width = size
+  canvas.height = size
   const ctx = canvas.getContext('2d')
   if (!ctx) return null
   ctx.drawImage(video, sx, sy, sourceSize, sourceSize, 0, 0, canvas.width, canvas.height)
-
-  const imageData = ctx.getImageData(0, 0, 64, 64).data
-  let total = 0
-  const signature: number[] = []
-  for (let i = 0; i < imageData.length; i += 4) {
-    const gray = (imageData[i] + imageData[i + 1] + imageData[i + 2]) / 3
-    total += gray
-    if ((i / 4) % 97 === 0) signature.push(Math.round(gray))
-  }
-  const average = total / (imageData.length / 4)
-  const delta = lastFrameAverage.value == null ? 24 : Math.abs(average - lastFrameAverage.value)
-  lastFrameAverage.value = average
-  let signatureDelta = 18
-  if (lastFrameSignature.value?.length) {
-    const totalDelta = signature.reduce((sum, value, index) => sum + Math.abs(value - (lastFrameSignature.value?.[index] ?? value)), 0)
-    signatureDelta = totalDelta / Math.max(signature.length, 1)
-  }
-  lastFrameSignature.value = signature
-  staticFrameStreak.value = delta < 1.2 && signatureDelta < 3.5 ? staticFrameStreak.value + 1 : 0
-  const motionScore = Math.min(1, delta / 18 + signatureDelta / 22)
-  const staticPenalty = Math.min(0.38, staticFrameStreak.value * 0.13)
-  const liveScore = purpose === 'heartbeat' ? 1 : Math.max(0.18, Math.min(1, 0.42 + motionScore * 0.48 - staticPenalty))
-  if (purpose === 'verify') {
-    const sampleY = 18
-    let upperBrightness = 0
-    let lowerBrightness = 0
-    const sampleWidth = 64
-    for (let x = 0; x < sampleWidth; x += 1) {
-      const upperIndex = (sampleY * sampleWidth + x) * 4
-      const lowerIndex = ((sampleY + 10) * sampleWidth + x) * 4
-      upperBrightness += (imageData[upperIndex] + imageData[upperIndex + 1] + imageData[upperIndex + 2]) / 3
-      lowerBrightness += (imageData[lowerIndex] + imageData[lowerIndex + 1] + imageData[lowerIndex + 2]) / 3
-    }
-    const eyeBandContrast = Math.abs(upperBrightness - lowerBrightness) / sampleWidth
-    blinkBaseline.value = blinkBaseline.value == null
-      ? eyeBandContrast
-      : blinkBaseline.value * 0.9 + eyeBandContrast * 0.1
-    const blinkDrop = Math.max(0, (blinkBaseline.value - eyeBandContrast) / Math.max(blinkBaseline.value, 1))
-    blinkCandidateFrames.value = blinkDrop > 0.18 && signatureDelta > 2.2 ? blinkCandidateFrames.value + 1 : 0
-    lastBlinkScore.value = Math.max(lastBlinkScore.value * 0.82, Math.min(1, blinkDrop * 2.4 + Math.min(0.3, blinkCandidateFrames.value * 0.12)))
-  } else {
-    lastBlinkScore.value = 0
-  }
-
-  return {
-    frame: canvas.toDataURL('image/jpeg', 0.9),
-    liveness_score: liveScore,
-    liveness_actions: [
-      {
-        action: 'blink',
-        passed: lastBlinkScore.value >= 0.45,
-        score: Number(lastBlinkScore.value.toFixed(3)),
-      },
-    ],
-  }
+  return canvas.toDataURL('image/jpeg', jpegQuality)
 }
 
 const buildPayload = (endpoint: 'verify' | 'heartbeat') => {
-  const payload: any = captureFrame(endpoint)
-  if (!payload) return null
-  payload.quality_metrics = {
-    visible_region: 'circle',
-    circle_center: [0.5, 0.5],
-    circle_radius: 0.5,
-    server_liveness: true,
-    challenge_actions: challengeActions.value,
-    liveness_actions: payload.liveness_actions,
-    blink_score: lastBlinkScore.value,
+  const frame = endpoint === 'verify' ? captureFrame(512, 0.82) : captureFrame()
+  if (!frame) return null
+  return {
+    frame,
+    quality_metrics: {
+      visible_region: 'circle',
+      circle_center: [0.5, 0.5],
+      circle_radius: 0.5,
+    },
   }
-  if (endpoint === 'verify') payload.challenge_id = challengeId.value
-  return payload
 }
 
 const applyResult = (result: any, endpoint: 'verify' | 'heartbeat') => {
@@ -349,7 +264,7 @@ const applyResult = (result: any, endpoint: 'verify' | 'heartbeat') => {
     failureCount.value = maxFailures.value
     stopHeartbeat()
     stopVerifyLoop()
-    challengeDialogVisible.value = false
+    verifyDialogVisible.value = false
     verifying.value = false
     emit('terminated', result)
     return
@@ -357,24 +272,14 @@ const applyResult = (result: any, endpoint: 'verify' | 'heartbeat') => {
   if (result?.passed) {
     verified.value = true
     stopVerifyLoop()
-    challengeDialogVisible.value = false
+    verifyDialogVisible.value = false
     verifying.value = false
     emit('verified')
     startHeartbeat()
     return
   }
   if (endpoint === 'verify') {
-    challengeHint.value = localizeFaceMessage(result?.reason)
-    const completed = result?.liveness?.completed_actions
-    if (completed && typeof completed === 'object') {
-      completedActions.value = Object.fromEntries(
-        Object.entries(completed).map(([key, value]) => [key, Boolean(value)])
-      )
-    }
-    const missing = result?.liveness?.missing_actions
-    if (Array.isArray(missing) && missing.length) {
-      challengeActions.value = missing
-    }
+    verifyHint.value = localizeFaceMessage(result?.reason)
   }
 }
 
@@ -385,7 +290,7 @@ const postFrame = async (endpoint: 'verify' | 'heartbeat') => {
   if (endpoint === 'heartbeat') heartbeatInFlight.value = true
   const payload = buildPayload(endpoint)
   if (!payload) {
-    if (endpoint === 'verify') challengeHint.value = '摄像头画面尚未就绪，请稍候。'
+    if (endpoint === 'verify') verifyHint.value = '摄像头画面尚未就绪，请稍候。'
     if (endpoint === 'verify') verifyInFlight.value = false
     if (endpoint === 'heartbeat') heartbeatInFlight.value = false
     return
@@ -399,44 +304,29 @@ const postFrame = async (endpoint: 'verify' | 'heartbeat') => {
   }
 }
 
-const fetchChallenge = async () => {
-  const result: any = await request.get(`/face/session/${props.sessionId}/challenge`, { _skipErrorToast: true } as any)
-  challengeId.value = String(result?.challenge_id || '')
-  challengeActions.value = Array.isArray(result?.actions) ? result.actions : []
-  completedActions.value = {}
-  challengeHint.value = '请将脸部放在圆形区域内，按提示完成动作。'
-}
-
 const runVerify = async () => {
   if (verifying.value) return
   verifying.value = true
   verified.value = false
-  challengeDialogVisible.value = true
-  challengeId.value = ''
-  challengeActions.value = []
-  completedActions.value = {}
-  challengeHint.value = '请将脸部放在圆形区域内，系统正在检测。'
-  blinkBaseline.value = null
-  blinkCandidateFrames.value = 0
-  lastBlinkScore.value = 0
+  verifyDialogVisible.value = true
+  verifyHint.value = '请将脸部放在圆形区域内，系统正在识别本人身份。'
   try {
     await nextTick()
     await startCamera()
     await nextTick()
     if (stream.value) await bindStreamToVideos(stream.value)
-    await fetchChallenge()
-    await sleep(120)
+    await sleep(40)
     await postFrame('verify')
     stopVerifyLoop()
     verifyTimer.value = window.setInterval(() => {
-      if (!verifying.value || !challengeDialogVisible.value || verified.value) return
+      if (!verifying.value || !verifyDialogVisible.value || verified.value) return
       void postFrame('verify').catch((error: any) => {
-        challengeHint.value = localizeFaceMessage(error?.response?.data?.detail, '检测失败，请调整后继续。')
+        verifyHint.value = localizeFaceMessage(error?.response?.data?.detail, '检测失败，请调整后继续。')
       })
-    }, 380)
+    }, verifyRetryMs)
   } catch (error: any) {
     const message = localizeFaceMessage(error?.response?.data?.detail || error?.message)
-    challengeHint.value = message
+    verifyHint.value = message
     emit('failed', message)
   }
 }
@@ -444,14 +334,14 @@ const runVerify = async () => {
 const cancelVerify = () => {
   stopVerifyLoop()
   verifying.value = false
-  challengeDialogVisible.value = false
+  verifyDialogVisible.value = false
 }
 
 const skipVerify = () => {
   stopCamera()
   verified.value = false
   verifying.value = false
-  challengeDialogVisible.value = false
+  verifyDialogVisible.value = false
   emit('skipped')
 }
 
@@ -462,7 +352,7 @@ const startHeartbeat = () => {
     void postFrame('heartbeat').catch(() => {
       // Heartbeat errors are surfaced by the next successful status/result update.
     })
-  }, 360)
+  }, heartbeatRetryMs)
 }
 
 const fetchStatus = async () => {
@@ -470,10 +360,10 @@ const fetchStatus = async () => {
     const result: any = await request.get(`/face/session/${props.sessionId}/status`, { _skipErrorToast: true } as any)
     failureCount.value = Number(result.monitor_failure_count ?? result.failure_count ?? 0)
     maxFailures.value = Number(result.max_failures || 5)
-    if (!result.registered) challengeHint.value = '当前账号尚未注册人脸档案'
+    if (!result.registered) verifyHint.value = '当前账号尚未注册人脸档案'
     if (result.terminated) emit('terminated', result)
   } catch {
-    challengeHint.value = '人脸校验服务暂不可用'
+    verifyHint.value = '人脸校验服务暂不可用'
   }
 }
 
@@ -562,7 +452,7 @@ onBeforeUnmount(stopCamera)
 }
 
 .face-guard__camera video,
-.face-challenge__circle video {
+.face-verify__circle video {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -627,7 +517,7 @@ onBeforeUnmount(stopCamera)
   margin-top: 12px;
 }
 
-.face-challenge {
+.face-verify {
   display: grid;
   justify-items: center;
   gap: 12px;
@@ -635,7 +525,7 @@ onBeforeUnmount(stopCamera)
   text-align: center;
 }
 
-.face-challenge__circle {
+.face-verify__circle {
   position: relative;
   width: 220px;
   height: 220px;
@@ -645,7 +535,7 @@ onBeforeUnmount(stopCamera)
   background: #0f172a;
 }
 
-.face-challenge__mask {
+.face-verify__mask {
   position: absolute;
   inset: 0;
   display: grid;
@@ -654,37 +544,16 @@ onBeforeUnmount(stopCamera)
   background: rgba(15, 23, 42, 0.72);
 }
 
-.face-challenge strong {
+.face-verify strong {
   color: #0f172a;
   font-size: 18px;
 }
 
-.face-challenge p {
+.face-verify p {
   margin: 0;
   color: #475569;
   font-size: 14px;
   line-height: 1.6;
-}
-
-.face-challenge__steps {
-  display: grid;
-  gap: 8px;
-  width: 100%;
-}
-
-.face-challenge__step {
-  display: block;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: #fff7ed;
-  color: #9a3412;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.face-challenge__step--done {
-  background: #ecfdf5;
-  color: #047857;
 }
 
 @media (max-width: 720px) {
@@ -697,7 +566,7 @@ onBeforeUnmount(stopCamera)
     height: 116px;
   }
 
-  .face-challenge__circle {
+  .face-verify__circle {
     width: 190px;
     height: 190px;
   }

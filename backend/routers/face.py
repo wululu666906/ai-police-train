@@ -8,7 +8,6 @@ import database
 import models
 from routers.auth import get_current_user, require_admin_user
 from services.face_service import (
-    create_liveness_challenge,
     count_session_failures,
     count_session_monitor_failures,
     count_session_monitor_failures_total,
@@ -29,16 +28,12 @@ router = APIRouter(prefix="/face", tags=["Face Verification"])
 
 class VerifyFrameRequest(BaseModel):
     frame: str
-    liveness_score: float | None = None
-    challenge_id: str | None = None
-    liveness_actions: list[dict[str, Any]] | None = None
     quality_metrics: dict[str, Any] | None = None
 
 
 class FaceEventRequest(BaseModel):
-    reason: str = "人脸离开画面"
+    reason: str = "浜鸿劯绂诲紑鐢婚潰"
     event_type: str = "offline"
-    liveness_score: float | None = None
 
 
 def _get_student(db: Session, student_id: int) -> models.User:
@@ -54,7 +49,7 @@ def _get_owned_session(db: Session, session_id: int, current_user: models.User) 
         query = query.filter(models.TrainingSession.user_id == current_user.id)
     session = query.first()
     if not session:
-        raise HTTPException(status_code=404, detail="训练会话不存在或无权访问")
+        raise HTTPException(status_code=404, detail="璁粌浼氳瘽涓嶅瓨鍦ㄦ垨鏃犳潈璁块棶")
     return session
 
 
@@ -131,18 +126,6 @@ def get_session_face_status(
     }
 
 
-@router.get("/session/{session_id}/challenge")
-def get_session_face_challenge(
-    session_id: int,
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(get_current_user),
-) -> dict[str, Any]:
-    session = _get_owned_session(db, session_id, current_user)
-    if session.status in {"evaluating", "finished"}:
-        raise HTTPException(status_code=409, detail="训练会话已结束，无法发放活体挑战。")
-    return create_liveness_challenge(session.id, session.user_id)
-
-
 @router.post("/session/{session_id}/verify")
 def verify_session_face(
     session_id: int,
@@ -165,9 +148,6 @@ def verify_session_face(
         session=session,
         frame_data_url=payload.frame,
         event_type="verify",
-        liveness_score=payload.liveness_score,
-        challenge_id=payload.challenge_id,
-        liveness_actions=payload.liveness_actions,
         client_quality=payload.quality_metrics,
     )
 
@@ -194,7 +174,6 @@ def heartbeat_session_face(
         session=session,
         frame_data_url=payload.frame,
         event_type="heartbeat",
-        liveness_score=payload.liveness_score,
         client_quality=payload.quality_metrics,
     )
 
@@ -222,7 +201,6 @@ def record_session_face_event(
         event_type=payload.event_type,
         status="failed",
         reason=payload.reason,
-        liveness_score=payload.liveness_score,
     )
     terminated = is_face_session_terminated_by_policy(db, session.id) or session.status in {"evaluating", "finished"}
     return {
