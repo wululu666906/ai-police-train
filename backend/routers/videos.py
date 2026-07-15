@@ -9,6 +9,7 @@ import json
 import os
 import time
 import subprocess
+import threading
 import uuid
 from typing import Optional
 
@@ -366,17 +367,12 @@ def _sync_auto_import_videos(db: Session, force: bool = False) -> dict:
             )
             db.add(video_obj)
             db.flush()
-            if VIDEO_AUTO_ANALYZE:
-                analysis = video_auto_config_service.analyze_video_file(
-                    full_path,
-                    title_hint=guessed_title,
-                    duration_seconds=duration_seconds,
-                )
-                _apply_ai_analysis_to_video(db, video_obj, analysis, overwrite_meta=True, overwrite_nodes=True)
-            else:
-                auto_nodes = _build_default_auto_nodes(video_obj, guessed_title, duration_seconds)
-                if auto_nodes:
-                    db.add_all(auto_nodes)
+            # 自动导入时只使用本地模板生成节点，不调用外部 AI API，
+            # 避免同步 LLM 调用阻塞整个 uvicorn 进程。
+            # 管理员可在视频列表中手动触发 AI 分析。
+            auto_nodes = _build_default_auto_nodes(video_obj, guessed_title, duration_seconds)
+            if auto_nodes:
+                db.add_all(auto_nodes)
             _ensure_video_thumbnail(video_obj, db)
             existing_paths.add(rel_path)
             imported_count += 1
@@ -528,6 +524,8 @@ def _serialize_video(
         "description": video.description,
         "briefing": video.briefing,
         "video_type": video.video_type,
+        "scenario_type": video.scenario_type,
+        "difficulty": video.difficulty or "normal",
         "video_url": _video_url(video.file_path) if include_video_url else None,
         "thumbnail_url": _thumbnail_url(video.thumbnail_path),
         "duration": video.duration,
@@ -660,6 +658,10 @@ def _serialize_node(node: models.VideoNode) -> dict:
         "skip_score_deduct": node.skip_score_deduct,
         "prop_mode": node.prop_mode,
         "node_type": node.node_type,
+        "node_interaction_type": node.node_interaction_type or "voice_qa",
+        "ai_instructor_hint": node.ai_instructor_hint,
+        "choice_options": json.loads(node.choice_options) if node.choice_options else None,
+        "correct_answer": node.correct_answer,
         "node_config": node_config,
         "required_gesture": node.required_gesture,
         "required_keywords": required_keywords,
@@ -693,6 +695,13 @@ def _apply_ai_analysis_to_video(
         tags = analysis.get("tags")
         if isinstance(tags, list):
             video.tags = json.dumps([str(item).strip() for item in tags if str(item).strip()], ensure_ascii=False)
+        # 新字段：场景类型和难度
+        scenario_type = str(analysis.get("scenario_type") or "").strip()
+        if scenario_type:
+            video.scenario_type = scenario_type
+        difficulty = str(analysis.get("difficulty") or "").strip().lower()
+        if difficulty in {"easy", "normal", "hard"}:
+            video.difficulty = difficulty
 
     if overwrite_nodes:
         db.query(models.VideoNode).filter(models.VideoNode.video_id == video.id).delete()
@@ -710,6 +719,9 @@ def _apply_ai_analysis_to_video(
         for index, item in enumerate(analysis_nodes):
             if not isinstance(item, dict):
                 continue
+            # 处理 choice_options：如果是列表则序列化为JSON
+            choice_options = item.get("choice_options")
+            choice_options_str = json.dumps(choice_options, ensure_ascii=False) if isinstance(choice_options, list) else None
             db.add(
                 models.VideoNode(
                     video_id=video.id,
@@ -723,6 +735,10 @@ def _apply_ai_analysis_to_video(
                     skip_score_deduct=int(item.get("skip_score_deduct") or 20),
                     prop_mode=item.get("prop_mode") or "auto",
                     node_type=item.get("node_type") or "action",
+                    node_interaction_type=item.get("node_interaction_type") or "voice_qa",
+                    ai_instructor_hint=item.get("ai_instructor_hint"),
+                    choice_options=choice_options_str,
+                    correct_answer=str(item.get("correct_answer") or "").strip() or None,
                     node_config=json.dumps(item.get("node_config") or {}, ensure_ascii=False),
                     required_gesture=item.get("required_gesture"),
                     required_keywords=json.dumps(item.get("required_keywords") or [], ensure_ascii=False),
@@ -848,36 +864,28 @@ def _get_video_for_access(
 
 @router.post("/upload")
 async def upload_video(
-    title: str = Form(...),
-    video_type: str = Form("auto"),
-    description: Optional[str] = Form(None),
-    case_id: Optional[int] = Form(None),
-    tags: Optional[str] = Form("[]"),
-    duration: Optional[int] = Form(None),
-    auto_configure: bool = Form(True),
-    scenario_hint: Optional[str] = Form(None),
-    training_variant: Optional[str] = Form(None),
-    difficulty_level: Optional[str] = Form(None),
     file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    duration: Optional[int] = Form(None),
     thumbnail: Optional[UploadFile] = File(None),
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(_require_admin),
 ):
-    """上传视频文件（管理端专用）"""
+    """
+    极简视频上传（管理端专用）
+    只需传入视频文件，标题可选（不填则从文件名自动推断）。
+    上传后 AI 自动分析视频内容，生成：类型、简报、标签、难度、训练节点。
+    """
     content_type = file.content_type or ""
-    # Windows 上部分浏览器对本地文件上报 application/octet-stream 或空，
-    # 用扩展名做二次兜底判断
     file_ext = os.path.splitext(file.filename or "")[1].lower()
     if content_type not in ALLOWED_VIDEO_TYPES and file_ext not in ALLOWED_VIDEO_EXTS:
         raise HTTPException(
             status_code=400,
             detail=f"不支持的视频格式：{content_type or file_ext or '未知'}，请上传 mp4/webm/mov",
         )
-    if video_type not in ("auto", "teaching", "interactive"):
-        raise HTTPException(status_code=400, detail="video_type 必须为 auto / teaching / interactive")
-    resolved_video_type = video_type
-    if resolved_video_type == "auto":
-        resolved_video_type = _infer_video_type_from_name(title.strip() or file.filename or "")
+
+    # 标题：优先用户提供，否则从文件名推断
+    resolved_title = (title or "").strip() or _guess_title_from_filename(file.filename or "video")
 
     video_data = await file.read()
     if len(video_data) > MAX_VIDEO_SIZE:
@@ -889,12 +897,12 @@ async def upload_video(
     with open(os.path.join(VIDEOS_DIR, filename), "wb") as f:
         f.write(video_data)
 
+    # 封面图：用户可选上传，否则后续自动截取
     thumbnail_filename = None
     if thumbnail and thumbnail.filename:
         thumb_ct = thumbnail.content_type or ""
         thumb_ext_raw = os.path.splitext(thumbnail.filename)[1].lower()
         allowed_thumb_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
-        # 兼容 content-type 为 octet-stream 的情况，用扩展名兜底
         is_valid_thumb = thumb_ct in ALLOWED_IMAGE_TYPES or thumb_ext_raw in allowed_thumb_exts
         if is_valid_thumb:
             thumb_data = await thumbnail.read()
@@ -905,52 +913,205 @@ async def upload_video(
                 with open(os.path.join(THUMBNAILS_DIR, thumbnail_filename), "wb") as f:
                     f.write(thumb_data)
 
-    try:
-        tags_list = json.loads(tags or "[]")
-        if not isinstance(tags_list, list):
-            tags_list = []
-    except Exception:
-        tags_list = []
+    # 探测视频时长（如前端未传）
+    resolved_duration = duration
+    if not resolved_duration:
+        probed = _probe_video_duration(os.path.join(VIDEOS_DIR, filename))
+        resolved_duration = int(round(probed)) if probed else None
 
+    # 创建视频记录（状态: analyzing，AI分析在后台执行）
     video_obj = models.TrainingVideo(
-        title=title.strip(),
-        description=description,
-        video_type=resolved_video_type,
+        title=resolved_title,
+        description=None,
+        video_type="interactive",
         file_path=filename,
         thumbnail_path=thumbnail_filename,
         file_size=len(video_data),
-        duration=duration,
-        case_id=case_id,
-        tags=json.dumps(tags_list, ensure_ascii=False),
-        status="draft",
+        duration=resolved_duration,
+        case_id=None,
+        tags=json.dumps([], ensure_ascii=False),
+        status="analyzing",
         uploaded_by=current_user.id,
     )
     db.add(video_obj)
     db.commit()
     db.refresh(video_obj)
-    if auto_configure:
-        analysis = video_auto_config_service.analyze_video_file(
-            os.path.join(VIDEOS_DIR, filename),
-            title_hint=video_obj.title,
-            duration_seconds=video_obj.duration,
-            preferred_type=None if video_type == "auto" else video_type,
-            scenario_hint=scenario_hint,
-            training_variant=training_variant,
-            difficulty_level=difficulty_level,
-        )
-        _apply_ai_analysis_to_video(
-            db,
-            video_obj,
-            analysis,
-            overwrite_meta=True,
-            overwrite_nodes=True,
-            locked_video_type=None if video_type == "auto" else resolved_video_type,
-        )
-        db.commit()
-        db.refresh(video_obj)
+
+    # 自动截取封面（同步，很快）
     if not thumbnail_filename:
         _ensure_video_thumbnail(video_obj, db)
-    return _serialize_video(video_obj, include_nodes=True)
+
+    video_id = video_obj.id
+    video_path = os.path.join(VIDEOS_DIR, filename)
+
+    # 后台线程执行 AI 分析
+    def _background_analyze():
+        from database import SessionLocal
+        bg_db = SessionLocal()
+        try:
+            vid = bg_db.query(models.TrainingVideo).filter(models.TrainingVideo.id == video_id).first()
+            if not vid:
+                return
+
+            analysis = video_auto_config_service.analyze_video_file(
+                video_path,
+                title_hint=resolved_title,
+                duration_seconds=resolved_duration,
+                preferred_type=None,
+                scenario_hint=None,
+                training_variant=None,
+                difficulty_level=None,
+            )
+
+            analysis_error = analysis.get("analysis_error")
+            if analysis.get("analysis_mode") == "error" or analysis_error:
+                vid.status = "draft"
+                vid.description = f"AI分析失败：{analysis_error or '未知错误'}。可点击重新分析。"
+                bg_db.commit()
+                return
+
+            _apply_ai_analysis_to_video(
+                bg_db,
+                vid,
+                analysis,
+                overwrite_meta=True,
+                overwrite_nodes=True,
+                locked_video_type=None,
+            )
+            vid.status = "published"
+            bg_db.commit()
+        except Exception as exc:
+            try:
+                vid = bg_db.query(models.TrainingVideo).filter(models.TrainingVideo.id == video_id).first()
+                if vid:
+                    vid.status = "draft"
+                    vid.description = f"AI分析异常：{exc}"
+                    bg_db.commit()
+            except Exception:
+                pass
+        finally:
+            bg_db.close()
+
+    threading.Thread(target=_background_analyze, daemon=True).start()
+
+    result = _serialize_video(video_obj, include_nodes=False)
+    result["analysis_status"] = "analyzing"
+    return result
+
+
+# ─────────────────────────────────────────────
+# 管理端：查询视频分析状态 / 重新分析
+# ─────────────────────────────────────────────
+
+@router.get("/status/{video_id}")
+def get_video_status(
+    video_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(_require_admin),
+):
+    """查询单个视频的分析状态（前端轮询用）"""
+    video = db.query(models.TrainingVideo).filter(models.TrainingVideo.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="视频不存在")
+    analysis_status = "analyzing" if video.status == "analyzing" else (
+        "success" if video.status == "published" else "failed"
+    )
+    return {
+        "id": video.id,
+        "status": video.status,
+        "analysis_status": analysis_status,
+        "title": video.title,
+        "node_count": len(video.nodes) if video.nodes else 0,
+        "scenario_type": video.scenario_type,
+        "difficulty": video.difficulty,
+    }
+
+
+@router.post("/retry-analysis/{video_id}")
+def retry_analysis(
+    video_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(_require_admin),
+):
+    """重新触发 AI 分析（用于之前分析失败的视频）"""
+    video = db.query(models.TrainingVideo).filter(models.TrainingVideo.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="视频不存在")
+    if video.status == "analyzing":
+        raise HTTPException(status_code=400, detail="该视频正在分析中，请稍候")
+
+    video.status = "analyzing"
+    video.description = None
+    db.commit()
+
+    video_path = os.path.join(VIDEOS_DIR, video.file_path)
+    title_hint = video.title or ""
+    duration_seconds = video.duration
+    vid_id = video.id
+
+    def _background_retry():
+        from database import SessionLocal
+        bg_db = SessionLocal()
+        try:
+            vid = bg_db.query(models.TrainingVideo).filter(models.TrainingVideo.id == vid_id).first()
+            if not vid:
+                return
+            analysis = video_auto_config_service.analyze_video_file(
+                video_path,
+                title_hint=title_hint,
+                duration_seconds=duration_seconds,
+                preferred_type=None,
+                scenario_hint=None,
+                training_variant=None,
+                difficulty_level=None,
+            )
+            analysis_error = analysis.get("analysis_error")
+            if analysis.get("analysis_mode") == "error" or analysis_error:
+                vid.status = "draft"
+                vid.description = f"AI分析失败：{analysis_error or '未知错误'}。可点击重新分析。"
+                bg_db.commit()
+                return
+            _apply_ai_analysis_to_video(
+                bg_db,
+                vid,
+                analysis,
+                overwrite_meta=True,
+                overwrite_nodes=True,
+                locked_video_type=None,
+            )
+            vid.status = "published"
+            bg_db.commit()
+        except Exception as exc:
+            try:
+                vid = bg_db.query(models.TrainingVideo).filter(models.TrainingVideo.id == vid_id).first()
+                if vid:
+                    vid.status = "draft"
+                    vid.description = f"AI分析异常：{exc}"
+                    bg_db.commit()
+            except Exception:
+                pass
+        finally:
+            bg_db.close()
+
+    threading.Thread(target=_background_retry, daemon=True).start()
+    return {"id": video_id, "status": "analyzing", "message": "已重新触发 AI 分析"}
+
+
+@router.patch("/{video_id}/toggle-publish")
+def toggle_publish(
+    video_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(_require_admin),
+):
+    """切换视频发布/下架状态"""
+    video = db.query(models.TrainingVideo).filter(models.TrainingVideo.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="视频不存在")
+    if video.status == "analyzing":
+        raise HTTPException(status_code=400, detail="视频正在分析中，无法切换状态")
+    video.status = "published" if video.status != "published" else "draft"
+    db.commit()
+    return {"id": video_id, "status": video.status}
 
 
 # ─────────────────────────────────────────────
@@ -1052,6 +1213,8 @@ def auto_configure_video(
     video_path = os.path.join(VIDEOS_DIR, video.file_path or "")
     if not os.path.exists(video_path):
         raise HTTPException(status_code=404, detail="视频文件不存在")
+    if video.status == "analyzing":
+        raise HTTPException(status_code=400, detail="该视频正在分析中，请稍候")
 
     payload = payload or {}
     overwrite_meta = bool(payload.get("overwrite_meta", True))
@@ -1065,39 +1228,63 @@ def auto_configure_video(
     allowed_scenarios = {"", "family_dispute", "alcohol_trouble", "school_conflict", "public_help", "traffic_scene", "unstable_person"}
     if scenario_hint not in allowed_scenarios:
         raise HTTPException(status_code=400, detail="scenario_hint 不合法")
-    analysis = video_auto_config_service.analyze_video_file(
-        video_path,
-        title_hint=video.title,
-        duration_seconds=video.duration,
-        preferred_type=None if preferred_type in {None, "", "auto"} else str(preferred_type),
-        scenario_hint=scenario_hint,
-        training_variant=training_variant,
-        difficulty_level=difficulty_level,
-    )
-    _apply_ai_analysis_to_video(
-        db,
-        video,
-        analysis,
-        overwrite_meta=overwrite_meta,
-        overwrite_nodes=overwrite_nodes,
-        locked_video_type=None if preferred_type in {None, "", "auto"} else str(preferred_type),
-    )
+
+    # 标记为分析中并立即返回，AI 分析在后台执行
+    prev_status = video.status
+    video.status = "analyzing"
     db.commit()
-    db.refresh(video)
-    _ensure_video_thumbnail(video, db)
-    result = _serialize_video(video, include_nodes=True)
-    result["auto_analysis"] = {
-        "analysis_mode": analysis.get("analysis_mode"),
-        "frame_count": analysis.get("frame_count"),
-        "ocr_hints": analysis.get("ocr_hints") or [],
-        "analysis_error": analysis.get("analysis_error"),
-        "suggested_timestamps": analysis.get("suggested_timestamps") or [],
-        "node_generation_mode": analysis.get("node_generation_mode"),
-        "police_scenario": analysis.get("police_scenario"),
-        "training_variant": analysis.get("training_variant"),
-        "difficulty_level": analysis.get("difficulty_level"),
-    }
-    return result
+
+    vid_id = video.id
+    title_hint = video.title
+    duration_seconds = video.duration
+    locked_type = None if preferred_type in {None, "", "auto"} else str(preferred_type)
+
+    def _background_auto_configure():
+        from database import SessionLocal
+        bg_db = SessionLocal()
+        try:
+            vid = bg_db.query(models.TrainingVideo).filter(models.TrainingVideo.id == vid_id).first()
+            if not vid:
+                return
+            analysis = video_auto_config_service.analyze_video_file(
+                video_path,
+                title_hint=title_hint,
+                duration_seconds=duration_seconds,
+                preferred_type=locked_type,
+                scenario_hint=scenario_hint,
+                training_variant=training_variant,
+                difficulty_level=difficulty_level,
+            )
+            analysis_error = analysis.get("analysis_error")
+            if analysis.get("analysis_mode") == "error" or analysis_error:
+                vid.status = prev_status if prev_status != "analyzing" else "draft"
+                vid.description = f"AI分析失败：{analysis_error or '未知错误'}。可点击重新分析。"
+                bg_db.commit()
+                return
+            _apply_ai_analysis_to_video(
+                bg_db,
+                vid,
+                analysis,
+                overwrite_meta=overwrite_meta,
+                overwrite_nodes=overwrite_nodes,
+                locked_video_type=locked_type,
+            )
+            vid.status = "published"
+            bg_db.commit()
+        except Exception as exc:
+            try:
+                vid = bg_db.query(models.TrainingVideo).filter(models.TrainingVideo.id == vid_id).first()
+                if vid:
+                    vid.status = prev_status if prev_status != "analyzing" else "draft"
+                    vid.description = f"AI分析异常：{exc}"
+                    bg_db.commit()
+            except Exception:
+                pass
+        finally:
+            bg_db.close()
+
+    threading.Thread(target=_background_auto_configure, daemon=True).start()
+    return {"id": video_id, "status": "analyzing", "message": "AI 分析已在后台启动，请稍后刷新查看结果"}
 
 
 @router.get("/{video_id}")
@@ -1324,6 +1511,3 @@ def delete_video_node(
     db.delete(node)
     db.commit()
     return {"message": "节点已删除", "node_id": node_id}
-    resolved_video_type = video_type
-    if resolved_video_type == "auto":
-        resolved_video_type = _infer_video_type_from_name(title.strip() or file.filename or "")

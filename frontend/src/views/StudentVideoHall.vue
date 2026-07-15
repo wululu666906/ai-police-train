@@ -1,11 +1,6 @@
 <template>
   <div class="student-page student-page--video-hall">
     <section class="video-center-hero">
-      <div class="video-center-hero__title">
-        <h1>视频实训中心</h1>
-        <p>教学预习视频、第一视角交互式实训</p>
-      </div>
-
       <div class="video-center-hero__actions">
         <el-input
           v-model="keyword"
@@ -18,19 +13,6 @@
         />
         <el-button plain class="history-btn" @click="router.push('/student/video-history')">实训历史</el-button>
       </div>
-    </section>
-
-    <section class="stats-grid">
-      <article v-for="item in statCards" :key="item.label" class="stat-card">
-        <div class="stat-card__icon" :class="`stat-card__icon--${item.tone}`">
-          <el-icon><component :is="item.icon" /></el-icon>
-        </div>
-        <div class="stat-card__content">
-          <div class="stat-card__label">{{ item.label }}</div>
-          <div class="stat-card__value">{{ item.value }}</div>
-          <div class="stat-card__desc">{{ item.desc }}</div>
-        </div>
-      </article>
     </section>
 
     <section class="content-card">
@@ -46,25 +28,6 @@
         </el-tabs>
 
         <div class="filter-row">
-          <el-select v-model="difficultyFilter" class="filter-select" placeholder="难度" @change="onFilterChanged">
-            <el-option label="全部难度" value="all" />
-            <el-option label="简单难度" value="easy" />
-            <el-option label="中等难度" value="medium" />
-            <el-option label="困难难度" value="hard" />
-          </el-select>
-
-          <el-select v-model="sceneFilter" class="filter-select" placeholder="场景类型" @change="onFilterChanged">
-            <el-option label="全部场景" value="all" />
-            <el-option v-for="scene in availableScenes" :key="scene" :label="scene" :value="scene" />
-          </el-select>
-
-          <el-select v-model="modeFilter" class="filter-select" placeholder="训练模式" @change="onFilterChanged">
-            <el-option label="全部模式" value="all" />
-            <el-option label="交互实训" value="interactive" />
-            <el-option label="教学素材" value="teaching" />
-            <el-option label="可继续训练" value="resumable" />
-          </el-select>
-
           <el-select v-model="sortBy" class="filter-select filter-select--sort" placeholder="排序方式" @change="onFilterChanged">
             <el-option label="默认排序" value="default" />
             <el-option label="最新上传" value="latest" />
@@ -138,9 +101,8 @@
             <div class="video-card__actions">
               <template v-if="video.video_type === 'interactive'">
                 <el-button type="primary" class="video-card__btn video-card__btn--primary" @click="openVideo(video)">
-                  {{ sessionForVideo(video)?.status === 'active' ? '继续训练' : '开始实训' }}
+                  {{ sessionForVideo(video)?.status === 'active' ? '继续训练' : '进入训练' }}
                 </el-button>
-                <el-button class="video-card__btn" @click="openVideo(video)">查看详情</el-button>
               </template>
               <template v-else>
                 <el-button
@@ -207,65 +169,150 @@
       v-model:show="showTrainingEntry"
       round
       class="training-entry-popup"
-      :overlay-style="{ backgroundColor: 'rgba(15,23,42,0.5)', backdropFilter: 'blur(4px)' }"
+      :close-on-click-overlay="false"
+      :overlay-style="{ backgroundColor: 'rgba(5,10,20,0.75)', backdropFilter: 'blur(6px)' }"
       teleport="body"
     >
-      <div v-if="playerVideo" class="entry-dialog">
+      <div v-if="playerVideo" class="entry-dialog entry-dialog--dark">
         <div class="entry-dialog__header">
-          <van-icon name="cross" class="entry-dialog__close" @click="showTrainingEntry = false" />
+          <div class="entry-dialog__steps">
+            <span class="entry-step" :class="{ 'entry-step--active': entryStep === 1, 'entry-step--done': entryStep > 1 }">1</span>
+            <span class="entry-step-line" :class="{ 'entry-step-line--done': entryStep > 1 }"></span>
+            <span class="entry-step" :class="{ 'entry-step--active': entryStep === 2 }">2</span>
+          </div>
+          <van-icon name="cross" class="entry-dialog__close" @click="showTrainingEntry = false; entryStep = 1" />
         </div>
-        <div class="entry-dialog__body">
-          <div class="entry-cover">
-            <img v-if="coverFor(playerVideo)" :src="coverFor(playerVideo)" class="entry-cover__img" />
-            <div v-else class="entry-cover__placeholder">
-              <el-icon :size="56" color="rgba(255,255,255,0.2)"><VideoPlay /></el-icon>
+
+        <!-- Step 1: Training Details -->
+        <div v-if="entryStep === 1" class="entry-dialog__body entry-dialog__body--split">
+          <div class="entry-left">
+            <div class="entry-cover entry-cover--compact">
+              <img v-if="coverFor(playerVideo)" :src="coverFor(playerVideo)" class="entry-cover__img" />
+              <div v-else class="entry-cover__placeholder">
+                <el-icon :size="40" color="rgba(255,255,255,0.2)"><VideoPlay /></el-icon>
+              </div>
+              <span class="entry-cover__badge">交互实训</span>
             </div>
-            <span class="entry-cover__badge">交互实训</span>
+            <div class="entry-stats entry-stats--vertical">
+              <div class="entry-stat-card">
+                <span class="entry-stat-card__num">{{ playerVideo.node_count || 0 }}</span>
+                <span class="entry-stat-card__label">训练节点</span>
+              </div>
+              <div class="entry-stat-card">
+                <span class="entry-stat-card__num">{{ playerVideo.duration ? formatDuration(playerVideo.duration) : '--' }}</span>
+                <span class="entry-stat-card__label">视频时长</span>
+              </div>
+              <div class="entry-stat-card">
+                <span class="entry-stat-card__num">{{ playerVideo.node_count ? playerVideo.node_count * 10 : 100 }}</span>
+                <span class="entry-stat-card__label">满分</span>
+              </div>
+            </div>
           </div>
 
-          <div class="entry-info">
+          <div class="entry-right">
             <h3 class="entry-info__title">{{ playerVideo.title }}</h3>
             <p class="entry-info__desc">{{ playerVideo.description || '本视频为第一视角交互式训练，系统将在关键节点自动暂停并检测你的动作与话术。' }}</p>
 
-            <div class="entry-stats">
-              <div class="entry-stat">
-                <el-icon color="#2563eb"><SetUp /></el-icon>
-                <span>{{ playerVideo.node_count }} 个训练节点</span>
-              </div>
-              <div v-if="playerVideo.duration" class="entry-stat">
-                <el-icon color="#2563eb"><Timer /></el-icon>
-                <span>视频时长 {{ formatDuration(playerVideo.duration) }}</span>
-              </div>
-              <div class="entry-stat">
-                <el-icon color="#2563eb"><VideoCamera /></el-icon>
-                <span>需要开启摄像头和麦克风</span>
+            <div v-if="playerVideo.briefing_objectives?.length || playerVideo.description" class="entry-section entry-section--compact">
+              <div class="entry-section__title">📌 训练目标</div>
+              <ul class="entry-objectives">
+                <li v-for="(obj, i) in (playerVideo.briefing_objectives || ['掌握本场景规范执法流程', '练习标准话术和规范动作', '培养现场处置综合能力'])" :key="i">{{ obj }}</li>
+              </ul>
+            </div>
+
+            <div v-if="(playerVideo.tags || []).length" class="entry-section entry-section--compact">
+              <div class="entry-section__title">🏷 考察要点</div>
+              <div class="entry-tags">
+                <el-tag v-for="tag in playerVideo.tags" :key="tag" size="small" effect="dark" type="info">{{ tag }}</el-tag>
               </div>
             </div>
 
-            <div class="entry-notices">
-              <div class="notice-row notice-row--warn">
-                <span class="notice-icon">!</span>
-                视频播放期间<strong>禁止拖动进度条</strong>
-              </div>
-              <div class="notice-row notice-row--info">
-                <span class="notice-icon">i</span>
-                节点超时将触发扣分，请保持专注
-              </div>
-              <div class="notice-row notice-row--info">
-                <span class="notice-icon">i</span>
-                训练完成后可回看教学视频与报告
-              </div>
+            <div class="entry-section entry-section--compact">
+              <div class="entry-section__title">📋 设备要求</div>
+              <p class="entry-section__text">需要开启摄像头和麦克风，建议 Chrome 浏览器。</p>
             </div>
 
-            <div v-if="(playerVideo.tags || []).length" class="entry-tags">
-              <el-tag v-for="tag in playerVideo.tags" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
+            <div v-if="sessionForVideo(playerVideo)" class="entry-section entry-section--compact">
+              <div class="entry-section__title">📊 我的记录</div>
+              <p class="entry-section__text">
+                上次状态：{{ sessionForVideo(playerVideo)?.status === 'active' ? '训练中（未完成）' : '已完成' }}
+              </p>
             </div>
 
             <div class="entry-actions">
-              <el-button @click="showTrainingEntry = false">暂不进入</el-button>
+              <el-button @click="showTrainingEntry = false; entryStep = 1">取消</el-button>
+              <el-button type="primary" @click="entryStep = 2">下一步 — 准备开始</el-button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2: Confirm & Mode Selection -->
+        <div v-if="entryStep === 2" class="entry-dialog__body">
+          <div class="entry-info">
+            <h3 class="entry-info__title">准备开始训练</h3>
+            <p class="entry-info__desc">请确认设备状态，选择训练模式后开始。</p>
+
+            <div class="entry-section">
+              <div class="entry-section__title">📷 设备检测</div>
+              <div class="entry-device-list">
+                <div class="entry-device">
+                  <span class="entry-device__label">摄像头</span>
+                  <span class="entry-device__status entry-device__status--pending">进入后自动检测</span>
+                </div>
+                <div class="entry-device">
+                  <span class="entry-device__label">麦克风</span>
+                  <span class="entry-device__status entry-device__status--pending">进入后自动检测</span>
+                </div>
+                <div class="entry-device">
+                  <span class="entry-device__label">人脸识别</span>
+                  <span class="entry-device__status entry-device__status--pending">进入后自动校验</span>
+                </div>
+              </div>
+              <p class="entry-device-hint">设备权限将在进入训练页面后由系统自动请求并检测。</p>
+            </div>
+
+            <div class="entry-section">
+              <div class="entry-section__title">🎯 训练模式</div>
+              <div class="entry-mode-select">
+                <button
+                  class="entry-mode-btn"
+                  :class="{ 'entry-mode-btn--active': entryMode === 'practice' }"
+                  @click="entryMode = 'practice'"
+                >
+                  <span class="entry-mode-btn__title">练习模式</span>
+                  <span class="entry-mode-btn__desc">提供标准话术参考和操作提示，适合熟悉流程</span>
+                </button>
+                <button
+                  class="entry-mode-btn entry-mode-btn--exam"
+                  :class="{ 'entry-mode-btn--active': entryMode === 'exam' }"
+                  @click="entryMode = 'exam'"
+                >
+                  <span class="entry-mode-btn__title">考核模式</span>
+                  <span class="entry-mode-btn__desc">不提供提示，严格评分，计入正式记录</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="entry-notices entry-notices--compact">
+              <div class="notice-row notice-row--warn">
+                <span class="notice-icon">!</span>
+                视频播放期间<strong>禁止拖动进度条</strong>，违规将被记录
+              </div>
+              <div class="notice-row notice-row--info">
+                <span class="notice-icon">i</span>
+                节点超时触发扣分，请保持专注
+              </div>
+              <div class="notice-row notice-row--info">
+                <span class="notice-icon">i</span>
+                切换标签页、离开页面等行为将被系统记录
+              </div>
+            </div>
+
+            <div class="entry-actions">
+              <el-button @click="entryStep = 1">上一步</el-button>
               <el-button type="primary" @click="enterTraining(playerVideo)">
                 <el-icon style="margin-right: 4px"><VideoPlay /></el-icon>
-                {{ sessionForVideo(playerVideo)?.status === 'active' ? '继续训练' : '开始实训' }}
+                已了解，开始训练
               </el-button>
             </div>
           </div>
@@ -329,6 +376,8 @@ const pageSize = ref(8)
 
 const showTeachingPlayer = ref(false)
 const showTrainingEntry = ref(false)
+const entryStep = ref(1)
+const entryMode = ref<'practice' | 'exam'>('practice')
 const playerVideo = ref<VideoItem | null>(null)
 const recentSessionMap = ref<Record<number, SessionBrief>>({})
 const { ensureVideoCover, ensureVideoCovers, getVideoCover } = useVideoCover()
@@ -485,13 +534,16 @@ function openVideo(video: VideoItem) {
   if (video.video_type === 'teaching') {
     showTeachingPlayer.value = true
   } else {
+    entryStep.value = 1
+    entryMode.value = 'practice'
     showTrainingEntry.value = true
   }
 }
 
 function enterTraining(video: VideoItem) {
   showTrainingEntry.value = false
-  router.push(`/student/video-training/${video.id}`)
+  entryStep.value = 1
+  router.push(`/student/video-training/${video.id}?mode=${entryMode.value}`)
 }
 
 function sessionForVideo(video?: VideoItem | null) {
@@ -988,38 +1040,104 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 }
 
 .entry-dialog {
-  background: #fff;
-  border-radius: 8px;
+  background: #ffffff;
+  border-radius: 12px;
   border: 1px solid #e5e7eb;
+  color: #1f2937;
+  width: 100%;
+  max-height: none;
+  overflow-y: auto;
+
+  &--dark {
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+  }
 
   &__header {
     display: flex;
-    justify-content: flex-end;
-    padding: 10px 14px 0;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px 0;
+  }
+
+  &__steps {
+    display: flex;
+    align-items: center;
+    gap: 0;
   }
 
   &__close {
     font-size: 20px;
     color: #9ca3af;
     cursor: pointer;
+    &:hover { color: #374151; }
   }
 
   &__body {
-    display: flex;
-    gap: 20px;
-    padding: 4px 20px 24px;
-    align-items: flex-start;
+    padding: 16px 24px 24px;
+
+    &--split {
+      display: flex;
+      gap: 24px;
+      align-items: flex-start;
+    }
+  }
+}
+
+.entry-step {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  background: #f3f4f6;
+  color: #9ca3af;
+  border: 2px solid #e5e7eb;
+  transition: all 0.3s;
+
+  &--active {
+    background: #2563eb;
+    color: #fff;
+    border-color: #2563eb;
+    box-shadow: 0 0 10px rgba(37, 99, 235, 0.3);
+  }
+
+  &--done {
+    background: #22c55e;
+    color: #fff;
+    border-color: #22c55e;
+  }
+}
+
+.entry-step-line {
+  width: 40px;
+  height: 2px;
+  background: #e5e7eb;
+  transition: background 0.3s;
+
+  &--done {
+    background: #22c55e;
   }
 }
 
 .entry-cover {
-  width: 240px;
-  flex-shrink: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   overflow: hidden;
-  background: #0f172a;
+  background: #1e293b;
   aspect-ratio: 16 / 9;
   position: relative;
+
+  &--compact {
+    width: 100%;
+    margin-bottom: 0;
+  }
+
+  &--wide {
+    width: 100%;
+    margin-bottom: 18px;
+  }
 
   &__img {
     width: 100%;
@@ -1034,78 +1152,228 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
     display: flex;
     align-items: center;
     justify-content: center;
+    background: #f3f4f6;
   }
 
   &__badge {
     position: absolute;
-    bottom: 7px;
-    left: 7px;
+    bottom: 10px;
+    left: 10px;
     background: rgba(37, 99, 235, 0.92);
     color: #fff;
     font-size: 11px;
     font-weight: 600;
-    padding: 2px 8px;
+    padding: 3px 10px;
     border-radius: 4px;
   }
 }
 
 .entry-info {
-  flex: 1;
-  min-width: 0;
-
   &__title {
     margin: 0 0 8px;
-    font-size: 17px;
+    font-size: 18px;
     font-weight: 700;
     color: #111827;
     line-height: 1.4;
   }
 
   &__desc {
-    margin: 0 0 14px;
+    margin: 0 0 16px;
     font-size: 13px;
     color: #6b7280;
     line-height: 1.7;
   }
 }
 
+.entry-left {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.entry-right {
+  flex: 1;
+  min-width: 0;
+}
+
 .entry-stats {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 18px;
+
+  &--vertical {
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 0;
+  }
+}
+
+.entry-stat-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 8px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+
+  &__num {
+    font-size: 18px;
+    font-weight: 800;
+    color: #2563eb;
+  }
+
+  &__label {
+    font-size: 11px;
+    color: #6b7280;
+  }
+}
+
+.entry-section {
+  margin-bottom: 14px;
+
+  &--compact {
+    margin-bottom: 10px;
+  }
+
+  &__title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 6px;
+  }
+
+  &__text {
+    font-size: 13px;
+    color: #6b7280;
+    line-height: 1.6;
+    margin: 0;
+  }
+}
+
+.entry-objectives {
+  margin: 0;
+  padding: 0 0 0 18px;
+  font-size: 13px;
+  color: #4b5563;
+  line-height: 1.8;
+}
+
+.entry-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.entry-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.entry-device {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #f9fafb;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+
+  &__label {
+    font-size: 13px;
+    color: #374151;
+  }
+
+  &__status {
+    font-size: 12px;
+
+    &--pending { color: #9ca3af; }
+    &--pass { color: #16a34a; }
+    &--fail { color: #dc2626; }
+  }
+}
+
+.entry-device-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.entry-mode-select {
+  display: flex;
+  gap: 12px;
+}
+
+.entry-mode-btn {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-bottom: 14px;
-}
+  padding: 14px;
+  border-radius: 8px;
+  border: 2px solid #e5e7eb;
+  background: #ffffff;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s;
 
-.entry-stat {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 13px;
-  color: #374151;
+  &:hover {
+    border-color: rgba(37, 99, 235, 0.4);
+    background: rgba(37, 99, 235, 0.02);
+  }
+
+  &--active {
+    border-color: #2563eb !important;
+    background: rgba(37, 99, 235, 0.04) !important;
+    box-shadow: 0 0 12px rgba(37, 99, 235, 0.1);
+  }
+
+  &__title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #111827;
+  }
+
+  &__desc {
+    font-size: 12px;
+    color: #6b7280;
+    line-height: 1.4;
+  }
 }
 
 .entry-notices {
-  margin-bottom: 14px;
+  margin-bottom: 16px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+
+  &--compact {
+    margin-top: 4px;
+  }
 }
 
 .notice-row {
   display: flex;
   align-items: flex-start;
-  gap: 7px;
+  gap: 8px;
   font-size: 12px;
-  color: #4b5563;
+  color: #6b7280;
   line-height: 1.5;
+
+  strong { color: #374151; }
 }
 
 .notice-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   font-size: 10px;
   font-weight: 700;
@@ -1116,17 +1384,12 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   .notice-row--info & { background: #dbeafe; color: #2563eb; }
 }
 
-.entry-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-bottom: 18px;
-}
-
 .entry-actions {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
+  margin-top: 20px;
+  justify-content: flex-end;
 }
 
 @media (max-width: 1440px) {

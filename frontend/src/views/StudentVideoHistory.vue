@@ -1,12 +1,5 @@
 <template>
   <div class="student-page training-history-page">
-    <section class="history-hero">
-      <div>
-        <h1 class="history-hero__title">实训记录</h1>
-        <p class="history-hero__subtitle">查看自己的视频实训记录、得分与评估报告。</p>
-      </div>
-    </section>
-
     <section class="filter-panel">
       <div class="filter-grid">
         <div class="filter-item">
@@ -141,7 +134,13 @@
           </div>
 
           <div class="history-table__body">
-            <div v-for="(item, index) in pagedSessions" :key="item.id" class="history-row">
+            <div
+              v-for="(item, index) in pagedSessions"
+              :key="item.id"
+              class="history-row"
+              :class="{ 'history-row--clickable': canViewReport(item) }"
+              @click="handleRowClick(item)"
+            >
               <div class="cell-center">{{ (currentPage - 1) * pageSize + index + 1 }}</div>
 
               <div class="history-row__title-cell">
@@ -170,7 +169,7 @@
                 <span v-else>--</span>
               </div>
 
-              <div class="cell-center">
+              <div class="cell-center grade-cell">
                 <span v-if="item.total_score != null" class="grade-badge" :class="`grade-badge--${gradeKey(item)}`">
                   {{ gradeText(item) }}
                 </span>
@@ -191,12 +190,12 @@
                 <div class="muted">{{ item.finished_at ? '已结束' : '最近更新' }}</div>
               </div>
 
-              <div class="action-cell">
+              <div class="action-cell action-cell--sticky" @click.stop>
                 <template v-if="item.status === 'active'">
                   <el-button type="primary" plain size="small" @click="handleAction('continue', item)">继续训练</el-button>
                 </template>
-                <template v-else-if="item.status === 'finished'">
-                  <el-button type="primary" plain size="small" @click="handleAction('report', item)">查看报告</el-button>
+                <template v-else-if="canViewReport(item)">
+                  <el-button type="primary" size="small" @click="handleAction('report', item)">查看报告</el-button>
                 </template>
                 <template v-else>
                   <el-button type="warning" plain size="small" @click="handleAction('redo', item)">去重修</el-button>
@@ -208,8 +207,8 @@
                   </button>
                   <template #dropdown>
                     <el-dropdown-menu>
-                      <el-dropdown-item v-if="item.status === 'finished'" command="report">查看报告</el-dropdown-item>
-                      <el-dropdown-item v-if="item.status === 'finished' && latestReplayArtifact(item)" command="replay">查看回放</el-dropdown-item>
+                      <el-dropdown-item v-if="canViewReport(item)" command="report">查看报告</el-dropdown-item>
+                      <el-dropdown-item v-if="canViewReport(item) && latestReplayArtifact(item)" command="replay">查看回放</el-dropdown-item>
                       <el-dropdown-item v-if="item.status === 'active'" command="continue">继续训练</el-dropdown-item>
                       <el-dropdown-item v-if="item.video_id" command="redo">重新训练</el-dropdown-item>
                     </el-dropdown-menu>
@@ -277,6 +276,8 @@ interface SessionItem {
   total_score: number | null
   full_score: number | null
   grade?: string
+  report_ready?: boolean
+  evaluation_status?: string
   artifacts?: ArtifactItem[]
   created_at: string
   finished_at?: string
@@ -534,9 +535,18 @@ async function fetchHistory() {
   }
 }
 
+function canViewReport(session: SessionItem): boolean {
+  return session.status === 'finished' || Boolean(session.finished_at)
+}
+
+function handleRowClick(session: SessionItem) {
+  if (!canViewReport(session)) return
+  void handleAction('report', session)
+}
+
 async function handleAction(command: string, session: SessionItem) {
   if (command === 'report') {
-    router.push(`/student/video-report/${session.id}`)
+    router.push(`/student/evaluation?session_id=${session.id}&type=video`)
     return
   }
 
@@ -693,11 +703,18 @@ function renderRadarChart() {
     tooltip: { trigger: 'item' },
     radar: {
       radius: '60%',
-      splitNumber: 4,
+      splitNumber: 5,
       axisName: { color: '#475569', fontSize: 12 },
+      axisLabel: { show: false },
       splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.28)' } },
       splitArea: { areaStyle: { color: ['rgba(37, 99, 235, 0.02)', 'rgba(37, 99, 235, 0.04)'] } },
-      indicator: radarMetrics.value.map((item) => ({ name: item.label, max: 100 })),
+      indicator: radarMetrics.value.map((item) => ({
+        name: item.label,
+        min: 0,
+        max: 100,
+        axisLabel: { show: false },
+      })),
+      alignTicks: false,
     },
     series: [
       {
@@ -713,7 +730,7 @@ function renderRadarChart() {
         ],
       },
     ],
-  })
+  }, { notMerge: true })
 }
 
 function renderTrendChart() {
@@ -745,6 +762,8 @@ function renderTrendChart() {
       type: 'value',
       min: 0,
       max: 100,
+      interval: 20,
+      alignTicks: false,
       splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.18)' } },
       axisLabel: { color: '#64748b' },
     },
@@ -777,19 +796,6 @@ function renderTrendChart() {
   padding: 18px 22px 24px;
   min-height: 100%;
   background: #f3f6fb;
-}
-
-.history-hero__title {
-  margin: 0;
-  font-size: 22px;
-  font-weight: 800;
-  color: #13213a;
-}
-
-.history-hero__subtitle {
-  margin: 8px 0 0;
-  font-size: 14px;
-  color: #64748b;
 }
 
 .filter-panel,
@@ -971,20 +977,21 @@ function renderTrendChart() {
 }
 
 .table-panel {
-  overflow: hidden;
+  overflow-x: auto;
 }
 
-.state-panel {
-  padding: 56px 24px;
+.history-table {
+  min-width: 100%;
 }
 
 .history-table__head,
 .history-row {
   display: grid;
-  grid-template-columns: 60px minmax(220px, 1.6fr) minmax(150px, 1fr) 110px 100px 80px 80px 130px 90px 150px 120px;
-  gap: 14px;
+  grid-template-columns: 52px minmax(180px, 1.4fr) minmax(120px, 1fr) 96px 88px 72px 96px 110px 80px 130px 132px;
+  gap: 12px;
   align-items: center;
   padding: 16px 18px;
+  min-width: 1180px;
 }
 
 .history-table__head {
@@ -999,6 +1006,14 @@ function renderTrendChart() {
   font-size: 14px;
   color: #334155;
   border-bottom: 1px solid #edf2f7;
+}
+
+.history-row--clickable {
+  cursor: pointer;
+}
+
+.history-row--clickable:hover {
+  background: #f8fbff;
 }
 
 .history-row:last-child {
@@ -1134,6 +1149,45 @@ function renderTrendChart() {
   gap: 8px;
 }
 
+.action-cell--sticky {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, #fff 18%);
+  padding-left: 12px;
+}
+
+.history-table__head .action-cell--sticky {
+  background: #f8fafc;
+}
+
+.grade-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.report-link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: #2f6df6;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.report-link:hover {
+  color: #1d4ed8;
+}
+
+.state-panel {
+  padding: 56px 24px;
+}
+
 .more-btn {
   display: inline-flex;
   align-items: center;
@@ -1199,7 +1253,7 @@ function renderTrendChart() {
 
   .history-table__head,
   .history-row {
-    min-width: 1480px;
+    min-width: 1180px;
   }
 }
 

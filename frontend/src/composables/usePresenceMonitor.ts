@@ -1,24 +1,118 @@
 import { computed, onUnmounted, ref } from 'vue'
+import { loadVisionTasksModule } from '../utils/mediapipeVision'
 
-type PresenceStatus = 'idle' | 'checking' | 'ready' | 'warn' | 'unsupported' | 'error'
+type PresenceStatus = 'idle' | 'loading' | 'checking' | 'ready' | 'warn' | 'unsupported' | 'error'
 
-interface FaceLike {
-  boundingBox?: DOMRectReadOnly
+interface BoundingBoxLike {
+  originX: number
+  originY: number
+  width: number
+  height: number
+}
+
+interface DetectionLike {
+  boundingBox?: BoundingBoxLike
+}
+
+interface FaceDetectorResult {
+  detections?: DetectionLike[]
 }
 
 interface FaceDetectorLike {
-  detect(source: ImageBitmapSource): Promise<FaceLike[]>
+  detectForVideo(video: HTMLVideoElement, timestampMs: number): FaceDetectorResult
+  close?: () => void
 }
 
-declare global {
-  interface Window {
-    FaceDetector?: new (options?: Record<string, unknown>) => FaceDetectorLike
+const REMOTE_FACE_MODEL_URL =
+  'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite'
+
+const CHECK_INTERVAL_MS = 700
+const REQUIRED_SINGLE_FACE_STREAK = 3
+const REQUIRED_LIVE_MOTION = 0.008
+const MIN_FACE_AREA_RATIO = 0.025
+const CIRCLE_CENTER_RADIUS = 0.42
+const SECONDARY_FACE_AREA_RATIO = 0.35
+
+function normalizeBox(box: BoundingBoxLike, videoWidth: number, videoHeight: number) {
+  const width = Math.max(videoWidth, 1)
+  const height = Math.max(videoHeight, 1)
+  const looksNormalized =
+    box.originX <= 1
+    && box.originY <= 1
+    && box.width <= 1
+    && box.height <= 1
+
+  if (looksNormalized) {
+    return {
+      originX: box.originX,
+      originY: box.originY,
+      width: box.width,
+      height: box.height,
+    }
+  }
+
+  return {
+    originX: box.originX / width,
+    originY: box.originY / height,
+    width: box.width / width,
+    height: box.height / height,
   }
 }
 
-const CHECK_INTERVAL_MS = 900
-const REQUIRED_SINGLE_FACE_STREAK = 3
-const REQUIRED_LIVE_MOTION = 0.012
+function detectionCenter(box: BoundingBoxLike) {
+  return {
+    x: box.originX + box.width / 2,
+    y: box.originY + box.height / 2,
+  }
+}
+
+function faceAreaRatio(box: BoundingBoxLike) {
+  return box.width * box.height
+}
+
+function faceCenterOffset(box: BoundingBoxLike) {
+  const center = detectionCenter(box)
+  return Math.hypot(center.x - 0.5, center.y - 0.5)
+}
+
+function resolvePrimaryFace(detections: DetectionLike[], videoWidth: number, videoHeight: number) {
+  const normalized = detections
+    .map((detection) => {
+      if (!detection.boundingBox) return null
+      return {
+        ...detection,
+        boundingBox: normalizeBox(detection.boundingBox, videoWidth, videoHeight),
+      }
+    })
+    .filter((detection): detection is DetectionLike => Boolean(detection?.boundingBox))
+
+  const valid = normalized.filter((detection) => {
+    const box = detection.boundingBox!
+    if (faceAreaRatio(box) < MIN_FACE_AREA_RATIO) return false
+    if (faceCenterOffset(box) > CIRCLE_CENTER_RADIUS) return false
+    return true
+  })
+
+  const pool = valid.length ? valid : normalized
+
+  if (!pool.length) {
+    return { count: 0, primary: null as DetectionLike | null }
+  }
+
+  const sorted = [...pool].sort(
+    (left, right) => faceAreaRatio(right.boundingBox!) - faceAreaRatio(left.boundingBox!),
+  )
+  const largestArea = faceAreaRatio(sorted[0].boundingBox!)
+  const significant = sorted.filter(
+    (detection) => faceAreaRatio(detection.boundingBox!) >= largestArea * SECONDARY_FACE_AREA_RATIO,
+  )
+
+  if (significant.length === 1) {
+    return { count: 1, primary: significant[0] }
+  }
+
+  return { count: significant.length, primary: sorted[0] }
+}
 
 export function usePresenceMonitor() {
   const status = ref<PresenceStatus>('idle')
@@ -27,25 +121,33 @@ export function usePresenceMonitor() {
   const singleFaceReady = ref(false)
   const liveReady = ref(false)
   const lastMotion = ref(0)
+  const source = ref<string | null>(null)
 
-  let detector: FaceDetectorLike | null = null
+  let faceDetector: FaceDetectorLike | null = null
   let boundVideo: HTMLVideoElement | null = null
   let timerId: ReturnType<typeof setTimeout> | null = null
+  let detectorInitPromise: Promise<boolean> | null = null
+  let loadingTimeoutId: ReturnType<typeof setTimeout> | null = null
   let singleFaceStreak = 0
   let previousCenter: { x: number; y: number } | null = null
+  let lastDetectionAt = 0
 
-  const supported = computed(() => typeof window !== 'undefined' && typeof window.FaceDetector === 'function')
+  const supported = computed(() => status.value !== 'unsupported')
   const verified = computed(() => singleFaceReady.value && liveReady.value)
 
   function reset(reason = '等待身份校验') {
-    status.value = supported.value ? 'checking' : 'unsupported'
-    message.value = supported.value ? reason : '当前浏览器不支持本地人脸检测'
     faceCount.value = 0
     singleFaceReady.value = false
     liveReady.value = false
     lastMotion.value = 0
     singleFaceStreak = 0
     previousCenter = null
+    if (status.value === 'unsupported') {
+      message.value = '人脸检测模型不可用，请检查网络或刷新页面'
+      return
+    }
+    status.value = faceDetector ? 'checking' : 'loading'
+    message.value = faceDetector ? reason : '正在加载人脸检测模型...'
   }
 
   function stopLoop() {
@@ -62,20 +164,67 @@ export function usePresenceMonitor() {
     }, CHECK_INTERVAL_MS)
   }
 
-  async function ensureDetector() {
-    if (!supported.value) {
+  async function initFaceDetector(): Promise<boolean> {
+    status.value = 'loading'
+    message.value = '正在加载人脸检测模型...'
+    if (loadingTimeoutId) clearTimeout(loadingTimeoutId)
+    loadingTimeoutId = setTimeout(() => {
+      if (!faceDetector && status.value === 'loading') {
+        status.value = 'unsupported'
+        message.value = '本地模型加载超时，已切换后端识别'
+      }
+    }, 15000)
+
+    try {
+      const loaded = await loadVisionTasksModule()
+      const { FilesetResolver, FaceDetector } = loaded.visionModule
+      if (!FilesetResolver || !FaceDetector) {
+        status.value = 'unsupported'
+        message.value = '人脸检测资源不可用'
+        return false
+      }
+
+      const resolver = await FilesetResolver.forVisionTasks(loaded.wasmUrl)
+      faceDetector = await FaceDetector.createFromOptions(resolver, {
+        baseOptions: {
+          modelAssetPath: REMOTE_FACE_MODEL_URL,
+          delegate: 'CPU',
+        },
+        runningMode: 'VIDEO',
+        minDetectionConfidence: 0.4,
+        minSuppressionThreshold: 0.3,
+      })
+
+      source.value = loaded.sourceLabel
+      status.value = 'checking'
+      message.value = '人脸检测已就绪，请保持面部在圆形区域内'
+      if (loadingTimeoutId) {
+        clearTimeout(loadingTimeoutId)
+        loadingTimeoutId = null
+      }
+      return true
+    } catch (error) {
+      faceDetector = null
+      source.value = null
       status.value = 'unsupported'
-      message.value = '当前浏览器不支持本地人脸检测'
+      message.value = '人脸检测模型加载失败，已切换后端识别'
+      if (loadingTimeoutId) {
+        clearTimeout(loadingTimeoutId)
+        loadingTimeoutId = null
+      }
+      console.warn('Presence monitor init failed', error)
       return false
     }
+  }
 
-    if (!detector) {
-      detector = new window.FaceDetector!({
-        fastMode: true,
-        maxDetectedFaces: 3,
+  async function ensureFaceDetector() {
+    if (faceDetector) return true
+    if (!detectorInitPromise) {
+      detectorInitPromise = initFaceDetector().finally(() => {
+        detectorInitPromise = null
       })
     }
-    return true
+    return detectorInitPromise
   }
 
   async function detectFrame() {
@@ -88,21 +237,34 @@ export function usePresenceMonitor() {
       return
     }
 
-    const ok = await ensureDetector()
-    if (!ok || !detector) return
+    const ok = await ensureFaceDetector()
+    if (!ok || !faceDetector) {
+      if (status.value !== 'unsupported') queueNextCheck()
+      return
+    }
+
+    const now = performance.now()
+    if (now - lastDetectionAt < CHECK_INTERVAL_MS - 40) {
+      queueNextCheck()
+      return
+    }
+    lastDetectionAt = now
 
     try {
-      const faces = await detector.detect(boundVideo)
-      faceCount.value = faces.length
+      const result = faceDetector.detectForVideo(boundVideo, now)
+      const videoWidth = boundVideo.videoWidth
+      const videoHeight = boundVideo.videoHeight
+      const { count, primary } = resolvePrimaryFace(result.detections || [], videoWidth, videoHeight)
+      faceCount.value = count
 
-      if (faces.length !== 1 || !faces[0].boundingBox) {
+      if (count !== 1 || !primary?.boundingBox) {
         singleFaceStreak = 0
         singleFaceReady.value = false
         liveReady.value = false
         previousCenter = null
         status.value = 'warn'
-        message.value = faces.length === 0
-          ? '请确保仅本人单人入镜'
+        message.value = count === 0
+          ? '请将面部保持在圆形区域内'
           : '检测到多人入镜，请保持单人画面'
         queueNextCheck()
         return
@@ -113,11 +275,8 @@ export function usePresenceMonitor() {
         singleFaceReady.value = true
       }
 
-      const box = faces[0].boundingBox
-      const center = {
-        x: box.x + box.width / 2,
-        y: box.y + box.height / 2,
-      }
+      const box = primary.boundingBox
+      const center = detectionCenter(box)
 
       if (previousCenter) {
         const motion = Math.hypot(center.x - previousCenter.x, center.y - previousCenter.y)
@@ -130,10 +289,10 @@ export function usePresenceMonitor() {
 
       status.value = verified.value ? 'ready' : 'checking'
       message.value = verified.value
-        ? '单人入镜与活体校验通过'
+        ? '人脸入镜与活体校验通过'
         : singleFaceReady.value
-          ? '请做轻微自然动作以完成活体校验'
-          : '正在确认是否为单人稳定入镜'
+          ? '请轻微转头或眨眼'
+          : '正在确认人脸入镜'
     } catch (error) {
       status.value = 'error'
       message.value = '身份校验运行失败，请稍后重试'
@@ -144,11 +303,18 @@ export function usePresenceMonitor() {
   }
 
   async function attachVideo(video: HTMLVideoElement | null) {
+    if (!video) {
+      stopLoop()
+      boundVideo = null
+      return
+    }
+    if (boundVideo === video && faceDetector && timerId !== null) {
+      return
+    }
     boundVideo = video
     stopLoop()
-    if (!video) return
     reset('正在启动身份校验')
-    if (!supported.value) return
+    if (status.value === 'unsupported') return
     await detectFrame()
   }
 
@@ -160,8 +326,15 @@ export function usePresenceMonitor() {
 
   function stop() {
     stopLoop()
+    if (loadingTimeoutId) {
+      clearTimeout(loadingTimeoutId)
+      loadingTimeoutId = null
+    }
     boundVideo = null
-    detector = null
+    if (faceDetector?.close) faceDetector.close()
+    faceDetector = null
+    detectorInitPromise = null
+    source.value = null
     status.value = 'idle'
     message.value = '身份校验已停止'
     faceCount.value = 0
@@ -170,6 +343,7 @@ export function usePresenceMonitor() {
     lastMotion.value = 0
     singleFaceStreak = 0
     previousCenter = null
+    lastDetectionAt = 0
   }
 
   onUnmounted(stop)
@@ -183,6 +357,7 @@ export function usePresenceMonitor() {
     liveReady,
     verified,
     lastMotion,
+    source,
     attachVideo,
     restart,
     stop,

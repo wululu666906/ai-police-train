@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Any, Optional
 
 import models
@@ -356,6 +358,7 @@ def build_node_multimodal_evidence(
             "total_points": _safe_int(police_semantic.get("total_points")),
             "hit_points": police_semantic.get("hit_points") if isinstance(police_semantic.get("hit_points"), list) else [],
             "missed_points": police_semantic.get("missed_points") if isinstance(police_semantic.get("missed_points"), list) else [],
+            "llm_rescued_points": police_semantic.get("llm_rescued_points") if isinstance(police_semantic.get("llm_rescued_points"), list) else [],
             "feedback": police_semantic.get("feedback"),
         },
         "degradation": degradation,
@@ -369,6 +372,83 @@ def build_node_multimodal_evidence(
             {"type": "police_semantic", "available": bool(police_semantic.get("enabled"))},
         ],
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P0: 语音通道模糊匹配辅助函数
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ASSESSMENT_KEYWORD_SYNONYMS: dict[str, list[str]] = {
+    "表明身份": ["我是警察", "我是民警", "我是公安", "警察", "民警"],
+    "民警": ["警察", "公安人员", "警官", "执法人员"],
+    "执法记录": ["记录仪", "录像", "全程记录", "录音录像"],
+    "告知权利": ["有权", "权利", "沉默权", "律师", "申辩"],
+    "安全距离": ["保持距离", "退后", "站远一点", "别靠近"],
+    "安抚": ["冷静", "别激动", "别着急", "放松", "慢慢说", "不要紧张"],
+    "冷静": ["别激动", "别着急", "不要紧张", "稳定情绪"],
+    "询问": ["问一下", "了解一下", "请问", "麻烦告诉", "说一下"],
+    "调查": ["了解情况", "核实", "调查清楚", "查明"],
+    "核实": ["确认", "验证", "查证", "核对"],
+    "配合": ["协助", "帮个忙", "配合一下", "请配合"],
+    "隔离": ["分开", "分离", "拉开", "各自", "两边"],
+    "控制": ["制服", "按住", "控制住", "别动"],
+    "120": ["急救", "救护车", "送医", "医院"],
+    "依法": ["根据法律", "按照规定", "法律规定", "合法"],
+    "什么时候": ["几点", "多久了", "多长时间", "时间"],
+    "在哪里": ["什么地方", "地址", "位置", "哪里", "具体地点"],
+}
+
+_logger = logging.getLogger(__name__)
+
+
+def _extract_point_keywords(point: dict[str, Any]) -> list[str]:
+    """从考察点定义中提取关键词列表（用于模糊匹配兜底）"""
+    rule = point.get("rule") if isinstance(point.get("rule"), dict) else {}
+    keywords = rule.get("keywords") if isinstance(rule.get("keywords"), list) else []
+    if keywords:
+        return [str(k).strip() for k in keywords if str(k).strip()]
+    # 从 label/content 中提取核心词作为备选
+    label = str(point.get("label") or point.get("content") or "").strip()
+    if not label:
+        return []
+    # 简单分词：提取2字以上的中文片段
+    import re
+    tokens = re.findall(r'[\u4e00-\u9fff]{2,6}', label)
+    return tokens[:5] if tokens else []
+
+
+def _fuzzy_keyword_check(keywords: list[str], transcript: str, threshold: float = 0.72) -> list[str]:
+    """对关键词列表执行模糊匹配，返回命中的关键词"""
+    if not keywords or not transcript:
+        return []
+    lowered_text = transcript.lower()
+    hits: list[str] = []
+    for kw in keywords:
+        lowered_kw = kw.lower()
+        # 1. 精确包含
+        if lowered_kw in lowered_text:
+            hits.append(kw)
+            continue
+        # 2. 同义词匹配
+        synonyms = _ASSESSMENT_KEYWORD_SYNONYMS.get(kw, [])
+        if any(syn.lower() in lowered_text for syn in synonyms):
+            hits.append(kw)
+            continue
+        # 3. 滑动窗口模糊匹配
+        if len(kw) >= 2:
+            kw_len = len(kw)
+            window_size = kw_len + max(2, kw_len // 2)
+            matched = False
+            for i in range(max(1, len(lowered_text) - window_size + 1)):
+                window = lowered_text[i:i + window_size]
+                ratio = SequenceMatcher(None, lowered_kw, window).ratio()
+                if ratio >= threshold:
+                    hits.append(kw)
+                    matched = True
+                    break
+            if matched:
+                continue
+    return hits
 
 
 def _evaluate_point_status(point: dict[str, Any], evidence: dict[str, Any], result: models.VideoNodeResult) -> tuple[str, list[str], str]:
@@ -390,7 +470,13 @@ def _evaluate_point_status(point: dict[str, Any], evidence: dict[str, Any], resu
         transcript = str(speech.get("transcript") or "").strip()
         if hits:
             return "hit", [f"关键词命中：{'、'.join(_dedupe_strings(hits, limit=3))}"], "关键话术已命中。"
+        # P0 增强：当精确匹配未命中时，尝试模糊/同义词匹配
         if transcript:
+            required_keywords = _extract_point_keywords(point)
+            if required_keywords:
+                fuzzy_hits = _fuzzy_keyword_check(required_keywords, transcript)
+                if fuzzy_hits:
+                    return "hit", [f"语义命中：{'、'.join(_dedupe_strings(fuzzy_hits, limit=3))}"], "关键话术通过语义匹配命中。"
             return "partial", [f"已有转写：{transcript[:30]}"], "已有表达，但未充分命中关键词。"
         return "missed", ["缺少有效转写"], "未采集到有效语言证据。"
 
@@ -455,11 +541,17 @@ def _evaluate_point_status(point: dict[str, Any], evidence: dict[str, Any], resu
         score = _safe_int(semantic.get("semantic_score"))
         hit_points = semantic.get("hit_points") if isinstance(semantic.get("hit_points"), list) else []
         missed_points = semantic.get("missed_points") if isinstance(semantic.get("missed_points"), list) else []
+        llm_rescued = semantic.get("llm_rescued_points") if isinstance(semantic.get("llm_rescued_points"), list) else []
         label = str(point.get("label") or point.get("content") or "").strip()
         if not semantic.get("enabled"):
             return "missed", ["未生成警情语义评分"], "缺少警情语义评分证据。"
+        # 检查是否在直接命中列表
         if label and any(label == str(item.get("point") or "") for item in hit_points if isinstance(item, dict)):
             return "hit", [f"命中处置点：{label}"], "回答覆盖该警情处置要点。"
+        # P0 增强：检查是否被 LLM 语义救回
+        if label and any(label == str(item.get("point") or "") for item in llm_rescued if isinstance(item, dict)):
+            reason = next((str(item.get("reason") or "") for item in llm_rescued if isinstance(item, dict) and str(item.get("point") or "") == label), "")
+            return "hit", [f"语义覆盖：{label}" + (f"（{reason}）" if reason else "")], "回答通过语义分析覆盖该处置要点。"
         if label and any(label == str(item.get("point") or "") for item in missed_points if isinstance(item, dict)):
             return "missed", [f"漏项：{label}"], "回答未覆盖该警情处置要点。"
         if score >= _safe_int(semantic.get("pass_threshold"), 50):
@@ -675,6 +767,7 @@ def build_video_evaluation_report(
         "finished_at": session.finished_at.isoformat() if session.finished_at else None,
         "evaluation_meta": {
             "scoring_version": "video_assessment_v2",
+            "compatible_version": "adaptive_v1",
             "report_header": {
                 "video_title": video.title if video else "",
                 "finished_at": session.finished_at.isoformat() if session.finished_at else None,
@@ -686,4 +779,18 @@ def build_video_evaluation_report(
             "ability_grade": ability_grade,
             "ability_profile": ability_profile,
         },
+        # 兼容 StudentEvaluation.vue 的字段格式
+        "scores": [
+            {
+                "dimension": item["label"],
+                "score": item["score"],
+                "full_score": item["full_score"],
+                "reason": f"通过视频实训节点考核，得分率 {item['percentage']}%",
+                "group": "common",
+            }
+            for item in dimension_scores
+        ],
+        "improvements": weakness_summary,
+        "strengths": ability_profile.get("strengths", [])[:3],
+        "suggestions": ability_profile.get("next_training", [])[:3],
     }

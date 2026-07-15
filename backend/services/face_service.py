@@ -47,7 +47,7 @@ def _resolve_path(value: str | Path) -> Path:
 
 
 FACE_SIMILARITY_THRESHOLD = float(os.getenv("FACE_SIMILARITY_THRESHOLD", "0.68"))
-FACE_FAST_VERIFY_SIMILARITY_THRESHOLD = float(os.getenv("FACE_FAST_VERIFY_SIMILARITY_THRESHOLD", "0.64"))
+FACE_FAST_VERIFY_SIMILARITY_THRESHOLD = float(os.getenv("FACE_FAST_VERIFY_SIMILARITY_THRESHOLD", "0.55"))
 FACE_HEARTBEAT_SIMILARITY_THRESHOLD = float(os.getenv("FACE_HEARTBEAT_SIMILARITY_THRESHOLD", "0.68"))
 FACE_MAX_FAILURES = int(os.getenv("FACE_MAX_FAILURES", "5"))
 FACE_SERIOUS_MAX_FAILURES = int(os.getenv("FACE_SERIOUS_MAX_FAILURES", "5"))
@@ -216,9 +216,18 @@ def _is_circular_visible_region(quality: dict[str, Any]) -> bool:
     return isinstance(client_quality, dict) and client_quality.get("visible_region") == "circle"
 
 
+def _client_liveness_verified(quality: dict[str, Any]) -> bool:
+    client_quality = quality.get("client_quality")
+    if not isinstance(client_quality, dict):
+        return False
+    return bool(client_quality.get("liveness_verified") or client_quality.get("single_face_verified"))
+
+
 def _quality_reason(quality: dict[str, Any]) -> tuple[str, str, str] | None:
-    center_limit = 0.44 if _is_circular_visible_region(quality) else 0.34
-    if quality.get("face_area_ratio", 0) < 0.055:
+    circular = _is_circular_visible_region(quality)
+    center_limit = 0.36 if circular else 0.34
+    min_area_ratio = 0.06 if circular else 0.055
+    if quality.get("face_area_ratio", 0) < min_area_ratio:
         return ("face_too_small", "人脸距离摄像头过远，请靠近后重试。", "minor")
     if quality.get("center_offset", 1) > center_limit:
         return ("face_off_center", "请将人脸放在圆形区域中央。", "medium")
@@ -227,6 +236,65 @@ def _quality_reason(quality: dict[str, Any]) -> tuple[str, str, str] | None:
     if quality.get("detection_score", 0) < 0.45:
         return ("low_detection_confidence", "人脸检测置信度偏低，请正对摄像头。", "minor")
     return None
+
+
+def _resolve_similarity_threshold(
+    event_type: str,
+    quality_payload: dict[str, Any],
+) -> float:
+    if event_type == "verify":
+        similarity_threshold = FACE_FAST_VERIFY_SIMILARITY_THRESHOLD
+    elif event_type == "heartbeat":
+        similarity_threshold = FACE_HEARTBEAT_SIMILARITY_THRESHOLD
+    else:
+        similarity_threshold = FACE_SIMILARITY_THRESHOLD
+    if event_type == "heartbeat" and quality_payload.get("blur", 0) < 22 and quality_payload.get("detection_score", 0) >= 0.5:
+        similarity_threshold -= 0.03
+    if event_type == "verify" and _client_liveness_verified(quality_payload):
+        similarity_threshold -= 0.03
+    floor = 0.58 if event_type == "heartbeat" else 0.55 if event_type == "verify" else 0.62
+    return max(floor, similarity_threshold)
+
+
+def _assess_identity_match(
+    *,
+    event_type: str,
+    quality_payload: dict[str, Any],
+    similarity: float,
+) -> tuple[bool, str, str | None, str | None]:
+    similarity_threshold = _resolve_similarity_threshold(event_type, quality_payload)
+    quality_reason = _quality_reason(quality_payload)
+    liveness_ready = event_type == "verify" and _client_liveness_verified(quality_payload)
+    if liveness_ready and quality_reason and quality_reason[2] == "minor":
+        quality_reason = None
+    identity_passed = similarity >= similarity_threshold
+    verify_quality_soft_pass = (
+        event_type == "verify"
+        and identity_passed
+        and quality_reason is not None
+        and quality_reason[2] == "minor"
+        and (similarity >= similarity_threshold + 0.03 or liveness_ready)
+    )
+    if liveness_ready and event_type == "verify":
+        passed = identity_passed
+    else:
+        passed = identity_passed and (not quality_reason or verify_quality_soft_pass)
+
+    reason_code = None
+    abnormal_level = None
+    if event_type == "verify" and passed:
+        reason = "人脸验证通过"
+    elif passed:
+        reason = "人脸已回到识别区域。"
+    elif quality_reason:
+        reason_code, reason, abnormal_level = quality_reason
+        abnormal_level = "minor"
+    else:
+        reason = "当前人脸与注册学员不一致，请确认由本人参加训练。"
+        reason_code = "face_mismatch"
+        abnormal_level = "serious" if similarity < max(0.45, similarity_threshold - 0.15) else "medium"
+
+    return passed, reason, reason_code, abnormal_level
 
 
 def _frame_quality(frame: np.ndarray, face: Any, face_count: int) -> dict[str, Any]:
@@ -303,22 +371,19 @@ def decode_data_url(data_url: str) -> bytes:
         raise HTTPException(status_code=400, detail="摄像头画面数据无效，请重新采集。")
 
 
-def extract_face(raw: bytes) -> FaceExtraction:
-    frame = _image_to_array(raw)
+def _faces_from_frame(frame: np.ndarray) -> tuple[list[Any], np.ndarray]:
     app = _load_engine()
     faces = app.get(frame)
     if not faces:
         enhanced_frame = _enhance_frame_for_face_detection(frame)
         faces = app.get(enhanced_frame)
         if faces:
-            frame = enhanced_frame
-    if not faces:
-        raise HTTPException(status_code=422, detail="未检测到人脸，请正对摄像头。")
-    if len(faces) > 1:
-        raise HTTPException(status_code=422, detail="检测到多人入镜，请保持单人验证。")
+            return faces, enhanced_frame
+    return faces, frame
 
-    face = faces[0]
-    quality = _frame_quality(frame, face, len(faces))
+
+def _build_face_extraction(frame: np.ndarray, face: Any, face_count: int) -> FaceExtraction:
+    quality = _frame_quality(frame, face, face_count)
     embedding = getattr(face, "normed_embedding", None)
     if embedding is None:
         embedding = getattr(face, "embedding", None)
@@ -331,11 +396,89 @@ def extract_face(raw: bytes) -> FaceExtraction:
     return FaceExtraction(
         frame=frame,
         embedding=vector.astype(float).tolist(),
-        face_count=len(faces),
+        face_count=face_count,
         detection_score=float(getattr(face, "det_score", 0) or 0),
         bbox=quality["bbox"],
         quality=quality,
     )
+
+
+def extract_face(raw: bytes) -> FaceExtraction:
+    frame = _image_to_array(raw)
+    faces, used = _faces_from_frame(frame)
+    if not faces:
+        raise HTTPException(status_code=422, detail="未检测到人脸，请正对摄像头。")
+    if len(faces) > 1:
+        raise HTTPException(status_code=422, detail="检测到多人入镜，请保持单人验证。")
+    return _build_face_extraction(used, faces[0], len(faces))
+
+
+def _matching_frame_variants(frame: np.ndarray) -> list[np.ndarray]:
+    variants: list[np.ndarray] = []
+    seen: set[int] = set()
+
+    def add(image: np.ndarray) -> None:
+        token = int(image.__array_interface__["data"][0])
+        if token in seen:
+            return
+        seen.add(token)
+        variants.append(image)
+
+    for base in (frame, np.flip(frame, axis=1).copy()):
+        add(base)
+        add(_enhance_frame_for_face_detection(base))
+    return variants
+
+
+def match_profile_frame(profile: models.FaceProfile, raw: bytes) -> tuple[float, FaceExtraction, int]:
+    frame = _image_to_array(raw)
+    templates = _profile_embeddings(profile)
+    centroid = _profile_centroid(templates)
+    best_similarity = 0.0
+    best_extraction: FaceExtraction | None = None
+    best_template_index = -1
+    saw_face = False
+
+    for variant in _matching_frame_variants(frame):
+        faces, used = _faces_from_frame(variant)
+        if not faces:
+            continue
+        if len(faces) > 1:
+            raise HTTPException(status_code=422, detail="检测到多人入镜，请保持单人验证。")
+        saw_face = True
+        extraction = _build_face_extraction(used, faces[0], 1)
+
+        # 策略1：与 centroid 均值模板比对
+        centroid_sim = cosine_similarity(centroid, extraction.embedding)
+        if centroid_sim > best_similarity:
+            best_similarity = centroid_sim
+            best_extraction = extraction
+            best_template_index = -1
+
+        # 策略2：与各单独模板比对，取单个最高
+        all_sims: list[float] = []
+        for index, template in enumerate(templates):
+            similarity = cosine_similarity(template, extraction.embedding)
+            all_sims.append(similarity)
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_extraction = extraction
+                best_template_index = index
+
+        # 策略3：top-K 平均（取相似度最高的 K 个模板的均值）
+        if len(all_sims) >= 2:
+            top_k = min(3, len(all_sims))
+            top_k_avg = sum(sorted(all_sims, reverse=True)[:top_k]) / top_k
+            if top_k_avg > best_similarity:
+                best_similarity = top_k_avg
+                best_extraction = extraction
+                best_template_index = -1
+
+    if not best_extraction:
+        if saw_face:
+            raise HTTPException(status_code=422, detail="人脸特征提取失败，请调整光线后重试。")
+        raise HTTPException(status_code=422, detail="未检测到人脸，请正对摄像头。")
+    return best_similarity, best_extraction, best_template_index
 
 
 async def read_upload(file: UploadFile) -> bytes:
@@ -442,19 +585,61 @@ def _profile_embeddings(profile: models.FaceProfile) -> list[list[float]]:
     return [[float(item) for item in value]]
 
 
+def _profile_centroid(embeddings: list[list[float]]) -> list[float]:
+    """计算多个 embedding 的均值向量并 L2 归一化，作为 centroid 模板。"""
+    if len(embeddings) == 1:
+        return embeddings[0]
+    matrix = np.asarray(embeddings, dtype=np.float32)
+    centroid = np.mean(matrix, axis=0)
+    norm = np.linalg.norm(centroid)
+    if norm > 0:
+        centroid = centroid / norm
+    return centroid.tolist()
+
+
+def _event_scope_filter(query, *, session_id: int | None = None, video_session_id: int | None = None):
+    if video_session_id is not None:
+        return query.filter(models.FaceVerificationEvent.video_session_id == video_session_id)
+    return query.filter(models.FaceVerificationEvent.session_id == session_id)
+
+
 def count_session_failures(db: Session, session_id: int) -> int:
-    return _count_consecutive_session_failures(db, session_id)
+    return _count_consecutive_session_failures(db, session_id=session_id)
+
+
+def count_video_session_failures(db: Session, video_session_id: int) -> int:
+    return _count_consecutive_session_failures(db, video_session_id=video_session_id)
 
 
 def count_session_monitor_failures(db: Session, session_id: int) -> int:
-    return _count_consecutive_session_failures(db, session_id, monitor_only=True)
+    return _count_consecutive_session_failures(db, session_id=session_id, monitor_only=True)
+
+
+def count_video_session_monitor_failures(db: Session, video_session_id: int) -> int:
+    return _count_consecutive_session_failures(db, video_session_id=video_session_id, monitor_only=True)
 
 
 def count_session_monitor_failures_total(db: Session, session_id: int) -> int:
     return (
-        db.query(models.FaceVerificationEvent)
+        _event_scope_filter(
+            db.query(models.FaceVerificationEvent),
+            session_id=session_id,
+        )
         .filter(
-            models.FaceVerificationEvent.session_id == session_id,
+            models.FaceVerificationEvent.event_type != "verify",
+            models.FaceVerificationEvent.status == "failed",
+        )
+        .count()
+    )
+
+
+def count_video_session_monitor_failures_total(db: Session, video_session_id: int) -> int:
+    return (
+        _event_scope_filter(
+            db.query(models.FaceVerificationEvent),
+            video_session_id=video_session_id,
+        )
+        .filter(
             models.FaceVerificationEvent.event_type != "verify",
             models.FaceVerificationEvent.status == "failed",
         )
@@ -486,21 +671,32 @@ def count_session_serious_failures_total(db: Session, session_id: int) -> int:
     )
 
 
-def _recent_monitor_events(db: Session, session_id: int) -> list[models.FaceVerificationEvent]:
+def _recent_monitor_events(
+    db: Session,
+    *,
+    session_id: int | None = None,
+    video_session_id: int | None = None,
+) -> list[models.FaceVerificationEvent]:
     return (
-        db.query(models.FaceVerificationEvent)
-        .filter(
-            models.FaceVerificationEvent.session_id == session_id,
-            models.FaceVerificationEvent.event_type != "verify",
+        _event_scope_filter(
+            db.query(models.FaceVerificationEvent),
+            session_id=session_id,
+            video_session_id=video_session_id,
         )
+        .filter(models.FaceVerificationEvent.event_type != "verify")
         .order_by(models.FaceVerificationEvent.created_at.desc())
         .limit(FACE_VOTE_WINDOW)
         .all()
     )
 
 
-def _vote_window(db: Session, session_id: int) -> dict[str, Any]:
-    events = list(reversed(_recent_monitor_events(db, session_id)))
+def _vote_window(
+    db: Session,
+    *,
+    session_id: int | None = None,
+    video_session_id: int | None = None,
+) -> dict[str, Any]:
+    events = list(reversed(_recent_monitor_events(db, session_id=session_id, video_session_id=video_session_id)))
     failed = [event for event in events if event.status == "failed"]
     serious = [event for event in failed if event.abnormal_level == "serious"]
     return {
@@ -513,12 +709,27 @@ def _vote_window(db: Session, session_id: int) -> dict[str, Any]:
 
 
 def is_face_session_terminated_by_policy(db: Session, session_id: int) -> bool:
-    consecutive_failures = _count_consecutive_session_failures(db, session_id, monitor_only=True)
+    consecutive_failures = _count_consecutive_session_failures(db, session_id=session_id, monitor_only=True)
     return consecutive_failures >= FACE_CONSECUTIVE_MAX_FAILURES
 
 
-def _count_consecutive_session_failures(db: Session, session_id: int, *, monitor_only: bool = False) -> int:
-    query = db.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.session_id == session_id)
+def is_video_face_session_terminated_by_policy(db: Session, video_session_id: int) -> bool:
+    consecutive_failures = _count_consecutive_session_failures(db, video_session_id=video_session_id, monitor_only=True)
+    return consecutive_failures >= FACE_CONSECUTIVE_MAX_FAILURES
+
+
+def _count_consecutive_session_failures(
+    db: Session,
+    *,
+    session_id: int | None = None,
+    video_session_id: int | None = None,
+    monitor_only: bool = False,
+) -> int:
+    query = _event_scope_filter(
+        db.query(models.FaceVerificationEvent),
+        session_id=session_id,
+        video_session_id=video_session_id,
+    )
     if monitor_only:
         query = query.filter(models.FaceVerificationEvent.event_type != "verify")
     events = (
@@ -660,7 +871,9 @@ def _finalize_face_termination(
 def record_event(
     db: Session,
     *,
-    session: models.TrainingSession,
+    session: models.TrainingSession | None = None,
+    video_session: models.VideoTrainingSession | None = None,
+    student_id: int | None = None,
     event_type: str,
     status: str,
     reason: str,
@@ -670,14 +883,22 @@ def record_event(
     quality: dict[str, Any] | None = None,
     abnormal_level: str | None = None,
 ) -> models.FaceVerificationEvent:
+    resolved_student_id = student_id or (session.user_id if session else video_session.user_id if video_session else None)
+    if resolved_student_id is None:
+        raise HTTPException(status_code=400, detail="人脸事件缺少学员信息。")
+
     if auto_finalize:
-        failure_basis = _count_consecutive_session_failures(db, session.id, monitor_only=True)
+        if video_session is not None:
+            failure_basis = _count_consecutive_session_failures(db, video_session_id=video_session.id, monitor_only=True)
+        else:
+            failure_basis = _count_consecutive_session_failures(db, session_id=session.id, monitor_only=True)
         failure_count = failure_basis + 1 if status == "failed" else 0
     else:
         failure_count = 0
     event = models.FaceVerificationEvent(
-        session_id=session.id,
-        student_id=session.user_id,
+        session_id=session.id if session else None,
+        video_session_id=video_session.id if video_session else None,
+        student_id=resolved_student_id,
         event_type=event_type,
         status=status,
         reason=localize_face_reason(reason),
@@ -690,21 +911,22 @@ def record_event(
     db.add(event)
     db.commit()
 
-    consecutive_failures = (
-        _count_consecutive_session_failures(db, session.id, monitor_only=True) if auto_finalize else 0
-    )
-    should_finalize = (
-        auto_finalize
-        and status == "failed"
-        and consecutive_failures >= FACE_CONSECUTIVE_MAX_FAILURES
-    )
-    if should_finalize:
-        _finalize_face_termination(
-            db,
-            session=session,
-            failure_count=failure_count,
-            reason=reason,
+    if session is not None:
+        consecutive_failures = (
+            _count_consecutive_session_failures(db, session_id=session.id, monitor_only=True) if auto_finalize else 0
         )
+        should_finalize = (
+            auto_finalize
+            and status == "failed"
+            and consecutive_failures >= FACE_CONSECUTIVE_MAX_FAILURES
+        )
+        if should_finalize:
+            _finalize_face_termination(
+                db,
+                session=session,
+                failure_count=failure_count,
+                reason=reason,
+            )
 
     db.refresh(event)
     return event
@@ -735,7 +957,7 @@ def verify_frame(
         return _verification_response(False, event, None, reason)
 
     try:
-        extraction = extract_face(decode_data_url(frame_data_url))
+        similarity, extraction, best_template_index = match_profile_frame(profile, decode_data_url(frame_data_url))
     except HTTPException as error:
         detail_text = str(error.detail or "")
         reason_code = "multiple_faces" if "multiple" in detail_text.lower() or "多人" in detail_text else "no_face"
@@ -753,44 +975,12 @@ def verify_frame(
         return _verification_response(False, event, None, localize_face_reason(error.detail))
 
     quality_payload = _merge_client_quality(extraction.quality, client_quality)
-    quality_reason = _quality_reason(quality_payload)
-    similarities = [cosine_similarity(template, extraction.embedding) for template in _profile_embeddings(profile)]
-    similarity = max(similarities) if similarities else 0.0
-    best_template_index = similarities.index(similarity) if similarities else -1
-
-    if event_type == "verify":
-        similarity_threshold = FACE_FAST_VERIFY_SIMILARITY_THRESHOLD
-    elif event_type == "heartbeat":
-        similarity_threshold = FACE_HEARTBEAT_SIMILARITY_THRESHOLD
-    else:
-        similarity_threshold = FACE_SIMILARITY_THRESHOLD
-    if quality_payload.get("blur", 0) < 22 and quality_payload.get("detection_score", 0) >= 0.5:
-        similarity_threshold -= 0.03 if event_type == "heartbeat" else 0.02
-    similarity_threshold = max(0.58 if event_type == "heartbeat" else 0.62, similarity_threshold)
-    identity_passed = similarity >= similarity_threshold
-
-    verify_quality_soft_pass = (
-        event_type == "verify"
-        and identity_passed
-        and quality_reason is not None
-        and quality_reason[2] == "minor"
-        and similarity >= similarity_threshold + 0.03
+    similarity_threshold = _resolve_similarity_threshold(event_type, quality_payload)
+    passed, reason, reason_code, abnormal_level = _assess_identity_match(
+        event_type=event_type,
+        quality_payload=quality_payload,
+        similarity=similarity,
     )
-    passed = identity_passed and (not quality_reason or verify_quality_soft_pass)
-
-    reason_code = None
-    abnormal_level = None
-    if event_type == "verify" and passed:
-        reason = "人脸验证通过"
-    elif passed:
-        reason = "人脸已回到识别区域。"
-    elif quality_reason:
-        reason_code, reason, abnormal_level = quality_reason
-        abnormal_level = "minor"
-    else:
-        reason = "当前人脸与注册学员不一致，请确认由本人参加训练。"
-        reason_code = "face_mismatch"
-        abnormal_level = "serious" if similarity < max(0.45, similarity_threshold - 0.15) else "medium"
 
     event = record_event(
         db,
@@ -804,7 +994,7 @@ def verify_frame(
         quality={**quality_payload, "best_template_index": best_template_index},
         abnormal_level=abnormal_level,
     )
-    vote = _vote_window(db, session.id) if auto_finalize else None
+    vote = _vote_window(db, session_id=session.id) if auto_finalize else None
     terminated = is_face_session_terminated_by_policy(db, session.id) if auto_finalize and not passed else False
     return _verification_response(
         passed,
@@ -852,3 +1042,155 @@ def _verification_response(
         "terminated": terminated,
         "event_id": event.id,
     }
+
+
+def _evaluate_identity_frame(
+    db: Session,
+    *,
+    student_id: int,
+    frame_data_url: str,
+    event_type: str = "verify",
+    client_quality: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    profile = db.query(models.FaceProfile).filter(models.FaceProfile.student_id == student_id).first()
+    if not profile:
+        return {
+            "passed": False,
+            "registered": False,
+            "reason": "当前账号尚未在管理端注册人脸档案。",
+            "reason_code": "no_registered_profile",
+        }
+
+    try:
+        similarity, extraction, best_template_index = match_profile_frame(profile, decode_data_url(frame_data_url))
+    except HTTPException as error:
+        detail_text = str(error.detail or "")
+        reason_code = "multiple_faces" if "multiple" in detail_text.lower() or "多人" in detail_text else "no_face"
+        return {
+            "passed": False,
+            "registered": True,
+            "reason": localize_face_reason(error.detail),
+            "reason_code": reason_code,
+            "similarity": 0.0,
+        }
+
+    quality_payload = _merge_client_quality(extraction.quality, client_quality)
+    similarity_threshold = _resolve_similarity_threshold(event_type, quality_payload)
+    passed, reason, reason_code, abnormal_level = _assess_identity_match(
+        event_type=event_type,
+        quality_payload=quality_payload,
+        similarity=similarity,
+    )
+
+    return {
+        "passed": passed,
+        "registered": True,
+        "reason": reason,
+        "reason_code": reason_code,
+        "abnormal_level": abnormal_level,
+        "similarity": similarity,
+        "similarity_threshold": similarity_threshold,
+        "detection_score": extraction.detection_score,
+        "quality_metrics": {**quality_payload, "best_template_index": best_template_index},
+    }
+
+
+def verify_student_frame(
+    db: Session,
+    *,
+    student: models.User,
+    frame_data_url: str,
+    client_quality: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result = _evaluate_identity_frame(
+        db,
+        student_id=student.id,
+        frame_data_url=frame_data_url,
+        event_type="verify",
+        client_quality=client_quality,
+    )
+    return {
+        **result,
+        "status": "passed" if result.get("passed") else "failed",
+        "reason": localize_face_reason(result.get("reason")),
+        "max_failures": FACE_MAX_FAILURES,
+        "terminated": False,
+    }
+
+
+def verify_video_session_frame(
+    db: Session,
+    *,
+    session: models.VideoTrainingSession,
+    frame_data_url: str,
+    event_type: str = "verify",
+    client_quality: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    auto_finalize = event_type != "verify"
+    profile = db.query(models.FaceProfile).filter(models.FaceProfile.student_id == session.user_id).first()
+    if not profile:
+        reason = "当前账号尚未在管理端注册人脸档案。"
+        event = record_event(
+            db,
+            video_session=session,
+            event_type=event_type,
+            status="failed",
+            reason=reason,
+            auto_finalize=auto_finalize,
+            reason_code="no_registered_profile",
+            abnormal_level="serious" if auto_finalize else "medium",
+        )
+        return _verification_response(False, event, None, reason)
+
+    evaluation = _evaluate_identity_frame(
+        db,
+        student_id=session.user_id,
+        frame_data_url=frame_data_url,
+        event_type=event_type,
+        client_quality=client_quality,
+    )
+    if not evaluation.get("registered"):
+        event = record_event(
+            db,
+            video_session=session,
+            event_type=event_type,
+            status="failed",
+            reason=str(evaluation.get("reason") or "人脸验证失败"),
+            auto_finalize=auto_finalize,
+            reason_code=str(evaluation.get("reason_code") or "verify_failed"),
+            abnormal_level="serious" if auto_finalize else "medium",
+        )
+        return _verification_response(False, event, None, str(evaluation.get("reason") or "人脸验证失败"))
+
+    passed = bool(evaluation.get("passed"))
+    event = record_event(
+        db,
+        video_session=session,
+        event_type=event_type,
+        status="passed" if passed else "failed",
+        reason=str(evaluation.get("reason") or "人脸验证失败"),
+        similarity=float(evaluation.get("similarity") or 0),
+        auto_finalize=auto_finalize,
+        reason_code=evaluation.get("reason_code"),
+        quality=evaluation.get("quality_metrics"),
+        abnormal_level=evaluation.get("abnormal_level"),
+    )
+    vote = _vote_window(db, video_session_id=session.id) if auto_finalize else None
+    terminated = (
+        is_video_face_session_terminated_by_policy(db, session.id)
+        if auto_finalize and not passed
+        else False
+    )
+    return _verification_response(
+        passed,
+        event,
+        evaluation.get("similarity"),
+        str(evaluation.get("reason") or "人脸验证失败"),
+        detection_score=evaluation.get("detection_score"),
+        similarity_threshold=evaluation.get("similarity_threshold"),
+        quality=evaluation.get("quality_metrics"),
+        vote_window=vote,
+        abnormal_level=evaluation.get("abnormal_level"),
+        reason_code=evaluation.get("reason_code"),
+        terminated=terminated,
+    )

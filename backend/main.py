@@ -1,5 +1,10 @@
-﻿import json
-import os
+﻿import os
+
+# 在所有依赖 import 之前抑制 TensorFlow Lite / PaddlePaddle INFO 日志
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("GLOG_minloglevel", "2")
+
+import json
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException
@@ -249,6 +254,8 @@ def ensure_face_schema_compatibility():
             if column_name not in event_columns:
                 column_type = "VARCHAR(60)" if column_name == "reason_code" else ("VARCHAR(20)" if column_name == "abnormal_level" else "TEXT")
                 statements.append(f"ALTER TABLE face_verification_events ADD COLUMN {column_name} {column_type}")
+        if "video_session_id" not in event_columns:
+            statements.append("ALTER TABLE face_verification_events ADD COLUMN video_session_id INTEGER")
 
         if statements:
             with database.engine.begin() as connection:

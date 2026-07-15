@@ -3,9 +3,12 @@
 Session 绠＄悊銆佽妭鐐瑰垽瀹氥€佽闊冲叧閿瘝鍖归厤銆佽瘎浼版姤鍛?
 """
 import json
+import logging
 import os
+import re
 import uuid
 from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -192,10 +195,139 @@ def _load_node_config(node: models.VideoNode) -> dict:
     return _load_json(node.node_config, {})
 
 
+def _parse_choice_options(node: models.VideoNode) -> list:
+    raw = _load_json(node.choice_options, [])
+    return raw if isinstance(raw, list) else []
+
+
+def _normalize_option_label(option: object, index: int) -> str:
+    if isinstance(option, str):
+        stripped = option.strip()
+        if stripped and stripped[0].isalpha():
+            return stripped[0].upper()
+        return chr(65 + index)
+    if isinstance(option, dict):
+        label = str(option.get("label") or option.get("value") or "").strip()
+        if label:
+            return label[0].upper() if len(label) == 1 else label.upper()
+    return chr(65 + index)
+
+
+def _resolve_judge_boolean_answer(node: models.VideoNode, config: dict) -> bool | None:
+    raw = config.get("correct_answer")
+    if isinstance(raw, bool):
+        return raw
+    label = str(node.correct_answer or raw or "").strip()
+    if label in {"对", "正确", "true", "True"}:
+        return True
+    if label in {"错", "错误", "false", "False"}:
+        return False
+    return None
+
+
+def _is_choice_style_judge_node(node: models.VideoNode, config: dict) -> bool:
+    options = _parse_choice_options(node)
+    if len(options) < 3:
+        return False
+    if isinstance(config.get("correct_answer"), bool):
+        return False
+    label = str(node.correct_answer or config.get("correct_answer") or "").strip()
+    if len(label) == 1 and label.isalpha():
+        return True
+    return False
+
+
+def _resolve_correct_choice_index(node: models.VideoNode, config: dict) -> int | None:
+    if isinstance(config.get("correct_index"), int):
+        return config["correct_index"]
+    label = str(node.correct_answer or config.get("correct_answer") or "").strip().upper()
+    if not label:
+        return None
+    if len(label) == 1 and label.isalpha():
+        return ord(label) - ord("A")
+    options = _parse_choice_options(node)
+    for index, option in enumerate(options):
+        if _normalize_option_label(option, index) == label:
+            return index
+    return None
+
+
 def _normalize_speech_keywords(raw_keywords) -> list[str]:
     if not isinstance(raw_keywords, list):
         return []
     return [str(item).strip() for item in raw_keywords if str(item).strip()]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P0: 话术关键词同义词表 + 模糊匹配
+# ─────────────────────────────────────────────────────────────────────────────
+
+KEYWORD_SYNONYMS: dict[str, list[str]] = {
+    # 身份表明
+    "表明身份": ["我是警察", "我是民警", "我是公安", "警察", "民警", "公安机关"],
+    "民警": ["警察", "公安人员", "警官", "执法人员"],
+    "警察": ["民警", "公安人员", "警官", "执法人员"],
+    # 执法记录
+    "执法记录": ["记录仪", "录像", "全程记录", "录音录像"],
+    # 告知权利
+    "告知权利": ["有权", "权利", "沉默权", "律师", "申辩", "陈述"],
+    "律师": ["辩护人", "法律援助", "请律师"],
+    # 安全相关
+    "安全距离": ["保持距离", "退后", "站远一点", "别靠近"],
+    "注意安全": ["小心", "当心", "注意", "保护好自己"],
+    # 安抚情绪
+    "安抚": ["冷静", "别激动", "别着急", "放松", "慢慢说", "不要紧张"],
+    "冷静": ["别激动", "别着急", "不要紧张", "稳定情绪", "深呼吸"],
+    # 调查相关
+    "询问": ["问一下", "了解一下", "请问", "麻烦告诉", "说一下"],
+    "调查": ["了解情况", "核实", "调查清楚", "查明"],
+    "核实": ["确认", "验证", "查证", "核对"],
+    # 程序性
+    "配合": ["协助", "帮个忙", "配合一下", "请配合"],
+    "笔录": ["做个记录", "记录一下", "录口供", "制作笔录"],
+    # 现场控制
+    "隔离": ["分开", "分离", "拉开", "各自", "两边"],
+    "控制": ["制服", "按住", "控制住", "别动"],
+    # 救助
+    "120": ["急救", "救护车", "送医", "医院"],
+    "受伤": ["伤情", "流血", "疼", "伤"],
+    # 法律
+    "依法": ["根据法律", "按照规定", "法律规定", "合法"],
+    "强制措施": ["拘留", "逮捕", "传唤", "约束"],
+    # 报警/接警
+    "报警": ["打110", "报案", "求助"],
+    "什么时候": ["几点", "多久了", "多长时间", "时间"],
+    "在哪里": ["什么地方", "地址", "位置", "哪里", "具体地点"],
+}
+
+
+def _fuzzy_keyword_match(keyword: str, text: str, threshold: float = 0.72) -> tuple[bool, str]:
+    """模糊匹配：先精确包含 -> 同义词 -> 滑动窗口模糊比较。
+    返回 (是否命中, 命中方式描述)"""
+    lowered_kw = keyword.lower()
+    lowered_text = text.lower()
+
+    # 1. 精确包含（原有逻辑）
+    if lowered_kw in lowered_text:
+        return True, "exact"
+
+    # 2. 同义词匹配
+    synonyms = KEYWORD_SYNONYMS.get(keyword, [])
+    for syn in synonyms:
+        if syn.lower() in lowered_text:
+            return True, f"synonym:{syn}"
+
+    # 3. 滑动窗口模糊匹配（适用于2字以上的关键词）
+    if len(keyword) >= 2:
+        kw_len = len(keyword)
+        window_size = kw_len + max(2, kw_len // 2)  # 允许比关键词略长的窗口
+        for i in range(max(1, len(lowered_text) - window_size + 1)):
+            window = lowered_text[i:i + window_size]
+            ratio = SequenceMatcher(None, lowered_kw, window).ratio()
+            if ratio >= threshold:
+                return True, f"fuzzy:{window.strip()}({ratio:.2f})"
+
+    return False, ""
 
 
 def _evaluate_speech_rule(
@@ -208,8 +340,16 @@ def _evaluate_speech_rule(
     normalized_keywords = _normalize_speech_keywords(keywords)
     text = str(transcript or "").strip()
     lowered = text.lower()
-    hits = [kw for kw in normalized_keywords if kw.lower() in lowered]
     policy = _mode_policy(mode)
+
+    # 使用增强匹配：精确 + 同义词 + 模糊
+    hits: list[str] = []
+    hit_details: list[dict] = []
+    for kw in normalized_keywords:
+        matched, match_type = _fuzzy_keyword_match(kw, text)
+        if matched:
+            hits.append(kw)
+            hit_details.append({"keyword": kw, "match_type": match_type})
 
     min_length = max(int(speech_rule.get("min_length") or 0) - int(policy["speech_min_length_relief"]), 0)
     match_mode = str(speech_rule.get("match_mode") or "any")
@@ -221,6 +361,7 @@ def _evaluate_speech_rule(
             "reason": "keyword_mismatch",
             "hits": hits,
             "hit_count": len(hits),
+            "hit_details": hit_details,
         }
 
     if not normalized_keywords:
@@ -229,6 +370,7 @@ def _evaluate_speech_rule(
             "reason": None if (not speech_required or bool(text) or min_length == 0) else "keyword_mismatch",
             "hits": hits,
             "hit_count": len(hits),
+            "hit_details": hit_details,
         }
 
     if match_mode == "all":
@@ -243,6 +385,7 @@ def _evaluate_speech_rule(
         "reason": None if passed else "keyword_mismatch",
         "hits": hits,
         "hit_count": len(hits),
+        "hit_details": hit_details,
     }
 
 
@@ -396,6 +539,28 @@ def _evaluate_police_semantic_answer(
         else:
             missed_points.append(item)
 
+    # ─── P0: LLM 语义兜底判定 ───
+    # 对别名匹配未命中的要点，使用 LLM 进行语义级别的覆盖判定
+    llm_rescued_points: list[dict] = []
+    if missed_points and answer_text and len(answer_text) >= 6:
+        llm_rescued_points = _llm_semantic_rescue(
+            answer_text=answer_text,
+            missed_points=missed_points,
+            question=prompt_content.get("police_question") or prompt_content.get("instruction") or "",
+        )
+        # 把 LLM 判定为覆盖的点从 missed 移到 hit
+        rescued_set = {item["point"] for item in llm_rescued_points}
+        new_missed = []
+        for mp in missed_points:
+            if mp["point"] in rescued_set:
+                rescued_item = next((r for r in llm_rescued_points if r["point"] == mp["point"]), None)
+                mp["hits"] = [f"(语义覆盖) {rescued_item.get('reason', '')}" if rescued_item else "(语义覆盖)"]
+                mp["match_type"] = "llm_semantic"
+                hit_points.append(mp)
+            else:
+                new_missed.append(mp)
+        missed_points = new_missed
+
     total = max(len(standard_points), 1)
     hit_count = len(hit_points)
     base_score = round(hit_count / total * 100)
@@ -416,6 +581,7 @@ def _evaluate_police_semantic_answer(
         "standard_points": standard_points,
         "hit_points": hit_points,
         "missed_points": missed_points,
+        "llm_rescued_points": llm_rescued_points,
         "hit_count": hit_count,
         "total_points": total,
         "semantic_score": semantic_score,
@@ -427,6 +593,93 @@ def _evaluate_police_semantic_answer(
             else "回答未充分覆盖风险识别、处置顺序或依法安全要求。"
         ),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P0: LLM 语义兜底 - 对别名匹配 miss 的点做 LLM 语义判定
+# ─────────────────────────────────────────────────────────────────────────────
+
+_LLM_SEMANTIC_RESCUE_PROMPT = """你是警务训练评估专家。请判断学员的回答是否在语义上覆盖了以下处置要点。
+注意：学员可能用不同的措辞表达相同的意思，只要语义上实质性包含该要点的核心意图即可判定为覆盖。
+
+警情问题：{question}
+
+学员回答：
+{answer_text}
+
+待判定的处置要点：
+{points_json}
+
+请逐条判定，返回 JSON 数组，每条格式如下：
+[{{"point": "要点原文", "covered": true或false, "reason": "简要理由(15字以内)"}}]
+
+判定原则：
+- 学员明确表达了该要点的核心动作或意图 → covered: true
+- 学员只是模糊提及但未体现实质处置意图 → covered: false
+- 宁严勿松：只有明确覆盖才判 true"""
+
+
+logger = logging.getLogger(__name__)
+
+
+def _llm_semantic_rescue(
+    answer_text: str,
+    missed_points: list[dict],
+    question: str,
+) -> list[dict]:
+    """对别名匹配未命中的要点调用 LLM 做语义级覆盖判定。
+    返回 LLM 判定为 covered 的要点列表。"""
+    if not missed_points:
+        return []
+
+    # 限制单次判定数量（控制 token 消耗）
+    points_to_check = missed_points[:8]
+    points_json = json.dumps(
+        [p["point"] for p in points_to_check],
+        ensure_ascii=False,
+    )
+
+    prompt = _LLM_SEMANTIC_RESCUE_PROMPT.format(
+        question=question or "(未提供具体问题)",
+        answer_text=answer_text[:800],  # 截断过长回答
+        points_json=points_json,
+    )
+
+    try:
+        from services.llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
+
+        response = create_json_chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            model=get_chat_model(),
+            temperature=0.1,
+            max_tokens=1000,
+        )
+        content = extract_message_text(response)
+        if not content:
+            return []
+
+        payload = json.loads(content)
+        # 支持两种返回格式：直接数组 或 {"results": [...]}
+        if isinstance(payload, dict):
+            payload = payload.get("results") or payload.get("items") or payload.get("points") or []
+        if not isinstance(payload, list):
+            return []
+
+        rescued: list[dict] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            if item.get("covered") is True:
+                rescued.append({
+                    "point": str(item.get("point") or "").strip(),
+                    "reason": str(item.get("reason") or "").strip(),
+                    "match_type": "llm_semantic",
+                })
+        return rescued
+
+    except Exception as exc:
+        logger.warning(f"LLM semantic rescue failed: {exc}")
+        return []
 
 
 def _grade_from_percentage(pct: int) -> str:
@@ -719,21 +972,21 @@ def _validate_pass_submission(
         errors.append(str(identity_eval["reason"]))
 
     if node.node_type == "judge":
-        try:
-            config = json.loads(node.node_config or "{}")
-        except Exception:
-            config = {}
-        correct_answer = config.get("correct_answer")
-        submitted_answer = answer_data.get("answer")
-        if submitted_answer is None or submitted_answer != correct_answer:
-            errors.append("judge_incorrect")
+        config = node_config if isinstance(node_config, dict) else {}
+        if _is_choice_style_judge_node(node, config):
+            correct_index = _resolve_correct_choice_index(node, config)
+            submitted_choice = answer_data.get("selected")
+            if submitted_choice is None or submitted_choice != correct_index:
+                errors.append("judge_incorrect")
+        else:
+            correct_answer = _resolve_judge_boolean_answer(node, config)
+            submitted_answer = answer_data.get("answer")
+            if correct_answer is None or submitted_answer is None or submitted_answer != correct_answer:
+                errors.append("judge_incorrect")
 
     if node.node_type == "choice":
-        try:
-            config = json.loads(node.node_config or "{}")
-        except Exception:
-            config = {}
-        correct_index = config.get("correct_index")
+        config = node_config if isinstance(node_config, dict) else {}
+        correct_index = _resolve_correct_choice_index(node, config)
         submitted_choice = answer_data.get("selected")
         if submitted_choice is None or submitted_choice != correct_index:
             errors.append("choice_incorrect")

@@ -9,6 +9,9 @@ import './style.css'
 import App from './App.vue'
 import { setupStudentElementPlus } from './geeker-adapt/setupElementPlus'
 import { clearAuth, getStoredRole, isLoggedIn, resetLoginRedirectState } from './utils/auth'
+import { suppressKnownDevConsoleNoise } from './utils/suppressDevConsoleNoise'
+
+suppressKnownDevConsoleNoise()
 
 // 配置路由
 const routes = [
@@ -61,7 +64,7 @@ const routes = [
       { path: 'hall', component: () => import('./views/StudentHall.vue') },
       { path: 'videos', component: () => import('./views/StudentVideoHall.vue') },
       { path: 'video-history', component: () => import('./views/StudentVideoHistory.vue') },
-      { path: 'video-report/:sessionId', component: () => import('./views/VideoTrainingReportPage.vue'), meta: { reportRole: 'student' } },
+      { path: 'video-report/:sessionId', component: () => import('./views/StudentEvaluation.vue'), meta: { reportKind: 'video' } },
       { path: 'classes', component: () => import('./views/StudentClasses.vue') },
       { path: 'history', component: () => import('./views/StudentHistory.vue') },
       { path: 'evaluation', component: () => import('./views/StudentEvaluation.vue') },

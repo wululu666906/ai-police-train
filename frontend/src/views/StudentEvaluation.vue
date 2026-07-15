@@ -1,23 +1,40 @@
 <template>
-  <div class="student-page evaluation-page">
-    <div v-if="loading" class="loading-state">
-      <el-skeleton :rows="10" animated />
-    </div>
+  <TrainingReportShell
+    :breadcrumb="evaluationBreadcrumb"
+    :loading="loading"
+    :has-content="Boolean(isVideoReport ? videoReport : report)"
+    :empty-title="emptyState.title"
+    :empty-description="emptyState.description"
+    @back="handleReportBack"
+    @print="printReport"
+  >
+    <template #actions>
+      <el-button plain size="small" :icon="Printer" @click="printReport">打印报告</el-button>
+      <el-button type="primary" size="small" :icon="Download" @click="printReport">下载报告</el-button>
+      <el-button
+        v-if="isVideoReport && videoReport?.video_id"
+        plain
+        size="small"
+        @click="restartVideoTraining"
+      >
+        重新训练
+      </el-button>
+      <el-button plain size="small" :icon="ArrowLeft" @click="handleReportBack">返回列表</el-button>
+    </template>
+
+    <template #empty-actions>
+      <el-button v-if="isVideoReport" plain size="small" :loading="loading" @click="refreshVideoReport">刷新报告</el-button>
+      <el-button v-if="canResumeTraining" plain size="small" @click="resumeTraining">继续训练</el-button>
+      <el-button v-if="isVideoReport" plain size="small" @click="router.push('/student/video-history')">实训记录</el-button>
+      <el-button v-else plain size="small" @click="router.push('/student/history')">训练历史</el-button>
+      <el-button type="primary" size="small" @click="handleReportBack">{{ evaluationReturnLabel }}</el-button>
+    </template>
+
+    <article v-if="isVideoReport && videoReport" class="evaluation-document">
+      <VideoReportPaper :report="videoReport" />
+    </article>
 
     <article v-else-if="report" class="evaluation-document">
-      <header class="report-topbar no-print">
-        <div class="report-brand">
-          <span class="brand-mark">评</span>
-          <strong>训练评估报告</strong>
-        </div>
-        <div class="report-crumb">{{ evaluationBreadcrumb }} / 详情</div>
-        <div class="page-actions">
-          <el-button plain size="small" :icon="Printer" @click="printReport">打印报告</el-button>
-          <el-button type="primary" size="small" :icon="Download" @click="printReport">下载报告</el-button>
-          <el-button plain size="small" :icon="ArrowLeft" @click="router.push(evaluationReturnPath)">返回列表</el-button>
-        </div>
-      </header>
-
       <section v-if="isLegacyReport" class="legacy-state">
         <h2>旧版评估报告</h2>
         <p>当前记录仍是旧版固定维度报告。系统现在只使用 Adaptive V1 评估制度，请重新评估后查看新版报告。</p>
@@ -208,14 +225,7 @@
         </section>
       </main>
     </article>
-
-    <div v-else class="empty-state">
-      <el-empty :description="emptyState.title">
-        <template #description><p>{{ emptyState.title }}</p><span>{{ emptyState.description }}</span></template>
-        <div class="empty-actions"><el-button v-if="canResumeTraining" plain size="small" @click="resumeTraining">继续训练</el-button><el-button plain size="small" @click="router.push('/student/history')">训练历史</el-button><el-button type="primary" size="small" @click="router.push(evaluationReturnPath)">{{ evaluationReturnLabel }}</el-button></div>
-      </el-empty>
-    </div>
-  </div>
+  </TrainingReportShell>
 </template>
 
 
@@ -226,11 +236,15 @@ import { ArrowLeft, Download, Printer } from '@element-plus/icons-vue'
 import { showToast } from 'vant'
 import request from '../utils/request'
 import ECharts from '../geeker-adapt/components/ECharts/index.vue'
+import TrainingReportShell from '../components/training-report/TrainingReportShell.vue'
+import VideoReportPaper from '../components/training-report/VideoReportPaper.vue'
+import { isVideoReportReady, type VideoReportData } from '../composables/useVideoReportMetrics'
 
 const router = useRouter()
 const route = useRoute()
 const setMainScrollable = inject<(value: boolean) => void>('setMainScrollable')
 const report = ref<any>(null)
+const videoReport = ref<VideoReportData | null>(null)
 const loading = ref(true)
 const refreshing = ref(false)
 const pollingReport = ref(false)
@@ -241,10 +255,24 @@ const emptyState = ref({
 })
 let evaluationPollTimer: number | null = null
 const assignmentContext = computed(() => sessionDetail.value?.assignment_context || null)
-const isAssignmentReport = computed(() => Boolean(assignmentContext.value || route.query.source === 'assignment'))
-const evaluationReturnPath = computed(() => isAssignmentReport.value ? '/student/classes' : '/student/hall')
-const evaluationReturnLabel = computed(() => isAssignmentReport.value ? '班级作业' : '训练大厅')
-const evaluationBreadcrumb = computed(() => isAssignmentReport.value ? '班级作业 / 训练评估报告' : '训练历史 / 训练评估报告')
+const isAssignmentReport = computed(() => !isVideoReport.value && Boolean(assignmentContext.value || route.query.source === 'assignment'))
+const isVideoReport = computed(() => {
+  if (route.meta.reportKind === 'video') return true
+  if (route.path.includes('/video-report/')) return true
+  return route.query.type === 'video'
+})
+const evaluationReturnPath = computed(() => {
+  if (isVideoReport.value) return '/student/video-history'
+  return isAssignmentReport.value ? '/student/classes' : '/student/hall'
+})
+const evaluationReturnLabel = computed(() => {
+  if (isVideoReport.value) return '实训记录'
+  return isAssignmentReport.value ? '班级作业' : '训练大厅'
+})
+const evaluationBreadcrumb = computed(() => {
+  if (isVideoReport.value) return '视频实训 / 训练评估报告 / 详情'
+  return isAssignmentReport.value ? '班级作业 / 训练评估报告' : '训练历史 / 训练评估报告'
+})
 const routeAssignmentId = computed(() => {
   const raw = Array.isArray(route.query.assignment_id) ? route.query.assignment_id[0] : route.query.assignment_id
   const id = Number(raw)
@@ -358,7 +386,7 @@ const assessmentStats = computed(() => {
   const missed = items.filter((item: any) => item.status !== 'hit' && item.status !== 'partial').length
   return { total: items.length, hit, partial, missed }
 })
-const canResumeTraining = computed(() => sessionDetail.value?.status === 'active' && Number(sessionDetail.value?.id) > 0)
+const canResumeTraining = computed(() => !isVideoReport.value && sessionDetail.value?.status === 'active' && Number(sessionDetail.value?.id) > 0)
 const weighting = computed(() => report.value?.evaluation_meta?.weighting || {})
 const assessmentCompletion = computed(() => report.value?.evaluation_meta?.assessment_completion || {})
 const scoreCaps = computed(() => Array.isArray(report.value?.evaluation_meta?.score_caps?.caps) ? report.value.evaluation_meta.score_caps.caps : [])
@@ -1004,10 +1032,79 @@ const resumeTraining = () => {
 }
 
 const getSessionId = () => {
+  const rawRouteSessionId = route.params.sessionId
+  if (rawRouteSessionId) {
+    const routeSessionId = Number(rawRouteSessionId)
+    if (!Number.isNaN(routeSessionId) && routeSessionId > 0) return routeSessionId
+  }
   const rawSessionId = route.query.session_id
   const sessionId = Number(rawSessionId)
   if (!rawSessionId || Number.isNaN(sessionId) || sessionId <= 0) return null
   return sessionId
+}
+
+const handleReportBack = () => {
+  router.push(evaluationReturnPath.value)
+}
+
+const restartVideoTraining = () => {
+  if (!videoReport.value?.video_id) return
+  router.replace(`/student/video-training/${videoReport.value.video_id}`)
+}
+
+const refreshVideoReport = async () => {
+  loading.value = true
+  videoReport.value = null
+  clearEvaluationPoll()
+  await fetchVideoReport()
+}
+
+const fetchVideoReport = async (options: { silent?: boolean; attempt?: number } = {}) => {
+  const sessionId = getSessionId()
+  if (!sessionId) {
+    showToast('无法加载评估报告')
+    setEmptyState('无法定位评估报告', '请从实训记录重新打开报告。')
+    loading.value = false
+    return
+  }
+
+  try {
+    const res: VideoReportData = await request.get(`/video-training/session/${sessionId}/report`, { _skipErrorToast: true } as any)
+    if (!isVideoReportReady(res)) {
+      if ((options.attempt || 0) < 12) {
+        pollingReport.value = true
+        setEmptyState('评估报告生成中', '系统正在整理多模态证据并生成评估报告，请稍候。')
+        loading.value = false
+        clearEvaluationPoll()
+        evaluationPollTimer = window.setTimeout(() => {
+          void fetchVideoReport({ silent: true, attempt: (options.attempt || 0) + 1 })
+        }, 1200)
+        return
+      }
+      pollingReport.value = false
+      setEmptyState('报告暂未生成', '系统可能仍在生成报告，请稍后刷新；也可在实训记录中重新打开。')
+      return
+    }
+    clearEvaluationPoll()
+    videoReport.value = {
+      ...res,
+      session_id: res.session_id || sessionId,
+    }
+  } catch (error: any) {
+    clearEvaluationPoll()
+    const status = Number(error?.response?.status || 0)
+    if (status === 401) {
+      setEmptyState('登录状态已失效', '请重新登录后再查看评估报告。')
+    } else if (status === 403 || status === 404) {
+      showToast('当前账号无权访问该评估报告')
+      setEmptyState('无法查看该评估报告', '该实训记录不存在，或不属于当前登录账号。请从实训记录入口重新打开。')
+    } else {
+      showToast('获取评估报告失败')
+      setEmptyState('加载失败', '请稍后重试。')
+    }
+  } finally {
+    loading.value = false
+  }
 }
 
 const normalizeReportPayload = (payload: any) => {
@@ -1160,6 +1257,10 @@ const printReport = () => {
 
 onMounted(async () => {
   setMainScrollable?.(true)
+  if (isVideoReport.value) {
+    await fetchVideoReport()
+    return
+  }
   if (route.query.refresh === '1') {
     await refreshEvaluation()
     const nextQuery = { ...route.query }
@@ -1176,47 +1277,8 @@ onUnmounted(() => {
 })
 </script>
 
+<style scoped src="../styles/training-report-shell.css"></style>
 <style scoped>
-.evaluation-page { min-height: 100%; padding: 0 0 36px; background: #f5f8fc; color: #15213b; font-size: 14px; line-height: 1.7; }
-.evaluation-document { width: 100%; margin: 0 auto; }
-.report-topbar { height: 74px; display: grid; grid-template-columns: 220px 1fr auto; align-items: center; gap: 24px; padding: 0 56px; background: rgba(255, 255, 255, 0.92); border-bottom: 1px solid #e8edf6; }
-.report-brand { display: flex; align-items: center; gap: 12px; color: #10203f; font-size: 18px; font-weight: 900; }
-.brand-mark { width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 6px; background: #2f6df6; color: #fff; font-size: 14px; }
-.report-crumb { color: #8a96ad; font-size: 13px; }
-.page-actions, .empty-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
-.report-paper, .legacy-state, .loading-state, .empty-state { background: #fff; }
-.report-paper { width: min(1160px, calc(100% - 72px)); margin: 36px auto 0; padding: 0 0 34px; min-height: 760px; box-shadow: 0 18px 48px rgba(33, 58, 99, 0.08); }
-.paper-hero { padding: 40px 52px 28px; border-bottom: 1px solid #e6ebf3; }
-.paper-hero h2 { margin: 0 0 12px; color: #101a33; font-size: 30px; line-height: 1.2; font-weight: 900; letter-spacing: 0; }
-.paper-hero p { margin: 0; color: #647089; font-size: 13px; }
-.paper-hero span { margin-left: 28px; }
-.report-section { padding: 28px 52px; border-bottom: 1px solid #e6ebf3; }
-.report-section:last-child { border-bottom: 0; }
-.section-title { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; color: #18213d; font-size: 16px; font-weight: 900; }
-.section-title i { width: 5px; height: 14px; border-radius: 3px; background: #8eb1ff; }
-.summary-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(420px, 1.15fr); gap: 34px; align-items: center; }
-.summary-copy { padding-left: 24px; }
-.summary-copy h3 { margin: 0 0 10px; color: #101a33; font-size: 22px; line-height: 1.3; font-weight: 900; }
-.summary-copy p, .insight-grid p, .score-item p, .report-text, .report-table td p { margin: 0; color: #657189; }
-.summary-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-left: 1px solid #e1e7f2; }
-.summary-metrics article { min-height: 92px; padding: 4px 26px; border-right: 1px solid #e1e7f2; }
-.summary-metrics span, .insight-grid span { color: #66748e; font-size: 13px; font-weight: 700; }
-.summary-metrics strong { display: block; margin: 9px 0 3px; color: #2f6df6; font-size: 31px; line-height: 1; font-weight: 900; }
-.summary-metrics p { margin: 0; color: #7c879d; font-size: 13px; }
-.insight-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 38px; margin-top: 26px; padding-top: 24px; border-top: 1px solid #e6ebf3; }
-.insight-grid article { min-width: 0; }
-.insight-grid strong { display: block; margin: 8px 0; color: #2f6df6; font-size: 17px; font-weight: 900; overflow-wrap: anywhere; }
-.overview-table { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 13px; column-gap: 72px; }
-.overview-table div { min-width: 0; display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: baseline; gap: 12px; }
-.overview-table span { color: #7b879c; }
-.overview-table strong { color: #15213b; font-weight: 900; overflow-wrap: anywhere; }
-.score-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid #e2e8f2; border-left: 1px solid #e2e8f2; }
-.score-item { min-height: 126px; padding: 18px 22px; border-right: 1px solid #e2e8f2; border-bottom: 1px solid #e2e8f2; background: #fff; }
-.score-item__head { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
-.score-item__head strong { color: #121d39; font-size: 15px; font-weight: 900; }
-.score-item__head span { color: #2f6df6; font-weight: 900; white-space: nowrap; }
-.score-bar { height: 6px; margin: 14px 0 13px; border-radius: 999px; background: #e7edf7; overflow: hidden; }
-.score-bar i { display: block; height: 100%; border-radius: inherit; background: #2f6df6; }
 .assessment-summary, .calibration-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 20px; }
 .assessment-summary div { min-height: 54px; display: flex; align-items: baseline; justify-content: center; gap: 7px; }
 .assessment-summary span { color: #6d7890; }

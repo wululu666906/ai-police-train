@@ -4,6 +4,9 @@ import vue from '@vitejs/plugin-vue'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue()],
+  optimizeDeps: {
+    include: ['@mediapipe/tasks-vision'],
+  },
   build: {
     rollupOptions: {
       output: {
@@ -37,6 +40,7 @@ export default defineConfig({
       '/dashboard': { target: process.env.VITE_DEV_PROXY_TARGET || 'http://127.0.0.1:8000', changeOrigin: true },
       '/videos':    { target: process.env.VITE_DEV_PROXY_TARGET || 'http://127.0.0.1:8000', changeOrigin: true },
       '/video-training': { target: process.env.VITE_DEV_PROXY_TARGET || 'http://127.0.0.1:8000', changeOrigin: true },
+      '/face':        { target: process.env.VITE_DEV_PROXY_TARGET || 'http://127.0.0.1:8000', changeOrigin: true },
       '/classes':   { target: process.env.VITE_DEV_PROXY_TARGET || 'http://127.0.0.1:8000', changeOrigin: true },
       '/avatars':   { target: process.env.VITE_DEV_PROXY_TARGET || 'http://127.0.0.1:8000', changeOrigin: true },
       // 静态文件（视频、封面图等）

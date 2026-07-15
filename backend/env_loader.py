@@ -40,4 +40,9 @@ def sanitize_ssl_env() -> None:
 
 def load_backend_env() -> None:
     sanitize_ssl_env()
-    load_dotenv(BACKEND_ENV_PATH, override=False)
+    load_dotenv(BACKEND_ENV_PATH, override=True)
+
+    # 抑制 PaddlePaddle / TensorFlow Lite 的 INFO 日志
+    # "INFO: Created TensorFlow Lite XNNPACK delegate for CPU."
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    os.environ.setdefault("GLOG_minloglevel", "2")

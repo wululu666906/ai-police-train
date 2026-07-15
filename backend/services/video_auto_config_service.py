@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import json
 import math
+import os
+import re
 from typing import Any, Optional
 
-from .llm_provider import ACTIVE_API_KEY, client, extract_json_payload, extract_message_text, get_chat_model
+from .llm_provider import extract_json_payload, extract_message_text
 
 
 def _default_assessment_points_for_auto_node(
@@ -950,6 +952,92 @@ def _fallback_analysis(
     return payload
 
 
+VALID_INTERACTION_TYPES = {"voice_qa", "choice", "judgment", "prop_select", "action"}
+
+
+def _interaction_to_node_type(interaction_type: str) -> str:
+    """将 node_interaction_type 映射为兼容旧代码的 node_type"""
+    mapping = {
+        "voice_qa": "voice_qa",
+        "choice": "choice",
+        "judgment": "judge",
+        "prop_select": "choice",
+        "action": "action",
+    }
+    return mapping.get(interaction_type, "voice_qa")
+
+
+def _normalize_choice_options_list(raw_options: Any) -> list[dict[str, str]] | None:
+    if not isinstance(raw_options, list) or not raw_options:
+        return None
+    normalized: list[dict[str, str]] = []
+    for index, option in enumerate(raw_options):
+        if isinstance(option, str):
+            trimmed = option.strip()
+            match = re.match(r"^([A-Za-z])[.、:：)\]]\s*(.+)$", trimmed) or re.match(r"^([A-Za-z])\s+(.+)$", trimmed)
+            if match:
+                normalized.append({"label": match.group(1).upper(), "text": match.group(2).strip()})
+            else:
+                normalized.append({"label": chr(65 + index), "text": trimmed})
+            continue
+        if isinstance(option, dict):
+            label = str(option.get("label") or option.get("value") or chr(65 + index)).strip()
+            text = str(option.get("text") or option.get("content") or option.get("description") or label).strip()
+            normalized.append({"label": label, "text": text})
+    return normalized or None
+
+
+def _is_true_judgment_options(options: list[dict[str, str]]) -> bool:
+    if len(options) != 2:
+        return False
+    labels = {str(item.get("label") or "").strip() for item in options}
+    return "对" in labels and "错" in labels
+
+
+def _resolve_node_interaction_type(
+    raw: dict[str, Any],
+    node_type: str,
+    required_keywords: list[str],
+    *,
+    choice_options: list[dict[str, str]] | None = None,
+) -> str:
+    """从 LLM 输出或规则推断节点交互类型"""
+    explicit = str(raw.get("node_interaction_type") or "").strip().lower()
+    if explicit in VALID_INTERACTION_TYPES:
+        interaction_type = explicit
+    elif node_type == "choice":
+        interaction_type = "choice"
+    elif node_type == "judge":
+        interaction_type = "judgment"
+    elif isinstance(raw.get("choice_options"), list) and raw["choice_options"]:
+        interaction_type = "choice"
+    else:
+        interaction_type = ""
+
+    normalized_options = choice_options or _normalize_choice_options_list(raw.get("choice_options"))
+    if interaction_type == "judgment" and normalized_options and not _is_true_judgment_options(normalized_options):
+        if len(normalized_options) >= 3:
+            return "choice"
+
+    if interaction_type:
+        return interaction_type
+
+    # 有选项则为选择题
+    if normalized_options:
+        return "choice"
+    # 有道具标签且需要选择
+    prompt_content = raw.get("prompt_content") if isinstance(raw.get("prompt_content"), dict) else {}
+    if prompt_content.get("prop_label") and str(raw.get("prop_mode") or "") == "manual":
+        return "prop_select"
+    # 有手势要求
+    if raw.get("required_gesture"):
+        return "action"
+    # 有关键词或是语音问答类型
+    if required_keywords or node_type == "voice_qa":
+        return "voice_qa"
+    return "voice_qa"
+
+
 def _normalize_node(raw: dict[str, Any], index: int, duration_seconds: Optional[int]) -> dict[str, Any]:
     duration = max(1, int(duration_seconds or 0) or 120)
     trigger_time = int(raw.get("trigger_time") or max(1, min(duration - 2, 12 + index * 18)))
@@ -1034,6 +1122,14 @@ def _normalize_node(raw: dict[str, Any], index: int, duration_seconds: Optional[
         },
     )
 
+    normalized_choice_options = _normalize_choice_options_list(raw.get("choice_options"))
+    resolved_interaction_type = _resolve_node_interaction_type(
+        raw,
+        node_type,
+        required_keywords,
+        choice_options=normalized_choice_options,
+    )
+
     return {
         "title": str(raw.get("title") or f"自动节点 {index + 1}").strip(),
         "trigger_time": trigger_time,
@@ -1042,12 +1138,58 @@ def _normalize_node(raw: dict[str, Any], index: int, duration_seconds: Optional[
         "retry_score_deduct": int(raw.get("retry_score_deduct") or 5),
         "skip_score_deduct": int(raw.get("skip_score_deduct") or 15),
         "prop_mode": str(raw.get("prop_mode") or ("manual" if prompt_content.get("prop_label") else "auto")),
-        "node_type": node_type,
+        "node_type": _interaction_to_node_type(resolved_interaction_type),
+        "node_interaction_type": resolved_interaction_type,
+        "ai_instructor_hint": str(raw.get("ai_instructor_hint") or "").strip() or None,
+        "choice_options": normalized_choice_options,
+        "correct_answer": str(raw.get("correct_answer") or "").strip() or None,
         "required_gesture": raw.get("required_gesture"),
         "required_keywords": required_keywords,
         "score_weight": int(raw.get("score_weight") or 10),
         "prompt_content": prompt_content,
         "node_config": node_config,
+    }
+
+
+def _normalize_analysis_strict(
+    payload: dict[str, Any],
+    title_hint: str,
+    duration_seconds: Optional[int],
+) -> dict[str, Any]:
+    """
+    严格规范化 AI 分析结果，不使用任何模板兜底。
+    所有字段直接取自 LLM 返回，缺失则留空。
+    """
+    title = str(payload.get("title") or title_hint or "").strip() or "未命名视频"
+    video_type = str(payload.get("video_type") or "interactive").strip().lower()
+    if video_type not in {"teaching", "interactive"}:
+        video_type = "interactive"
+
+    tags = payload.get("tags") if isinstance(payload.get("tags"), list) else []
+    tags = [str(item).strip() for item in tags if str(item).strip()]
+    if "AI识别" not in tags:
+        tags.insert(0, "AI识别")
+
+    raw_nodes = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
+    nodes = [
+        _normalize_node(item if isinstance(item, dict) else {}, index, duration_seconds)
+        for index, item in enumerate(raw_nodes[:8])
+        if isinstance(item, dict)
+    ]
+
+    return {
+        "analysis_mode": "llm_vision",
+        "title": title,
+        "description": str(payload.get("description") or "").strip() or f"AI 根据视频内容自动生成的训练配置。",
+        "video_type": video_type,
+        "scenario_type": str(payload.get("scenario_type") or "").strip() or None,
+        "difficulty": str(payload.get("difficulty") or "normal").strip().lower() if str(payload.get("difficulty") or "").strip().lower() in {"easy", "normal", "hard"} else "normal",
+        "briefing": str(payload.get("briefing") or "").strip() or None,
+        "tags": tags,
+        "status": "draft",
+        "nodes": nodes if video_type == "interactive" else [],
+        "suggested_timestamps": [int(item.get("trigger_time") or 0) for item in nodes] if video_type == "interactive" else [],
+        "node_generation_mode": "llm_generated",
     }
 
 
@@ -1097,6 +1239,8 @@ def _normalize_analysis(
         "title": title or fallback["title"],
         "description": str(payload.get("description") or fallback["description"]).strip(),
         "video_type": video_type,
+        "scenario_type": str(payload.get("scenario_type") or "").strip() or None,
+        "difficulty": str(payload.get("difficulty") or "normal").strip().lower() if str(payload.get("difficulty") or "").strip().lower() in {"easy", "normal", "hard"} else "normal",
         "briefing": str(payload.get("briefing") or fallback["briefing"]).strip(),
         "tags": tags,
         "status": str(payload.get("status") or "draft") if str(payload.get("status") or "draft") in {"draft", "published", "archived"} else "draft",
@@ -1114,87 +1258,649 @@ def _normalize_analysis(
     return normalized
 
 
+def _extract_audio_from_video(video_path: str) -> Optional[str]:
+    """用 ffmpeg 从视频中提取音频为 wav 文件（16kHz mono，适合 ASR）"""
+    import tempfile
+    audio_path = tempfile.mktemp(suffix=".wav")
+    try:
+        import subprocess
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", video_path,
+                "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                audio_path,
+            ],
+            capture_output=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            return None
+        if os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000:
+            return audio_path
+        return None
+    except Exception:
+        return None
+
+
+def _detect_scene_changes(video_path: str, threshold: float = 0.35) -> list[float]:
+    """用 ffmpeg 检测视频镜头切换时间点"""
+    import subprocess
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-i", video_path,
+                "-vf", f"select='gt(scene,{threshold})',showinfo",
+                "-vsync", "vfr", "-f", "null", "-",
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        # 从 stderr 中解析 showinfo 输出的 pts_time
+        scene_times: list[float] = []
+        for line in (result.stderr or "").split("\n"):
+            if "pts_time:" in line:
+                try:
+                    pts_str = line.split("pts_time:")[1].split()[0]
+                    scene_times.append(float(pts_str))
+                except (ValueError, IndexError):
+                    pass
+        return scene_times
+    except Exception:
+        return []
+
+
+def _get_audio_duration(audio_path: str) -> float:
+    """获取音频文件时长"""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(result.stdout.strip()) if result.stdout.strip() else 0
+    except Exception:
+        return 0
+
+
+def _split_audio_to_chunks(audio_path: str, chunk_seconds: int = 10) -> list[dict[str, Any]]:
+    """将音频文件按 chunk_seconds 切割为多段（10秒一段，实现句子级精度）"""
+    import subprocess
+    import tempfile
+
+    duration = _get_audio_duration(audio_path)
+    if duration <= 0:
+        return [{"path": audio_path, "start_time": 0, "end_time": 0}]
+
+    chunks: list[dict[str, Any]] = []
+    start = 0.0
+    while start < duration:
+        end = min(start + chunk_seconds, duration)
+        chunk_path = tempfile.mktemp(suffix=".wav")
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", audio_path,
+                    "-ss", str(start), "-t", str(chunk_seconds),
+                    "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                    chunk_path,
+                ],
+                capture_output=True, timeout=60,
+            )
+            if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 500:
+                chunks.append({"path": chunk_path, "start_time": start, "end_time": end})
+        except Exception:
+            pass
+        start = end
+
+    return chunks if chunks else [{"path": audio_path, "start_time": 0, "end_time": duration}]
+
+
+def _transcribe_audio_chunk(audio_path: str, start_time: float = 0) -> list[dict[str, Any]]:
+    """
+    用千问 ASR 转写单个音频片段。
+    返回句子级别的结果：[{time, end_time, text}]
+    通过标点符号拆分来获得句子级别精度。
+    """
+    from openai import OpenAI
+    import re
+
+    api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_API_KEY", "")
+    if not api_key:
+        return []
+
+    asr_model = os.getenv("QWEN_ASR_MODEL", "qwen3-asr-flash")
+    asr_base_url = os.getenv("QWEN_ASR_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+
+    try:
+        with open(audio_path, "rb") as f:
+            audio_bytes = f.read()
+
+        audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+        data_url = f"data:audio/wav;base64,{audio_b64}"
+
+        if len(data_url.encode("utf-8")) > 10 * 1024 * 1024:
+            return []
+
+        client = OpenAI(api_key=api_key, base_url=asr_base_url)
+        response = client.chat.completions.create(
+            model=asr_model,
+            messages=[{
+                "role": "user",
+                "content": [{"type": "input_audio", "input_audio": {"data": data_url}}],
+            }],
+            extra_body={"asr_options": {"enable_itn": True, "language": "zh", "enable_timestamps": True}},
+        )
+
+        text = ""
+        message = response.choices[0].message
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            text = content.strip()
+        elif isinstance(content, list):
+            text = "".join(
+                str(item.get("text", "") if isinstance(item, dict) else getattr(item, "text", ""))
+                for item in content
+            ).strip()
+
+        if not text:
+            return []
+
+        # 按标点拆分为句子，并在10秒的chunk内均匀分配时间
+        sentences = re.split(r'(?<=[。？！；\?\!；])', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        if not sentences:
+            return [{"time": round(start_time, 1), "end_time": round(start_time + 10, 1), "text": text}]
+
+        # 每个句子在chunk内按比例分配时间
+        chunk_duration = 10.0  # 每段10秒
+        results: list[dict[str, Any]] = []
+        total_chars = sum(len(s) for s in sentences)
+        current_offset = 0.0
+
+        for sentence in sentences:
+            if not sentence:
+                continue
+            # 按字数比例分配时间
+            sentence_duration = (len(sentence) / max(total_chars, 1)) * chunk_duration
+            sentence_start = start_time + current_offset
+            sentence_end = sentence_start + sentence_duration
+            results.append({
+                "time": round(sentence_start, 1),
+                "end_time": round(sentence_end, 1),
+                "text": sentence,
+            })
+            current_offset += sentence_duration
+
+        return results
+    except Exception as exc:
+        print(f"ASR chunk transcription error: {exc}")
+        return []
+
+
+def _transcribe_video_audio(video_path: str) -> list[dict[str, Any]]:
+    """
+    从视频提取音频并转写为句子级别带时间戳的文本。
+    使用10秒切片 + 句子拆分 实现精确到秒的时间轴。
+    """
+    audio_path = _extract_audio_from_video(video_path)
+    if not audio_path:
+        return []
+
+    try:
+        chunks = _split_audio_to_chunks(audio_path, chunk_seconds=10)
+        transcript: list[dict[str, Any]] = []
+        for chunk in chunks:
+            segments = _transcribe_audio_chunk(chunk["path"], chunk["start_time"])
+            transcript.extend(segments)
+            if chunk["path"] != audio_path:
+                try:
+                    os.remove(chunk["path"])
+                except Exception:
+                    pass
+        return transcript
+    finally:
+        try:
+            if audio_path and os.path.exists(audio_path):
+                os.remove(audio_path)
+        except Exception:
+            pass
+
+
+def _stage1_scene_understanding(
+    *,
+    title_hint: str,
+    duration_seconds: Optional[int],
+    transcript: list[dict[str, Any]],
+    ocr_hints: list[str],
+    scene_changes: list[float],
+) -> Optional[dict[str, Any]]:
+    """
+    第一阶段：场景理解 + 角色标注
+    快速分析视频内容结构，识别说话人、场景类型、处置阶段。
+    """
+    from .llm_provider import client, get_chat_model, ACTIVE_API_KEY as LLM_API_KEY
+    if not LLM_API_KEY:
+        return None
+
+    # 构建精确时间轴文本
+    transcript_lines = []
+    for seg in transcript:
+        t = seg.get("time", 0)
+        end_t = seg.get("end_time", t)
+        minutes = int(t) // 60
+        seconds = int(t) % 60
+        transcript_lines.append(f"[{minutes}:{seconds:02d}-{int(end_t)//60}:{int(end_t)%60:02d}] {seg.get('text', '')}")
+    transcript_text = "\n".join(transcript_lines)
+
+    scene_change_text = ""
+    if scene_changes:
+        scene_change_text = f"\n镜头切换时间点（秒）：{', '.join(str(round(t, 1)) for t in scene_changes[:15])}"
+
+    prompt = f"""你是警务训练视频分析专家。请分析以下视频的语音内容，完成角色标注和场景结构理解。
+
+【视频信息】
+- 标题：{title_hint or '未提供'}
+- 总时长：{int(duration_seconds or 0)} 秒
+- 画面文字(OCR)：{' / '.join(ocr_hints[:6]) if ocr_hints else '无'}{scene_change_text}
+
+【语音转写（精确到句子级时间戳）】
+{transcript_text}
+
+请输出 JSON，包含：
+{{
+  "scenario_type": "场景类型（如'消费纠纷'、'家庭纠纷'、'交通执法'、'醉酒警情'、'盘查核验'等）",
+  "participants": ["参与人角色列表，如'民警A', '顾客', '店员', '围观群众'"],
+  "annotated_transcript": [
+    {{"time": 起始秒数, "end_time": 结束秒数, "speaker": "说话人角色（民警/当事人A/当事人B/群众等）", "text": "原始文本", "is_standard": true或false（是否是规范执法话术）}}
+  ],
+  "phases": [
+    {{"name": "阶段名称", "start_time": 起始秒, "end_time": 结束秒, "description": "该阶段发生了什么"}}
+  ],
+  "key_moments": [
+    {{"time": 秒数, "event": "关键事件描述", "speaker": "说话人", "training_value": "这个时刻对训练有什么价值"}}
+  ]
+}}
+
+规则：
+1. annotated_transcript 必须标注每句话是谁说的（民警/当事人/群众）
+2. is_standard=true 表示这是民警的规范话术（学员需要学习的）
+3. phases 按处置流程划分（如：到场控制→分别询问→取证核实→处置结论）
+4. key_moments 标注适合设为训练暂停点的时刻（一般在民警标准操作前后）"""
+
+    try:
+        response = client.chat.completions.create(
+            model=get_chat_model(),
+            messages=[
+                {"role": "system", "content": "你是警务训练视频分析专家。只输出合法JSON。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=3000,
+        )
+        raw = extract_message_text(response)
+        payload = extract_json_payload(raw)
+        return payload if isinstance(payload, dict) else None
+    except Exception as exc:
+        print(f"Stage 1 analysis error: {exc}")
+        return None
+
+
+def _stage2_training_design(
+    *,
+    title_hint: str,
+    duration_seconds: Optional[int],
+    stage1_result: dict[str, Any],
+    transcript: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """
+    第二阶段：基于场景理解结果，设计训练节点。
+    已知角色标注和阶段划分，精确编排训练点。
+    """
+    from .llm_provider import client, get_chat_model, ACTIVE_API_KEY as LLM_API_KEY
+    if not LLM_API_KEY:
+        return None
+
+    scenario_type = stage1_result.get("scenario_type", "未知场景")
+    participants = stage1_result.get("participants", [])
+    phases = stage1_result.get("phases", [])
+    key_moments = stage1_result.get("key_moments", [])
+    annotated = stage1_result.get("annotated_transcript", [])
+
+    # 构建角色标注的转写文本
+    annotated_text = ""
+    if annotated:
+        lines = []
+        for seg in annotated:
+            t = int(seg.get("time", 0))
+            speaker = seg.get("speaker", "未知")
+            text = seg.get("text", "")
+            is_std = "★" if seg.get("is_standard") else ""
+            lines.append(f"[{t//60}:{t%60:02d}] 【{speaker}】{is_std} {text}")
+        annotated_text = "\n".join(lines)
+    else:
+        # 回退到原始转写
+        for seg in transcript:
+            t = int(seg.get("time", 0))
+            annotated_text += f"[{t//60}:{t%60:02d}] {seg.get('text', '')}\n"
+
+    phases_text = "\n".join(f"  - {p.get('name', '')}（{p.get('start_time', 0)}-{p.get('end_time', 0)}秒）：{p.get('description', '')}" for p in phases)
+    moments_text = "\n".join(f"  - [{m.get('time', 0)}秒] {m.get('event', '')}（{m.get('speaker', '')}）→ 训练价值：{m.get('training_value', '')}" for m in key_moments)
+
+    prompt = f"""你是资深公安实战训练教官，擅长将执法示范视频精确编排为交互式训练课程。请基于以下已分析好的视频结构，设计训练节点。
+
+【已分析的视频结构】
+- 场景类型：{scenario_type}
+- 参与人：{', '.join(participants)}
+- 总时长：{int(duration_seconds or 0)} 秒
+
+【处置阶段划分】
+{phases_text or '未划分'}
+
+【关键训练时刻】
+{moments_text or '未识别'}
+
+【角色标注的语音内容（★=民警规范话术）】
+{annotated_text}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+请输出完整的训练方案 JSON：
+
+{{
+  "title": "优化后的视频标题",
+  "description": "一句话简介",
+  "video_type": "interactive",
+  "scenario_type": "{scenario_type}",
+  "difficulty": "normal",
+  "briefing": "训练简报（100-200字，写给学员：你接到什么警情、到场看到什么、任务是什么）",
+  "tags": ["标签"],
+  "nodes": [4-6个训练节点]
+}}
+
+每个节点格式：
+{{
+  "title": "节点名称（简洁描述该步骤，如'表明身份'、'安抚劝导'）",
+  "trigger_time": 精确暂停秒数,
+  "answer_appears_at": 该节点答案在视频中出现的秒数（即★标注话术的时间戳）,
+  "node_interaction_type": "judgment 或 voice_qa 或 choice",
+  "ai_instructor_hint": "AI教官引导语（见下方格式要求）",
+  "choice_options": [选项数组，仅choice/judgment需要],
+  "correct_answer": "正确答案",
+  "required_keywords": ["关键词"]（仅voice_qa，从★话术中提取3-5个核心词）,
+  "timeout_seconds": 45,
+  "score_weight": 10,
+  "prompt_content": {{
+    "instruction": "节点任务说明（一句话告诉学员需要做什么）",
+    "scene_summary": "当前场景描述（50-80字，描述此刻现场状况：对方在做什么、情绪如何、周围环境）",
+    "speech_hint": "标准话术原文（直接从★标注的民警话术复制，完整不删减）"
+  }}
+}}
+
+━━━━━━━━━━━ 核心规则（必须严格遵守）━━━━━━━━━━━
+
+【trigger_time 定位规则 — 最重要】
+1. 找到每个训练点对应的★标注民警话术的起始时间（即 answer_appears_at）
+2. trigger_time = answer_appears_at - 3（在答案出现前3秒暂停）
+3. trigger_time 必须 > 0 且 < 总时长
+4. 如果两个相邻节点的★话术间隔 < 8 秒，合并为一个节点
+5. trigger_time 绝对不能等于或大于 answer_appears_at（否则学员会先看到答案再答题）
+6. 优先选择处置阶段转换点、关键决策点作为训练节点
+
+【ai_instructor_hint 格式要求 — 带着练】
+必须包含三部分，用换行分隔：
+- 第1行：场景描述（"现在的情况是：..."，20-30字描述当前局势）
+- 第2行：任务引导（"你需要：..."，明确告诉学员该做什么动作/说什么方向的话）
+- 第3行：关键提示（"注意要点：..."，给出1-2个关键提示词但不给完整答案）
+示例："现在的情况是：当事双方情绪激动，正在互相推搡。\\n你需要：上前控制局面，表明执法身份，将双方分开。\\n注意要点：先控制局面确保安全，再表明身份。"
+
+【其他规则】
+7. 交互类型多样化：judgment→voice_qa→choice→voice_qa 交替使用
+8. voice_qa 的 required_keywords 从★标注的民警话术中提取3-5个核心动词/名词
+9. speech_hint 必须是视频中民警说的原话（★标注内容），完整复制不能改写
+10. scene_summary 必须具体描述此刻画面/对方状态，不能用笼统描述"""
+
+    try:
+        response = client.chat.completions.create(
+            model=get_chat_model(),
+            messages=[
+                {"role": "system", "content": "你是公安实战训练课程编排专家。严格按要求输出合法JSON。核心要求：1)trigger_time必须在答案出现前3秒；2)ai_instructor_hint必须包含场景+任务+要点三部分；3)speech_hint必须是视频原话。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=6000,
+        )
+        raw = extract_message_text(response)
+        payload = extract_json_payload(raw)
+        return payload if isinstance(payload, dict) else None
+    except Exception as exc:
+        print(f"Stage 2 analysis error: {exc}")
+        return None
+
+
+def _postprocess_validate_trigger_times(
+    stage2: dict[str, Any],
+    stage1: dict[str, Any],
+    transcript: list[dict[str, Any]],
+    duration_seconds: Optional[int],
+) -> dict[str, Any]:
+    """
+    后处理校验：确保每个节点的 trigger_time 在答案出现之前。
+    
+    逻辑：
+    1. 如果 LLM 返回了 answer_appears_at，验证 trigger_time < answer_appears_at
+    2. 如果没有 answer_appears_at，尝试用 speech_hint 在转写中匹配找到答案时间
+    3. 确保 trigger_time 不超出视频时长，且节点间不重叠
+    """
+    nodes = stage2.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return stage2
+
+    duration = int(duration_seconds or 0)
+    annotated = stage1.get("annotated_transcript", [])
+
+    # 构建转写文本时间索引（用于匹配 speech_hint）
+    transcript_index: list[dict[str, Any]] = []
+    for seg in (annotated if annotated else transcript):
+        t = int(seg.get("time", 0))
+        text = str(seg.get("text", ""))
+        transcript_index.append({"time": t, "text": text})
+
+    corrected_nodes = []
+    prev_trigger = -1
+
+    for node in nodes:
+        if not isinstance(node, dict):
+            corrected_nodes.append(node)
+            continue
+
+        trigger_time = int(node.get("trigger_time") or 0)
+        answer_at = node.get("answer_appears_at")
+
+        # 尝试确定答案出现时间
+        if answer_at is not None:
+            answer_at = int(answer_at)
+        else:
+            # 尝试通过 speech_hint 在转写中定位答案时间
+            speech_hint = ""
+            prompt_content = node.get("prompt_content")
+            if isinstance(prompt_content, dict):
+                speech_hint = str(prompt_content.get("speech_hint") or "")
+            if speech_hint and transcript_index:
+                answer_at = _find_text_time_in_transcript(speech_hint, transcript_index)
+
+        # 校验规则 1: trigger_time 必须在 answer_appears_at 之前
+        if answer_at is not None and answer_at > 0:
+            if trigger_time >= answer_at:
+                # 修正：在答案前 3 秒暂停
+                trigger_time = max(1, answer_at - 3)
+                print(f"[后处理] 修正 trigger_time: 节点'{node.get('title')}' → {trigger_time}s (答案在{answer_at}s)")
+
+        # 校验规则 2: trigger_time 不超出视频时长
+        if duration > 0 and trigger_time >= duration:
+            trigger_time = max(1, duration - 5)
+
+        # 校验规则 3: trigger_time 不能为 0 或负数
+        if trigger_time <= 0:
+            trigger_time = max(1, trigger_time)
+
+        # 校验规则 4: 与前一个节点至少间隔 5 秒
+        if prev_trigger >= 0 and trigger_time <= prev_trigger + 5:
+            trigger_time = prev_trigger + 6
+
+        node["trigger_time"] = trigger_time
+        prev_trigger = trigger_time
+        corrected_nodes.append(node)
+
+    stage2["nodes"] = corrected_nodes
+    return stage2
+
+
+def _find_text_time_in_transcript(
+    target_text: str,
+    transcript_index: list[dict[str, Any]],
+) -> Optional[int]:
+    """
+    在转写时间轴中查找最匹配目标文本的时间点。
+    使用关键词重叠度匹配，返回最佳匹配的起始时间。
+    """
+    if not target_text or not transcript_index:
+        return None
+
+    # 提取目标文本的关键词（去掉标点，取 >= 2 字的词）
+    import re
+    punct_pattern = r'[，。！？、；：\u201c\u201d\u2018\u2019（）\s]'
+    target_clean = re.sub(punct_pattern, '', target_text)
+    if len(target_clean) < 4:
+        return None
+
+    # 用滑动窗口在转写中找最大重叠
+    best_time: Optional[int] = None
+    best_score = 0
+
+    for seg in transcript_index:
+        seg_text = re.sub(punct_pattern, '', str(seg.get("text", "")))
+        if not seg_text:
+            continue
+        # 计算字符重叠比例
+        overlap = sum(1 for ch in target_clean if ch in seg_text)
+        score = overlap / max(len(target_clean), 1)
+        if score > best_score and score >= 0.4:
+            best_score = score
+            best_time = int(seg.get("time", 0))
+
+    return best_time
+
+
 def _request_llm_analysis(
     *,
     title_hint: str,
     duration_seconds: Optional[int],
     frames: list[dict[str, Any]],
     ocr_hints: list[str],
+    transcript: list[dict[str, Any]],
+    scene_changes: list[float] | None = None,
     preferred_type: Optional[str] = None,
     scenario_hint: Optional[str] = None,
     training_variant: Optional[str] = None,
     difficulty_level: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    if not ACTIVE_API_KEY or not frames:
+    """
+    两阶段 AI 分析：
+    Stage 1: 场景理解 + 角色标注（快速）
+    Stage 2: 基于结构化理解做训练编排（精确）
+    """
+    from .llm_provider import ACTIVE_API_KEY as LLM_API_KEY
+    if not LLM_API_KEY:
+        return None
+    if not transcript and not ocr_hints:
         return None
 
-    user_content: list[dict[str, Any]] = [
-        {
-            "type": "text",
-            "text": (
-                "你是公安实战训练课程编排专家。请根据视频抽帧，把模拟警情视频拆解成可训练、可评分、可复盘的警情处置节点。"
-                "必须只返回 JSON 对象，字段包括："
-                "title, description, video_type(teaching|interactive), briefing, tags, status(draft|published|archived), nodes。"
-                "nodes 是数组，每项包括：title, trigger_time, pause_mode, timeout_seconds, retry_score_deduct, "
-                "skip_score_deduct, prop_mode, node_type, required_gesture, required_keywords, score_weight, "
-                "prompt_content, node_config。node_config 内尽量补 assessment_points，"
-                "每个 assessment_point 至少包含 id, label, content, dimension, required, rule(channel/mode)。"
-                "如果是模拟警情或情景处置视频，video_type 必须为 interactive，节点数量控制在 4-6 个，"
-                "优先按警情发展阶段切分，而不是平均切时间。警情节点必须使用 node_type=voice_qa，"
-                "node_config 必须包含 police_node_type(arrival_observation|risk_identification|disposal_decision|standard_communication), "
-                "standard_points, risk_signals, law_points, score_rubric。prompt_content 必须包含 scene_summary, police_question, answer_mode, node_badge。"
-                "评分维度使用 risk_awareness, procedure, communication, lawfulness, safety。"
-                "处置建议必须依法、安全、克制，不得生成越权、危险或刺激冲突的建议。"
-                "如果视频明显是教学讲解或纯展示，video_type 设为 teaching 且 nodes 返回空数组；"
-                "如果是执法演示、动作演练、情景化训练，则输出可暂停追问的训练节点。"
-            ),
-        },
-        {
-            "type": "text",
-            "text": (
-                f"title_hint={title_hint or '未提供'}; "
-                f"duration_seconds={int(duration_seconds or 0)}; "
-                f"preferred_type={preferred_type or 'auto'}; "
-                f"police_scenario={_normalize_police_scenario(scenario_hint) or 'auto'}; "
-                f"training_variant={_normalize_training_variant(training_variant)}; "
-                f"difficulty_level={_normalize_difficulty_level(difficulty_level)}; "
-                f"ocr_hints={' | '.join(ocr_hints[:6]) if ocr_hints else 'none'}; "
-                "analysis_workflow=template+frames+ocr+transcript+llm"
-            ),
-        },
-    ]
-    for frame in frames[:6]:
-        user_content.append(
-            {
-                "type": "text",
-                "text": f"frame_timestamp={frame['timestamp']}s",
-            }
-        )
-        user_content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": frame["data_url"]},
-            }
+    print("[AI分析] Stage 1: 场景理解与角色标注...")
+    stage1 = _stage1_scene_understanding(
+        title_hint=title_hint,
+        duration_seconds=duration_seconds,
+        transcript=transcript,
+        ocr_hints=ocr_hints,
+        scene_changes=scene_changes or [],
+    )
+
+    if not stage1:
+        print("[AI分析] Stage 1 失败，回退到单步分析...")
+        # 回退：直接做单步分析（兼容）
+        return _single_step_analysis(
+            title_hint=title_hint,
+            duration_seconds=duration_seconds,
+            transcript=transcript,
+            ocr_hints=ocr_hints,
         )
 
-    response = client.chat.completions.create(
-        model=get_chat_model(),
-        messages=[
-            {
-                "role": "system",
-                "content": "Return valid json only. Do not output markdown or explanation.",
-            },
-            {
-                "role": "user",
-                "content": user_content,
-            },
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.2,
-        max_tokens=3000,
+    print(f"[AI分析] Stage 1 完成: scenario={stage1.get('scenario_type')}, phases={len(stage1.get('phases', []))}, moments={len(stage1.get('key_moments', []))}")
+    print("[AI分析] Stage 2: 训练节点编排...")
+
+    stage2 = _stage2_training_design(
+        title_hint=title_hint,
+        duration_seconds=duration_seconds,
+        stage1_result=stage1,
+        transcript=transcript,
     )
-    payload = extract_json_payload(extract_message_text(response))
-    return payload if isinstance(payload, dict) else None
+
+    if not stage2:
+        print("[AI分析] Stage 2 失败")
+        return None
+
+    # 后处理：校验并修正 trigger_time 精准度
+    stage2 = _postprocess_validate_trigger_times(stage2, stage1, transcript, duration_seconds)
+
+    # 保存第一阶段的结构信息到结果中
+    stage2["_stage1"] = stage1
+    print(f"[AI分析] Stage 2 完成: nodes={len(stage2.get('nodes', []))}")
+    return stage2
+
+
+def _single_step_analysis(
+    *,
+    title_hint: str,
+    duration_seconds: Optional[int],
+    transcript: list[dict[str, Any]],
+    ocr_hints: list[str],
+) -> Optional[dict[str, Any]]:
+    """单步分析回退（当两阶段分析第一步失败时使用）"""
+    from .llm_provider import client, get_chat_model
+
+    transcript_text = ""
+    if transcript:
+        lines = []
+        for seg in transcript:
+            t = int(seg.get("time", 0))
+            lines.append(f"[{t//60}:{t%60:02d}] {seg.get('text', '')}")
+        transcript_text = "\n".join(lines)
+
+    prompt = f"""你是公安实战训练课程编排专家。根据以下视频语音转写，生成训练节点。
+
+视频标题：{title_hint or '未提供'}，时长：{int(duration_seconds or 0)}秒
+OCR：{' / '.join(ocr_hints[:6]) if ocr_hints else '无'}
+
+语音转写：
+{transcript_text}
+
+输出JSON，包含title, description, video_type, scenario_type, difficulty, briefing, tags, nodes(4-6个)。
+每个node含：title, trigger_time, node_interaction_type(judgment/voice_qa/choice), ai_instructor_hint, choice_options, correct_answer, required_keywords, timeout_seconds, score_weight, prompt_content(instruction/scene_summary/speech_hint)。
+交互类型必须多样化。trigger_time必须基于语音时间戳。"""
+
+    try:
+        response = client.chat.completions.create(
+            model=get_chat_model(),
+            messages=[
+                {"role": "system", "content": "只输出合法JSON。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            max_tokens=5000,
+        )
+        return extract_json_payload(extract_message_text(response))
+    except Exception as exc:
+        print(f"Single-step analysis error: {exc}")
+        return None
 
 
 def analyze_video_file(
@@ -1207,63 +1913,115 @@ def analyze_video_file(
     training_variant: Optional[str] = None,
     difficulty_level: Optional[str] = None,
 ) -> dict[str, Any]:
-    fallback = _fallback_analysis(
-        title_hint,
-        duration_seconds,
-        preferred_type,
-        scenario_hint,
-        training_variant,
-        difficulty_level,
-    )
+    """
+    视频分析流程：
+    1. ffmpeg 提取音频 → 千问 ASR 转写为带时间戳文本
+    2. OCR 识别帧中文字
+    3. 将纯文本（转写+OCR+元信息）发给 DeepSeek 分析训练点
+    
+    不使用模板兜底，不依赖 Vision 模型。
+    """
+    from .llm_provider import ACTIVE_API_KEY as LLM_KEY
+
+    if not LLM_KEY:
+        return {
+            "analysis_mode": "error",
+            "analysis_error": "未配置 AI API Key（DEEPSEEK_API_KEY），无法进行视频分析。请在 .env 中配置后重试。",
+            "title": title_hint or "未命名视频",
+            "description": "",
+            "video_type": "interactive",
+            "briefing": None,
+            "tags": [],
+            "status": "draft",
+            "nodes": [],
+            "suggested_timestamps": [],
+            "frame_count": 0,
+            "ocr_hints": [],
+            "transcript": [],
+        }
+
+    # Step 1: 提取视频帧用于 OCR
     frames = _sample_video_frames(video_path)
-    ocr_hints = _extract_ocr_hints(frames)
+    ocr_hints = _extract_ocr_hints(frames) if frames else []
 
-    def apply_suggested_timestamps(payload: dict[str, Any]) -> dict[str, Any]:
-        nodes = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
-        if not nodes:
-            payload["suggested_timestamps"] = []
-            return payload
-        suggested = suggest_training_timestamps(video_path, duration_seconds, len(nodes))
-        if suggested:
-            for index, timestamp in enumerate(suggested):
-                if index < len(nodes) and isinstance(nodes[index], dict):
-                    nodes[index]["trigger_time"] = int(timestamp)
-        payload["nodes"] = nodes
-        payload["suggested_timestamps"] = [int(item.get("trigger_time") or 0) for item in nodes if isinstance(item, dict)]
-        return payload
+    # Step 2: 检测场景切换点
+    print(f"[视频分析] 检测场景切换...")
+    scene_changes = _detect_scene_changes(video_path)
+    print(f"[视频分析] 检测到 {len(scene_changes)} 个镜头切换点")
 
+    # Step 3: 提取音频并 ASR 转写（句子级精度，10秒切片）
+    print(f"[视频分析] 开始提取音频并转写: {video_path}")
+    transcript = _transcribe_video_audio(video_path)
+    print(f"[视频分析] 转写完成，共 {len(transcript)} 段句子")
+
+    # 如果既没有转写也没有 OCR，报错
+    if not transcript and not ocr_hints:
+        return {
+            "analysis_mode": "error",
+            "analysis_error": "无法从视频中提取语音或文字内容。请确认：1) 视频有声音 2) ffmpeg 已安装 3) DASHSCOPE_API_KEY 已配置。",
+            "title": title_hint or "未命名视频",
+            "description": "",
+            "video_type": "interactive",
+            "briefing": None,
+            "tags": [],
+            "status": "draft",
+            "nodes": [],
+            "suggested_timestamps": [],
+            "frame_count": len(frames),
+            "ocr_hints": ocr_hints,
+            "transcript": [],
+        }
+
+    # Step 4: 两阶段 AI 分析（场景理解 → 训练编排）
     try:
         payload = _request_llm_analysis(
             title_hint=title_hint,
             duration_seconds=duration_seconds,
             frames=frames,
             ocr_hints=ocr_hints,
+            transcript=transcript,
+            scene_changes=scene_changes,
             preferred_type=preferred_type,
             scenario_hint=scenario_hint,
             training_variant=training_variant,
             difficulty_level=difficulty_level,
         )
         if not payload:
-            return apply_suggested_timestamps({
-                **fallback,
+            return {
+                "analysis_mode": "error",
+                "analysis_error": "AI 分析未返回有效结果。已成功提取语音内容，但 LLM 未能生成训练节点。请重试。",
+                "title": title_hint or "未命名视频",
+                "description": "",
+                "video_type": "interactive",
+                "briefing": None,
+                "tags": [],
+                "status": "draft",
+                "nodes": [],
+                "suggested_timestamps": [],
                 "frame_count": len(frames),
                 "ocr_hints": ocr_hints,
-            })
-        normalized = _normalize_analysis(
-            payload,
-            title_hint,
-            duration_seconds,
-            preferred_type,
-            scenario_hint,
-            training_variant,
-            difficulty_level,
-        )
-        normalized = apply_suggested_timestamps(normalized)
+                "transcript": transcript,
+            }
+
+        # AI 成功返回，规范化
+        normalized = _normalize_analysis_strict(payload, title_hint, duration_seconds)
         normalized["frame_count"] = len(frames)
         normalized["ocr_hints"] = ocr_hints
+        normalized["transcript"] = transcript
         return normalized
     except Exception as exc:
-        fallback["analysis_error"] = str(exc)
-        fallback["frame_count"] = len(frames)
-        fallback["ocr_hints"] = ocr_hints
-        return apply_suggested_timestamps(fallback)
+        return {
+            "analysis_mode": "error",
+            "analysis_error": f"AI 分析过程中出错：{exc}。请稍后重试。",
+            "title": title_hint or "未命名视频",
+            "description": "",
+            "video_type": "interactive",
+            "briefing": None,
+            "tags": [],
+            "status": "draft",
+            "nodes": [],
+            "suggested_timestamps": [],
+            "frame_count": len(frames),
+            "ocr_hints": ocr_hints,
+            "transcript": transcript,
+        }

@@ -11,13 +11,19 @@ from services.face_service import (
     count_session_failures,
     count_session_monitor_failures,
     count_session_monitor_failures_total,
+    count_video_session_failures,
+    count_video_session_monitor_failures,
+    count_video_session_monitor_failures_total,
     engine_status,
     is_face_session_terminated_by_policy,
+    is_video_face_session_terminated_by_policy,
     read_upload,
     record_event,
     register_profile,
     serialize_profile,
     verify_frame,
+    verify_student_frame,
+    verify_video_session_frame,
     FACE_MAX_FAILURES,
     localize_face_reason,
 )
@@ -49,7 +55,17 @@ def _get_owned_session(db: Session, session_id: int, current_user: models.User) 
         query = query.filter(models.TrainingSession.user_id == current_user.id)
     session = query.first()
     if not session:
-        raise HTTPException(status_code=404, detail="璁粌浼氳瘽涓嶅瓨鍦ㄦ垨鏃犳潈璁块棶")
+        raise HTTPException(status_code=404, detail="训练会话不存在或无权访问")
+    return session
+
+
+def _get_owned_video_session(db: Session, session_id: int, current_user: models.User) -> models.VideoTrainingSession:
+    query = db.query(models.VideoTrainingSession).filter(models.VideoTrainingSession.id == session_id)
+    if current_user.role != "admin":
+        query = query.filter(models.VideoTrainingSession.user_id == current_user.id)
+    session = query.first()
+    if not session:
+        raise HTTPException(status_code=404, detail="视频实训会话不存在或无权访问")
     return session
 
 
@@ -100,6 +116,96 @@ async def register_my_face_profile(
     raw = await read_upload(file)
     profile = register_profile(db, current_user, raw)
     return serialize_profile(profile)
+
+
+@router.post("/me/verify-frame")
+def verify_my_face_frame(
+    payload: VerifyFrameRequest,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+) -> dict[str, Any]:
+    return verify_student_frame(
+        db,
+        student=current_user,
+        frame_data_url=payload.frame,
+        client_quality=payload.quality_metrics,
+    )
+
+
+@router.get("/video-session/{session_id}/status")
+def get_video_session_face_status(
+    session_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+) -> dict[str, Any]:
+    session = _get_owned_video_session(db, session_id, current_user)
+    profile = db.query(models.FaceProfile).filter(models.FaceProfile.student_id == session.user_id).first()
+    monitor_failure_count = count_video_session_monitor_failures(db, session.id)
+    monitor_failure_total = count_video_session_monitor_failures_total(db, session.id)
+    terminated_by_policy = is_video_face_session_terminated_by_policy(db, session.id)
+    return {
+        "registered": profile is not None,
+        "failure_count": monitor_failure_count,
+        "monitor_failure_count": monitor_failure_count,
+        "monitor_failure_total": monitor_failure_total,
+        "failure_total": monitor_failure_count,
+        "max_failures": FACE_MAX_FAILURES,
+        "terminated_by_policy": terminated_by_policy,
+        "terminated": terminated_by_policy or session.status in {"finished", "abandoned"},
+        "session_status": session.status,
+    }
+
+
+@router.post("/video-session/{session_id}/verify")
+def verify_video_session_face(
+    session_id: int,
+    payload: VerifyFrameRequest,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+) -> dict[str, Any]:
+    session = _get_owned_video_session(db, session_id, current_user)
+    if session.status in {"finished", "abandoned"}:
+        return {
+            "passed": False,
+            "status": "ignored",
+            "reason": "视频实训会话已结束，人脸验证请求已忽略。",
+            "failure_count": count_video_session_failures(db, session.id),
+            "max_failures": FACE_MAX_FAILURES,
+            "terminated": True,
+        }
+    return verify_video_session_frame(
+        db,
+        session=session,
+        frame_data_url=payload.frame,
+        event_type="verify",
+        client_quality=payload.quality_metrics,
+    )
+
+
+@router.post("/video-session/{session_id}/heartbeat")
+def heartbeat_video_session_face(
+    session_id: int,
+    payload: VerifyFrameRequest,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+) -> dict[str, Any]:
+    session = _get_owned_video_session(db, session_id, current_user)
+    if session.status in {"finished", "abandoned"}:
+        return {
+            "passed": False,
+            "status": "ignored",
+            "reason": "视频实训会话已结束，人脸监控请求已忽略。",
+            "failure_count": count_video_session_failures(db, session.id),
+            "max_failures": FACE_MAX_FAILURES,
+            "terminated": True,
+        }
+    return verify_video_session_frame(
+        db,
+        session=session,
+        frame_data_url=payload.frame,
+        event_type="heartbeat",
+        client_quality=payload.quality_metrics,
+    )
 
 
 @router.get("/session/{session_id}/status")

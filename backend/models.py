@@ -187,7 +187,8 @@ class FaceVerificationEvent(Base):
     __tablename__ = "face_verification_events"
 
     id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(Integer, ForeignKey("training_sessions.id"), nullable=False, index=True)
+    session_id = Column(Integer, ForeignKey("training_sessions.id"), nullable=True, index=True)
+    video_session_id = Column(Integer, ForeignKey("video_training_sessions.id"), nullable=True, index=True)
     student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     event_type = Column(String(30), default="verify")
     status = Column(String(30), default="failed")
@@ -202,6 +203,7 @@ class FaceVerificationEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     session = relationship("TrainingSession")
+    video_session = relationship("VideoTrainingSession")
     student = relationship("User")
 
 
@@ -391,6 +393,10 @@ class TrainingVideo(Base):
     tags = Column(Text, default="[]")                        # JSON 字符串
     # 训练前简报（案情背景、训练要点、评分规则等，富文本/纯文本均可）
     briefing = Column(Text, nullable=True)
+    # AI 分析生成的场景类型（如"交通执法"、"家庭纠纷"等）
+    scenario_type = Column(String(50), nullable=True)
+    # 难度等级：easy / normal / hard
+    difficulty = Column(String(20), default="normal")
     # published=已发布，draft=草稿，archived=归档
     status = Column(String(20), default="draft")
     sort_order = Column(Integer, default=0)
@@ -419,8 +425,16 @@ class VideoNode(Base):
     skip_score_deduct = Column(Integer, default=20)          # 跳过扣分
     # auto=练习模式自动弹出，manual=考核模式手动取出
     prop_mode = Column(String(20), default="auto")
-    # action=指令引导，judge=判断题，choice=单选题
+    # action=指令引导，judge=判断题，choice=单选题，voice_qa=语音问答
     node_type = Column(String(20), default="action")
+    # 交互方式细分：voice_qa=语音问答, choice=选择题, judgment=判断题, prop_select=虚拟道具选择, action=动作指令
+    node_interaction_type = Column(String(30), default="voice_qa")
+    # AI 教官提示（训练模式下显示，考核模式下隐藏）
+    ai_instructor_hint = Column(Text, nullable=True)
+    # 选择题/判断题选项（JSON数组，如 [{"label":"A","text":"..."},{"label":"B","text":"..."}]）
+    choice_options = Column(Text, nullable=True)
+    # 正确答案（如 "A" 或 "true"/"false"）
+    correct_answer = Column(String(200), nullable=True)
     node_config = Column(Text, default="{}")                 # 题目/选项等扩展配置（JSON）
     required_gesture = Column(String(50), nullable=True)     # 要求的手势类型
     required_keywords = Column(Text, default="[]")           # 要求匹配的关键词（JSON）
