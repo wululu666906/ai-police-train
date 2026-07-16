@@ -112,6 +112,32 @@
                 <el-option label="语音问答" value="voice_qa" />
               </el-select>
             </el-form-item>
+            <el-form-item label="交互方式">
+              <el-select v-model="currentNode.node_interaction_type" style="width: 240px">
+                <el-option label="语音问答" value="voice_qa" />
+                <el-option label="选择题" value="choice" />
+                <el-option label="判断题" value="judgment" />
+                <el-option label="虚拟道具选择" value="prop_select" />
+                <el-option label="动作指令" value="action" />
+              </el-select>
+            </el-form-item>
+
+            <div class="form-section-title">AI教官提示</div>
+            <el-form-item label="教官引导语">
+              <el-input
+                v-model="currentNode.ai_instructor_hint"
+                type="textarea"
+                :rows="4"
+                placeholder="练习模式下显示给学员的AI教官引导提示，格式建议：&#10;第1行：现在的情况是：...&#10;第2行：你需要：...&#10;第3行：注意要点：..."
+              />
+              <div class="form-help-text">练习模式下显示，考核模式下隐藏。建议包含场景描述、任务引导和关键提示三部分。</div>
+            </el-form-item>
+            <el-form-item label="正确答案">
+              <el-input
+                v-model="currentNode.correct_answer"
+                placeholder="如：A 或 true/false 或关键词"
+              />
+            </el-form-item>
 
             <template v-if="currentNode.node_type === 'action'">
               <el-form-item label="节点说明">
@@ -419,6 +445,10 @@ interface NodeItem {
   skip_score_deduct: number
   prop_mode: string
   node_type: string
+  node_interaction_type: string
+  ai_instructor_hint: string
+  choice_options: Array<{ label: string; text: string }> | null
+  correct_answer: string | null
   node_config: Record<string, any>
   required_gesture: string | null
   required_keywords: string[]
@@ -521,6 +551,10 @@ async function fetchNodes() {
     const response: any = await request.get(`/videos/${props.video.id}/nodes`)
     nodes.value = (response || []).map((node: any) => ({
       ...node,
+      node_interaction_type: node.node_interaction_type || 'voice_qa',
+      ai_instructor_hint: node.ai_instructor_hint || '',
+      choice_options: node.choice_options || null,
+      correct_answer: node.correct_answer || null,
       prompt_content: normalizePromptContent(node.prompt_content),
       node_config: ensureNodeConfig(node.node_type, node.node_config || {}),
       required_keywords: Array.isArray(node.required_keywords) ? node.required_keywords : [],
@@ -624,6 +658,10 @@ function addNode() {
     skip_score_deduct: 20,
     prop_mode: 'auto',
     node_type: 'action',
+    node_interaction_type: 'voice_qa',
+    ai_instructor_hint: '',
+    choice_options: null,
+    correct_answer: null,
     node_config: {},
     required_gesture: null,
     required_keywords: [],
@@ -1025,6 +1063,13 @@ function gestureLabel(value: string) {
   &:first-child {
     margin-top: 0;
   }
+}
+
+.form-help-text {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #9ca3af;
 }
 
 .form-unit {

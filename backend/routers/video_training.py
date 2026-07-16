@@ -12,7 +12,7 @@ from difflib import SequenceMatcher
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 import database
 import models
@@ -1075,12 +1075,14 @@ def start_video_training(
         mode = "practice"
 
     # 鏌ユ壘鏄惁鏈夎繘琛屼腑鐨?session锛堝悓鐢ㄦ埛鍚岃棰戯級
+    # 查找同用户同视频同模式的 active session（仅恢复相同模式的）
     existing = (
         db.query(models.VideoTrainingSession)
         .filter(
             models.VideoTrainingSession.user_id == current_user.id,
             models.VideoTrainingSession.video_id == video_id,
             models.VideoTrainingSession.status == "active",
+            models.VideoTrainingSession.mode == mode,
         )
         .order_by(models.VideoTrainingSession.created_at.desc())
         .first()
@@ -1097,6 +1099,22 @@ def start_video_training(
             "resumed": True,
             "node_results": [_serialize_node_result(r) for r in node_results],
         }
+
+    # 将同视频不同模式的 active session 标记为 abandoned
+    stale_sessions = (
+        db.query(models.VideoTrainingSession)
+        .filter(
+            models.VideoTrainingSession.user_id == current_user.id,
+            models.VideoTrainingSession.video_id == video_id,
+            models.VideoTrainingSession.status == "active",
+            models.VideoTrainingSession.mode != mode,
+        )
+        .all()
+    )
+    for stale in stale_sessions:
+        stale.status = "abandoned"
+    if stale_sessions:
+        db.flush()
 
     full_score = _calc_full_score(video.nodes)
     session = models.VideoTrainingSession(
@@ -1638,31 +1656,171 @@ def _serialize_review_record(result: models.VideoNodeResult) -> Optional[dict]:
 @router.get("/history")
 def get_student_video_history(
     video_id: Optional[int] = None,
+    page: int = 1,
+    page_size: int = 20,
+    status: Optional[str] = None,
+    mode: Optional[str] = None,
+    category: Optional[str] = None,
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    query = db.query(models.VideoTrainingSession).filter(
-        models.VideoTrainingSession.user_id == current_user.id,
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 50)
+    offset = (page - 1) * page_size
+
+    # 基础查询（不含 joinedload，用于 count 和筛选）
+    base_query = (
+        db.query(models.VideoTrainingSession)
+        .filter(models.VideoTrainingSession.user_id == current_user.id)
     )
     if video_id:
-        query = query.filter(models.VideoTrainingSession.video_id == video_id)
-    sessions = query.order_by(models.VideoTrainingSession.created_at.desc()).limit(50).all()
+        base_query = base_query.filter(models.VideoTrainingSession.video_id == video_id)
+    if status and status in ("active", "finished", "abandoned"):
+        base_query = base_query.filter(models.VideoTrainingSession.status == status)
+    if mode and mode in ("practice", "exam"):
+        base_query = base_query.filter(models.VideoTrainingSession.mode == mode)
+    if category:
+        base_query = base_query.join(models.TrainingVideo).filter(
+            models.TrainingVideo.scenario_type == category
+        )
+
+    total = base_query.count()
+    session_ids_query = (
+        base_query.order_by(models.VideoTrainingSession.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+
+    # 带 joinedload 的实际加载
+    sessions = (
+        db.query(models.VideoTrainingSession)
+        .options(
+            joinedload(models.VideoTrainingSession.video).joinedload(models.TrainingVideo.nodes),
+            joinedload(models.VideoTrainingSession.artifacts),
+        )
+        .filter(models.VideoTrainingSession.id.in_(
+            [s.id for s in session_ids_query.all()]
+        ))
+        .order_by(models.VideoTrainingSession.created_at.desc())
+        .all()
+    )
+
+    # 批量获取失分维度统计（仅 finished sessions）
+    finished_ids = [s.id for s in sessions if s.status == "finished"]
+    failure_map: dict[int, dict[str, int]] = {}
+    if finished_ids:
+        node_results_all = (
+            db.query(models.VideoNodeResult)
+            .filter(models.VideoNodeResult.session_id.in_(finished_ids))
+            .all()
+        )
+        for nr in node_results_all:
+            sid = nr.session_id
+            if sid not in failure_map:
+                failure_map[sid] = {}
+            for reason in _extract_failure_reasons(nr):
+                failure_map[sid][reason] = failure_map[sid].get(reason, 0) + 1
 
     items = []
     for s in sessions:
         data = _serialize_session(s)
-        video = db.query(models.TrainingVideo).filter(
-            models.TrainingVideo.id == s.video_id
-        ).first()
+        video = s.video
         data["video_title"] = video.title if video else f"视频#{s.video_id}"
-        # 宸插畬鎴愮殑闄勪笂璇勭骇
+        data["category"] = (video.scenario_type or "综合训练") if video else "综合训练"
+        data["difficulty"] = (video.difficulty or "normal") if video else "normal"
+
+        # 百分制得分和评级
         if s.status == "finished" and s.total_score is not None and s.full_score:
-            pct = round(s.total_score / s.full_score * 100)
-            data["grade"] = _grade_from_percentage(pct)
+            pct = round(s.total_score / s.full_score * 100, 1)
+            data["score_percentage"] = pct
+            data["grade"] = _grade_from_percentage(round(pct))
+            data["needs_retry"] = pct < 70
         else:
+            data["score_percentage"] = None
             data["grade"] = None
+            data["needs_retry"] = s.status == "abandoned"
+
+        # 训练时长（秒）
+        duration = None
+        if s.finished_at and s.created_at:
+            duration = int((s.finished_at - s.created_at).total_seconds())
+        if not duration:
+            # fallback: 从 camera_recording artifact 取
+            for artifact in (s.artifacts or []):
+                if artifact.artifact_type == "camera_recording" and artifact.duration_seconds:
+                    duration = artifact.duration_seconds
+                    break
+        data["duration_seconds"] = duration
+
+        # 失分原因统计
+        data["failure_reasons"] = failure_map.get(s.id, {})
+
         items.append(data)
-    return items
+
+    # 汇总失分维度（全部已完成记录的聚合）
+    all_finished_query = (
+        db.query(models.VideoTrainingSession)
+        .filter(
+            models.VideoTrainingSession.user_id == current_user.id,
+            models.VideoTrainingSession.status == "finished",
+        )
+    )
+    if video_id:
+        all_finished_query = all_finished_query.filter(models.VideoTrainingSession.video_id == video_id)
+    if category:
+        all_finished_query = all_finished_query.join(models.TrainingVideo).filter(
+            models.TrainingVideo.scenario_type == category
+        )
+    all_finished_ids = [s.id for s in all_finished_query.all()]
+
+    issue_summary: dict[str, int] = {}
+    if all_finished_ids:
+        all_node_results = (
+            db.query(models.VideoNodeResult)
+            .filter(models.VideoNodeResult.session_id.in_(all_finished_ids))
+            .all()
+        )
+        for nr in all_node_results:
+            for reason in _extract_failure_reasons(nr):
+                issue_summary[reason] = issue_summary.get(reason, 0) + 1
+
+    # 将 failure reason key 映射为用户可读标签
+    failure_label_map = {
+        "gesture_mismatch": "肢体动作不规范",
+        "gesture_timeout": "动作超时未完成",
+        "keyword_mismatch": "话术关键词缺失",
+        "speech_too_short": "口头表达不完整",
+        "prop_missed": "未正确使用道具/装备",
+        "wrong_answer": "选项/判断答错",
+        "timeout": "节点超时",
+    }
+    issue_top = sorted(issue_summary.items(), key=lambda x: x[1], reverse=True)[:5]
+    issue_top_labeled = [
+        {"key": key, "label": failure_label_map.get(key, key), "count": count}
+        for key, count in issue_top
+    ]
+
+    # 获取可用的场景类型列表
+    available_categories = (
+        db.query(models.TrainingVideo.scenario_type)
+        .join(models.VideoTrainingSession, models.VideoTrainingSession.video_id == models.TrainingVideo.id)
+        .filter(
+            models.VideoTrainingSession.user_id == current_user.id,
+            models.TrainingVideo.scenario_type.isnot(None),
+        )
+        .distinct()
+        .all()
+    )
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_more": page * page_size < total,
+        "issue_top": issue_top_labeled,
+        "available_categories": [c[0] for c in available_categories if c[0]],
+    }
 
 
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?

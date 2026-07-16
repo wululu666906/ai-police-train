@@ -507,13 +507,28 @@ async function fetchVideos() {
 
 async function fetchHistorySummary() {
   try {
-    const res: any = await request.get('/video-training/history')
-    const items = Array.isArray(res) ? res : []
+    // 同时获取最近历史和所有 active 会话，确保未完成的训练不会被遗漏
+    const [historyRes, activeRes]: [any, any] = await Promise.all([
+      request.get('/video-training/history'),
+      request.get('/video-training/history', { params: { status: 'active', page_size: 50 } }),
+    ])
+    const historyItems = Array.isArray(historyRes?.items) ? historyRes.items : (Array.isArray(historyRes) ? historyRes : [])
+    const activeItems = Array.isArray(activeRes?.items) ? activeRes.items : (Array.isArray(activeRes) ? activeRes : [])
     const map: Record<number, SessionBrief> = {}
 
-    for (const item of items) {
-      if (!item?.video_id || map[item.video_id]) continue
+    // 先填充所有 active 会话（优先级最高）
+    for (const item of activeItems) {
+      if (!item?.video_id) continue
       map[item.video_id] = item
+    }
+
+    // 再填充历史记录（不覆盖已有的 active）
+    for (const item of historyItems) {
+      if (!item?.video_id) continue
+      const existing = map[item.video_id]
+      if (!existing || (item.status === 'active' && existing.status !== 'active')) {
+        map[item.video_id] = item
+      }
     }
 
     recentSessionMap.value = map
