@@ -4,7 +4,7 @@
       <div class="filter-grid">
         <div class="filter-item">
           <label>实训类型</label>
-          <el-select v-model="typeFilter" placeholder="全部类型" @change="resetPagination">
+          <el-select v-model="typeFilter" placeholder="全部类型">
             <el-option label="全部类型" value="all" />
             <el-option v-for="item in availableTypes" :key="item" :label="item" :value="item" />
           </el-select>
@@ -12,7 +12,7 @@
 
         <div class="filter-item">
           <label>训练模式</label>
-          <el-select v-model="modeFilter" placeholder="全部模式" @change="resetPagination">
+          <el-select v-model="modeFilter" placeholder="全部模式">
             <el-option label="全部模式" value="all" />
             <el-option label="练习模式" value="practice" />
             <el-option label="正式考核" value="exam" />
@@ -21,7 +21,7 @@
 
         <div class="filter-item">
           <label>完成状态</label>
-          <el-select v-model="statusFilter" placeholder="全部状态" @change="resetPagination">
+          <el-select v-model="statusFilter" placeholder="全部状态">
             <el-option label="全部状态" value="all" />
             <el-option label="已完成" value="finished" />
             <el-option label="进行中" value="active" />
@@ -39,7 +39,6 @@
             end-placeholder="结束日期"
             range-separator="-"
             value-format="YYYY-MM-DD"
-            @change="resetPagination"
           />
         </div>
 
@@ -50,8 +49,6 @@
             placeholder="搜索视频名称、场景、关键词"
             clearable
             :prefix-icon="Search"
-            @input="resetPagination"
-            @clear="resetPagination"
           />
         </div>
 
@@ -80,7 +77,7 @@
 
     <section class="analytics-grid">
       <article class="chart-card">
-        <div class="chart-card__title">能力雷达图（近 10 次平均表现）</div>
+        <div class="chart-card__title">能力雷达图（已完成训练平均表现）</div>
         <div ref="radarChartRef" class="chart-card__canvas" />
       </article>
 
@@ -148,7 +145,7 @@
                 <div class="history-row__sub">Session #{{ item.id }}</div>
               </div>
 
-              <div class="history-row__scene">{{ sceneForSession(item) }}</div>
+              <div class="history-row__scene">{{ item.category || '综合训练' }}</div>
 
               <div class="cell-center">
                 <span class="mode-badge" :class="item.mode === 'exam' ? 'mode-badge--exam' : 'mode-badge--practice'">
@@ -163,15 +160,15 @@
               </div>
 
               <div class="cell-center score-cell" :class="scoreClass(item)">
-                <template v-if="item.total_score != null">
-                  {{ item.total_score.toFixed(1) }}
+                <template v-if="item.score_percentage != null">
+                  {{ item.score_percentage.toFixed(1) }}
                 </template>
                 <span v-else>--</span>
               </div>
 
               <div class="cell-center grade-cell">
-                <span v-if="item.total_score != null" class="grade-badge" :class="`grade-badge--${gradeKey(item)}`">
-                  {{ gradeText(item) }}
+                <span v-if="item.grade" class="grade-badge" :class="`grade-badge--${gradeKey(item)}`">
+                  {{ item.grade }}
                 </span>
                 <span v-else class="muted">--</span>
               </div>
@@ -220,14 +217,16 @@
         </div>
 
         <div class="table-footer">
-          <span class="table-footer__count">共 {{ filteredSessions.length }} 条</span>
+          <span class="table-footer__count">共 {{ totalCount }} 条</span>
           <el-pagination
             v-model:current-page="currentPage"
             v-model:page-size="pageSize"
             background
             layout="prev, pager, next, sizes"
             :page-sizes="[8, 10, 20]"
-            :total="filteredSessions.length"
+            :total="totalCount"
+            @current-change="fetchHistory"
+            @size-change="fetchHistory"
           />
         </div>
       </template>
@@ -250,7 +249,7 @@
 
 <script setup lang="ts">
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { CircleCheck, MoreFilled, Opportunity, Refresh, Star, Search, Warning } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
@@ -265,73 +264,82 @@ interface ArtifactItem {
   created_at?: string
 }
 
+interface IssueItem {
+  key: string
+  label: string
+  count: number
+}
+
 interface SessionItem {
   id: number
   video_id: number
   video_title?: string
+  category?: string
+  difficulty?: string
   node_total: number
   mode: string
   status: string
   current_node_index: number
   total_score: number | null
   full_score: number | null
-  grade?: string
+  score_percentage: number | null
+  grade?: string | null
+  needs_retry?: boolean
+  duration_seconds?: number | null
   report_ready?: boolean
   evaluation_status?: string
+  failure_reasons?: Record<string, number>
   artifacts?: ArtifactItem[]
   created_at: string
   finished_at?: string
 }
 
-interface ReportData {
-  session_id?: number
-  video_title: string
-  mode?: string
-  grade: string
-  total_score: number
-  full_score: number
-  percentage: number
-  pass_count: number
-  skip_count: number
-  fail_count: number
-  total_nodes?: number
-  total_deducted: number
-  violation_count?: number
-  violation_summary?: Record<string, number>
-  failure_reason_summary?: Record<string, number>
-  finished_at?: string
-  node_summaries: {
-    node_index: number
-    node_title?: string
-    result: string
-    retry_count: number
-    score_earned: number
-    score_deducted: number
-    speech_transcript?: string
-    failure_reasons?: string[]
-  }[]
+interface HistoryResponse {
+  items: SessionItem[]
+  total: number
+  page: number
+  page_size: number
+  has_more: boolean
+  issue_top: IssueItem[]
+  available_categories: string[]
 }
 
+const route = useRoute()
 const router = useRouter()
 const setMainScrollable = inject<(value: boolean) => void>('setMainScrollable')
 
 const sessions = ref<SessionItem[]>([])
+const totalCount = ref(0)
+const issueTopFromServer = ref<IssueItem[]>([])
+const availableCategories = ref<string[]>([])
 const loading = ref(true)
 const showReplayDialog = ref(false)
 const replayArtifactUrl = ref('')
 
-const typeFilter = ref('all')
-const modeFilter = ref<'all' | 'practice' | 'exam'>('all')
-const statusFilter = ref<'all' | 'finished' | 'active' | 'retry' | 'abandoned'>('all')
-const keyword = ref('')
-const dateRange = ref<[string, string] | []>([])
-const currentPage = ref(1)
-const pageSize = ref(10)
+// 从 URL query 恢复筛选状态
+const typeFilter = ref(String(route.query.category || 'all'))
+const modeFilter = ref<'all' | 'practice' | 'exam'>((route.query.mode as 'all' | 'practice' | 'exam') || 'all')
+const statusFilter = ref<'all' | 'finished' | 'active' | 'retry' | 'abandoned'>((route.query.status as 'all' | 'finished' | 'active' | 'retry' | 'abandoned') || 'all')
+const keyword = ref(String(route.query.keyword || ''))
+const dateRange = ref<[string, string] | []>(
+  route.query.date_start && route.query.date_end
+    ? [String(route.query.date_start), String(route.query.date_end)]
+    : []
+)
+const currentPage = ref(Number(route.query.page) || 1)
+const pageSize = ref(Number(route.query.page_size) || 10)
 
 const radarChartRef = ref<HTMLElement | null>(null)
 const trendChartRef = ref<HTMLElement | null>(null)
 let radarChart: echarts.ECharts | null = null
 let trendChart: echarts.ECharts | null = null
+
+// debounce 工具
+let debounceTimer: ReturnType<typeof setTimeout> | null = null
+function debounce(fn: () => void, ms = 300) {
+  if (debounceTimer) clearTimeout(debounceTimer)
+  debounceTimer = setTimeout(fn, ms)
+}
 
 onMounted(() => {
   setMainScrollable?.(true)
@@ -344,64 +352,68 @@ onUnmounted(() => {
   radarChart?.dispose()
   trendChart?.dispose()
   window.removeEventListener('resize', handleResize)
+  if (debounceTimer) clearTimeout(debounceTimer)
 })
 
+// 监听筛选变化 - 服务端分页（使用 flush: 'post' 合并同步修改）
 watch(
-  [sessions, typeFilter, modeFilter, statusFilter, keyword, dateRange],
+  [typeFilter, modeFilter, statusFilter, dateRange],
   () => {
     currentPage.value = 1
-    void nextTick(() => {
-      renderRadarChart()
-      renderTrendChart()
-    })
+    syncQueryParams()
+    void fetchHistory()
   },
-  { deep: true }
+  { flush: 'post' },
 )
 
-const availableTypes = computed(() => Array.from(new Set(sessions.value.map((item) => sceneForSession(item)))))
-
-const filteredSessions = computed(() => {
-  const kw = keyword.value.trim().toLowerCase()
-
-  return sessions.value.filter((item) => {
-    if (typeFilter.value !== 'all' && sceneForSession(item) !== typeFilter.value) return false
-    if (modeFilter.value !== 'all' && item.mode !== modeFilter.value) return false
-
-    if (statusFilter.value === 'finished' && item.status !== 'finished') return false
-    if (statusFilter.value === 'active' && item.status !== 'active') return false
-    if (statusFilter.value === 'abandoned' && item.status !== 'abandoned') return false
-    if (statusFilter.value === 'retry' && !needsRetry(item)) return false
-
-    if (dateRange.value.length === 2) {
-      const [start, end] = dateRange.value
-      const time = new Date(item.created_at).getTime()
-      const startTime = new Date(`${start}T00:00:00`).getTime()
-      const endTime = new Date(`${end}T23:59:59`).getTime()
-      if (time < startTime || time > endTime) return false
-    }
-
-    if (!kw) return true
-    return [
-      item.video_title || '',
-      sceneForSession(item),
-      gradeText(item),
-      statusText(item),
-    ].join(' ').toLowerCase().includes(kw)
+watch(keyword, () => {
+  debounce(() => {
+    currentPage.value = 1
+    syncQueryParams()
+    void fetchHistory()
   })
 })
 
-const pagedSessions = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  return filteredSessions.value.slice(start, start + pageSize.value)
+// 同步筛选状态到 URL
+function syncQueryParams() {
+  const query: Record<string, string> = {}
+  if (typeFilter.value !== 'all') query.category = typeFilter.value
+  if (modeFilter.value !== 'all') query.mode = modeFilter.value
+  if (statusFilter.value !== 'all') query.status = statusFilter.value
+  if (keyword.value) query.keyword = keyword.value
+  if (dateRange.value.length === 2) {
+    query.date_start = dateRange.value[0]
+    query.date_end = dateRange.value[1]
+  }
+  if (currentPage.value > 1) query.page = String(currentPage.value)
+  if (pageSize.value !== 10) query.page_size = String(pageSize.value)
+  router.replace({ query })
+}
+
+const availableTypes = computed(() => availableCategories.value)
+
+// 前端仅做 keyword 本地过滤（其他筛选已由后端处理）
+const filteredSessions = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  if (!kw) return sessions.value
+  return sessions.value.filter((item) =>
+    [item.video_title || '', item.category || '', item.grade || '', statusText(item)]
+      .join(' ')
+      .toLowerCase()
+      .includes(kw)
+  )
 })
 
-const finishedSessions = computed(() => filteredSessions.value.filter((item) => item.status === 'finished'))
-const activeSessions = computed(() => filteredSessions.value.filter((item) => item.status === 'active'))
-const retrySessions = computed(() => filteredSessions.value.filter((item) => needsRetry(item)))
+// 服务端分页，pagedSessions 就是当前页数据
+const pagedSessions = computed(() => filteredSessions.value)
+
+const finishedSessions = computed(() => sessions.value.filter((item) => item.status === 'finished'))
+const activeSessions = computed(() => sessions.value.filter((item) => item.status === 'active'))
+const retrySessions = computed(() => sessions.value.filter((item) => item.needs_retry === true))
 
 const averageScore = computed(() => {
   const values = finishedSessions.value
-    .map((item) => scorePercent(item))
+    .map((item) => item.score_percentage)
     .filter((value): value is number => value != null)
   if (!values.length) return 0
   return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(1))
@@ -409,7 +421,7 @@ const averageScore = computed(() => {
 
 const averageScoreDelta = computed(() => {
   const values = finishedSessions.value
-    .map((item) => scorePercent(item))
+    .map((item) => item.score_percentage)
     .filter((value): value is number => value != null)
   if (values.length < 2) return 0
   const mid = Math.floor(values.length / 2)
@@ -424,15 +436,15 @@ const averageScoreDelta = computed(() => {
 const statCards = computed(() => [
   {
     label: '全部记录',
-    value: filteredSessions.value.length,
-    desc: `共完成 ${sessions.value.length} 次训练`,
+    value: totalCount.value,
+    desc: `共完成 ${finishedSessions.value.length} 次训练`,
     icon: Opportunity,
     tone: 'blue',
   },
   {
     label: '已完成',
     value: finishedSessions.value.length,
-    desc: `完成率 ${filteredSessions.value.length ? ((finishedSessions.value.length / filteredSessions.value.length) * 100).toFixed(1) : '0.0'}%`,
+    desc: `完成率 ${totalCount.value ? ((finishedSessions.value.length / totalCount.value) * 100).toFixed(1) : '0.0'}%`,
     icon: CircleCheck,
     tone: 'green',
   },
@@ -460,15 +472,16 @@ const statCards = computed(() => [
 ])
 
 const radarMetrics = computed(() => {
-  const base = finishedSessions.value.length
-    ? finishedSessions.value.map((item) => scorePercent(item) || 0)
+  const recent = finishedSessions.value.slice(0, 10)
+  const base = recent.length
+    ? recent.map((item) => item.score_percentage || 0)
     : [72]
   const overall = base.reduce((sum, value) => sum + value, 0) / base.length
 
   const metric = (matcher: RegExp, fallbackOffset: number) => {
-    const scoped = finishedSessions.value
-      .filter((item) => matcher.test(item.video_title || ''))
-      .map((item) => scorePercent(item) || 0)
+    const scoped = recent
+      .filter((item) => matcher.test(item.category || item.video_title || ''))
+      .map((item) => item.score_percentage || 0)
     const value = scoped.length
       ? scoped.reduce((sum, current) => sum + current, 0) / scoped.length
       : Math.max(45, Math.min(98, overall + fallbackOffset))
@@ -476,46 +489,28 @@ const radarMetrics = computed(() => {
   }
 
   return [
-    { label: '肢体动作规范', value: metric(/盘查|队列|姿势|处置/, 2) },
-    { label: '口头沟通规范', value: metric(/话术|询问|文明用语/, -2) },
-    { label: '执法专业与安全处置', value: metric(/现场|法律|执法|防卫/, 1) },
-    { label: '虚拟道具操作规范', value: metric(/证件|装备|盘查/, -5) },
-    { label: '流程执行完整度', value: metric(/流程|观察|标准/, -1) },
+    { label: '肢体动作规范', value: metric(/盘查|队列|姿势|处置|动作/, 2) },
+    { label: '口头沟通规范', value: metric(/话术|询问|文明用语|沟通/, -2) },
+    { label: '执法专业与安全处置', value: metric(/现场|法律|执法|防卫|安全/, 1) },
+    { label: '虚拟道具操作规范', value: metric(/证件|装备|盘查|道具/, -5) },
+    { label: '流程执行完整度', value: metric(/流程|观察|标准|完整/, -1) },
   ]
 })
 
+// 使用后端返回的真实失分数据
 const issueTopList = computed(() => {
-  const counter = new Map<string, number>()
-  const lowScoreSessions = finishedSessions.value.filter((item) => (scorePercent(item) || 0) < 85)
-
-  const append = (label: string) => {
-    counter.set(label, (counter.get(label) || 0) + 1)
-  }
-
-  lowScoreSessions.forEach((item) => {
-    const title = item.video_title || ''
-    if (/话术|询问|文明用语/.test(title)) append('动作不规范 / 话术态度不足')
-    if (/现场|流程|观察/.test(title)) append('节点超时')
-    if (/证件|盘查|身份/.test(title)) append('未展示证件 / 装备')
-    if (/法律|防卫|执法/.test(title)) append('选项或规范理解偏差')
-    if (/队列|姿势/.test(title)) append('流程顺序错误')
-    if (!/话术|询问|文明用语|现场|流程|观察|证件|盘查|身份|法律|防卫|执法|队列|姿势/.test(title)) {
-      append('话术不完整 / 缺失')
-    }
-  })
-
-  const total = Array.from(counter.values()).reduce((sum, value) => sum + value, 0)
-  return Array.from(counter.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([label, count]) => ({
-      label,
-      value: total ? Math.round((count / total) * 100) : 0,
-    }))
+  const issues = issueTopFromServer.value
+  if (!issues.length) return []
+  const total = issues.reduce((sum, item) => sum + item.count, 0)
+  return issues.map((item) => ({
+    label: item.label,
+    value: total ? Math.round((item.count / total) * 100) : 0,
+  }))
 })
 
 const trendSeries = computed(() => {
   return [...finishedSessions.value]
+    .filter((item) => item.finished_at)
     .sort((a, b) => new Date(a.finished_at || a.created_at).getTime() - new Date(b.finished_at || b.created_at).getTime())
     .slice(-7)
 })
@@ -523,8 +518,35 @@ const trendSeries = computed(() => {
 async function fetchHistory() {
   loading.value = true
   try {
-    const res: unknown = await request.get('/video-training/history')
-    sessions.value = Array.isArray(res) ? (res as SessionItem[]) : []
+    const params: Record<string, string | number> = {
+      page: currentPage.value,
+      page_size: pageSize.value,
+    }
+    if (statusFilter.value !== 'all' && statusFilter.value !== 'retry') {
+      params.status = statusFilter.value
+    }
+    if (modeFilter.value !== 'all') {
+      params.mode = modeFilter.value
+    }
+    if (typeFilter.value !== 'all') {
+      params.category = typeFilter.value
+    }
+
+    const res = await request.get('/video-training/history', { params }) as any
+    // 兼容旧格式（数组）和新格式（对象）
+    if (Array.isArray(res)) {
+      sessions.value = res
+      totalCount.value = res.length
+      issueTopFromServer.value = []
+    } else {
+      sessions.value = Array.isArray(res.items) ? res.items : []
+      totalCount.value = res.total || 0
+      issueTopFromServer.value = Array.isArray(res.issue_top) ? res.issue_top : []
+      if (res.available_categories?.length) {
+        availableCategories.value = res.available_categories
+      }
+    }
+
     await nextTick()
     renderRadarChart()
     renderTrendChart()
@@ -584,18 +606,8 @@ function calcProgress(session: SessionItem): number {
   return Math.min(100, Math.round((session.current_node_index / session.node_total) * 100))
 }
 
-function scorePercent(session: SessionItem): number | null {
-  if (session.total_score == null || session.full_score == null || session.full_score === 0) return null
-  return Number(((session.total_score / session.full_score) * 100).toFixed(1))
-}
-
-function needsRetry(session: SessionItem): boolean {
-  const pct = scorePercent(session)
-  return session.status === 'abandoned' || (session.status === 'finished' && pct != null && pct < 70)
-}
-
 function statusKey(session: SessionItem): 'done' | 'live' | 'retry' | 'abandoned' {
-  if (needsRetry(session)) return 'retry'
+  if (session.needs_retry) return 'retry'
   if (session.status === 'finished') return 'done'
   if (session.status === 'abandoned') return 'abandoned'
   return 'live'
@@ -609,44 +621,23 @@ function statusText(session: SessionItem): string {
   return '进行中'
 }
 
-function gradeText(session: SessionItem): string {
-  if (session.grade) return session.grade
-  const pct = scorePercent(session)
-  if (pct == null) return '--'
-  if (pct >= 90) return '优秀'
-  if (pct >= 70) return '合格'
-  return '待重修'
-}
-
 function gradeKey(session: SessionItem): 'excellent' | 'pass' | 'fail' {
-  const grade = gradeText(session)
+  const grade = session.grade
   if (grade === '优秀') return 'excellent'
   if (grade === '合格') return 'pass'
   return 'fail'
 }
 
 function scoreClass(session: SessionItem): string {
-  const pct = scorePercent(session)
+  const pct = session.score_percentage
   if (pct == null) return ''
   if (pct >= 90) return 'score-cell--excellent'
   if (pct >= 70) return 'score-cell--good'
   return 'score-cell--weak'
 }
 
-function sceneForSession(session: SessionItem): string {
-  const title = session.video_title || ''
-  if (/现场|处置|盘查/.test(title)) return '街面纠纷警情处置'
-  if (/法律|防卫|执法/.test(title)) return '法律知识学习'
-  if (/证件|身份/.test(title)) return '证件出示规范'
-  if (/文明|话术|询问/.test(title)) return '文明执法用语规范'
-  if (/观察|环境/.test(title)) return '环境观察重点'
-  if (/队列|姿势/.test(title)) return '队列动作训练'
-  return '综合训练场景'
-}
-
 function durationText(session: SessionItem): string {
-  const artifact = latestReplayArtifact(session)
-  if (artifact?.duration_seconds) return formatDurationSeconds(artifact.duration_seconds)
+  if (session.duration_seconds) return formatDurationSeconds(session.duration_seconds)
   return '--'
 }
 
@@ -674,6 +665,8 @@ function relativeTime(iso?: string): string {
 
 function resetPagination() {
   currentPage.value = 1
+  syncQueryParams()
+  void fetchHistory()
 }
 
 function resetFilters() {
@@ -682,7 +675,9 @@ function resetFilters() {
   statusFilter.value = 'all'
   keyword.value = ''
   dateRange.value = []
-  resetPagination()
+  currentPage.value = 1
+  syncQueryParams()
+  // watch 会触发 fetchHistory，这里不重复调用
 }
 
 function handleResize() {
@@ -739,7 +734,7 @@ function renderTrendChart() {
 
   const data = trendSeries.value.map((item) => ({
     label: formatDateTime(item.finished_at || item.created_at).slice(5, 10),
-    score: scorePercent(item) || 0,
+    score: item.score_percentage || 0,
   }))
 
   trendChart.setOption({

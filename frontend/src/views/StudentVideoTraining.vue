@@ -269,64 +269,14 @@
                 </div>
               </div>
 
-              <!-- 教官引导（答题/超时阶段始终展示，提供上下文） -->
-              <div v-if="!showNodeFeedback && nodePhase !== 'observe'" class="imm-node-panel__hint">
-                <p v-if="resolvedAiInstructorHint">{{ resolvedAiInstructorHint }}</p>
-                <p v-else>{{ displayInstruction }}</p>
-                <p v-if="displaySceneSummary" class="imm-node-panel__scene">{{ displaySceneSummary }}</p>
-                <!-- 参考话术引导：练习模式下展示，首次折叠，重试后自动展开 -->
-                <div v-if="displaySpeechHint" class="imm-node-panel__speech-ref" :class="{ 'imm-node-panel__speech-ref--revealed': showSpeechHintRevealed }">
-                  <div class="imm-node-panel__speech-ref-header" @click="showSpeechHintRevealed = !showSpeechHintRevealed">
-                    <span class="imm-node-panel__speech-ref-icon">💡</span>
-                    <span class="imm-node-panel__speech-ref-label">参考话术</span>
-                    <span class="imm-node-panel__speech-ref-toggle">{{ showSpeechHintRevealed ? '收起' : '点击查看' }}</span>
-                  </div>
-                  <transition name="imm-speech-expand">
-                    <div v-if="showSpeechHintRevealed" class="imm-node-panel__speech-ref-body">
-                      <p>{{ displaySpeechHint }}</p>
-                    </div>
-                  </transition>
+              <!-- 阶段：答题交互（上移，优先展示） -->
+              <div v-if="!showNodeFeedback && !showTimeoutOptions && nodePhase === 'interact'" class="imm-node-panel__interaction">
+                <!-- 题目描述（场景，突出显示） -->
+                <div class="imm-node-panel__question">
+                  <p v-if="displaySceneSummary" class="imm-node-panel__question-text">{{ displaySceneSummary }}</p>
+                  <p v-else-if="resolvedAiInstructorHint" class="imm-node-panel__question-text">{{ resolvedAiInstructorHint }}</p>
+                  <p v-else-if="displayInstruction" class="imm-node-panel__question-text">{{ displayInstruction }}</p>
                 </div>
-              </div>
-
-              <!-- 阶段：答案反馈 -->
-              <div v-if="showNodeFeedback && nodeFeedbackData" class="imm-node-panel__feedback">
-                <div v-if="nodeFeedbackData.userAnswer" class="imm-node-panel__feedback-row">
-                  <span>你的回答：</span>{{ nodeFeedbackData.userAnswer }}
-                </div>
-                <div class="imm-node-panel__feedback-row imm-node-panel__feedback-row--answer">
-                  <span>正确答案：</span>{{ nodeFeedbackData.correctAnswer }}
-                </div>
-                <div class="imm-node-panel__feedback-row">
-                  <span>解析：</span>{{ nodeFeedbackData.explanation }}
-                </div>
-                <div v-if="!nodeFeedbackData.passed" class="imm-node-panel__feedback-actions">
-                  <el-button size="small" type="primary" @click="feedbackRetry">再试一次</el-button>
-                  <el-button size="small" @click="feedbackContinue">继续下一节点</el-button>
-                </div>
-                <div v-else class="imm-node-panel__feedback-actions">
-                  <el-button size="small" type="primary" @click="feedbackContinue">继续下一节点</el-button>
-                </div>
-              </div>
-
-              <!-- 阶段：超时 -->
-              <div v-else-if="showTimeoutOptions" class="imm-node-panel__timeout">
-                <p class="imm-node-panel__timeout-desc">倒计时已结束，请重新练习本节点，或跳过继续后续训练。</p>
-                <div class="imm-node-panel__timeout-actions">
-                  <el-button type="primary" @click="retryNode">再来一次</el-button>
-                  <el-button @click="skipNode('timeout')">跳过此节点</el-button>
-                </div>
-              </div>
-
-              <!-- 阶段：现场观察 -->
-              <div v-else-if="nodePhase === 'observe'" class="imm-node-panel__observe">
-                <p class="imm-node-panel__observe-title">请先观察现场，判断局势后再作答</p>
-                <p class="imm-node-panel__observe-timer">{{ observeCountdown }} 秒后开始答题</p>
-                <el-button type="primary" size="small" @click="skipObservePhase">我已看清，开始答题</el-button>
-              </div>
-
-              <!-- 阶段：答题交互 -->
-              <div v-else-if="currentNode && nodePhase === 'interact'" class="imm-node-panel__interaction">
                 <div class="imm-node-panel__divider"></div>
                 <div v-if="resolvedInteractionType === 'judgment'" class="imm-interaction__judge">
                   <div class="imm-interaction__title">请判断以下做法是否正确</div>
@@ -384,6 +334,56 @@
                 </div>
               </div>
 
+              <!-- 教官引导（下移到交互区后面，仅显示参考话术） -->
+              <div v-if="!showNodeFeedback && nodePhase !== 'observe' && displaySpeechHint" class="imm-node-panel__hint">
+                <!-- 参考话术：练习模式下直接展示，不再折叠 -->
+                <div class="imm-node-panel__speech-ref imm-node-panel__speech-ref--revealed">
+                  <div class="imm-node-panel__speech-ref-header">
+                    <span class="imm-node-panel__speech-ref-icon">💡</span>
+                    <span class="imm-node-panel__speech-ref-label">参考话术</span>
+                  </div>
+                  <div class="imm-node-panel__speech-ref-body">
+                    <p>{{ displaySpeechHint }}</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 阶段：答案反馈 -->
+              <div v-if="showNodeFeedback && nodeFeedbackData" class="imm-node-panel__feedback">
+                <div v-if="nodeFeedbackData.userAnswer" class="imm-node-panel__feedback-row">
+                  <span>你的回答：</span>{{ nodeFeedbackData.userAnswer }}
+                </div>
+                <div class="imm-node-panel__feedback-row imm-node-panel__feedback-row--answer">
+                  <span>正确答案：</span>{{ nodeFeedbackData.correctAnswer }}
+                </div>
+                <div class="imm-node-panel__feedback-row">
+                  <span>解析：</span>{{ nodeFeedbackData.explanation }}
+                </div>
+                <div v-if="!nodeFeedbackData.passed" class="imm-node-panel__feedback-actions">
+                  <el-button size="small" type="primary" @click="feedbackRetry">再试一次</el-button>
+                  <el-button size="small" @click="feedbackContinue">继续下一节点</el-button>
+                </div>
+                <div v-else class="imm-node-panel__feedback-actions">
+                  <el-button size="small" type="primary" @click="feedbackContinue">继续下一节点</el-button>
+                </div>
+              </div>
+
+              <!-- 阶段：超时 -->
+              <div v-else-if="showTimeoutOptions" class="imm-node-panel__timeout">
+                <p class="imm-node-panel__timeout-desc">倒计时已结束，请重新练习本节点，或跳过继续后续训练。</p>
+                <div class="imm-node-panel__timeout-actions">
+                  <el-button type="primary" @click="retryNode">再来一次</el-button>
+                  <el-button @click="skipNode('timeout')">跳过此节点</el-button>
+                </div>
+              </div>
+
+              <!-- 阶段：现场观察 -->
+              <div v-else-if="nodePhase === 'observe'" class="imm-node-panel__observe">
+                <p class="imm-node-panel__observe-title">请先观察现场，判断局势后再作答</p>
+                <p class="imm-node-panel__observe-timer">{{ observeCountdown }} 秒后开始答题</p>
+                <el-button type="primary" size="small" @click="skipObservePhase">我已看清，开始答题</el-button>
+              </div>
+
               <!-- 底部倒计时（仅答题阶段显示） -->
               <div v-if="!showNodeFeedback && !showTimeoutOptions && nodePhase === 'interact'" class="imm-node-panel__footer">
                 <div class="imm-node-panel__countdown" :class="{ 'imm-node-panel__countdown--urgent': countdown <= 5 }">
@@ -412,6 +412,11 @@
           <!-- ═══ 考核模式：沉浸式交互区域（判断/选择/语音） ═══ -->
           <transition name="imm-fade-slide">
             <div v-if="trainingMode === 'exam' && nodeActive && currentNode && !showNodeFeedback" class="imm-interaction">
+              <!-- 题目描述 -->
+              <div v-if="displayInstruction" class="imm-interaction__question">
+                <p class="imm-interaction__question-text">{{ displayInstruction }}</p>
+              </div>
+
               <!-- 判断题 -->
               <div v-if="resolvedInteractionType === 'judgment'" class="imm-interaction__judge">
                 <div class="imm-interaction__title">请判断以下做法是否正确</div>
@@ -851,14 +856,14 @@
                   <div class="task-panel__text">{{ displaySceneSummary }}</div>
                 </div>
 
-                <div v-if="displayStandardPoints.length" class="task-panel__section">
+                <div v-if="trainingMode === 'practice' && displayStandardPoints.length" class="task-panel__section">
                   <div class="task-panel__label">评分要点</div>
                   <div class="standard-point-list">
                     <span v-for="point in displayStandardPoints" :key="point" class="standard-point">{{ point }}</span>
                   </div>
                 </div>
 
-                <div v-if="displayRiskSignals.length || displayLawPoints.length" class="task-panel__section">
+                <div v-if="trainingMode === 'practice' && (displayRiskSignals.length || displayLawPoints.length)" class="task-panel__section">
                   <div class="task-panel__label">现场风险与程序要点</div>
                   <div v-if="displayRiskSignals.length" class="standard-point-list">
                     <span v-for="point in displayRiskSignals" :key="`risk-${point}`" class="standard-point standard-point--risk">{{ point }}</span>
@@ -868,12 +873,12 @@
                   </div>
                 </div>
 
-                <div v-if="displaySpeechHint" class="task-panel__section">
+                <div v-if="trainingMode === 'practice' && displaySpeechHint" class="task-panel__section">
                   <div class="task-panel__label">标准话术参考</div>
                   <div class="task-panel__quote">{{ displaySpeechHint }}</div>
                 </div>
 
-                <div v-if="displayGestureHint" class="task-panel__section">
+                <div v-if="trainingMode === 'practice' && displayGestureHint" class="task-panel__section">
                   <div class="task-panel__label">标准动作参考</div>
                   <div class="task-panel__quote">{{ displayGestureHint }}</div>
                 </div>
@@ -1156,7 +1161,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft, Timer, CircleCheck, CircleClose, Remove,
@@ -2053,6 +2058,18 @@ async function confirmBriefing() {
   await playTrainingVideo()
 }
 
+// 路由离开时立即释放摄像头和麦克风（不等过渡动画结束）
+onBeforeRouteLeave((_to, _from, next) => {
+  void stopTrainingRecording(false)
+  stopCamera()
+  stopPresenceMonitor()
+  stopFaceIdentityVerify()
+  stopGestureDetection()
+  speechProvider.value?.stop()
+  stopWaveSimulation()
+  next()
+})
+
 onUnmounted(() => {
   void stopTrainingRecording(false)
   stopCamera()
@@ -2176,12 +2193,22 @@ async function startCamera() {
 }
 
 function stopCamera() {
+  // 先停止所有底层 track（摄像头 + 麦克风），确保即使 DOM 元素已销毁也能释放硬件
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(t => t.stop())
+  }
   if (briefingCameraRef.value?.srcObject) {
+    const s = briefingCameraRef.value.srcObject as MediaStream
+    if (s !== cameraStream) {
+      s.getTracks().forEach(t => t.stop())
+    }
     briefingCameraRef.value.srcObject = null
   }
   if (cameraRef.value?.srcObject) {
     const s = cameraRef.value.srcObject as MediaStream
-    s.getTracks().forEach(t => t.stop())
+    if (s !== cameraStream) {
+      s.getTracks().forEach(t => t.stop())
+    }
     cameraRef.value.srcObject = null
   }
   cameraStream = null
@@ -3174,16 +3201,23 @@ function submitChoice() {
   } else if (trainingMode.value === 'practice') {
     showPracticeWrongFeedback(extra)
   } else {
+    // 考核模式答错：显示反馈并重置选中状态允许重试
     nodeResult.value = 'fail'
     const exp = currentNode.value?.node_config?.explanation
-    if (exp) ElMessage.info(exp)
+    ElMessage.error(exp || '回答错误，请重新选择')
+    choiceSelected.value = null
     nodeRetryCount.value++
   }
 }
 
 function checkAllNodesDone() {
   const total = video.value?.nodes?.length || 0
-  if (completedCount.value >= total) finishTraining()
+  if (completedCount.value >= total) {
+    // 所有节点已完成，但不立即结束训练——让视频继续播放至结束
+    // 视频播放结束后 onVideoEnded 会自动触发 finishTraining
+    ElMessage.success('所有训练节点已完成，视频播放结束后将自动生成评估报告')
+    void playTrainingVideo()
+  }
 }
 
 function isVideoReportReady(payload: any): payload is Report {
@@ -6392,6 +6426,32 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   margin: 16px 0;
 }
 
+.imm-node-panel__question {
+  margin-bottom: 4px;
+}
+
+.imm-node-panel__question-text {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.7;
+  color: #e2e8f0;
+}
+
+.imm-node-panel__question-instruction {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.6;
+  color: #94a3b8;
+  padding: 6px 12px;
+  border-radius: 6px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .imm-node-panel__interaction {
   .imm-interaction__title {
     text-align: left;
@@ -7313,6 +7373,20 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   color: #94a3b8;
   margin-bottom: 14px;
   text-align: center;
+}
+
+.imm-interaction__question {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.imm-interaction__question-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e2e8f0;
+  line-height: 1.6;
+  margin: 0;
 }
 
 .imm-interaction__options {

@@ -1426,6 +1426,10 @@ def create_video_node(
         skip_score_deduct=int(payload.get("skip_score_deduct", 20)),
         prop_mode=payload.get("prop_mode", "auto"),
         node_type=payload.get("node_type", "action"),
+        node_interaction_type=payload.get("node_interaction_type", "voice_qa"),
+        ai_instructor_hint=payload.get("ai_instructor_hint") or None,
+        choice_options=json.dumps(payload.get("choice_options"), ensure_ascii=False) if payload.get("choice_options") else None,
+        correct_answer=payload.get("correct_answer") or None,
         node_config=json.dumps(payload.get("node_config", {}), ensure_ascii=False),
         required_gesture=payload.get("required_gesture"),
         required_keywords=json.dumps(payload.get("required_keywords", []), ensure_ascii=False),
@@ -1478,15 +1482,20 @@ def update_video_node(
     scalar_fields = {
         "node_index", "title", "trigger_time", "pause_mode",
         "timeout_seconds", "retry_score_deduct", "skip_score_deduct",
-        "prop_mode", "node_type", "required_gesture", "score_weight",
+        "prop_mode", "node_type", "node_interaction_type",
+        "ai_instructor_hint", "correct_answer",
+        "required_gesture", "score_weight",
     }
-    json_fields = {"prompt_content", "node_config", "required_keywords"}
+    json_fields = {"prompt_content", "node_config", "required_keywords", "choice_options"}
 
     for key, value in payload.items():
         if key in scalar_fields:
             setattr(node, key, value)
         elif key in json_fields:
-            setattr(node, key, json.dumps(value, ensure_ascii=False))
+            if value is None:
+                setattr(node, key, None)
+            else:
+                setattr(node, key, json.dumps(value, ensure_ascii=False))
 
     db.commit()
     db.refresh(node)
