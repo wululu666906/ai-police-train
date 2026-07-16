@@ -646,13 +646,13 @@ const normalizeSuggestedItems = (payload: unknown): SuggestedQuestionItem[] => {
         target_role_name: item?.target_role_name || null,
       }))
       .filter((item) => item.text && !META_QUESTION_PATTERN.test(item.text) && item.text.length <= 48)
-      .slice(0, 4)
+      .slice(0, 3)
   }
   const list = Array.isArray(payload) ? payload : []
   return list
     .map((item) => String(item || '').trim())
     .filter((item) => item && !META_QUESTION_PATTERN.test(item) && item.length <= 48)
-    .slice(0, 4)
+    .slice(0, 3)
     .map((text) => ({ text, category: '追问', target_role_name: null }))
 }
 
@@ -1556,7 +1556,7 @@ onMounted(fetchSessionData)
   padding: 12px 16px;
   background: #f2f3f5;
   border-top: 1px solid #e5e6eb;
-  overflow-x: hidden;
+  overflow: visible;
 }
 
 .typing-indicator {
@@ -1841,10 +1841,21 @@ onMounted(fetchSessionData)
 .training-page {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  /* Keep the whole training workspace in the viewport. Individual panes own
+     their scrolling so the browser page itself never becomes the scroller. */
+  height: 100dvh;
+  min-height: 0;
   overflow: hidden;
   font-family: 'PingFang SC', 'Microsoft YaHei', 'Inter', sans-serif;
   background: var(--police-bg);
+}
+
+/* Compensate for the platform-wide desktop display scale so this fixed
+   workspace remains exactly one visible viewport high. */
+@media (min-width: 768px) {
+  .training-page {
+    height: calc(100dvh / var(--platform-display-scale));
+  }
 }
 
 .training-header {
@@ -1936,6 +1947,7 @@ onMounted(fetchSessionData)
 .training-body {
   display: flex;
   flex: 1;
+  height: 0;
   min-height: 0;
   overflow: hidden;
 }
@@ -1950,6 +1962,7 @@ onMounted(fetchSessionData)
   background: #fff;
   border-right: 1px solid #e2e8f0;
   overflow: hidden;
+  min-height: 0;
   flex-shrink: 0;
 }
 
@@ -1957,6 +1970,7 @@ onMounted(fetchSessionData)
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-width: thin;
 }
 
@@ -2939,6 +2953,8 @@ onMounted(fetchSessionData)
 
 .chat-messages {
   padding: 16px 20px;
+  min-height: 0;
+  overscroll-behavior: contain;
 }
 
 .msg-row {
@@ -3013,6 +3029,7 @@ onMounted(fetchSessionData)
   padding: 7px 16px 8px;
   background: #fff;
   border-top-color: #e2e8f0;
+  flex: 0 0 auto;
 }
 
 .coach-feedback {
@@ -3053,9 +3070,29 @@ onMounted(fetchSessionData)
   line-height: 1.2;
 }
 
+.suggested-questions__hint {
+  display: none;
+}
+
+.suggested-questions__list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
 .suggested-question-chip {
-  padding: 5px 9px;
+  min-width: 0;
+  width: 100%;
+  padding: 5px 8px;
   font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.suggested-question-chip__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .suggested-question-chip:hover:not(:disabled) {
@@ -3114,9 +3151,11 @@ onMounted(fetchSessionData)
   }
 
   .info-panel {
-    flex: none;
+    /* On a stacked layout the case panel must still have a bounded height;
+       otherwise lengthy case data pushes the conversation and input offscreen. */
+    flex: 0 1 300px;
+    min-height: 148px;
     width: 100%;
-    max-height: none;
     border-right: none;
     border-bottom: 1px solid #e5e6eb;
   }
@@ -3127,6 +3166,10 @@ onMounted(fetchSessionData)
 
   .msg-body {
     max-width: 84%;
+  }
+
+  .suggested-questions__list {
+    grid-template-columns: 1fr;
   }
 }
 </style>

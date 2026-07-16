@@ -7,7 +7,7 @@ const getDevApiBaseUrl = () => {
 }
 
 const service = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || (import.meta.env.DEV ? getDevApiBaseUrl() : ''),
+  baseURL: import.meta.env.VITE_API_URL || (import.meta.env.DEV ? getDevApiBaseUrl() : '/api'),
   timeout: 120000,
 })
 

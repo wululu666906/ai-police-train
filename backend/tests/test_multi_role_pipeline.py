@@ -2,6 +2,7 @@
 
 from services.multi_role_director import run_director
 from services.multi_role_actor import generate_role_dialogue, _repeat_similarity, _repetition_repair
+from services.multi_role_service import _role_thread_history
 from services.scene_conversation_engine import consolidate_scene_conversation
 
 
@@ -55,6 +56,26 @@ class _FakeMessage:
         self.content = content
         self.speaker_name = speaker_name
         self.inner_thought = ""
+
+
+def test_role_thread_history_excludes_other_roles_private_conversation_context():
+    role = _FakeRole(1, "张某")
+    other = _FakeRole(2, "李某")
+    history = [
+        _FakeMessage("user", "张某，说说你看到的情况"),
+        _FakeMessage("assistant", "我只说我亲眼看到的。", "张某"),
+        _FakeMessage("assistant", "我和他是亲兄弟。", "李某"),
+        _FakeMessage("user", "你再补充一下"),
+    ]
+    history[1].speaker_role_id = role.id
+    history[2].speaker_role_id = other.id
+
+    thread = _role_thread_history(history, role)
+    contents = [message.content for message in thread]
+
+    assert "我只说我亲眼看到的。" in contents
+    assert "我和他是亲兄弟。" not in contents
+    assert "你再补充一下" in contents
 
 
 def test_director_rule_plan_orders_multiple_speakers():
@@ -266,4 +287,7 @@ def test_actor_extreme_loss_control_does_not_repeat_previous_line():
     contents = [item["content"] for item in output["utterances"]]
     assert contents
     assert repeated not in contents
-    assert any("脑子" in item or "缓" in item or "别吼我" in item for item in contents)
+    assert all(
+        token not in " ".join(contents)
+        for token in ("换个角度", "你先问", "你问具体点", "把问题拆开")
+    )

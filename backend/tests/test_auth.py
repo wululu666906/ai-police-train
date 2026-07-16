@@ -1,4 +1,4 @@
-import json
+﻿import json
 from datetime import datetime, timedelta
 
 import models
@@ -409,7 +409,41 @@ class TestOpsAccounts:
         assert client.post("/auth/token", data={"username": "ops_import_student", "password": "student123"}).status_code == 200
         assert client.post("/auth/token", data={"username": "ops_import_admin", "password": "admin123"}).status_code == 200
 
-    def test_ops_import_preview_marks_duplicates_and_invalid_roles(self, client, maintainer_headers):
+    def test_ops_import_preview_can_force_target_role(self, client, maintainer_headers):
+        csv_content = (
+            "账号,初始密码,角色\n"
+            "ops_force_role,student123,student\n"
+        ).encode("utf-8")
+        response = client.post(
+            "/ops/accounts/import/preview",
+            data={"target_role": "admin"},
+            files={"file": ("accounts.csv", csv_content, "text/csv")},
+            headers=maintainer_headers,
+        )
+        assert response.status_code == 200
+        item = response.json()["items"][0]
+        assert item["role"] == "admin"
+
+    def test_ops_batch_delete_accounts(self, client, maintainer_headers, db_session):
+        admin_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_batch_delete_admin", "password": "admin123", "role": "admin"},
+            headers=maintainer_headers,
+        )
+        student_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_batch_delete_student", "password": "student123", "role": "student"},
+            headers=maintainer_headers,
+        )
+        payload = {"account_ids": [admin_response.json()["id"], student_response.json()["id"]]}
+        response = client.post("/ops/accounts/batch-delete", json=payload, headers=maintainer_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["deleted_count"] == 2
+        assert db_session.query(models.User).filter(models.User.username == "ops_batch_delete_admin").first() is None
+        assert db_session.query(models.User).filter(models.User.username == "ops_batch_delete_student").first() is None
+
+    def test_ops_import_preview_marks_duplicates_and_overrides_file_roles(self, client, maintainer_headers):
         csv_content = (
             "账号,初始密码,角色\n"
             "admin,123456,admin\n"
@@ -424,10 +458,24 @@ class TestOpsAccounts:
         )
         assert response.status_code == 200
         items = response.json()["items"]
-        assert response.json()["ready_count"] == 1
+        assert response.json()["ready_count"] == 2
         assert "账号已存在" in items[0]["errors"]
-        assert "角色只能是管理端账号或学员端账号" in items[1]["errors"]
+        assert items[1]["status"] == "ready"
+        assert items[1]["role"] == "student"
         assert "文件内账号重复" in items[3]["errors"]
+
+    def test_ops_import_preview_rejects_invalid_target_role(self, client, maintainer_headers):
+        csv_content = (
+            "账号,初始密码\n"
+            "ops_invalid_target_role,123456\n"
+        ).encode("utf-8")
+        response = client.post(
+            "/ops/accounts/import/preview",
+            data={"target_role": "maintainer"},
+            files={"file": ("accounts.csv", csv_content, "text/csv")},
+            headers=maintainer_headers,
+        )
+        assert response.status_code == 400
 
     def test_ops_import_forbidden_for_admin(self, client, admin_headers):
         response = client.post(

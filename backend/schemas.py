@@ -265,6 +265,7 @@ class UserBase(BaseModel):
     email: Optional[str] = None
     unit: Optional[str] = None
     department: Optional[str] = None
+    account_group: Optional[str] = None
     bio: Optional[str] = None
 
 
@@ -363,6 +364,7 @@ class BatchStudentCreateRequest(BaseModel):
     start_no: int
     end_no: int
     password: str
+    account_group: Optional[str] = None
 
 
 class BatchStudentCreateResponse(BaseModel):
@@ -400,6 +402,7 @@ class OpsAccountCreate(BaseModel):
     email: Optional[str] = None
     unit: Optional[str] = None
     department: Optional[str] = None
+    account_group: Optional[str] = None
     bio: Optional[str] = None
 
 
@@ -412,6 +415,7 @@ class OpsAccountUpdate(BaseModel):
     email: Optional[str] = None
     unit: Optional[str] = None
     department: Optional[str] = None
+    account_group: Optional[str] = None
     bio: Optional[str] = None
 
 
@@ -434,6 +438,7 @@ class OpsAccountImportItem(BaseModel):
     email: Optional[str] = None
     unit: Optional[str] = None
     department: Optional[str] = None
+    account_group: Optional[str] = None
     bio: Optional[str] = None
 
 
@@ -461,3 +466,14 @@ class OpsAccountImportCommitResponse(BaseModel):
     created_usernames: List[str] = []
     skipped_usernames: List[str] = []
     failed_items: List[OpsAccountImportPreviewItem] = []
+
+
+class OpsAccountBatchDeleteRequest(BaseModel):
+    account_ids: List[int]
+
+
+class OpsAccountBatchDeleteResponse(BaseModel):
+    deleted_count: int
+    skipped_count: int
+    deleted_usernames: List[str] = []
+    skipped_usernames: List[str] = []

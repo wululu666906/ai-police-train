@@ -1,4 +1,6 @@
+import hashlib
 import json
+import threading
 from typing import Any
 
 import models
@@ -8,6 +10,8 @@ from .rag_service import rag_service
 CASE_SOURCE = "case_library"
 CASE_DOC_TYPE = "case_info"
 ROLE_DOC_TYPE = "role_script"
+_SYNC_LOCK = threading.Lock()
+_SYNC_FINGERPRINTS: dict[int, str] = {}
 
 
 def _safe_json_loads(value: Any, fallback: Any):
@@ -173,26 +177,54 @@ def build_case_knowledge_documents(case: models.Case) -> list[dict[str, Any]]:
     return docs
 
 
+def _documents_fingerprint(docs: list[dict[str, Any]]) -> str:
+    payload = [
+        {
+            "id": doc.get("id"),
+            "content": doc.get("content"),
+            "metadata": doc.get("metadata") or {},
+        }
+        for doc in docs
+    ]
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
 def sync_case_to_knowledge(case: models.Case) -> dict[str, Any]:
     docs = build_case_knowledge_documents(case)
-    expected_ids = [doc["id"] for doc in docs]
-    existing = rag_service.get_documents_by_metadata({"case_id": str(case.id)})
-    stale_ids = [item["id"] for item in existing if item["id"] not in expected_ids]
-    if stale_ids:
-        rag_service.delete_by_ids(stale_ids)
-    synced_ids = rag_service.upsert_documents(
-        expected_ids,
-        [doc["content"] for doc in docs],
-        [doc["metadata"] for doc in docs],
-    )
-    return {
-        "ok": True,
-        "sync_status": "ok",
-        "case_id": case.id,
-        "synced_ids": synced_ids,
-        "deleted_ids": stale_ids,
-        "embedding_error": rag_service.embedding_error,
-    }
+    fingerprint = _documents_fingerprint(docs)
+    case_id = int(case.id or 0)
+    with _SYNC_LOCK:
+        if case_id and _SYNC_FINGERPRINTS.get(case_id) == fingerprint:
+            return {
+                "ok": True,
+                "sync_status": "skipped",
+                "case_id": case.id,
+                "synced_ids": [],
+                "deleted_ids": [],
+                "embedding_error": rag_service.embedding_error,
+            }
+
+        expected_ids = [doc["id"] for doc in docs]
+        existing = rag_service.get_documents_by_metadata({"case_id": str(case.id)})
+        stale_ids = [item["id"] for item in existing if item["id"] not in expected_ids]
+        if stale_ids:
+            rag_service.delete_by_ids(stale_ids)
+        synced_ids = rag_service.upsert_documents(
+            expected_ids,
+            [doc["content"] for doc in docs],
+            [doc["metadata"] for doc in docs],
+        )
+        if case_id:
+            _SYNC_FINGERPRINTS[case_id] = fingerprint
+        return {
+            "ok": True,
+            "sync_status": "ok",
+            "case_id": case.id,
+            "synced_ids": synced_ids,
+            "deleted_ids": stale_ids,
+            "embedding_error": rag_service.embedding_error,
+        }
 
 
 def try_sync_case_to_knowledge(case: models.Case) -> dict[str, Any]:

@@ -8,12 +8,12 @@ import type {
 const TARGET_SAMPLE_RATE = 16000
 
 const getApiBaseUrl = () =>
-  import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '')
+  import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '/api')
 
 const getRealtimeHttpBase = () => {
   const apiBase = getApiBaseUrl().replace(/\/$/, '')
-  if (!apiBase || apiBase === '/api') return window.location.origin
-  if (/\/api$/i.test(apiBase)) return apiBase.slice(0, -4) || window.location.origin
+  if (!apiBase) return window.location.origin
+  if (apiBase.startsWith('/')) return `${window.location.origin}${apiBase}`
   return apiBase
 }
 

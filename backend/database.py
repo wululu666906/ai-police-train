@@ -1,5 +1,6 @@
 import os
 
+from sqlalchemy import event
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -33,9 +34,28 @@ SQLALCHEMY_DATABASE_URL = resolve_database_url()
 # SQLite 特有配置；PostgreSQL 不需要 check_same_thread。
 engine_args = {}
 if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
-    engine_args["connect_args"] = {"check_same_thread": False}
+    sqlite_timeout = int(os.getenv("SQLITE_BUSY_TIMEOUT_SECONDS", "30"))
+    engine_args["connect_args"] = {
+        "check_same_thread": False,
+        "timeout": sqlite_timeout,
+    }
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL, **engine_args)
+
+
+if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def _configure_sqlite_connection(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute(f"PRAGMA busy_timeout={int(os.getenv('SQLITE_BUSY_TIMEOUT_MS', '30000'))}")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

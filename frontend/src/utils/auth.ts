@@ -21,7 +21,7 @@ export const redirectToLogin = () => {
   if (redirectingToLogin) return
   redirectingToLogin = true
   clearAuth()
-  window.location.href = window.location.port === '6670' ? '/ops/login' : '/login'
+  window.location.href = '/login'
 }
 
 export const resetLoginRedirectState = () => {

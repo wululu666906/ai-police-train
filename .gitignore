@@ -79,6 +79,7 @@ frontend_dist_sync.tar.gz
 .collect.txt
 backups/
 duiyou/
+tools/ffmpeg/
 scripts/_*
 scripts/native_deploy_remote.py
 temp_*

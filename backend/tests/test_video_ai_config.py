@@ -5,6 +5,42 @@ from routers import videos as videos_router
 from services import video_auto_config_service
 
 
+def test_video_analysis_uses_dedicated_provider_settings(monkeypatch):
+    captured = {}
+
+    def fake_binding(*, provider, model):
+        captured.update(provider=provider, model=model)
+        return object(), model, provider, "test-key"
+
+    monkeypatch.setenv("VIDEO_ANALYSIS_PROVIDER", "qwen")
+    monkeypatch.setenv("VIDEO_ANALYSIS_MODEL", "qwen-plus")
+    monkeypatch.setattr(
+        "services.llm_provider.get_chat_completion_binding",
+        fake_binding,
+    )
+
+    _, model, provider, api_key = video_auto_config_service._get_video_analysis_llm()
+
+    assert captured == {"provider": "qwen", "model": "qwen-plus"}
+    assert provider == "qwen"
+    assert model == "qwen-plus"
+    assert api_key == "test-key"
+
+
+def test_video_analysis_reports_missing_ffmpeg_before_external_calls(monkeypatch):
+    monkeypatch.setattr(video_auto_config_service, "_ffmpeg_available", lambda: False)
+    monkeypatch.setattr(
+        video_auto_config_service,
+        "_get_video_analysis_llm",
+        lambda: (object(), "qwen-plus", "qwen", "test-key"),
+    )
+
+    payload = video_auto_config_service.analyze_video_file("sample.mp4", title_hint="测试视频")
+
+    assert payload["analysis_mode"] == "error"
+    assert "ffmpeg" in payload["analysis_error"]
+
+
 def _fake_analysis(title: str = "AI识别后标题") -> dict:
     return {
         "analysis_mode": "llm_vision",

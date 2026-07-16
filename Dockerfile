@@ -23,6 +23,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         sqlite3 \
+        ffmpeg \
         libglib2.0-0 \
         libgl1 \
         libgomp1 \

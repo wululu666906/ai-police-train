@@ -131,47 +131,43 @@
               </div>
 
               <div class="history-row__actions">
-                <el-dropdown
-                  trigger="click"
-                  popper-class="history-action-dropdown"
-                  :disabled="isActionLocked(record.id)"
-                  @command="(command: string | number | object) => handleRecordAction(command, record)"
-                >
+                <div class="action-menu" @click.stop>
                   <button
                     type="button"
                     class="action-menu-trigger"
                     :class="{ 'action-menu-trigger--loading': isActionLocked(record.id) }"
                     :disabled="isActionLocked(record.id)"
+                    :aria-expanded="openActionMenuId === record.id"
+                    aria-haspopup="menu"
+                    @click="toggleActionMenu(record.id)"
                   >
                     <span>操作</span>
                     <span v-if="isActionLocked(record.id)" class="action-loading-dot" aria-hidden="true"></span>
                     <el-icon v-else><ArrowDown /></el-icon>
                   </button>
-                  <template #dropdown>
-                    <el-dropdown-menu>
-                      <el-dropdown-item command="dialogue">
-                        <el-icon><ChatLineRound /></el-icon>
-                        <span>查看对话</span>
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="record.status === 'finished'" command="report">
-                        <el-icon><Document /></el-icon>
-                        <span>查看报告</span>
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="record.status === 'finished'" command="reevaluate" :disabled="reEvaluatingId !== null">
-                        <el-icon><Refresh /></el-icon>
-                        <span>重新评估</span>
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="record.status !== 'finished'" command="continue">
-                        <el-icon><VideoPlay /></el-icon>
-                        <span>继续训练</span>
-                      </el-dropdown-item>
-                      <el-dropdown-item command="delete" divided :disabled="deletingId !== null || reEvaluatingId !== null" class="history-action-dropdown__danger">
-                        <el-icon><Delete /></el-icon>
-                        <span>删除记录</span>
-                      </el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
+                  <div v-if="openActionMenuId === record.id" class="action-menu__panel" role="menu">
+                    <button type="button" class="action-menu__item" role="menuitem" @click="handleRecordAction('dialogue', record)">
+                      <el-icon><ChatLineRound /></el-icon>
+                      <span>查看对话</span>
+                    </button>
+                    <button v-if="record.status === 'finished'" type="button" class="action-menu__item" role="menuitem" @click="handleRecordAction('report', record)">
+                      <el-icon><Document /></el-icon>
+                      <span>查看报告</span>
+                    </button>
+                    <button v-if="record.status === 'finished'" type="button" class="action-menu__item" role="menuitem" :disabled="reEvaluatingId !== null" @click="handleRecordAction('reevaluate', record)">
+                      <el-icon><Refresh /></el-icon>
+                      <span>重新评估</span>
+                    </button>
+                    <button v-if="record.status !== 'finished'" type="button" class="action-menu__item" role="menuitem" @click="handleRecordAction('continue', record)">
+                      <el-icon><VideoPlay /></el-icon>
+                      <span>继续训练</span>
+                    </button>
+                    <button type="button" class="action-menu__item action-menu__item--danger" role="menuitem" :disabled="deletingId !== null || reEvaluatingId !== null" @click="handleRecordAction('delete', record)">
+                      <el-icon><Delete /></el-icon>
+                      <span>删除记录</span>
+                    </button>
+                  </div>
+                </div>
               </div>
             </article>
           </div>
@@ -213,6 +209,7 @@ const showEmptySessions = ref(false)
 const hiddenEmptyCount = ref(0)
 const reEvaluatingId = ref<number | null>(null)
 const deletingId = ref<number | null>(null)
+const openActionMenuId = ref<number | null>(null)
 const loadError = ref('')
 const statusFilter = ref<'all' | 'active' | 'finished'>('all')
 const activeCount = ref(0)
@@ -355,8 +352,18 @@ const openDialogue = (sessionId: number) => {
 
 const isActionLocked = (sessionId: number) => deletingId.value === sessionId || reEvaluatingId.value === sessionId
 
+const toggleActionMenu = (sessionId: number) => {
+  if (isActionLocked(sessionId)) return
+  openActionMenuId.value = openActionMenuId.value === sessionId ? null : sessionId
+}
+
+const closeActionMenu = () => {
+  openActionMenuId.value = null
+}
+
 const handleRecordAction = async (rawCommand: string | number | object, record: any) => {
   if (!record?.id || isActionLocked(record.id)) return
+  closeActionMenu()
   const command = String(rawCommand)
 
   if (command === 'dialogue') {
@@ -467,11 +474,13 @@ const formatTime = (iso: string) => {
 
 onMounted(() => {
   setMainScrollable?.(true)
+  document.addEventListener('click', closeActionMenu)
   fetchHistory()
 })
 
 onUnmounted(() => {
   setMainScrollable?.(false)
+  document.removeEventListener('click', closeActionMenu)
 })
 </script>
 
@@ -1018,45 +1027,86 @@ onUnmounted(() => {
   }
 }
 
-:global(.history-action-dropdown) {
-  min-width: 132px !important;
-  border: 1px solid #e5e7eb !important;
-  border-radius: 6px !important;
-  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.13) !important;
+.action-menu {
+  position: relative;
+  display: inline-flex;
+  justify-content: center;
 }
 
-:global(.history-action-dropdown .el-dropdown-menu) {
-  padding: 8px !important;
+.action-menu__panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  right: 50%;
+  /* Compact menu proportions matching the action control reference. */
+  width: 132px;
+  box-sizing: border-box;
+  padding: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.13);
+  transform: translateX(50%);
 }
 
-:global(.history-action-dropdown .el-dropdown-menu__item) {
-  display: flex !important;
+.action-menu__panel::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  right: calc(50% - 4px);
+  width: 9px;
+  height: 9px;
+  border-top: 1px solid #e5e7eb;
+  border-left: 1px solid #e5e7eb;
+  background: #fff;
+  transform: rotate(45deg);
+}
+
+.action-menu__item {
+  display: flex;
+  width: 100%;
   align-items: center !important;
+  justify-content: flex-start;
   gap: 8px !important;
   min-height: 38px !important;
   border-radius: 5px !important;
-  padding: 0 10px !important;
+  border: 0;
+  padding: 0 10px;
+  background: transparent;
   color: #111827 !important;
-  font-size: 13px !important;
+  font-size: 14px !important;
   font-weight: 800 !important;
+  text-align: left;
+  cursor: pointer;
 }
 
-:global(.history-action-dropdown .el-dropdown-menu__item:hover) {
-  background: #f8fafc !important;
-  color: #165dff !important;
+.action-menu__item:hover:not(:disabled) {
+  background: #f2f7ff !important;
+  color: #2563eb !important;
 }
 
-:global(.history-action-dropdown .el-dropdown-menu__item .el-icon) {
+.action-menu__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.action-menu__item .el-icon {
   margin-right: 0 !important;
   font-size: 15px !important;
 }
 
-:global(.history-action-dropdown__danger),
-:global(.history-action-dropdown__danger .el-icon) {
+.action-menu__item--danger {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.action-menu__item--danger,
+.action-menu__item--danger .el-icon {
   color: #ef4444 !important;
 }
 
-:global(.history-action-dropdown__danger:hover) {
+.action-menu__item--danger:hover:not(:disabled) {
   background: #fff1f2 !important;
   color: #dc2626 !important;
 }

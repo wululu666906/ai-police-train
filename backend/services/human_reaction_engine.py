@@ -147,12 +147,21 @@ REACTION_LIBRARY: dict[str, dict[str, Any]] = {
         ],
         "state_delta": {"emotion": -5, "cooperation": 5, "risk": -4, "clarity": 3},
     },
+    "guided_acknowledgement": {
+        "label": "接受引导",
+        "delivery": "calm",
+        "rules": [
+            "先用自然口语确认已听到民警的安抚、处置承诺或程序说明。",
+            "随后只配合一小步：补充一个可核实细节、停止争吵或同意等待；不得突然完整交代。",
+        ],
+        "state_delta": {"emotion": -4, "cooperation": 6, "risk": -4, "clarity": 2},
+    },
     "probing_observation": {
         "label": "试探观察型",
         "delivery": "normal",
         "rules": [
             "先看民警态度，问一句答一句，不主动展开敏感内容。",
-            "可以要求民警把问题问具体，避免一次性倾倒全部信息。",
+            "不主动倾倒全部信息；没看清或记不准时，只说自己不确定的部分，不指导民警怎么提问。",
         ],
         "state_delta": {"emotion": 0, "cooperation": 0, "risk": 0, "clarity": 0},
     },
@@ -184,7 +193,7 @@ def infer_scene_mood(
     min_cooperation = min((item["cooperation"] for item in role_states), default=50)
     min_clarity = min((item["clarity"] for item in role_states), default=50)
 
-    if _contains_any(text, ("冷静", "别激动", "分开", "慢慢说", "一个一个", "先坐下", "我会处理")):
+    if _contains_any(text, ("冷静", "别激动", "别着急", "分开", "慢慢说", "一个一个", "先坐下", "我会处理", "我来处理", "我现在过去", "马上过去", "帮你解决", "核实完")):
         return "deescalate"
     if max_risk >= 88 or _contains_any(text, ("别碰", "放下", "刀", "砸", "冲过去", "控制住")):
         return "edge_loss_control"
@@ -295,7 +304,6 @@ def choose_role_reaction(
         or "违法" in role_type
     ):
         add("defensive_denial", 8, "存在隐瞒事实且被触及责任/证据")
-        add("topic_shift_bargain", 2, "可能转移到后果或处理方式")
     if snap["cooperation"] <= 22 or "回避" in archetype or ("证" in role_type and snap["cooperation"] <= 40):
         add("avoidant_silence", 7, "低配合或怕牵连")
     if intent == "vent" or "委屈" in archetype or "报警" in role_type or "受害" in role_type or "被害" in role_type:

@@ -205,6 +205,16 @@ async def speech_realtime(
                         await websocket.send_json({"type": "asr_event", "event": event_type})
 
             await asyncio.gather(client_to_upstream(), upstream_to_client())
+            if speech_log_id:
+                db = database.SessionLocal()
+                try:
+                    log = db.query(models.SpeechUsageLog).filter(models.SpeechUsageLog.id == speech_log_id).first()
+                    if log:
+                        log.status = "success"
+                        db.add(log)
+                        db.commit()
+                finally:
+                    db.close()
     except WebSocketDisconnect:
         return
     except Exception as error:

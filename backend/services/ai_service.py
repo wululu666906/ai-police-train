@@ -26,7 +26,11 @@ from .multi_role_service import (
 )
 from .role_resolver import is_role_speakable, resolve_scene_role, resolve_scene_roles
 from .dialogue_sequence_service import build_intake_sequence_feedback, merge_sequence_feedback
-from .dialogue_sanitize_service import repair_repetitive_spoken_line, sanitize_spoken_line
+from .dialogue_sanitize_service import (
+    repair_learner_echoed_spoken_line,
+    repair_repetitive_spoken_line,
+    sanitize_spoken_line,
+)
 from .opening_turn_service import infer_session_scene_kind
 from .stage_config_service import find_stage_config, infer_scene_kind, normalize_stages
 from .state_contract_postcheck import apply_contract_postcheck, postcheck_reply_turns, validate_response_against_contract
@@ -166,6 +170,16 @@ SYSTEM_PROMPT_TEMPLATE = """
   "new_fact_revealed": null,
   "is_stage_completed": false
 }}
+"""
+
+
+ROLE_SPEECH_INTEGRITY_PROMPT = """
+【可见台词硬规则】
+你只是在场角色，不是引导学员的助手或教学系统。response 和 follow_up_response 中严禁出现：
+- 指导民警提问的句子，如“你先问”“你再问”“问具体点”“把问题拆开”。
+- 管理对话或宣布转题的句子，如“换个角度”“换个说法”“别一直绕在同一个点上”“别让我重复”。
+- 任何人设字段、信息边界、状态契约、当前诉求等内部术语。
+若没有把握回答，直接以人物身份说自己看见、听见、担心或记不清的内容；不要评价民警的问法。
 """
 
 
@@ -1195,6 +1209,7 @@ def _run_training_turn(
             current_stage_goal=current_stage_goal,
             target_role_name=target_role_name,
             runtime_state=runtime_state,
+            recognized_actions=recognized_actions,
         )
 
     if multi_turn_payload:
@@ -1277,6 +1292,7 @@ def _run_training_turn(
         scene_boundary_block=_format_scene_boundary_block(persona_profile),
         state_contract_block=state_contract_block,
     )
+    system_prompt = f"{system_prompt}\n{ROLE_SPEECH_INTEGRITY_PROMPT}"
 
     if result is None:
         messages = [{"role": "system", "content": system_prompt}, *_build_prompt_history(history)]
@@ -1351,9 +1367,13 @@ def _run_training_turn(
             state_contract,
             role_name=getattr(role, "name", "") or "",
             user_text=prompt_text,
-            use_llm=True,
+            use_llm=False,
         )
         ai_reply = postcheck.get("text") or ai_reply
+        # Contract rewrites are another LLM output boundary. Sanitize again so
+        # internal labels cannot be reintroduced after the initial cleanup.
+        ai_reply = sanitize_spoken_line(ai_reply)
+        ai_reply = repair_learner_echoed_spoken_line(ai_reply, prompt_text)
         if postcheck.get("follow_up") and not str(result.get("follow_up_response") or "").strip():
             result["follow_up_response"] = postcheck["follow_up"]
         runtime_state["last_postcheck"] = {
@@ -1423,8 +1443,11 @@ def _run_training_turn(
             runtime_state.get("role_contracts") or {},
             fallback_contract=state_contract,
             user_text=prompt_text,
-            use_llm=True,
+            use_llm=False,
         )
+        for item in normalized_turns:
+            item["content"] = sanitize_spoken_line(str(item.get("content") or ""))
+            item["content"] = repair_learner_echoed_spoken_line(item["content"], prompt_text)
         role_brains = runtime_state.get("role_brains") if isinstance(runtime_state.get("role_brains"), dict) else {}
         if role_brains:
             from .multi_role_actor import _sanitize_identity_confusion

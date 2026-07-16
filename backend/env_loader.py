@@ -40,7 +40,9 @@ def sanitize_ssl_env() -> None:
 
 def load_backend_env() -> None:
     sanitize_ssl_env()
-    load_dotenv(BACKEND_ENV_PATH, override=True)
+    # Keep explicitly supplied process variables (especially pytest's isolated
+    # DATABASE_URL) authoritative; otherwise tests can target the local DB.
+    load_dotenv(BACKEND_ENV_PATH, override=False)
 
     # 抑制 PaddlePaddle / TensorFlow Lite 的 INFO 日志
     # "INFO: Created TensorFlow Lite XNNPACK delegate for CPU."

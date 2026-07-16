@@ -75,9 +75,13 @@
           </section>
 
           <section class="ops-face-card">
-            <div class="ops-face-photo">
-              <img v-if="faceImageUrl" :src="faceImageUrl" alt="人脸档案照片" />
-              <span v-else>暂无照片</span>
+            <div class="ops-face-photo-list">
+              <div v-for="(url, index) in faceImageUrls" :key="url" class="ops-face-photo">
+                <img :src="url" :alt="`人脸档案照片 ${index + 1}`" loading="lazy" />
+              </div>
+              <div v-if="!faceImageUrls.length" class="ops-face-photo ops-face-photo--empty">
+                <span>暂无照片</span>
+              </div>
             </div>
             <div>
               <span>人脸档案</span>
@@ -122,6 +126,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import request from '../utils/request'
 import { resolveMediaUrl } from '../utils/media'
 import OpsIcon from '../components/OpsIcon.vue'
@@ -188,8 +193,11 @@ type UsageAccount = {
   }
 }
 
+const route = useRoute()
+const initialRole = route.query.role === 'student' || route.query.role === 'admin' ? route.query.role : ''
+const initialAccountId = Number(route.query.account || 0) || null
 const loading = ref(false)
-const roleFilter = ref<'admin' | 'student' | ''>('admin')
+const roleFilter = ref<'admin' | 'student' | ''>(initialRole as 'admin' | 'student' | '')
 const keyword = ref('')
 const usageAccounts = ref<UsageAccount[]>([])
 const selectedId = ref<number | null>(null)
@@ -224,9 +232,13 @@ const withCacheBuster = (url: string, version?: string) => {
   return `${url}${separator}v=${encodeURIComponent(version || String(Date.now()))}`
 }
 
-const faceImageUrl = computed(() => {
+const faceImageUrls = computed(() => {
   const face = detail.value?.profile?.face
-  return withCacheBuster(resolveMediaUrl(face?.image_url), face?.updated_at || detail.value?.usage_version)
+  const version = face?.updated_at || detail.value?.usage_version
+  const urls = [face?.image_url, ...(face?.sample_images || [])]
+    .map((url) => withCacheBuster(resolveMediaUrl(url), version))
+    .filter(Boolean)
+  return Array.from(new Set(urls))
 })
 
 const roleLabel = (role: string) => {
@@ -395,7 +407,10 @@ const fetchUsage = async (silent = false) => {
     usageAccounts.value = Array.isArray(res) ? res : []
     usageVersions.value = computeVersionMap(usageAccounts.value)
     globalVersion.value = computeGlobalVersion(usageAccounts.value)
-    if (!selectedId.value && usageAccounts.value.length) {
+    if (!selectedId.value && initialAccountId && usageAccounts.value.some((item) => item.id === initialAccountId)) {
+      await fetchDetail(initialAccountId)
+      selectedId.value = initialAccountId
+    } else if (!selectedId.value && usageAccounts.value.length) {
       await selectAccount(usageAccounts.value[0])
     } else if (selectedId.value) {
       const stillVisible = usageAccounts.value.some((item) => item.id === selectedId.value)
@@ -726,7 +741,7 @@ onUnmounted(() => {
 
 .ops-face-card {
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
+  grid-template-columns: minmax(160px, 240px) minmax(0, 1fr);
   gap: 14px;
   padding: 0 16px 14px;
   border-bottom: 1px solid #eef2f7;
@@ -768,12 +783,19 @@ onUnmounted(() => {
   margin: 5px 0 0;
 }
 
+.ops-face-photo-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  align-content: start;
+  gap: 8px;
+}
+
 .ops-face-photo {
-  width: 132px;
-  aspect-ratio: 1;
+  width: 100%;
+  min-height: 132px;
+  aspect-ratio: 4 / 5;
   display: grid;
   place-items: center;
-  overflow: hidden;
   border: 1px solid #dbe3ee;
   border-radius: 6px;
   background: #f8fafc;
@@ -785,7 +807,12 @@ onUnmounted(() => {
 .ops-face-photo img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  background: #fff;
+}
+
+.ops-face-photo--empty {
+  aspect-ratio: 1;
 }
 
 .ops-category-tabs {

@@ -1164,6 +1164,17 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
             "evidence_points": case_data.get("evidence_points", []),
             "inconsistencies": case_data.get("inconsistencies", []),
             "parse_warnings": case_data.get("parse_warnings", []),
+            "scene_blueprints": case_data.get("scene_blueprints", []),
+            "ai_workflows": case_data.get("ai_workflows", []),
+            "scene_scripts": [
+                {
+                    "scene_name": item.get("scene_name"),
+                    "fact_ids": item.get("fact_ids", []),
+                    "supplement_ids": item.get("supplement_ids", []),
+                    "script_markdown": item.get("script_markdown", ""),
+                }
+                for item in scenes_data if isinstance(item, dict)
+            ],
             **case_data,
             "case_type": normalized_case_type,
             "scene_role_map": _build_scene_role_map(scenes_data),
@@ -1180,6 +1191,22 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
         )
         db.add(db_case)
         db.flush()
+
+        # Parse/scene AI runs are created before an administrator publishes the
+        # case. Attach their correlation IDs now so the maintainer can trace a
+        # stored case back to its evidence/worldview generation history.
+        workflow_items = case_data.get("ai_workflows") if isinstance(case_data.get("ai_workflows"), list) else []
+        correlation_ids = {
+            str(item.get("correlation_id") or "").strip()
+            for item in workflow_items if isinstance(item, dict) and str(item.get("correlation_id") or "").strip()
+        }
+        if correlation_ids:
+            db.query(models.AIWorkflowRun).filter(models.AIWorkflowRun.correlation_id.in_(correlation_ids)).update(
+                {models.AIWorkflowRun.case_id: db_case.id}, synchronize_session=False
+            )
+            db.query(models.CaseStoryVersion).filter(models.CaseStoryVersion.correlation_id.in_(correlation_ids)).update(
+                {models.CaseStoryVersion.case_id: db_case.id}, synchronize_session=False
+            )
 
         persons_data = structured_data_to_save.get("persons") or []
         created_roles = {}

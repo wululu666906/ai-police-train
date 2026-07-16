@@ -16,15 +16,17 @@ suppressKnownDevConsoleNoise()
 // 配置路由
 const routes = [
   { path: '/login', component: () => import('./views/Login.vue'), meta: { guestOnly: true } },
-  { path: '/ops/login', component: () => import('./views/OpsLogin.vue'), meta: { opsGuestOnly: true } },
+  { path: '/ops/login', redirect: '/login' },
   {
     path: '/ops',
     component: () => import('./views/OpsLayout.vue'),
-    redirect: '/ops/accounts',
+    redirect: '/ops/overview',
     meta: { requiresAuth: true, roles: ['maintainer'] },
     children: [
+      { path: 'overview', component: () => import('./views/OpsOverview.vue') },
       { path: 'accounts', component: () => import('./views/OpsAccounts.vue') },
       { path: 'usage', component: () => import('./views/OpsUsage.vue') },
+      { path: 'system-issues', component: () => import('./views/OpsSystemIssues.vue') },
     ],
   },
   { 
@@ -52,7 +54,7 @@ const routes = [
     ]
   },
   { path: '/', redirect: () => {
-    if (window.location.port === '6670') return getStoredRole() === 'maintainer' ? '/ops/accounts' : '/ops/login'
+    if (window.location.port === '6670') return getStoredRole() === 'maintainer' ? '/ops/overview' : '/login'
     return getStoredRole() === 'student' ? '/student/hall' : '/admin/dashboard'
   } },
   {
@@ -103,7 +105,7 @@ router.onError((error, to) => {
 })
 
 router.beforeEach((to) => {
-  if (to.path === '/login' || to.path === '/ops/login') {
+  if (to.path === '/login') {
     resetLoginRedirectState()
   }
 
@@ -112,30 +114,25 @@ router.beforeEach((to) => {
   const requiredRoles = to.meta.roles as string[] | undefined
 
   if (to.meta.guestOnly && token) {
-    if (role === 'maintainer') return '/ops/accounts'
-    return role === 'student' ? '/student/hall' : '/admin/dashboard'
-  }
-
-  if (to.meta.opsGuestOnly && token) {
-    if (role === 'maintainer') return '/ops/accounts'
+    if (role === 'maintainer') return '/ops/overview'
     return role === 'student' ? '/student/hall' : '/admin/dashboard'
   }
 
   if (to.meta.requiresAuth && !isLoggedIn()) {
-    return to.path.startsWith('/ops') ? '/ops/login' : '/login'
+    return '/login'
   }
 
   if (requiredRoles && role && !requiredRoles.includes(role)) {
     if (requiredRoles.includes('maintainer')) {
       return role === 'student' ? '/student/hall' : '/admin/dashboard'
     }
-    if (role === 'maintainer') return '/ops/accounts'
+    if (role === 'maintainer') return '/ops/overview'
     return role === 'student' ? '/student/hall' : '/admin/dashboard'
   }
 
   if (requiredRoles && !role && token) {
     clearAuth()
-    return to.path.startsWith('/ops') ? '/ops/login' : '/login'
+    return '/login'
   }
 
   return true

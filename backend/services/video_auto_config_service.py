@@ -5,9 +5,45 @@ import json
 import math
 import os
 import re
+import shutil
 from typing import Any, Optional
 
 from .llm_provider import extract_json_payload, extract_message_text
+
+
+def _get_video_analysis_llm() -> tuple[Any, str, str, str]:
+    """Resolve a dedicated provider/model for video analysis."""
+    from .llm_provider import get_chat_completion_binding
+
+    provider = (os.getenv("VIDEO_ANALYSIS_PROVIDER") or "").strip().lower()
+    model = (os.getenv("VIDEO_ANALYSIS_MODEL") or "").strip()
+    return get_chat_completion_binding(provider=provider or None, model=model or None)
+
+
+def _ffmpeg_executable() -> str:
+    configured = os.getenv("FFMPEG_BINARY", "").strip()
+    if configured and not os.path.isabs(configured):
+        configured = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", configured))
+    if configured and (os.path.isfile(configured) or shutil.which(configured)):
+        return configured
+    return shutil.which("ffmpeg") or "ffmpeg"
+
+
+def _ffprobe_executable() -> str:
+    configured = os.getenv("FFPROBE_BINARY", "").strip()
+    if configured:
+        return configured
+    ffmpeg = _ffmpeg_executable()
+    if os.path.isabs(ffmpeg):
+        sibling = os.path.join(os.path.dirname(ffmpeg), "ffprobe.exe" if os.name == "nt" else "ffprobe")
+        if os.path.exists(sibling):
+            return sibling
+    return shutil.which("ffprobe") or "ffprobe"
+
+
+def _ffmpeg_available() -> bool:
+    candidate = _ffmpeg_executable()
+    return bool(shutil.which(candidate) or os.path.isfile(candidate))
 
 
 def _default_assessment_points_for_auto_node(
@@ -1266,7 +1302,7 @@ def _extract_audio_from_video(video_path: str) -> Optional[str]:
         import subprocess
         result = subprocess.run(
             [
-                "ffmpeg", "-y", "-i", video_path,
+                _ffmpeg_executable(), "-y", "-i", video_path,
                 "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
                 audio_path,
             ],
@@ -1288,7 +1324,7 @@ def _detect_scene_changes(video_path: str, threshold: float = 0.35) -> list[floa
     try:
         result = subprocess.run(
             [
-                "ffmpeg", "-i", video_path,
+                _ffmpeg_executable(), "-i", video_path,
                 "-vf", f"select='gt(scene,{threshold})',showinfo",
                 "-vsync", "vfr", "-f", "null", "-",
             ],
@@ -1313,7 +1349,7 @@ def _get_audio_duration(audio_path: str) -> float:
     import subprocess
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            [_ffprobe_executable(), "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
             capture_output=True, text=True, timeout=30,
         )
@@ -1339,7 +1375,7 @@ def _split_audio_to_chunks(audio_path: str, chunk_seconds: int = 10) -> list[dic
         try:
             subprocess.run(
                 [
-                    "ffmpeg", "-y", "-i", audio_path,
+                    _ffmpeg_executable(), "-y", "-i", audio_path,
                     "-ss", str(start), "-t", str(chunk_seconds),
                     "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
                     chunk_path,
@@ -1479,8 +1515,8 @@ def _stage1_scene_understanding(
     第一阶段：场景理解 + 角色标注
     快速分析视频内容结构，识别说话人、场景类型、处置阶段。
     """
-    from .llm_provider import client, get_chat_model, ACTIVE_API_KEY as LLM_API_KEY
-    if not LLM_API_KEY:
+    client, model, _, llm_api_key = _get_video_analysis_llm()
+    if not llm_api_key:
         return None
 
     # 构建精确时间轴文本
@@ -1530,7 +1566,7 @@ def _stage1_scene_understanding(
 
     try:
         response = client.chat.completions.create(
-            model=get_chat_model(),
+            model=model,
             messages=[
                 {"role": "system", "content": "你是警务训练视频分析专家。只输出合法JSON。"},
                 {"role": "user", "content": prompt},
@@ -1557,8 +1593,8 @@ def _stage2_training_design(
     第二阶段：基于场景理解结果，设计训练节点。
     已知角色标注和阶段划分，精确编排训练点。
     """
-    from .llm_provider import client, get_chat_model, ACTIVE_API_KEY as LLM_API_KEY
-    if not LLM_API_KEY:
+    client, model, _, llm_api_key = _get_video_analysis_llm()
+    if not llm_api_key:
         return None
 
     scenario_type = stage1_result.get("scenario_type", "未知场景")
@@ -1661,7 +1697,7 @@ def _stage2_training_design(
 
     try:
         response = client.chat.completions.create(
-            model=get_chat_model(),
+            model=model,
             messages=[
                 {"role": "system", "content": "你是公安实战训练课程编排专家。严格按要求输出合法JSON。核心要求：1)trigger_time必须在答案出现前3秒；2)ai_instructor_hint必须包含场景+任务+要点三部分；3)speech_hint必须是视频原话。"},
                 {"role": "user", "content": prompt},
@@ -1809,8 +1845,8 @@ def _request_llm_analysis(
     Stage 1: 场景理解 + 角色标注（快速）
     Stage 2: 基于结构化理解做训练编排（精确）
     """
-    from .llm_provider import ACTIVE_API_KEY as LLM_API_KEY
-    if not LLM_API_KEY:
+    _, _, _, llm_api_key = _get_video_analysis_llm()
+    if not llm_api_key:
         return None
     if not transcript and not ocr_hints:
         return None
@@ -1865,7 +1901,7 @@ def _single_step_analysis(
     ocr_hints: list[str],
 ) -> Optional[dict[str, Any]]:
     """单步分析回退（当两阶段分析第一步失败时使用）"""
-    from .llm_provider import client, get_chat_model
+    client, model, _, _ = _get_video_analysis_llm()
 
     transcript_text = ""
     if transcript:
@@ -1889,7 +1925,7 @@ OCR：{' / '.join(ocr_hints[:6]) if ocr_hints else '无'}
 
     try:
         response = client.chat.completions.create(
-            model=get_chat_model(),
+            model=model,
             messages=[
                 {"role": "system", "content": "只输出合法JSON。"},
                 {"role": "user", "content": prompt},
@@ -1921,12 +1957,29 @@ def analyze_video_file(
     
     不使用模板兜底，不依赖 Vision 模型。
     """
-    from .llm_provider import ACTIVE_API_KEY as LLM_KEY
+    _, _, _, llm_api_key = _get_video_analysis_llm()
 
-    if not LLM_KEY:
+    if not llm_api_key:
         return {
             "analysis_mode": "error",
             "analysis_error": "未配置 AI API Key（DEEPSEEK_API_KEY），无法进行视频分析。请在 .env 中配置后重试。",
+            "title": title_hint or "未命名视频",
+            "description": "",
+            "video_type": "interactive",
+            "briefing": None,
+            "tags": [],
+            "status": "draft",
+            "nodes": [],
+            "suggested_timestamps": [],
+            "frame_count": 0,
+            "ocr_hints": [],
+            "transcript": [],
+        }
+
+    if not _ffmpeg_available():
+        return {
+            "analysis_mode": "error",
+            "analysis_error": "未检测到 ffmpeg，无法提取视频音频并生成训练节点。请安装 ffmpeg 后重试。",
             "title": title_hint or "未命名视频",
             "description": "",
             "video_type": "interactive",
@@ -1956,6 +2009,18 @@ def analyze_video_file(
 
     # 如果既没有转写也没有 OCR，报错
     if not transcript and not ocr_hints:
+        fallback = _fallback_analysis(
+            title_hint,
+            duration_seconds,
+            preferred_type,
+            scenario_hint,
+            training_variant,
+            difficulty_level,
+        )
+        fallback["frame_count"] = len(frames)
+        fallback["ocr_hints"] = ocr_hints
+        fallback["transcript"] = []
+        return fallback
         return {
             "analysis_mode": "error",
             "analysis_error": "无法从视频中提取语音或文字内容。请确认：1) 视频有声音 2) ffmpeg 已安装 3) DASHSCOPE_API_KEY 已配置。",

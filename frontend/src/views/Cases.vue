@@ -351,6 +351,9 @@
                 这一页用于确认“AI 建议值”和“最终发布值”。
                 你在下方输入框里修改的是最终发布内容；上面的识别卡片和下方建议文案仅作为参考。
               </div>
+              <div v-if="aiWorkflowSummary(aiParsedData.ai_workflow)" class="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-700">
+                <strong>本次 AI 解析工作流：</strong>{{ aiWorkflowSummary(aiParsedData.ai_workflow) }}
+              </div>
 
               <div v-if="fileMeta.name" class="grid grid-cols-1 gap-4 md:grid-cols-3">
                 <div class="preview-card">
@@ -542,6 +545,9 @@
             <div v-if="sceneGenerationWarning(aiParsedData)" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
               <div class="font-bold">{{ sceneGenerationLabel(aiParsedData) }}</div>
               <div class="mt-1">{{ sceneGenerationWarning(aiParsedData) }}</div>
+            </div>
+            <div v-if="aiWorkflowSummary(aiParsedData.scene_ai_workflow)" class="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-700">
+              <strong>本次场景生成工作流：</strong>{{ aiWorkflowSummary(aiParsedData.scene_ai_workflow) }}
             </div>
             <div v-for="(scene, idx) in generatedScenes" :key="idx" class="scene-editor-card">
               <div class="scene-editor-card__top">
@@ -1832,6 +1838,7 @@ const sceneGenerationLabel = (payload: any) => {
   const mode = String(payload?.scene_generation_mode || '')
   if (mode === 'ai_template_first') return 'AI 模板优先场景生成'
   if (mode === 'ai_case_driven' || mode === 'ai') return 'AI 案件驱动场景生成'
+  if (mode === 'ai_text_template') return 'AI 纯文本剧本场景生成'
   if (mode === 'fallback_template_first') return '模板优先兜底场景'
   if (mode === 'fallback_case_driven' || mode === 'fallback_modules' || mode === 'fallback') return '案件驱动兜底场景'
   return '场景生成'
@@ -1839,6 +1846,17 @@ const sceneGenerationLabel = (payload: any) => {
 const sceneGenerationIsFallback = (payload: any) => String(payload?.scene_generation_mode || '').startsWith('fallback')
 const parseWarnings = (payload: any) => Array.isArray(payload?.parse_warnings) ? payload.parse_warnings : []
 const sceneGenerationWarning = (payload: any) => String(payload?.scene_generation_warning || '').trim()
+const aiWorkflowSummary = (workflow: any) => {
+  if (!workflow) return ''
+  const attempts = Array.isArray(workflow.attempts) ? workflow.attempts : []
+  const primary = workflow.primary_provider || attempts[0]?.provider || 'AI'
+  const final = workflow.final_provider || attempts.at(-1)?.provider || primary
+  const failed = Number(workflow.failed_attempts || attempts.filter((item: any) => item?.status !== 'success').length || 0)
+  if (workflow.used_rule_fallback) return `${primary} 已失败 ${failed || attempts.length} 次，当前为规则兜底。`
+  return failed > 0 || primary !== final
+    ? `${primary} 失败 ${failed} 次，已切换至 ${final} 并生成成功。`
+    : `使用 ${final} 生成成功，共尝试 ${attempts.length || 1} 次。`
+}
 
 let personEditorSeed = 1
 
@@ -2688,6 +2706,7 @@ const startParsing = async () => {
       payload.append('source_mode', 'transcript_file')
       const res: any = await request.post('/cases/parse-file', payload, { _skipErrorToast: true } as any)
       aiParsedData.value = res || {}
+      aiParsedData.value.ai_workflows = res?.ai_workflow ? [res.ai_workflow] : []
       aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: true })
       if (parseEngineIsFallback(res)) {
         showToast('本次为规则兜底解析，请人工复核后再发布')
@@ -2704,6 +2723,7 @@ const startParsing = async () => {
 
     const res: any = await request.post('/cases/parse', { text: form.rawText, source_mode: 'plain_case' }, { _skipErrorToast: true } as any)
     aiParsedData.value = res || {}
+    aiParsedData.value.ai_workflows = res?.ai_workflow ? [res.ai_workflow] : []
     aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: true })
     if (parseEngineIsFallback(res)) {
       showToast('本次为规则兜底解析，请人工复核后再发布')
@@ -2744,6 +2764,12 @@ const startGenerating = async () => {
       ...aiParsedData.value,
       scene_generation_mode: res.scene_generation_mode || '',
       scene_generation_warning: res.scene_generation_warning || '',
+      scene_blueprints: res.scene_blueprints || [],
+      scene_ai_workflow: res.ai_workflow || null,
+      ai_workflows: [
+        ...(Array.isArray(aiParsedData.value?.ai_workflows) ? aiParsedData.value.ai_workflows : []),
+        ...(res.ai_workflow ? [res.ai_workflow] : []),
+      ],
     }
     if (sceneGenerationIsFallback(res)) {
       showToast('本次为规则兜底场景，请人工复核场景与角色分配')

@@ -60,8 +60,9 @@ function Start-HiddenPowerShell {
     $psi.WorkingDirectory = $WorkingDirectory
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
-    if ($psi.EnvironmentVariables.ContainsKey("Path") -and $psi.EnvironmentVariables.ContainsKey("PATH")) {
-        $psi.EnvironmentVariables.Remove("PATH")
+    $envVars = $psi.EnvironmentVariables
+    if ($null -ne $envVars -and $envVars.ContainsKey("Path") -and $envVars.ContainsKey("PATH")) {
+        $envVars.Remove("PATH")
     }
     [System.Diagnostics.Process]::Start($psi) | Out-Null
 }

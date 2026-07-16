@@ -67,10 +67,11 @@ def ensure_default_users():
 def ensure_message_schema_compatibility():
     engine = database.engine
     try:
+        # Older project databases predate this table.  Returning early here
+        # leaves every student-case request failing when it aggregates message
+        # activity, so create the table first and only then add newer columns.
+        models.Message.__table__.create(bind=engine, checkfirst=True)
         inspector = inspect(engine)
-        if "messages" not in inspector.get_table_names():
-            return
-
         message_columns = {column["name"] for column in inspector.get_columns("messages")}
         statements = []
         if "speaker_role_id" not in message_columns:
@@ -91,10 +92,12 @@ def ensure_message_schema_compatibility():
 def ensure_role_schema_compatibility():
     engine = database.engine
     try:
+        # The scene-to-role mapping was absent from early databases.  Create
+        # both tables before inspecting columns so old installations can load
+        # scene role data instead of failing at query time.
+        models.Role.__table__.create(bind=engine, checkfirst=True)
+        models.SceneRole.__table__.create(bind=engine, checkfirst=True)
         inspector = inspect(engine)
-        if "roles" not in inspector.get_table_names():
-            return
-
         role_columns = {column["name"] for column in inspector.get_columns("roles")}
         statements = []
         if "person_id" not in role_columns:
@@ -129,6 +132,7 @@ def ensure_user_schema_compatibility():
             "email": "VARCHAR(120)",
             "unit": "VARCHAR(120)",
             "department": "VARCHAR(120)",
+            "account_group": "VARCHAR(80)",
             "bio": "TEXT",
             "last_login_at": "DATETIME",
             "updated_at": "DATETIME",
@@ -179,9 +183,18 @@ def ensure_video_schema_compatibility():
         inspector = inspect(database.engine)
         if "training_videos" in inspector.get_table_names():
             cols = {c["name"] for c in inspector.get_columns("training_videos")}
+            statements = []
             with database.engine.begin() as conn:
                 if "briefing" not in cols:
-                    conn.execute(text("ALTER TABLE training_videos ADD COLUMN briefing TEXT"))
+                    statements.append("ALTER TABLE training_videos ADD COLUMN briefing TEXT")
+                # Video hall serializes these fields for every video.  They
+                # were introduced after existing local databases were created.
+                if "scenario_type" not in cols:
+                    statements.append("ALTER TABLE training_videos ADD COLUMN scenario_type VARCHAR(50)")
+                if "difficulty" not in cols:
+                    statements.append("ALTER TABLE training_videos ADD COLUMN difficulty VARCHAR(20) DEFAULT 'normal'")
+                for statement in statements:
+                    conn.execute(text(statement))
         if "video_training_sessions" in inspector.get_table_names():
             cols = {c["name"] for c in inspector.get_columns("video_training_sessions")}
             statements = []
@@ -494,6 +507,9 @@ def ensure_ops_audit_schema_compatibility():
     try:
         models.OpsAuditLog.__table__.create(bind=database.engine, checkfirst=True)
         models.SpeechUsageLog.__table__.create(bind=database.engine, checkfirst=True)
+        models.AIWorkflowRun.__table__.create(bind=database.engine, checkfirst=True)
+        models.CaseStoryVersion.__table__.create(bind=database.engine, checkfirst=True)
+        models.OpsIssueRecord.__table__.create(bind=database.engine, checkfirst=True)
     except Exception as error:
         print(f"Ops audit/speech usage schema compatibility check failed: {error}")
 

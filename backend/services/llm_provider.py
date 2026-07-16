@@ -2,6 +2,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any, List, Optional
 
 from openai import OpenAI
@@ -16,11 +17,13 @@ EMBEDDING_PROVIDER = (os.getenv("EMBEDDING_PROVIDER") or "").strip().lower()
 QWEN_API_KEY = os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_API_KEY", "")
 QWEN_BASE_URL = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 QWEN_CHAT_MODEL = os.getenv("QWEN_CHAT_MODEL", "qwen-plus")
+QWEN_LONG_OUTPUT_MODEL = os.getenv("QWEN_LONG_OUTPUT_MODEL", QWEN_CHAT_MODEL)
 QWEN_EMBEDDING_MODEL = os.getenv("QWEN_EMBEDDING_MODEL", "text-embedding-v4")
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_CHAT_MODEL = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-chat")
+DEEPSEEK_LONG_OUTPUT_MODEL = os.getenv("DEEPSEEK_LONG_OUTPUT_MODEL", DEEPSEEK_CHAT_MODEL)
 DEEPSEEK_EMBEDDING_MODEL = os.getenv("DEEPSEEK_EMBEDDING_MODEL", "")
 
 _embedding_dimensions_raw = os.getenv("QWEN_EMBEDDING_DIMENSIONS", "1024").strip()
@@ -45,8 +48,22 @@ def _env_float(name: str, default: float) -> float:
     return value if value > 0 else default
 
 
-LLM_TIMEOUT_SECONDS = _env_float("LLM_TIMEOUT_SECONDS", 30.0)
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+LLM_TIMEOUT_SECONDS = _env_float("LLM_TIMEOUT_SECONDS", 300.0)
 EMBEDDING_TIMEOUT_SECONDS = _env_float("EMBEDDING_TIMEOUT_SECONDS", LLM_TIMEOUT_SECONDS)
+CASE_AI_MAX_TOKENS = _env_int("CASE_AI_MAX_TOKENS", 128000)
+DEEPSEEK_MAX_OUTPUT_TOKENS = _env_int("DEEPSEEK_MAX_OUTPUT_TOKENS", CASE_AI_MAX_TOKENS)
+QWEN_MAX_OUTPUT_TOKENS = _env_int("QWEN_MAX_OUTPUT_TOKENS", 32768)
 
 
 def _resolve_provider() -> str:
@@ -180,6 +197,45 @@ def _chat_model_for_provider(provider: str) -> str:
     return ACTIVE_CHAT_MODEL
 
 
+def get_chat_completion_binding(
+    provider: str | None = None,
+    model: str | None = None,
+) -> tuple[OpenAI, str, str, str]:
+    """Return a configured chat client without changing the process-wide default."""
+    normalized = (provider or ACTIVE_PROVIDER).strip().lower()
+    if normalized == "dashscope":
+        normalized = "qwen"
+    if normalized not in {"qwen", "deepseek"}:
+        normalized = ACTIVE_PROVIDER
+
+    api_key = QWEN_API_KEY if normalized == "qwen" else DEEPSEEK_API_KEY
+    return (
+        _chat_client_for_provider(normalized),
+        (model or _chat_model_for_provider(normalized)).strip(),
+        normalized,
+        api_key,
+    )
+
+
+def get_long_output_model(provider: str | None = None) -> str:
+    """Resolve the explicitly configured long-output model for case workflows."""
+    resolved = provider or ACTIVE_PROVIDER
+    if resolved == "qwen":
+        return QWEN_LONG_OUTPUT_MODEL
+    if resolved == "deepseek":
+        return DEEPSEEK_LONG_OUTPUT_MODEL
+    return ACTIVE_CHAT_MODEL
+
+
+def get_provider_max_output_tokens(provider: str | None = None) -> int:
+    resolved = provider or ACTIVE_PROVIDER
+    if resolved == "qwen":
+        return QWEN_MAX_OUTPUT_TOKENS
+    if resolved == "deepseek":
+        return DEEPSEEK_MAX_OUTPUT_TOKENS
+    return CASE_AI_MAX_TOKENS
+
+
 def _provider_has_api_key(provider: str) -> bool:
     if provider == "qwen":
         return bool(QWEN_API_KEY)
@@ -193,6 +249,14 @@ def _provider_fallback_order(provider: str) -> list[str]:
     return [item for item in candidates if item != provider and _provider_has_api_key(item)]
 
 
+class LLMJsonCompletionError(RuntimeError):
+    """Raised only after JSON mode, plain JSON mode, and provider failover fail."""
+
+    def __init__(self, message: str, trace: list[dict[str, Any]] | None = None):
+        super().__init__(message)
+        self.trace = trace or []
+
+
 def _llm_error_summary(exc: Exception) -> str:
     text = str(exc or "").strip()
     text = re.sub(r"sk-[A-Za-z0-9_.-]+", "sk-***", text)
@@ -201,6 +265,21 @@ def _llm_error_summary(exc: Exception) -> str:
 
 def get_chat_model() -> str:
     return ACTIVE_CHAT_MODEL
+
+
+def _response_usage(response: Any) -> dict[str, int | None]:
+    usage = getattr(response, "usage", None)
+    return {
+        "input_tokens": getattr(usage, "prompt_tokens", None) if usage else None,
+        "output_tokens": getattr(usage, "completion_tokens", None) if usage else None,
+    }
+
+
+def _response_finish_reason(response: Any) -> str:
+    try:
+        return str(response.choices[0].finish_reason or "")
+    except Exception:
+        return ""
 
 
 def get_case_completion_model() -> str:
@@ -306,6 +385,8 @@ def create_json_chat_completion(
     llm_client: Optional[OpenAI] = None,
     retries: Optional[int] = None,
     allow_plain_json_fallback: bool = True,
+    return_trace: bool = False,
+    long_output: bool = False,
 ):
     request_messages = list(messages)
     request_messages.insert(
@@ -324,32 +405,94 @@ def create_json_chat_completion(
         "messages": request_messages,
         "response_format": {"type": "json_object"},
         "temperature": temperature,
-        "max_tokens": max_tokens,
+        "max_tokens": max(1, int(max_tokens)),
     }
     if extra_kwargs:
         kwargs.update(extra_kwargs)
 
     provider = _provider_for_client(llm_client)
-    resolved_retries = retries if retries is not None else (4 if provider == "deepseek" else 2)
+    requested_max_tokens = max(1, int(max_tokens))
+    kwargs["max_tokens"] = min(requested_max_tokens, get_provider_max_output_tokens(provider))
+    trace: list[dict[str, Any]] = []
+
+    def _attempt(
+        *,
+        attempt_provider: str,
+        attempt_model: str,
+        mode: str,
+        ordinal: int,
+        max_output_tokens: int,
+        call,
+    ):
+        started_at = datetime.now(timezone.utc)
+        started = time.perf_counter()
+        entry: dict[str, Any] = {
+            "provider": attempt_provider,
+            "model": attempt_model,
+            "mode": mode,
+            "attempt": ordinal,
+            "max_tokens": max_output_tokens,
+            "started_at": started_at.isoformat(),
+        }
+        try:
+            response = call()
+            content = extract_message_text(response)
+            entry.update(
+                {
+                    "status": "success" if content and content.strip() else "empty",
+                    "finish_reason": _response_finish_reason(response),
+                    "response_chars": len(content or ""),
+                    "duration_ms": round((time.perf_counter() - started) * 1000),
+                    **_response_usage(response),
+                }
+            )
+            trace.append(entry)
+            return response, content
+        except Exception as exc:
+            summary = _llm_error_summary(exc)
+            entry.update({
+                "status": "error",
+                "error": summary,
+                "duration_ms": round((time.perf_counter() - started) * 1000),
+            })
+            trace.append(entry)
+            return None, ""
+
+    def _success(response: Any, final_provider: str):
+        result_trace = {
+            "primary_provider": provider,
+            "final_provider": final_provider,
+            "failed_attempts": sum(1 for item in trace if item.get("status") != "success"),
+            "switched_provider": final_provider != provider,
+            "attempts": trace,
+        }
+        return (response, result_trace) if return_trace else response
+
+    # DeepSeek may acknowledge JSON mode with finish_reason=stop but an empty
+    # message. Retrying that identical request rarely changes the outcome; move
+    # quickly to plain JSON mode and then to the configured alternate provider.
+    resolved_retries = retries if retries is not None else (1 if provider == "deepseek" else 2)
     resolved_retries = max(1, int(resolved_retries))
-    last_response = None
+    errors: list[str] = []
     for attempt in range(resolved_retries):
         if attempt > 0 and provider == "deepseek":
             kwargs["temperature"] = min(1.0, float(kwargs.get("temperature", temperature)) + 0.05)
 
         active_client = llm_client or client
-        response = active_client.chat.completions.create(**kwargs)
-        last_response = response
-        content = extract_message_text(response)
+        response, content = _attempt(
+            attempt_provider=provider,
+            attempt_model=str(kwargs["model"]),
+            mode="strict_json",
+            ordinal=attempt + 1,
+            max_output_tokens=int(kwargs["max_tokens"]),
+            call=lambda: active_client.chat.completions.create(**kwargs),
+        )
         if content and content.strip():
-            return response
+            return _success(response, provider)
 
-        finish_reason = ""
-        try:
-            finish_reason = str(response.choices[0].finish_reason or "")
-        except Exception:
-            finish_reason = ""
-
+        finish_reason = trace[-1].get("finish_reason", "") if trace else ""
+        error_text = trace[-1].get("error", "") if trace else ""
+        errors.append(f"{provider} JSON mode: {error_text or 'empty response'}")
         print(
             f"LLM empty JSON response detected: provider={provider}, "
             f"attempt={attempt + 1}, finish_reason={finish_reason or 'unknown'}"
@@ -366,7 +509,7 @@ def create_json_chat_completion(
         ]
         time.sleep(0.35 * (attempt + 1))
 
-    if provider == "deepseek" and allow_plain_json_fallback:
+    if allow_plain_json_fallback:
         fallback_kwargs = {
             "model": model or get_chat_model(),
             "messages": list(request_messages)
@@ -380,30 +523,127 @@ def create_json_chat_completion(
                 }
             ],
             "temperature": min(0.6, temperature),
-            "max_tokens": max_tokens,
+            "max_tokens": min(requested_max_tokens, get_provider_max_output_tokens(provider)),
         }
         if extra_kwargs:
             for key, value in extra_kwargs.items():
                 if key != "response_format":
                     fallback_kwargs[key] = value
         active_client = llm_client or client
-        response = active_client.chat.completions.create(**fallback_kwargs)
-        content = extract_message_text(response)
+        response, content = _attempt(
+            attempt_provider=provider,
+            attempt_model=str(fallback_kwargs["model"]),
+            mode="plain_json",
+            ordinal=resolved_retries + 1,
+            max_output_tokens=int(fallback_kwargs["max_tokens"]),
+            call=lambda: active_client.chat.completions.create(**fallback_kwargs),
+        )
         if content and content.strip():
             print("LLM JSON fallback succeeded with plain-text JSON mode.")
-            return response
+            return _success(response, provider)
+        errors.append(f"{provider} plain JSON mode: {trace[-1].get('error') or 'empty response'}")
 
-    if last_response is not None:
-        return last_response
-    active_client = llm_client or client
-    return active_client.chat.completions.create(**kwargs)
+    # The project can be configured with both providers. Use the alternate one
+    # as an actual failover instead of silently returning an empty response.
+    for fallback_provider in _provider_fallback_order(provider):
+        fallback_client = _chat_client_for_provider(fallback_provider)
+        fallback_model = get_long_output_model(fallback_provider) if long_output else _chat_model_for_provider(fallback_provider)
+        fallback_kwargs = {
+            "model": fallback_model,
+            "messages": list(request_messages)
+            + [{"role": "system", "content": "Return one non-empty valid compact JSON object only."}],
+            "temperature": min(0.6, temperature),
+            "max_tokens": min(requested_max_tokens, get_provider_max_output_tokens(fallback_provider)),
+        }
+        if extra_kwargs:
+            for key, value in extra_kwargs.items():
+                if key != "response_format":
+                    fallback_kwargs[key] = value
+        response, content = _attempt(
+            attempt_provider=fallback_provider,
+            attempt_model=fallback_model,
+            mode="provider_failover_plain_json",
+            ordinal=len(trace) + 1,
+            max_output_tokens=int(fallback_kwargs["max_tokens"]),
+            call=lambda: fallback_client.chat.completions.create(**fallback_kwargs),
+        )
+        if content and content.strip():
+            print(f"LLM provider failover succeeded: from={provider}, to={fallback_provider}")
+            return _success(response, fallback_provider)
+        errors.append(f"{fallback_provider} plain JSON failover: {trace[-1].get('error') or 'empty response'}")
+
+    detail = "; ".join(errors) or f"{provider} returned an empty JSON response"
+    raise LLMJsonCompletionError(f"LLM JSON generation unavailable: {detail}", trace=trace)
+
+
+def create_text_chat_completion(
+    *,
+    messages: List[dict[str, str]],
+    model: Optional[str] = None,
+    temperature: float = 0.3,
+    max_tokens: int = CASE_AI_MAX_TOKENS,
+    llm_client: Optional[OpenAI] = None,
+    return_trace: bool = False,
+    long_output: bool = True,
+):
+    """Plain-text path for long scene templates when JSON transport is unusable."""
+    provider = _provider_for_client(llm_client)
+    requested = max(1, int(max_tokens))
+    providers = [provider, *_provider_fallback_order(provider)]
+    trace: list[dict[str, Any]] = []
+    last_error = ""
+    for ordinal, current_provider in enumerate(providers, start=1):
+        active_client = (llm_client or client) if current_provider == provider else _chat_client_for_provider(current_provider)
+        active_model = (model or get_chat_model()) if current_provider == provider else (
+            get_long_output_model(current_provider) if long_output else _chat_model_for_provider(current_provider)
+        )
+        started = time.perf_counter()
+        entry = {
+            "provider": current_provider,
+            "model": active_model,
+            "mode": "plain_text_template",
+            "attempt": ordinal,
+            "max_tokens": min(requested, get_provider_max_output_tokens(current_provider)),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            response = active_client.chat.completions.create(
+                model=active_model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=entry["max_tokens"],
+            )
+            content = extract_message_text(response)
+            entry.update({
+                "status": "success" if content.strip() else "empty",
+                "finish_reason": _response_finish_reason(response),
+                "response_chars": len(content),
+                "duration_ms": round((time.perf_counter() - started) * 1000),
+                **_response_usage(response),
+            })
+            trace.append(entry)
+            if content.strip():
+                result_trace = {
+                    "primary_provider": provider,
+                    "final_provider": current_provider,
+                    "failed_attempts": sum(1 for item in trace if item.get("status") != "success"),
+                    "switched_provider": current_provider != provider,
+                    "attempts": trace,
+                }
+                return (response, result_trace) if return_trace else response
+            last_error = f"{current_provider} returned empty text"
+        except Exception as exc:
+            last_error = _llm_error_summary(exc)
+            entry.update({"status": "error", "error": last_error, "duration_ms": round((time.perf_counter() - started) * 1000)})
+            trace.append(entry)
+    raise LLMJsonCompletionError(f"LLM text template unavailable: {last_error}", trace=trace)
 
 
 def create_case_completion_chat_completion(
     *,
     messages: List[dict[str, str]],
     temperature: float = 0.2,
-    max_tokens: int = 6000,
+    max_tokens: int = CASE_AI_MAX_TOKENS,
     extra_kwargs: Optional[dict[str, Any]] = None,
 ):
     return create_json_chat_completion(

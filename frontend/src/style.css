@@ -3,6 +3,13 @@
 @tailwind utilities;
 
 :root {
+  /*
+   * The platform's desktop baseline intentionally matches viewing the site at
+   * 110% in a Chromium browser.  `zoom` scales layout as well as painted
+   * content, so controls, dialogs and canvas/video areas stay aligned instead
+   * of only making text larger.
+   */
+  --platform-display-scale: 1.1;
   --primary-color: #003087;
   --primary-hover: #00409a;
   --secondary-color: #e6eeff;
@@ -48,6 +55,21 @@ html,
 body {
   width: 100%;
   overflow-x: hidden;
+}
+
+/* Keep compact touch layouts at their original density. */
+@media (min-width: 768px) {
+  html {
+    zoom: var(--platform-display-scale);
+  }
+
+  /* CSS zoom does not reduce vh units like a browser's native zoom does.
+     Keep the application root at the real visible height to prevent a
+     110%-scaled fixed-height workspace from creating a page scrollbar. */
+  html,
+  body {
+    height: calc(100dvh / var(--platform-display-scale)) !important;
+  }
 }
 
 #app {

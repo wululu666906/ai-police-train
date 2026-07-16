@@ -31,6 +31,7 @@ DEFAULT_RUNTIME_STATE = {
     "role_state_snapshots": {},
     "role_state_deltas": {},
     "role_brains": {},
+    "last_guidance_outcomes": {},
     "last_active_role_ids": [],
     "last_target_role_name": "",
     "state_influence_turn_log": [],
@@ -43,6 +44,7 @@ _RUNTIME_PASSTHROUGH_KEYS = (
     "state_influence_turn_log",
     "opening_delivered",
     "dialogue_mode",
+    "last_guidance_outcomes",
 )
 
 
@@ -156,8 +158,52 @@ def _normalize_role_brains(value: Any) -> dict[str, dict[str, Any]]:
         brain["brain_id"] = str(brain.get("brain_id") or "").strip()
         brain["brain_signature"] = str(brain.get("brain_signature") or "").strip()
         brain["last_topics"] = _dedupe_strings(brain.get("last_topics") or [])
+        brain["recent_response_topics"] = _dedupe_strings(brain.get("recent_response_topics") or brain["last_topics"])
+        brain["recent_user_topics"] = _dedupe_strings(brain.get("recent_user_topics") or [])
         brain["last_self_utterances"] = _dedupe_strings(brain.get("last_self_utterances") or [])
         brain["allowed_identity_terms"] = _dedupe_strings(brain.get("allowed_identity_terms") or [])
+        brain["known_facts"] = str(brain.get("known_facts") or "").strip()
+        brain["shared_case_facts"] = str(brain.get("shared_case_facts") or "").strip()
+        brain["hidden_truths"] = str(brain.get("hidden_truths") or "").strip()
+        brain["does_not_know"] = str(brain.get("does_not_know") or "").strip()
+        brain["role_case_evidence"] = _dedupe_strings(brain.get("role_case_evidence") or [])[-4:]
+        relationship_ledger = brain.get("relationship_ledger") if isinstance(brain.get("relationship_ledger"), list) else []
+        brain["relationship_ledger"] = [
+            {
+                "source": str(item.get("source") or "").strip(),
+                "statement": str(item.get("statement") or "").strip(),
+            }
+            for item in relationship_ledger[-8:]
+            if isinstance(item, dict) and str(item.get("statement") or "").strip()
+        ]
+        public_observations = brain.get("public_observations") if isinstance(brain.get("public_observations"), list) else []
+        brain["public_observations"] = [
+            {
+                "speaker_name": str(item.get("speaker_name") or "").strip(),
+                "speaker_role_id": item.get("speaker_role_id"),
+                "content": str(item.get("content") or "").strip(),
+                "source": str(item.get("source") or "公开场景台词").strip(),
+            }
+            for item in public_observations[-8:]
+            if isinstance(item, dict) and str(item.get("content") or "").strip()
+        ]
+        raw_private_turns = brain.get("private_turns") if isinstance(brain.get("private_turns"), list) else []
+        private_turns: list[dict[str, Any]] = []
+        for item in raw_private_turns[-6:]:
+            if not isinstance(item, dict):
+                continue
+            learner_text = str(item.get("learner_text") or "").strip()
+            self_utterances = _dedupe_strings(item.get("self_utterances") or [])
+            topics = _dedupe_strings(item.get("topics") or [])
+            if learner_text or self_utterances:
+                private_turns.append(
+                    {
+                        "learner_text": learner_text,
+                        "self_utterances": self_utterances[-4:],
+                        "topics": topics[-4:],
+                    }
+                )
+        brain["private_turns"] = private_turns
         brains[key] = brain
     return brains
 

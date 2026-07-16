@@ -55,6 +55,15 @@
             </el-button>
           </div>
         </div>
+        <button
+          v-if="hasMoreScenes"
+          type="button"
+          class="scene-expand-btn"
+          @click="emit('view-detail')"
+        >
+          <span>展开全部场景</span>
+          <span class="scene-expand-btn__count">+{{ hiddenSceneCount }}</span>
+        </button>
     </div>
   </article>
 </template>
@@ -102,6 +111,9 @@ const emit = defineEmits<{
 }>()
 
 const displayScenes = computed(() => (props.caseItem.scenes || []).slice(0, 3))
+const totalScenes = computed(() => (props.caseItem.scenes || []).length)
+const hiddenSceneCount = computed(() => Math.max(0, totalScenes.value - displayScenes.value.length))
+const hasMoreScenes = computed(() => hiddenSceneCount.value > 0)
 
 const formattedDate = computed(() => {
   const raw = props.caseItem.created_at
@@ -259,6 +271,37 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
   background: #f8fafc;
   padding: 0 10px;
   border: 1px solid #f1f5f9;
+}
+
+.scene-expand-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px dashed #bfdbfe;
+  border-radius: 6px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.scene-expand-btn__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .scene-status {

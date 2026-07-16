@@ -882,10 +882,43 @@ def batch_delete_students(
             db.query(models.Message).filter(models.Message.session_id.in_(session_ids)).delete(
                 synchronize_session=False
             )
+            db.query(models.TrainingSessionArtifact).filter(models.TrainingSessionArtifact.session_id.in_(session_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.training_session_id.in_(session_ids)).update(
+                {models.AssignmentSubmission.training_session_id: None},
+                synchronize_session=False,
+            )
             db.query(models.TrainingSession).filter(models.TrainingSession.id.in_(session_ids)).delete(
                 synchronize_session=False
             )
 
+        video_session_ids = [
+            item[0]
+            for item in db.query(models.VideoTrainingSession.id)
+            .filter(models.VideoTrainingSession.user_id.in_(user_ids))
+            .all()
+        ]
+        if video_session_ids:
+            db.query(models.VideoNodeResult).filter(models.VideoNodeResult.session_id.in_(video_session_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(models.VideoTrainingArtifact).filter(models.VideoTrainingArtifact.session_id.in_(video_session_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(models.VideoTrainingSession).filter(models.VideoTrainingSession.id.in_(video_session_ids)).delete(
+                synchronize_session=False
+            )
+
+        db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(models.AssignmentStudentOverride).filter(models.AssignmentStudentOverride.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(models.ClassMembership).filter(models.ClassMembership.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.student_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(models.FaceProfile).filter(models.FaceProfile.student_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(models.SpeechUsageLog).filter(models.SpeechUsageLog.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(models.OpsAuditLog).filter(
+            (models.OpsAuditLog.actor_id.in_(user_ids)) | (models.OpsAuditLog.target_user_id.in_(user_ids))
+        ).delete(synchronize_session=False)
         db.query(models.User).filter(models.User.id.in_(user_ids)).delete(synchronize_session=False)
         db.commit()
 

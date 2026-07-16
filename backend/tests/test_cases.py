@@ -464,7 +464,7 @@ class TestCasesSceneGeneration:
 
         data = response.json()
         assert len(data["scenes"]) >= 2
-        assert data["scene_generation_mode"] in {"ai", "fallback"}
+        assert data["scene_generation_mode"].startswith(("ai", "fallback"))
         assert any("XX路东段废弃仓库" in scene["dispatch_brief"] for scene in data["scenes"])
         assert all(scene["roles"] for scene in data["scenes"])
         assert all(scene["stages"] for scene in data["scenes"])
