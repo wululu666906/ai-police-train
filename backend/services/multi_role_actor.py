@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
 from typing import Any, Optional
 
 import models
 from .case_knowledge_service import load_case_knowledge_bundle
-from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
+from .case_intelligence_service import validate_supporting_knowledge_ids
+from .llm_provider import create_json_chat_completion, extract_message_text, get_fast_generation_kwargs, get_roleplay_model
 from .rag_service import RUNTIME_RETRIEVAL_LIBRARIES, rag_service
 from .persona_engine import (
     analyze_dialogue_momentum,
     build_persona_profile,
     build_role_script,
-    format_persona_block,
+    format_runtime_persona_block,
 )
 from .state_influence_engine import (
     apply_delivery_from_contract,
@@ -69,7 +71,7 @@ ROLE_ACTOR_PROMPT = """
 【真人化反应策略（必须体现）】
 {human_reaction_block}
 
-【案件基准事实（全角色必须一致，不得互相矛盾）】
+【后台一致性规则（不是你可直接复述的案件知识）】
 {canonical_facts_block}
 
 【案件库与角色剧本库】
@@ -101,13 +103,13 @@ ROLE_ACTOR_PROMPT = """
 3. 必须符合你的人设、情绪、配合度；不能串戏、不能全知。
 4. 严禁用第一人称「我」冒充学员点名的其他角色作答；若你是证人/家属且学员在问别人，请用第三人称转述你观察到的情况。
 5. 若 participation=interrupt，第一句可带打断感；若 calm_scene 模式，情绪应略有缓和但仍保角色性格。
-6. 若你是违法嫌疑人、配合度较低、lying_ability 较高，且 hidden_truths 不为空：初期不要主动承认 hidden_truths，可用淡化、推责、记不清或针对案件事实表示质疑来回避；不得反过来指导民警如何提问、要求其换角度或评价其问法。只有当学员明确追问证据、监控、证人、伤情、时间线矛盾时，才允许部分改口或松动。
+6. 若本人证言存在待核实或相互矛盾之处，只能如实说明“记不清、无法确认或需要核实”，不得借此编造、推责或指导民警如何提问。学员明确追问证据、监控、证人、伤情、时间线矛盾时，才可结合本人来源记忆补充。
 7. 若学员只是笼统问“具体点/说清楚”，不要自动交代所有事实；先自然补充一项你亲历、看见或听见的细节。只有确实无法判断学员所指对象时，才能以角色口吻简短表示自己没听明白，不能教导学员如何提问。
 8. 若学员拿出证据或指出矛盾，回复中应体现被击中的心理变化：停顿、犹豫、缩小说法、改口一小步，而不是突然完整认罪。
 9. 必须优先回应【学员刚才说】这一句；【近期对话】只能作为背景，不能把历史里的问题说成学员本轮刚问的问题。
 10. 如果学员刚才是在告知、安抚、说明已采取措施（例如“已经叫救护车/已经通知/请稍等”），应回应这项措施是否让你安心、是否继续催促、需要什么确认；不得说“你们光问”“你刚才问这些”“你不是问了吗”等把历史追问当成本轮提问的话。
 11. 人设配置（如核心顾虑、当前诉求、触发点）仅用于决定语气与反应，禁止在台词中念出字段名、配置原文或「我最怕的就是XXX」这类说明书句式；把担心融入自然口语。
-12. 被问时间、地点时，若【案件基准事实】或【已知】中有标准答案，必须与其一致；证人可说「大概/记不清」，但不得换成不同路口或相差超过1小时的时间。
+12. 被问时间、地点时，只能使用【角色专属案件知识】或【已知】中的信息；没有角色来源支持时必须具体说明无法确认，不得从全案视角补答案。
 13. 严格遵守【视角约束】中的身份边界：若提示你是旁观者/证人，禁止用第一人称「我」替被问对象回答经历。
 14. delivery 取值及含义：
     - normal：平常语气
@@ -128,13 +130,16 @@ ROLE_ACTOR_PROMPT = """
 23. 如果你前几轮已经围绕同一件事抱怨或辩解过，本轮除非学员继续明确追问这件事，否则必须直接回应学员当前问点，或补充一项尚未说过的自然细节；不得评价学员的提问方式、要求学员换话题或指导学员下一步问什么。
 24. 你不是一个共享演员在临时换皮；你是【当前角色大脑 / 身体绑定】里的唯一角色。其他角色的话只是你听到的外部声音，不能变成你的身份、记忆、经历或第一人称立场。
 25. 【公开场景台词】只能用于回应“谁刚才说了什么”，不能据此推断或确认亲属、同事、同案、朋友等关系；除非【身份锚点】明确支持，否则学员在问题里使用的称谓也只是提问方式，不能当成事实复述。
+26. 每轮先看学员当前问题、本人来源记忆事实、当前情绪/信任状态和民警实际动作，再决定补充、犹豫、无法确认或缓和；不得把任何后台配置、标签或规则说出口。
+27. 只要本轮台词涉及案件经过、人物、时间、地点、证据或本人见闻，每条台词必须填写至少一个 supporting_knowledge_ids，且只能引用【案件库与角色剧本库】中属于本人的 ID；没有依据时直接说自己无法确认。
 
 {{
   "utterances": [
-    {{"content": "第一句台词", "delivery": "angry"}},
-    {{"content": "第二句台词", "delivery": "normal"}}
+    {{"content": "第一句台词", "delivery": "angry", "supporting_knowledge_ids": ["K1"]}},
+    {{"content": "第二句台词", "delivery": "normal", "supporting_knowledge_ids": []}}
   ],
-  "inner_thought": "心理活动",
+ "inner_thought": "心理活动",
+  "supporting_knowledge_ids": ["K1"],
   "state_delta": {{"emotion": 0, "cooperation": 0, "risk": 0, "clarity": 0}},
   "new_fact_revealed": null
 }}
@@ -143,6 +148,13 @@ ROLE_ACTOR_PROMPT = """
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _grounding_safe_reply(role: models.Role) -> str:
+    role_type = _text(getattr(role, "role_type", ""))
+    if any(token in role_type for token in ("证人", "目击", "旁观")):
+        return "我只能说我当时亲眼看到、听到的部分，其他情况我不能确认。"
+    return "这件事我只能说明自己清楚的部分，不确定的我不能乱说。"
 
 
 def _format_facts(value: Any) -> str:
@@ -331,9 +343,12 @@ def _role_case_evidence(role: models.Role, case: Optional[models.Case]) -> list[
     if not role_name or not case:
         return []
     structured = _safe_case_structured(case)
+    story_world = structured.get("story_world") if isinstance(structured.get("story_world"), dict) else {}
     sources = [
         _text(getattr(case, "background", "")),
         _text(structured.get("full_narrative")),
+        _text(structured.get("complete_story")),
+        _text(story_world.get("complete_story")),
         _text(structured.get("rawText")),
     ]
     matches: list[str] = []
@@ -429,14 +444,26 @@ def _build_role_brain(
     )
     private_turns = previous.get("private_turns") if isinstance(previous.get("private_turns"), list) else []
     relationship_ledger = _relationship_ledger(role, case, profile)
-    own_known_facts = _format_facts(getattr(role, "knows_facts", []))
-    hidden_truths = _format_facts(getattr(role, "hidden_truths", []))
-    does_not_know = _format_facts(getattr(role, "does_not_know", []))
+    try:
+        role_meta = _safe_json_dict(getattr(role, "persona_meta", None))
+    except Exception:
+        role_meta = {}
+    source_memories = role_meta.get("role_memories") if isinstance(role_meta.get("role_memories"), list) else []
+    memory_statements = [
+        _text(item.get("statement") or item.get("content"))
+        for item in source_memories
+        if isinstance(item, dict) and _text(item.get("statement") or item.get("content"))
+    ]
+    own_known_facts = _format_facts(memory_statements or getattr(role, "knows_facts", []))
+    unresolved = role_meta.get("unresolved_claims") if isinstance(role_meta.get("unresolved_claims"), list) else []
+    hidden_truths = _format_facts([])
+    does_not_know = _format_facts(unresolved or getattr(role, "does_not_know", []))
     role_case_evidence = _role_case_evidence(role, case)
     allowed_identity_terms = _allowed_identity_terms_for_role(role, identity_anchor, profile)
     return {
         **previous,
         "brain_id": f"role:{role_id or role_name}",
+        "thread_id": f"case:{getattr(case, 'id', 'none')}:scene:{getattr(scene, 'id', 'none')}:role:{role_id or role_name}",
         "role_id": role_id,
         "role_name": role_name,
         "person_id": person_id,
@@ -513,9 +540,8 @@ def _format_role_brain_block(role_brain: dict[str, Any]) -> str:
     script_excerpt = _text(brain.get("script_excerpt"))
     if script_excerpt:
         lines.append(f"- 你的专属剧本摘录：{script_excerpt}")
-    role_case_evidence = brain.get("role_case_evidence") if isinstance(brain.get("role_case_evidence"), list) else []
-    if role_case_evidence:
-        lines.append(f"- 只与你有关的案件材料摘录：{' / '.join(_text(item)[:180] for item in role_case_evidence[:3] if _text(item))}")
+    # Do not derive a role's memory by scanning the whole narrative for its
+    # name.  Mentioned-in-document does not mean personally known.
     return "\n".join(lines)
 
 
@@ -1013,6 +1039,7 @@ def _sanitize_identity_confusion(
     role_brain: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, str]]:
     role_name = _role_display_name(role)
+    scene_role_names = [_text(name) for name in (role_brain or {}).get("scene_role_names", []) if _text(name)]
     brain_allowed = (
         role_brain.get("allowed_identity_terms")
         if isinstance(role_brain, dict) and isinstance(role_brain.get("allowed_identity_terms"), list)
@@ -1145,6 +1172,9 @@ def _sanitize_identity_confusion(
         content = _text(item.get("content"))
         if not content:
             continue
+        for other_name in scene_role_names:
+            if other_name != role_name:
+                content = re.sub(rf"(我是|我叫|本人是)\s*{re.escape(other_name)}", rf"\1{role_name}", content)
         if _has_unsupported_self_relation_claim(content, supported_terms):
             cleaned.append(
                 {
@@ -1685,7 +1715,7 @@ def generate_role_dialogue(
     role_brain: Optional[dict[str, Any]] = None,
     use_llm: bool = True,
 ) -> dict[str, Any]:
-    utterance_count = max(1, min(8, int(cast_entry.get("utterance_count") or 1)))
+    utterance_count = max(1, min(4, int(cast_entry.get("utterance_count") or 1)))
     profile = build_persona_profile(role, case, scene)
     script = build_role_script(role, case, scene, profile)
     role_brain = _build_role_brain(
@@ -1703,20 +1733,10 @@ def generate_role_dialogue(
         peer_utterances,
     )
     knowledge_bundle = load_case_knowledge_bundle(case, role)
-    retrieval_query = rag_service.build_retrieval_query(
-        user_text,
-        getattr(case, "case_type", "") if case else "",
-        getattr(case, "title", "") if case else "",
-        getattr(scene, "name", "") if scene else "",
-        current_stage,
-        history=[getattr(message, "content", "") for message in history[-4:]],
-    )
-    retrieval_bundle = rag_service.build_context_block(
-        retrieval_query,
-        limit=4,
-        libraries=RUNTIME_RETRIEVAL_LIBRARIES,
-        max_chars=2800,
-    )
+    retrieval_bundle = {"context_block": ""}
+    if os.getenv("ROLE_AI_USE_RAG", "0").strip().lower() in {"1", "true", "yes"}:
+        retrieval_query = rag_service.build_retrieval_query(user_text, getattr(case, "case_type", "") if case else "", getattr(case, "title", "") if case else "", getattr(scene, "name", "") if scene else "", current_stage, history=[getattr(message, "content", "") for message in history[-3:]])
+        retrieval_bundle = rag_service.build_context_block(retrieval_query, limit=2, libraries=RUNTIME_RETRIEVAL_LIBRARIES, max_chars=1200)
     momentum = analyze_dialogue_momentum(
         user_text,
         profile,
@@ -1726,7 +1746,7 @@ def generate_role_dialogue(
     )
     momentum = enrich_momentum_with_axis_deltas(momentum, user_text, recognized_actions, profile)
     state_contract = build_state_contract(role_snapshot, momentum, profile)
-    persona_block = format_persona_block(profile, script, {}, momentum)
+    persona_block = format_runtime_persona_block(role, profile)
     role_brain_block = _format_role_brain_block(role_brain)
     identity_anchor_block = _text(role_brain.get("identity_anchor")) or _format_identity_anchor(role, case, profile)
     state_contract_block = format_state_contract_block(state_contract)
@@ -1769,22 +1789,25 @@ def generate_role_dialogue(
             state_contract_block=state_contract_block,
             human_reaction_block=human_reaction_block,
             perspective_hint=perspective_hint,
-            canonical_facts_block=format_canonical_facts_block(case, scene),
-            case_knowledge_block=knowledge_bundle.get("knowledge_block") or "暂无案件知识库内容",
-            retrieved_knowledge_block=retrieval_bundle.get("context_block") or "本轮未召回到可用法规、SOP或教学资料。",
+            # Do not leak the canonical whole-case ledger into the actor
+            # prompt. It is reserved for post-generation validation.
+            canonical_facts_block="全案基准不会直接提供给角色；只允许使用下方角色专属案件知识和本轮公开信息。",
+            case_knowledge_block=(knowledge_bundle.get("knowledge_block") or "暂无案件知识库内容")[:1200],
+            retrieved_knowledge_block=(retrieval_bundle.get("context_block") or "（本角色未启用外部检索）")[:1200],
             knows_facts=_text(role_brain.get("known_facts")) or "（无）",
             hidden_truths=_text(role_brain.get("hidden_truths")) or "（无）",
             does_not_know=_text(role_brain.get("does_not_know")) or "（无）",
             peer_utterances_block=format_peer_utterances_block(peer_utterances or []),
             public_scene_block=_format_public_scene_block(public_scene_utterances),
-            history_block=_build_history_block(history),
+            history_block=_build_history_block(history[-6:]),
         )
         try:
             response = create_json_chat_completion(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.82,
-                model=get_chat_model(),
-                max_tokens=1800,
+                model=get_roleplay_model(),
+                max_tokens=max(256, int(os.getenv("ROLE_AI_MAX_TOKENS", "700"))),
+                extra_kwargs=get_fast_generation_kwargs(),
             )
             raw = extract_message_text(response) or ""
             match = re.search(r"\{[\s\S]*\}", raw)
@@ -1793,9 +1816,22 @@ def generate_role_dialogue(
             cleaned = []
             for item in utterances[:utterance_count]:
                 if isinstance(item, dict) and _text(item.get("content")):
-                    cleaned.append({"content": _text(item.get("content")), "delivery": _text(item.get("delivery")) or "normal"})
+                    grounding = validate_supporting_knowledge_ids(
+                        knowledge_bundle.get("role_knowledge_view") or {},
+                        item.get("supporting_knowledge_ids"),
+                        require_support=bool((knowledge_bundle.get("role_knowledge_view") or {}).get("ledger")),
+                    )
+                    content = _text(item.get("content"))
+                    if not grounding["valid"]:
+                        content = _grounding_safe_reply(role)
+                        grounding["repaired"] = True
+                    cleaned.append({
+                        "content": content,
+                        "delivery": _text(item.get("delivery")) or "normal",
+                        "grounding": grounding,
+                    })
                 elif isinstance(item, str) and _text(item):
-                    cleaned.append({"content": _text(item), "delivery": "normal"})
+                    cleaned.append({"content": _text(item), "delivery": "normal", "grounding": {"requested": [], "valid": True, "invalid": []}})
             if cleaned:
                 cleaned = sanitize_utterances(cleaned)
                 cleaned = _sanitize_utterances_for_last_user(cleaned, user_text)
@@ -1832,6 +1868,7 @@ def generate_role_dialogue(
                         reaction,
                     ),
                     "new_fact_revealed": payload.get("new_fact_revealed"),
+                    "grounding": {"requested": [], "valid": True, "invalid": []},
                 }
         except Exception:
             output = None
@@ -1908,6 +1945,7 @@ def generate_role_dialogue(
         "guidance_recognized": _guidance_is_effective(momentum, recognized_actions),
         "guidance_acknowledged": reaction.get("key") == "guided_acknowledgement",
         "role_brain": role_brain,
+        "grounding": [item.get("grounding") for item in output["utterances"] if isinstance(item, dict) and item.get("grounding")],
     }
 
 

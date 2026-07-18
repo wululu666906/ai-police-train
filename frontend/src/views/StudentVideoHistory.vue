@@ -531,6 +531,13 @@ async function fetchHistory() {
     if (typeFilter.value !== 'all') {
       params.category = typeFilter.value
     }
+    if (keyword.value.trim()) {
+      params.keyword = keyword.value.trim()
+    }
+    if (dateRange.value.length === 2) {
+      params.date_start = dateRange.value[0]
+      params.date_end = dateRange.value[1]
+    }
 
     const res = await request.get('/video-training/history', { params }) as any
     // 兼容旧格式（数组）和新格式（对象）

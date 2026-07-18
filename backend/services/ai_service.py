@@ -1,10 +1,11 @@
 import json
+import os
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 import models
-from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
+from .llm_provider import create_json_chat_completion, extract_message_text, get_roleplay_model
 from .case_knowledge_service import load_case_knowledge_bundle
 from .rag_service import RUNTIME_RETRIEVAL_LIBRARIES, rag_service
 from .persona_engine import (
@@ -17,6 +18,7 @@ from .persona_engine import (
     evaluate_truth_stage,
     format_memory_block,
     format_persona_block,
+    format_runtime_persona_block,
     summarize_session_memory,
 )
 from .multi_role_service import (
@@ -34,6 +36,7 @@ from .dialogue_sanitize_service import (
 from .opening_turn_service import infer_session_scene_kind
 from .stage_config_service import find_stage_config, infer_scene_kind, normalize_stages
 from .state_contract_postcheck import apply_contract_postcheck, postcheck_reply_turns, validate_response_against_contract
+from .hybrid_state_machine import derive_hybrid_state
 from .state_influence_metrics import build_session_metrics, record_turn_metrics
 from .state_influence_engine import (
     blend_four_axis_state,
@@ -58,13 +61,14 @@ SYSTEM_PROMPT_TEMPLATE = """
 你正在扮演“{role_name}”，不是助手，不是旁白，而是案件中的真实角色本人。
 
 你必须遵守以下规则：
-1. 只能依据案件事实、角色设定、当前训练阶段、警方已掌握信息和本轮输入作答。
+1. 先直接回答学员本轮正在问的内容；只能依据案件事实、角色设定、当前训练阶段、警方已掌握信息和本轮输入作答。
 2. 不要凭空补全案件，不要主动把整条案情一次性说完。
 3. 回答要像真实人类：允许犹豫、改口、情绪化、打断、补半句，但不能机械重复。
 4. 优先按照“当前场景行为模式 + 场景边界”决定说什么、保留什么、被问到什么才会松口，不要机械套用固定三栏。
 5. 不知道的就说不知道；不愿主动说的可以保留，但保留方式要自然。
 6. 如果警方问得笼统，就给有限且口语化的回答；如果问得具体、击中软肋或动作触发了你，才逐步多说一点。
 7. 只输出一个合法 JSON 对象，不要输出解释和 markdown。
+8. 决策优先级固定为：本轮问题与事实 > 信息边界 > 当前状态 > 行为风格。人设字段只能影响语气、长度和披露程度，不能改变回答主题。
 
 案件信息：
 - 案发时间：{case_time}
@@ -79,21 +83,8 @@ SYSTEM_PROMPT_TEMPLATE = """
 知识库实时召回（法律法规 / SOP / 教学资料）：
 {retrieved_knowledge_block}
 
-角色画像：
-- 角色类型：{role_type}
-- 行为原型：{behavior_archetype}
-- 互动风格：{interaction_style}
-- 当前状态：{status}
-- 性格特点：{personality}
-- 说话风格：{speaking_style}
-- 对警方基本态度：{police_attitude}
-- 当前诉求：{current_goal}
-- 核心顾虑：{core_concern}
-- 关系压力：{relationship_pressure}
-- 对外口径：{surface_stance}
-- 受压反应：{pressure_response}
-- 情绪触发点：{trigger_points}
-- 可安抚点：{calming_points}
+最小角色上下文（仅用于影响本轮语气和披露，不得在台词中复述）：
+{runtime_persona_block}
 - 当前情绪：{emotion}/100
 - 当前信任：{trust}/100
 - 当前配合：{cooperation}/100
@@ -106,16 +97,6 @@ SYSTEM_PROMPT_TEMPLATE = """
 - 当前场景边界：
 {scene_boundary_block}
 
-兼容旧事实边界：
-你确实知道的事实：
-{knows_facts}
-
-你确实不知道或无法确认的事实：
-{does_not_know}
-
-你可能不愿主动说出的事实：
-{hidden_truths}
-
 当前训练阶段：
 - 阶段名称：{current_stage}
 - 阶段目标：{current_stage_goal}
@@ -127,15 +108,6 @@ SYSTEM_PROMPT_TEMPLATE = """
 {stage_action_catalog}
 - 警方已掌握的信息：
 {revealed_info}
-
-深层人物建模：
-{persona_block}
-
-角色约束：
-{role_archetype_block}
-
-场景约束：
-{scene_mode_block}
 
 近期记忆：
 {memory_block}
@@ -1166,21 +1138,26 @@ def _run_training_turn(
     runtime_state["case_knowledge_doc_ids"] = [
         item.get("id") for item in knowledge_bundle.get("documents", []) if item.get("id")
     ]
-    retrieval_query = rag_service.build_retrieval_query(
-        prompt_text,
-        getattr(case, "case_type", "") if case else "",
-        getattr(case, "title", "") if case else "",
-        getattr(scene, "name", "") if scene else "",
-        current_stage,
-        current_stage_goal,
-        history=[getattr(message, "content", "") for message in history[-4:]],
-    )
-    retrieval_bundle = rag_service.build_context_block(
-        retrieval_query,
-        limit=5,
-        libraries=RUNTIME_RETRIEVAL_LIBRARIES,
-        max_chars=3600,
-    )
+    # Runtime retrieval may contain case-library documents.  Supplying that
+    # context to an actor bypasses the role's epistemic boundary, therefore
+    # role dialogue uses only its explicit role view by default.
+    retrieval_bundle = {"hits": [], "context_block": "", "error": ""}
+    if os.getenv("ROLE_AI_USE_RAG", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        retrieval_query = rag_service.build_retrieval_query(
+            prompt_text,
+            getattr(case, "case_type", "") if case else "",
+            getattr(case, "title", "") if case else "",
+            getattr(scene, "name", "") if scene else "",
+            current_stage,
+            current_stage_goal,
+            history=[getattr(message, "content", "") for message in history[-4:]],
+        )
+        retrieval_bundle = rag_service.build_context_block(
+            retrieval_query,
+            limit=5,
+            libraries=RUNTIME_RETRIEVAL_LIBRARIES,
+            max_chars=3600,
+        )
     runtime_state["rag_retrieved_doc_ids"] = [
         item.get("id") for item in retrieval_bundle.get("hits", []) if item.get("id")
     ]
@@ -1255,6 +1232,7 @@ def _run_training_turn(
         timeline=_build_timeline_text(structured),
         case_knowledge_block=knowledge_bundle.get("knowledge_block") or "暂无案件知识库内容",
         retrieved_knowledge_block=retrieval_bundle.get("context_block") or "本轮未召回到可用法规、SOP或教学资料；继续依据案件事实和角色边界作答。",
+        runtime_persona_block=format_runtime_persona_block(role, persona_profile),
         knows_facts=_format_list_block(getattr(role, "knows_facts", [])),
         does_not_know=_format_list_block(getattr(role, "does_not_know", [])),
         hidden_truths=_format_list_block(getattr(role, "hidden_truths", [])),
@@ -1309,7 +1287,7 @@ def _run_training_turn(
         response = create_json_chat_completion(
             messages=messages,
             temperature=generation_temperature_for_contract(state_contract),
-            model=get_chat_model(),
+            model=get_roleplay_model(),
             max_tokens=2200,
         )
         raw_content = _extract_response_text(response) or ""
@@ -1349,6 +1327,13 @@ def _run_training_turn(
     runtime_state["state_snapshot"] = current_state_snapshot
     state_contract = build_state_contract(blended_state, momentum, persona_profile)
     runtime_state["state_contract"] = state_contract
+    runtime_state["hybrid_state"] = derive_hybrid_state(
+        blended_state,
+        phase=current_stage,
+        recognized_actions=recognized_actions,
+        missing_objectives=[],
+        previous=runtime_state.get("hybrid_state"),
+    )
 
     ai_reply = sanitize_spoken_line(str(result.get("response") or "……").strip() or "……")
     if not planned_reply_turns:
@@ -1399,6 +1384,13 @@ def _run_training_turn(
         recognized_actions=recognized_actions,
         case_type=case_type,
     )
+    runtime_state["hybrid_state"] = derive_hybrid_state(
+        blended_state,
+        phase=current_stage,
+        recognized_actions=recognized_actions,
+        missing_objectives=stage_coverage.get("missing") or [],
+        previous=runtime_state.get("hybrid_state"),
+    )
     stage_completed = _should_allow_stage_completion(
         bool(result.get("is_stage_completed", False)),
         transient_history,
@@ -1414,6 +1406,12 @@ def _run_training_turn(
         recognized_actions=recognized_actions,
         case_type=case_type,
     )
+    hybrid_state = runtime_state.get("hybrid_state") if isinstance(runtime_state.get("hybrid_state"), dict) else {}
+    if not hybrid_state.get("transition_allowed", True):
+        # The model may suggest completion, but the compiled training state
+        # remains authoritative: unresolved safety risk or objectives block
+        # phase advancement.
+        stage_completed = False
 
     stage_names = _list_stage_names(scene, case_type=case_type)
     is_last_stage = not stage_names or current_stage == stage_names[-1]
@@ -1703,6 +1701,7 @@ def _run_training_turn(
         ),
         "truth_stage": truth_stage,
         "state_contract": state_contract,
+        "hybrid_state": runtime_state.get("hybrid_state"),
         "state_influence_metrics": build_session_metrics(runtime_state),
         "last_postcheck": runtime_state.get("last_postcheck"),
     }

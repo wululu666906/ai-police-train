@@ -2,6 +2,23 @@ import io
 import json
 
 import models
+from routers.video_training import _resolve_correct_choice_index
+
+
+def test_choice_answer_text_resolves_to_its_option_index():
+    node = models.VideoNode(
+        node_index=0,
+        title="选择题",
+        trigger_time=1,
+        node_type="choice",
+        choice_options=json.dumps([
+            {"label": "A", "text": "错误做法"},
+            {"label": "B", "text": "正确做法"},
+        ], ensure_ascii=False),
+        correct_answer="正确做法",
+    )
+
+    assert _resolve_correct_choice_index(node, {}) == 1
 
 
 def ensure_interactive_video(db_session, title: str = "视频实训测试用例") -> models.TrainingVideo:
@@ -105,7 +122,10 @@ class TestVideoTraining:
         assert submit_response.status_code == 200
         assert submit_response.json()["result"] == "pass"
 
-        resume_response = client.post(f"/video-training/start/{video.id}", headers=student_headers)
+        # Sessions are intentionally isolated by training mode.  Resume the
+        # exam session with the same explicit mode instead of falling back to
+        # the practice-mode default.
+        resume_response = client.post(f"/video-training/start/{video.id}?mode=exam", headers=student_headers)
         assert resume_response.status_code == 200
         resume_payload = resume_response.json()
         assert resume_payload["resumed"] is True
@@ -125,7 +145,7 @@ class TestVideoTraining:
 
         history_response = client.get("/video-training/history", headers=student_headers)
         assert history_response.status_code == 200
-        history_items = history_response.json()
+        history_items = history_response.json()["items"]
         history_item = next(item for item in history_items if item["video_id"] == video.id)
         assert history_item["node_total"] == 3
 
@@ -406,7 +426,7 @@ class TestVideoTraining:
 
         history_response = client.get("/video-training/history", headers=student_headers)
         assert history_response.status_code == 200
-        history_item = next(item for item in history_response.json() if item["id"] == session_id)
+        history_item = next(item for item in history_response.json()["items"] if item["id"] == session_id)
         assert len(history_item["artifacts"]) == 1
         assert history_item["artifacts"][0]["id"] == second_payload["id"]
 

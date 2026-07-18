@@ -7,9 +7,9 @@ os.environ.setdefault("GLOG_minloglevel", "2")
 import json
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
@@ -27,7 +27,23 @@ load_backend_env()
 app = FastAPI(title="AI虚拟警情模拟训练平台 - API", version="1.0.0")
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_to_chinese_response(_: Request, error: Exception):
+    """Prevent framework/dependency errors from being displayed in English."""
+    print(f"Unhandled server error: {error}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "服务器处理请求时发生异常，请稍后重试。"},
+    )
+
+
 def ensure_default_users():
+    # Demo accounts with known passwords must never be created implicitly in a
+    # deployed environment.  Existing accounts are left untouched; this flag
+    # is only for an explicitly requested local demo setup.
+    if os.getenv("SEED_DEMO_ACCOUNTS", "0").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+
     db = database.SessionLocal()
     try:
         users = db.query(models.User).all()
@@ -149,6 +165,13 @@ def ensure_user_schema_compatibility():
                     connection.execute(text(statement))
     except Exception as error:
         print(f"User schema compatibility check failed: {error}")
+
+
+def ensure_account_group_schema_compatibility():
+    try:
+        models.AccountGroup.__table__.create(bind=database.engine, checkfirst=True)
+    except Exception as error:
+        print(f"Account group schema compatibility check failed: {error}")
 
 
 def ensure_classroom_schema_compatibility():
@@ -595,6 +618,10 @@ if os.path.exists(os.path.join(frontend_dist, "assets")):
 
 @app.on_event("startup")
 def on_startup():
+    # The project has no standalone migration module.  Create tables from the
+    # current metadata, then run the compatibility helpers below for columns
+    # added to existing SQLite installations.
+    models.Base.metadata.create_all(bind=database.engine)
     ensure_user_schema_compatibility()
     ensure_message_schema_compatibility()
     ensure_role_schema_compatibility()
@@ -602,6 +629,7 @@ def on_startup():
     ensure_classroom_schema_compatibility()
     ensure_video_schema_compatibility()
     ensure_face_schema_compatibility()
+    ensure_account_group_schema_compatibility()
     ensure_ops_audit_schema_compatibility()
     ensure_default_users()
     if os.getenv("FACE_ENGINE_WARMUP", "0").strip().lower() in {"1", "true", "yes", "on"}:

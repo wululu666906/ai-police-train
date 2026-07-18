@@ -20,6 +20,7 @@ DEFAULT_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "800"))
 DEFAULT_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "150"))
 DEFAULT_TOP_K = int(os.getenv("RAG_TOP_K", "5"))
 DEFAULT_CONTEXT_MAX_CHARS = int(os.getenv("RAG_CONTEXT_MAX_CHARS", "3600"))
+FORCE_LOCAL_FALLBACK = os.getenv("RAG_FORCE_LOCAL_FALLBACK", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 CASE_LIBRARY = "case_library"
 ROLE_LIBRARY = "role_library"
@@ -213,6 +214,8 @@ class RAGService:
         return datetime.now(timezone.utc).isoformat()
 
     def _build_embeddings(self, texts: List[str]) -> List[List[float]]:
+        if FORCE_LOCAL_FALLBACK:
+            return [self._fallback_embedding(text) for text in texts]
         try:
             return create_embeddings(texts)
         except Exception as exc:
@@ -596,8 +599,9 @@ class RAGService:
                     if str((item.get("metadata") or {}).get("source_id") or item.get("id") or "").strip()
                 }
             ),
-            "embedding_available": not bool(self.embedding_error),
+            "embedding_available": not FORCE_LOCAL_FALLBACK and not bool(self.embedding_error),
             "embedding_error": self.embedding_error,
+            "embedding_mode": "local_fallback" if FORCE_LOCAL_FALLBACK else "provider",
             "libraries": libraries,
         }
 
@@ -759,6 +763,8 @@ class RAGService:
             return []
 
         filters = self._build_filters(libraries=libraries, where=where)
+        if FORCE_LOCAL_FALLBACK:
+            return self._search_without_embeddings(query, limit, filters)
         try:
             query_embedding = self._build_embeddings([query])
         except Exception:

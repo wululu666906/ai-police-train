@@ -5,6 +5,7 @@ from typing import Any
 
 import models
 from .rag_service import rag_service
+from .case_intelligence_service import build_role_knowledge_view, format_role_knowledge_view
 
 
 CASE_SOURCE = "case_library"
@@ -251,9 +252,32 @@ def load_case_knowledge_bundle(case: models.Case | None, role: models.Role | Non
     if not case or not getattr(case, "id", None):
         return {"documents": [], "knowledge_block": "暂无案件知识库内容"}
 
-    ids = [case_info_id(case.id)]
+    # Actor models must not receive the full case document.  It contains facts
+    # that a witness, suspect or caller may not know.  The full case remains
+    # available to validators and admin tools; roleplay receives a scoped view.
+    ids = [] if role else [case_info_id(case.id)]
     if role and getattr(role, "id", None):
         ids.append(role_script_id(case.id, role.id))
+
+    if role:
+        structured = _safe_json_loads(getattr(case, "structured_data", None), {})
+        persona_meta = _safe_json_loads(getattr(role, "persona_meta", None), {})
+        role_payload = {
+            **persona_meta,
+            "knows_facts": _to_list(getattr(role, "knows_facts", None)),
+            "hidden_truths": _to_list(getattr(role, "hidden_truths", None)),
+            "does_not_know": _to_list(getattr(role, "does_not_know", None)),
+        }
+        role_view = build_role_knowledge_view(
+            structured,
+            role_name=str(getattr(role, "name", "") or "相关人员"),
+            role_payload=role_payload,
+        )
+        return {
+            "documents": [],
+            "knowledge_block": format_role_knowledge_view(role_view),
+            "role_knowledge_view": role_view,
+        }
 
     docs = rag_service.get_documents_by_ids(ids)
     if len(docs) < len(ids):

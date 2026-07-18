@@ -9,7 +9,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
-from sqlalchemy import func, select
+from sqlalchemy import bindparam, func, inspect, select, text
 from sqlalchemy.orm import Session
 
 import database
@@ -261,6 +261,105 @@ def serialize_account(user: models.User) -> schemas.OpsAccountOverview:
     return schemas.OpsAccountOverview.model_validate(user)
 
 
+def delete_optional_table_rows(db: Session, table_name: str, column_name: str, values: list[int]) -> None:
+    ids = [int(value) for value in values if int(value or 0) > 0]
+    if not ids or not inspect(db.get_bind()).has_table(table_name):
+        return
+    statement = text(f'DELETE FROM "{table_name}" WHERE "{column_name}" IN :ids').bindparams(
+        bindparam("ids", expanding=True)
+    )
+    db.execute(statement, {"ids": ids})
+
+
+def delete_assignment_owned_data(db: Session, assignment_ids: list[int]) -> None:
+    ids = [int(value) for value in assignment_ids if int(value or 0) > 0]
+    if not ids:
+        return
+    db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.assignment_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.AssignmentStudentOverride).filter(models.AssignmentStudentOverride.assignment_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.TrainingAssignmentCase).filter(models.TrainingAssignmentCase.assignment_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.TrainingAssignmentScene).filter(models.TrainingAssignmentScene.assignment_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.TrainingAssignment).filter(models.TrainingAssignment.id.in_(ids)).delete(synchronize_session=False)
+
+
+def delete_video_training_sessions(db: Session, session_ids: list[int]) -> None:
+    ids = [int(value) for value in session_ids if int(value or 0) > 0]
+    if not ids:
+        return
+    db.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.video_session_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.VideoNodeResult).filter(models.VideoNodeResult.session_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.VideoTrainingArtifact).filter(models.VideoTrainingArtifact.session_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.VideoTrainingSession).filter(models.VideoTrainingSession.id.in_(ids)).delete(synchronize_session=False)
+
+
+def delete_video_owned_data(db: Session, video_ids: list[int]) -> None:
+    ids = [int(value) for value in video_ids if int(value or 0) > 0]
+    if not ids:
+        return
+    session_ids = [
+        row[0]
+        for row in db.query(models.VideoTrainingSession.id)
+        .filter(models.VideoTrainingSession.video_id.in_(ids))
+        .all()
+    ]
+    delete_video_training_sessions(db, session_ids)
+    node_ids = [
+        row[0]
+        for row in db.query(models.VideoNode.id)
+        .filter(models.VideoNode.video_id.in_(ids))
+        .all()
+    ]
+    if node_ids:
+        db.query(models.VideoNodeResult).filter(models.VideoNodeResult.node_id.in_(node_ids)).delete(synchronize_session=False)
+        db.query(models.VideoNode).filter(models.VideoNode.id.in_(node_ids)).delete(synchronize_session=False)
+    db.query(models.TrainingVideo).filter(models.TrainingVideo.id.in_(ids)).delete(synchronize_session=False)
+
+
+def delete_admin_owned_data(db: Session, user_id: int) -> None:
+    class_ids = [
+        row[0]
+        for row in db.query(models.TrainingClass.id)
+        .filter(models.TrainingClass.created_by == user_id)
+        .all()
+    ]
+    if class_ids:
+        assignment_ids = [
+            row[0]
+            for row in db.query(models.TrainingAssignment.id)
+            .filter(models.TrainingAssignment.class_id.in_(class_ids))
+            .all()
+        ]
+        delete_assignment_owned_data(db, assignment_ids)
+        db.query(models.ClassAnnouncement).filter(models.ClassAnnouncement.class_id.in_(class_ids)).delete(synchronize_session=False)
+        db.query(models.ClassMembership).filter(models.ClassMembership.class_id.in_(class_ids)).delete(synchronize_session=False)
+        db.query(models.TrainingClass).filter(models.TrainingClass.id.in_(class_ids)).delete(synchronize_session=False)
+
+    assignment_ids = [
+        row[0]
+        for row in db.query(models.TrainingAssignment.id)
+        .filter(models.TrainingAssignment.created_by == user_id)
+        .all()
+    ]
+    delete_assignment_owned_data(db, assignment_ids)
+
+    announcement_ids = [
+        row[0]
+        for row in db.query(models.ClassAnnouncement.id)
+        .filter(models.ClassAnnouncement.created_by == user_id)
+        .all()
+    ]
+    if announcement_ids:
+        db.query(models.ClassAnnouncement).filter(models.ClassAnnouncement.id.in_(announcement_ids)).delete(synchronize_session=False)
+
+    video_ids = [
+        row[0]
+        for row in db.query(models.TrainingVideo.id)
+        .filter(models.TrainingVideo.uploaded_by == user_id)
+        .all()
+    ]
+    delete_video_owned_data(db, video_ids)
+
+
 def write_ops_audit(
     db: Session,
     *,
@@ -288,6 +387,25 @@ def apply_profile_fields(user: models.User, payload) -> None:
     for field, max_length in PROFILE_FIELD_LIMITS.items():
         if field in payload.model_fields_set:
             setattr(user, field, clean_text(getattr(payload, field), max_length))
+
+
+def normalize_account_group_name(value: str | None) -> str:
+    return clean_text(value, 80) or ""
+
+
+def ensure_account_group_registry(db: Session, name: str | None, *, description: str | None = None) -> models.AccountGroup | None:
+    group_name = normalize_account_group_name(name)
+    if not group_name:
+        return None
+    group = db.query(models.AccountGroup).filter(models.AccountGroup.name == group_name).first()
+    if group:
+        if description is not None and clean_text(description, 200) is not None and group.description != clean_text(description, 200):
+            group.description = clean_text(description, 200)
+        return group
+    group = models.AccountGroup(name=group_name, description=clean_text(description, 200))
+    db.add(group)
+    db.flush()
+    return group
 
 
 def normalize_import_role(role: str | None) -> str:
@@ -877,6 +995,12 @@ def delete_student_owned_data(db: Session, user_id: int) -> None:
         .all()
     ]
     if training_session_ids:
+        delete_optional_table_rows(db, "face_verification_sessions", "session_id", training_session_ids)
+        delete_optional_table_rows(db, "multimodal_events", "session_id", training_session_ids)
+        delete_optional_table_rows(db, "multimodal_session_metrics", "session_id", training_session_ids)
+        db.query(models.FaceVerificationEvent).filter(
+            models.FaceVerificationEvent.session_id.in_(training_session_ids)
+        ).delete(synchronize_session=False)
         db.query(models.Message).filter(models.Message.session_id.in_(training_session_ids)).delete(synchronize_session=False)
         db.query(models.TrainingSessionArtifact).filter(models.TrainingSessionArtifact.session_id.in_(training_session_ids)).delete(synchronize_session=False)
         db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.training_session_id.in_(training_session_ids)).update(
@@ -891,14 +1015,14 @@ def delete_student_owned_data(db: Session, user_id: int) -> None:
         .filter(models.VideoTrainingSession.user_id == user_id)
         .all()
     ]
-    if video_session_ids:
-        db.query(models.VideoNodeResult).filter(models.VideoNodeResult.session_id.in_(video_session_ids)).delete(synchronize_session=False)
-        db.query(models.VideoTrainingArtifact).filter(models.VideoTrainingArtifact.session_id.in_(video_session_ids)).delete(synchronize_session=False)
-        db.query(models.VideoTrainingSession).filter(models.VideoTrainingSession.id.in_(video_session_ids)).delete(synchronize_session=False)
+    delete_video_training_sessions(db, video_session_ids)
 
     db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.user_id == user_id).delete(synchronize_session=False)
     db.query(models.AssignmentStudentOverride).filter(models.AssignmentStudentOverride.user_id == user_id).delete(synchronize_session=False)
     db.query(models.ClassMembership).filter(models.ClassMembership.user_id == user_id).delete(synchronize_session=False)
+    delete_optional_table_rows(db, "face_verification_sessions", "student_id", [user_id])
+    delete_optional_table_rows(db, "multimodal_events", "student_id", [user_id])
+    delete_optional_table_rows(db, "multimodal_session_metrics", "student_id", [user_id])
     db.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.student_id == user_id).delete(synchronize_session=False)
     db.query(models.FaceProfile).filter(models.FaceProfile.student_id == user_id).delete(synchronize_session=False)
     db.query(models.SpeechUsageLog).filter(models.SpeechUsageLog.user_id == user_id).delete(synchronize_session=False)
@@ -945,22 +1069,69 @@ def list_account_groups(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(require_maintainer_user),
 ):
-    rows = (
+    registry_rows = db.query(models.AccountGroup).order_by(models.AccountGroup.name.asc()).all()
+    user_rows = (
         db.query(models.User.account_group, func.count(models.User.id))
         .filter(models.User.role.in_(VISIBLE_ROLES))
         .group_by(models.User.account_group)
-        .order_by(models.User.account_group.asc())
         .all()
     )
+    counts = {str(name or "").strip(): int(count or 0) for name, count in user_rows if str(name or "").strip()}
+    ungrouped_count = sum(int(count or 0) for name, count in user_rows if not str(name or "").strip())
     groups = []
-    ungrouped_count = 0
-    for name, count in rows:
-        clean_name = str(name or "").strip()
-        if clean_name:
-            groups.append({"name": clean_name, "count": int(count or 0)})
-        else:
-            ungrouped_count += int(count or 0)
+    seen: set[str] = set()
+    for row in registry_rows:
+        group_name = normalize_account_group_name(row.name)
+        if not group_name or group_name in seen:
+            continue
+        seen.add(group_name)
+        groups.append({
+            "id": row.id,
+            "name": group_name,
+            "description": row.description,
+            "count": counts.get(group_name, 0),
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        })
+    for group_name, count in sorted(counts.items(), key=lambda item: item[0]):
+        if group_name not in seen:
+            groups.append({
+                "id": None,
+                "name": group_name,
+                "description": None,
+                "count": count,
+                "created_at": None,
+                "updated_at": None,
+            })
+            seen.add(group_name)
     return {"groups": groups, "ungrouped_count": ungrouped_count}
+
+
+@router.post("/account-groups", response_model=schemas.AccountGroupOverview)
+def create_account_group(
+    payload: schemas.AccountGroupCreate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_maintainer_user),
+):
+    name = normalize_account_group_name(payload.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="请输入分组名称")
+    existing = db.query(models.AccountGroup).filter(models.AccountGroup.name == name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="分组已存在")
+    group = ensure_account_group_registry(db, name, description=payload.description)
+    db.flush()
+    write_ops_audit(db, actor=current_user, action="create_account_group", detail={"name": name, "description": group.description})
+    db.commit()
+    db.refresh(group)
+    return schemas.AccountGroupOverview(
+        id=group.id,
+        name=group.name,
+        description=group.description,
+        count=0,
+        created_at=group.created_at,
+        updated_at=group.updated_at,
+    )
 
 
 @router.get("/accounts/usage")
@@ -1052,7 +1223,8 @@ def create_account(
     if db.query(models.User).filter(models.User.username == username).first():
         raise HTTPException(status_code=400, detail="账号已存在")
 
-    user = models.User(username=username, hashed_password=hash_password(password), role=role)
+    account_group = ensure_account_group_registry(db, getattr(payload, "account_group", None))
+    user = models.User(username=username, hashed_password=hash_password(password), role=role, account_group=account_group.name if account_group else None)
     apply_profile_fields(user, payload)
     db.add(user)
     db.flush()
@@ -1083,6 +1255,7 @@ def batch_create_student_accounts(
         if db.query(models.User).filter(models.User.username == username).first():
             skipped_usernames.append(username)
             continue
+        ensure_account_group_registry(db, account_group)
         db.add(models.User(username=username, hashed_password=hash_password(password), role="student", account_group=account_group))
         created_usernames.append(username)
     if created_usernames:
@@ -1142,11 +1315,13 @@ def commit_import_accounts(
             username=item.username,
             hashed_password=hash_password(item.password or "123456"),
             role=item.role,
+            account_group=item.account_group,
         )
         for field, max_length in PROFILE_FIELD_LIMITS.items():
             setattr(user, field, clean_text(getattr(item, field), max_length))
         db.add(user)
         db.flush()
+        ensure_account_group_registry(db, item.account_group)
         write_ops_audit(db, actor=current_user, action="import_create_account", target_user=user, detail={
             "username": item.username,
             "role": item.role,
@@ -1168,6 +1343,8 @@ def commit_import_accounts(
     )
 
 
+@router.post("/accounts/batch-delete/", response_model=schemas.OpsAccountBatchDeleteResponse, include_in_schema=False)
+@router.post("/accounts/batch_delete", response_model=schemas.OpsAccountBatchDeleteResponse, include_in_schema=False)
 @router.post("/accounts/batch-delete", response_model=schemas.OpsAccountBatchDeleteResponse)
 def batch_delete_accounts(
     payload: schemas.OpsAccountBatchDeleteRequest,
@@ -1197,8 +1374,10 @@ def batch_delete_accounts(
             "role": user.role,
             "batch": True,
         })
-        if user.role == "student":
+        if user.role in MANAGED_ROLES:
             delete_student_owned_data(db, user.id)
+        if user.role == "admin":
+            delete_admin_owned_data(db, user.id)
         delete_user_references(db, user.id)
         db.delete(user)
 
@@ -1242,6 +1421,9 @@ def update_account(
         user.role = role
 
     apply_profile_fields(user, payload)
+    if "account_group" in payload.model_fields_set:
+        account_group = ensure_account_group_registry(db, getattr(payload, "account_group", None))
+        user.account_group = account_group.name if account_group else None
     user.updated_at = datetime.utcnow()
     db.add(user)
     write_ops_audit(db, actor=current_user, action="update_account", target_user=user, detail={
@@ -1252,6 +1434,62 @@ def update_account(
     db.commit()
     db.refresh(user)
     return serialize_account(user)
+
+
+@router.post("/account-groups/delete/", response_model=schemas.AccountGroupDeleteResponse, include_in_schema=False)
+@router.post("/account-groups/delete", response_model=schemas.AccountGroupDeleteResponse)
+def delete_account_group(
+    payload: schemas.AccountGroupDeleteRequest,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_maintainer_user),
+):
+    group_name = normalize_account_group_name(payload.name)
+    if not group_name:
+        raise HTTPException(status_code=400, detail="请输入分组名称")
+    group = db.query(models.AccountGroup).filter(models.AccountGroup.name == group_name).first()
+    affected_users = db.query(models.User).filter(models.User.account_group == group_name).all()
+    if not group and not affected_users:
+        raise HTTPException(status_code=404, detail="分组不存在")
+    deleted_accounts_count = 0
+    skipped_usernames: list[str] = []
+    if payload.delete_accounts:
+        for user in affected_users:
+            if user.role == "maintainer" or user.id == current_user.id:
+                skipped_usernames.append(user.username)
+                continue
+            if user.role in MANAGED_ROLES:
+                delete_student_owned_data(db, user.id)
+            if user.role == "admin":
+                delete_admin_owned_data(db, user.id)
+            delete_user_references(db, user.id)
+            write_ops_audit(db, actor=current_user, action="delete_account", detail={
+                "target_user_id": user.id,
+                "username": user.username,
+                "role": user.role,
+                "group_deleted": group_name,
+            })
+            db.delete(user)
+            deleted_accounts_count += 1
+    else:
+        for user in affected_users:
+            user.account_group = None
+            db.add(user)
+
+    if group:
+        db.delete(group)
+    write_ops_audit(db, actor=current_user, action="delete_account_group", detail={
+        "name": group_name,
+        "delete_accounts": bool(payload.delete_accounts),
+        "deleted_accounts_count": deleted_accounts_count,
+        "skipped_accounts_count": len(skipped_usernames),
+    })
+    db.commit()
+    return schemas.AccountGroupDeleteResponse(
+        deleted_group=group_name,
+        deleted_accounts_count=deleted_accounts_count,
+        skipped_accounts_count=len(skipped_usernames),
+        skipped_usernames=skipped_usernames,
+    )
 
 
 @router.post("/accounts/{account_id}/reset-password")
@@ -1296,8 +1534,10 @@ def delete_account(
         "username": deleted_username,
         "role": deleted_role,
     })
-    if user.role == "student":
+    if user.role in MANAGED_ROLES:
         delete_student_owned_data(db, user.id)
+    if user.role == "admin":
+        delete_admin_owned_data(db, user.id)
     delete_user_references(db, user.id)
 
     db.delete(user)

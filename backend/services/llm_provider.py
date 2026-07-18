@@ -22,9 +22,14 @@ QWEN_EMBEDDING_MODEL = os.getenv("QWEN_EMBEDDING_MODEL", "text-embedding-v4")
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-DEEPSEEK_CHAT_MODEL = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-chat")
+# DeepSeek routing: default AI jobs use the low-latency Flash model.  Case
+# reconstruction/scene writing and role performance use Pro explicitly.
+DEEPSEEK_CHAT_MODEL = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash")
+DEEPSEEK_CASE_MODEL = os.getenv("DEEPSEEK_CASE_MODEL", "deepseek-v4-pro")
+DEEPSEEK_ROLEPLAY_MODEL = os.getenv("DEEPSEEK_ROLEPLAY_MODEL", "deepseek-v4-pro")
 DEEPSEEK_LONG_OUTPUT_MODEL = os.getenv("DEEPSEEK_LONG_OUTPUT_MODEL", DEEPSEEK_CHAT_MODEL)
 DEEPSEEK_EMBEDDING_MODEL = os.getenv("DEEPSEEK_EMBEDDING_MODEL", "")
+DEEPSEEK_REASONING_MODE = (os.getenv("DEEPSEEK_REASONING_MODE") or "disabled").strip().lower()
 
 _embedding_dimensions_raw = os.getenv("QWEN_EMBEDDING_DIMENSIONS", "1024").strip()
 EMBEDDING_DIMENSIONS: Optional[int]
@@ -225,6 +230,30 @@ def get_long_output_model(provider: str | None = None) -> str:
     if resolved == "deepseek":
         return DEEPSEEK_LONG_OUTPUT_MODEL
     return ACTIVE_CHAT_MODEL
+
+
+def get_case_workflow_model(provider: str | None = None) -> str:
+    """Model for evidence extraction, case worldview and scene generation."""
+    resolved = provider or ACTIVE_PROVIDER
+    if resolved == "deepseek":
+        return DEEPSEEK_CASE_MODEL
+    return get_long_output_model(resolved)
+
+
+def get_roleplay_model(provider: str | None = None) -> str:
+    """Model for live simulated-role dialogue and cast direction."""
+    resolved = provider or ACTIVE_PROVIDER
+    if resolved == "deepseek":
+        return DEEPSEEK_ROLEPLAY_MODEL
+    return _chat_model_for_provider(resolved)
+
+
+def get_fast_generation_kwargs(provider: str | None = None) -> dict[str, Any]:
+    """Low-latency provider control; set mode=default when unsupported."""
+    resolved = provider or ACTIVE_PROVIDER
+    if resolved == "deepseek" and DEEPSEEK_REASONING_MODE in {"disabled", "off", "false", "0"}:
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    return {}
 
 
 def get_provider_max_output_tokens(provider: str | None = None) -> int:
@@ -474,6 +503,7 @@ def create_json_chat_completion(
     resolved_retries = retries if retries is not None else (1 if provider == "deepseek" else 2)
     resolved_retries = max(1, int(resolved_retries))
     errors: list[str] = []
+    primary_unavailable = False
     for attempt in range(resolved_retries):
         if attempt > 0 and provider == "deepseek":
             kwargs["temperature"] = min(1.0, float(kwargs.get("temperature", temperature)) + 0.05)
@@ -493,6 +523,11 @@ def create_json_chat_completion(
         finish_reason = trace[-1].get("finish_reason", "") if trace else ""
         error_text = trace[-1].get("error", "") if trace else ""
         errors.append(f"{provider} JSON mode: {error_text or 'empty response'}")
+        if any(marker in str(error_text).lower() for marker in ("insufficient balance", "error code: 402", "quota exhausted")):
+            # A balance/quota failure cannot be repaired by changing prompt or
+            # JSON mode.  Move directly to the configured alternate provider.
+            primary_unavailable = True
+            break
         print(
             f"LLM empty JSON response detected: provider={provider}, "
             f"attempt={attempt + 1}, finish_reason={finish_reason or 'unknown'}"
@@ -509,7 +544,7 @@ def create_json_chat_completion(
         ]
         time.sleep(0.35 * (attempt + 1))
 
-    if allow_plain_json_fallback:
+    if allow_plain_json_fallback and not primary_unavailable:
         fallback_kwargs = {
             "model": model or get_chat_model(),
             "messages": list(request_messages)
@@ -527,6 +562,9 @@ def create_json_chat_completion(
         }
         if extra_kwargs:
             for key, value in extra_kwargs.items():
+                # This is the primary provider's plain-JSON retry.  The
+                # alternate provider is not selected until the loop below, so
+                # do not reference fallback_provider in this scope.
                 if key != "response_format":
                     fallback_kwargs[key] = value
         active_client = llm_client or client
@@ -585,6 +623,7 @@ def create_text_chat_completion(
     llm_client: Optional[OpenAI] = None,
     return_trace: bool = False,
     long_output: bool = True,
+    extra_kwargs: Optional[dict[str, Any]] = None,
 ):
     """Plain-text path for long scene templates when JSON transport is unusable."""
     provider = _provider_for_client(llm_client)
@@ -607,12 +646,15 @@ def create_text_chat_completion(
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            response = active_client.chat.completions.create(
-                model=active_model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=entry["max_tokens"],
-            )
+            request_kwargs = {
+                "model": active_model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": entry["max_tokens"],
+            }
+            if extra_kwargs and current_provider == provider:
+                request_kwargs.update(extra_kwargs)
+            response = active_client.chat.completions.create(**request_kwargs)
             content = extract_message_text(response)
             entry.update({
                 "status": "success" if content.strip() else "empty",

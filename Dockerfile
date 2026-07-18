@@ -36,6 +36,7 @@ RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
 COPY backend/ ./
+COPY data/face_models /app/data/face_models
 COPY frontend /app/frontend
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 

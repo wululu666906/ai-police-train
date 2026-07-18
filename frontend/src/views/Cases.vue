@@ -192,7 +192,7 @@
                 <div class="cpv-person__info">
                   <span class="cpv-person__name">{{ person.name }}</span>
                   <span class="cpv-person__type">{{ person.role_type || person.role || '相关人员' }}</span>
-                  <span v-if="person.behavior_archetype" class="cpv-person__arch">{{ person.behavior_archetype }}</span>
+                  <span class="cpv-person__arch">人物线 {{ Array.isArray(person.role_memories) ? person.role_memories.length : 0 }} 条</span>
                 </div>
               </div>
             </div>
@@ -448,7 +448,7 @@
                   <div>
                     <div class="section-block__eyebrow">第三步</div>
                     <div class="section-title">AI 角色模板预览</div>
-                    <p class="mt-1 text-sm text-slate-500">AI 已为案件人物补出更完整的人设草案。发布前请完成最后一轮人工审核，可直接删角色、改姓名、改身份和人物设定。</p>
+                    <p class="mt-1 text-sm text-slate-500">程序已从原文提取人物身份与来源事实，不会自动编造人物画像。可直接删改角色；确需人物模板时再人工选择行为原型。</p>
                   </div>
                   <div class="flex items-center gap-2">
                     <van-tag type="primary" plain>{{ parsedPersons(aiParsedData).length }} 人</van-tag>
@@ -485,7 +485,9 @@
                           <div class="flex min-w-0 items-center gap-3">
                             <div class="text-base font-bold text-slate-800">{{ person.name || '未命名角色' }}</div>
                             <van-tag plain type="primary">{{ person.role_type || person.role || '相关人员' }}</van-tag>
-                            <van-tag plain>{{ person.behavior_archetype || '求助配合型' }}</van-tag>
+                            <van-tag plain :type="Array.isArray(person.role_memories) && person.role_memories.length ? undefined : 'warning'">人物线 {{ Array.isArray(person.role_memories) ? person.role_memories.length : 0 }} 条</van-tag>
+                            <van-tag v-if="person.source_verification === 'pending_review'" plain type="warning">待核实：可入场复核</van-tag>
+                            <van-tag v-else-if="person.source_verification" plain type="success">原文可回指</van-tag>
                           </div>
                           <div class="flex items-center gap-2">
                             <span class="persona-stack-toggle" @click.stop="togglePersonCollapsed(person)">{{ person._collapsed ? '展开详情' : '收起详情' }}</span>
@@ -519,19 +521,16 @@
             <section class="section-block section-block--violet">
               <div class="section-block__header">
                 <div>
-                  <div class="section-block__eyebrow">辅助文案</div>
-                  <div class="section-block__title">训练入口提示文案</div>
+                  <div class="section-block__eyebrow">案件叙事</div>
+                  <div class="section-block__title">完整故事剧情</div>
                 </div>
               </div>
-              <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
               <div class="rounded-2xl border border-slate-100 bg-white p-5">
-                <div class="section-title">接警简报建议</div>
-                <div class="preview-body">{{ aiParsedData.dispatch_brief_suggestion || '暂无' }}</div>
-              </div>
-              <div class="rounded-2xl border border-slate-100 bg-white p-5">
-                <div class="section-title">现场第一印象建议</div>
-                <div class="preview-body">{{ aiParsedData.first_impression_suggestion || '暂无' }}</div>
-              </div>
+                <div class="section-title">案件完整故事剧情</div>
+                <WordDocumentView
+                  :content="aiParsedData.narrative_document?.content || aiParsedData.complete_story || aiParsedData.story_world?.complete_story || aiParsedData.full_narrative || ''"
+                  title="案件完整故事剧情"
+                />
               </div>
             </section>
           </div>
@@ -810,7 +809,7 @@
                           <span class="role-audit-header__sep">·</span>
                           <span>创建时间：{{ editableCase.created_at ? formatDateTime(editableCase.created_at) : '暂无' }}</span>
                           <span class="role-audit-header__sep">·</span>
-                          <span>行为原型：{{ activeEditablePerson.behavior_archetype || '求助配合型' }}</span>
+                          <span>人物线：{{ Array.isArray(activeEditablePerson.role_memories) ? activeEditablePerson.role_memories.length : 0 }} 条</span>
                         </div>
                       </div>
                       <div class="role-audit-header__actions">
@@ -1188,6 +1187,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import RoleCompactForm from '../components/RoleCompactForm.vue'
+import WordDocumentView from '../components/WordDocumentView.vue'
 import {
   buildRoleCompactSummary,
   expandRoleCompactToPerson,
@@ -1206,7 +1206,6 @@ import {
 } from '../utils/assessmentPoints'
 import {
   dedupeStringList,
-  normalizeBehaviorTemplate,
   PERSON_ALIAS_TO_CANONICAL,
   PERSON_CANONICAL_FIELDS,
 } from '../utils/personaTemplate'
@@ -1327,9 +1326,8 @@ const setPersonReviewStatus = (person: any, status: string) => {
 const getPersonCompletenessHint = (person: any) => {
   if (!person) return '信息不完整'
   const missing: string[] = []
-  if (!String(person.current_goal || '').trim()) missing.push('诉求')
-  if (!String(person.core_concern || '').trim()) missing.push('顾虑')
-  if (!(person.trigger_points?.length)) missing.push('触发点')
+  if (!(Array.isArray(person.role_memories) && person.role_memories.length)) missing.push('人物线 / 证言')
+  if (!(Array.isArray(person.response_constraints) && person.response_constraints.length)) missing.push('回答边界')
   if (missing.length === 0) return '信息较完整'
   return `缺少：${missing.join('、')}`
 }
@@ -1343,12 +1341,9 @@ const runPersonAiReview = async (person: any) => {
     // 用已有接口生成角色摘要，这里先做前端简单分析
     await new Promise((resolve) => setTimeout(resolve, 800))
     const hints: string[] = []
-    if (!String(person.current_goal || '').trim()) hints.push('「当前诉求」为空，建议补充该角色在事件中最想达到的目标。')
-    if (!String(person.core_concern || '').trim()) hints.push('「最怕后果」为空，建议补充该角色最担忧的风险或后果。')
-    if (!(person.trigger_points?.length)) hints.push('「触发点」为空，建议补充能让该角色情绪激动的关键话题。')
-    if (!(person.calming_points?.length)) hints.push('「安抚点」为空，建议补充能让该角色情绪平复的应对方式。')
-    if (!(person.boundary_primary?.length || person.known_key_points?.length)) hints.push('「可核实事实」为空，建议补充该角色愿意主动提供的信息。')
-    if (!hints.length) hints.push('当前角色画像较完整，各核心字段均已填写，可以进入场景配置环节。')
+    if (!(Array.isArray(person.role_memories) && person.role_memories.length)) hints.push('当前角色还没有来源人物线，请补充其陈述、亲历、所见所闻。')
+    if (!(Array.isArray(person.response_constraints) && person.response_constraints.length)) hints.push('当前角色还没有回答边界，建议限制为本人可确认的证言与公开信息。')
+    if (!hints.length) hints.push('当前角色人物线与回答边界已具备，可以进入场景配置环节。')
     person._ai_review_text = hints.join('\n\n')
   } finally {
     person._ai_review_loading = false
@@ -1598,7 +1593,7 @@ const showAssessmentWarnings = (warnings: any) => {
 const generateAssessmentPointsForScene = async (scene: any, sceneIndex: number) => {
   if (!scene || !editableCase.value) return
   const narrative = String(
-    editableCase.value.original_content || editableCase.value.full_narrative || editableCase.value.background || ''
+    editableCase.value.original_content || editableCase.value.narrative_document?.content || editableCase.value.full_narrative || editableCase.value.background || ''
   ).trim()
   if (!narrative) {
     showToast('请先在「案情原文」填写案件材料，再为本场景生成考察点')
@@ -1832,8 +1827,17 @@ const getEditablePersonCardStyle = (_index: number, person: any) => {
   }
 }
 
-const parseEngineLabel = (payload: any) => String(payload?.parse_engine || '') === 'ai' ? 'AI 结构化解析' : '规则兜底解析'
-const parseEngineIsFallback = (payload: any) => String(payload?.parse_engine || '') !== 'ai'
+const parseEngineLabel = (payload: any) => {
+  const engine = String(payload?.parse_engine || '')
+  if (engine === 'ai_text_first') return 'AI 主叙事 + 程序提取'
+  if (engine === 'ai') return 'AI 结构化解析（旧版）'
+  if (engine === 'rule_text_first') return '程序提取（AI 主叙事未成功）'
+  return '规则兜底解析'
+}
+const parseEngineIsFallback = (payload: any) => {
+  if (typeof payload?.ai_workflow?.used_rule_fallback === 'boolean') return payload.ai_workflow.used_rule_fallback
+  return !String(payload?.parse_engine || '').startsWith('ai')
+}
 const sceneGenerationLabel = (payload: any) => {
   const mode = String(payload?.scene_generation_mode || '')
   if (mode === 'ai_template_first') return 'AI 模板优先场景生成'
@@ -1892,17 +1896,11 @@ const normalizePersonEditors = (persons: any, options: { collapsed?: boolean } =
       role: String(person?.role || '').trim(),
       role_type: String(compactFields.role_type || '相关人员').trim() || '相关人员',
       status: String(compactFields.status || '正常').trim() || '正常',
-      weakness: String(compactFields.core_concern || '').trim(),
-      current_need: String(compactFields.current_goal || '').trim(),
-      authority_attitude: String(compactFields.police_attitude || '').trim(),
-      stress_response: String(compactFields.pressure_response || '').trim(),
-      public_mask: String(compactFields.surface_stance || '').trim(),
-      private_drive: String(compactFields.current_goal || '').trim(),
-      trigger_topics: dedupeStringList(compactFields.trigger_points),
-      knows_facts: dedupeStringList(compactFields.knows_facts),
-      does_not_know: dedupeStringList(compactFields.does_not_know || compactFields.cannot_answer),
-      hidden_truths: dedupeStringList(compactFields.hidden_truths),
-      cannot_answer: dedupeStringList(compactFields.cannot_answer || compactFields.does_not_know),
+      role_memories: Array.isArray(compactFields.role_memories) ? compactFields.role_memories : [],
+      knowledge_ledger: Array.isArray(compactFields.knowledge_ledger) ? compactFields.knowledge_ledger : [],
+      unresolved_claims: Array.isArray(compactFields.unresolved_claims) ? compactFields.unresolved_claims : [],
+      response_constraints: Array.isArray(compactFields.response_constraints) ? compactFields.response_constraints : [],
+      role_template_version: 'source_memory_v2',
       _original_name: String(person?.name || '').trim(),
       _editor_id: Number(person?._editor_id) || personEditorSeed++,
       _collapsed: typeof person?._collapsed === 'boolean' ? person._collapsed : Boolean(options.collapsed),
@@ -1917,57 +1915,12 @@ const buildEmptyPerson = (index: number, options: { collapsed?: boolean } = {}) 
   role: '相关人员',
   role_type: '相关人员',
   status: '正常',
-  behavior_archetype: '求助配合型',
-  police_attitude: '主动求助',
-  interaction_style: '配合型',
-  personality: '',
-  speaking_style: '',
-  scene_behavior_mode: '核查取证型',
-  emotion_level: '中',
-  cooperation_level: '中',
-  risk_level: '中',
-  clarity_level: '中',
-  init_emotion: 50,
-  init_trust: 30,
-  init_risk: 50,
-  init_expression_clarity: 52,
-  knows_facts: [],
-  does_not_know: [],
-  hidden_truths: [],
-  known_key_points: [],
-  withheld_key_points: [],
-  conflict_core: [],
-  acceptable_outcomes: [],
-  no_go_topics: [],
-  trigger_sources: [],
-  concerned_targets: [],
-  taboo_actions: [],
-  escalation_actions: [],
-  deescalation_conditions: [],
-  iq_level: '中等',
-  eq_level: '中等',
-  lying_ability: '一般',
-  weakness: '',
-  current_goal: '',
-  core_concern: '',
-  relationship_pressure: [],
-  surface_stance: '',
-  pressure_response: '',
-  trigger_points: [],
-  impairment_state: '',
-  calming_points: [],
-  self_image: '',
-  current_need: '',
-  authority_attitude: '',
-  stress_response: '',
-  protected_targets: [],
-  feared_people: [],
-  conflict_targets: [],
-  feared_consequences: [],
-  trigger_topics: [],
-  coping_patterns: [],
-  public_mask: '',
-  private_drive: '',
+  role_memories: [],
+  knowledge_ledger: [],
+  unresolved_claims: [],
+  response_constraints: [],
+  source_refs: [],
+  role_template_version: 'source_memory_v2',
 }], options)[0]
 
 const parsedPersons = (payload: any) => {
@@ -1994,22 +1947,11 @@ const listEquals = (left: any, right: any) => {
 
 const getPersonDedupInsights = (person: any) => {
   const issues: string[] = []
-  for (const [alias, canonical] of Object.entries(PERSON_ALIAS_TO_CANONICAL)) {
-    const aliasValue = person?.[alias]
-    const canonicalValue = person?.[canonical]
-    if (!toComparableList(aliasValue).length || !toComparableList(canonicalValue).length) continue
-    if (!listEquals(aliasValue, canonicalValue)) {
-      issues.push(`${alias} 与 ${canonical} 不一致，将以 ${canonical} 为准`)
-    }
-  }
-
-  const merged = normalizeBehaviorTemplate(person || {})
+  const memories = Array.isArray(person?.role_memories) ? person.role_memories : []
   const mergedPreview = [
-    merged.current_goal ? `诉求=${merged.current_goal}` : '',
-    merged.core_concern ? `顾虑=${merged.core_concern}` : '',
-    merged.trigger_points?.length ? `触发点(${merged.trigger_points.length})` : '',
-    merged.calming_points?.length ? `安抚点(${merged.calming_points.length})` : '',
-    merged.scene_behavior_mode ? `模式=${merged.scene_behavior_mode}` : '',
+    memories.length ? `人物线=${memories.length}条` : '',
+    person?.unresolved_claims?.length ? `待核实=${person.unresolved_claims.length}项` : '',
+    person?.response_constraints?.length ? `回答边界=${person.response_constraints.length}条` : '',
   ].filter(Boolean)
 
   return { issues, mergedPreview }
@@ -2487,13 +2429,10 @@ const getSceneUnsuitableRoleHints = (caseItem: any, scene: any) => {
 const getScenePrimaryRoleSummary = (caseItem: any, scene: any) => {
   const person = (caseItem?.persons || []).find((item: any) => item.name === scene?.primary_role_name)
   if (!person) return '当前未匹配到对应角色模板。'
-  const archetype = person.behavior_archetype || '求助配合型'
-  const policeAttitude = person.police_attitude || person.authority_attitude || '暂无明确对警方态度'
-  const goal = person.current_goal || person.current_need || '暂无当前诉求'
-  const concern = person.core_concern || person.weakness || '暂无明确顾虑'
-  const triggers = getPersonListText(person.trigger_points).replace(/\n/g, '、') || '暂无明确触发点'
-  const calming = getPersonListText(person.calming_points).replace(/\n/g, '、') || '暂无明确安抚点'
-  return `主对话人画像：${archetype}；面对警方通常是“${policeAttitude}”；当前最想保住“${goal}”；最怕“${concern}”；触发点常见于“${triggers}”；更容易被“${calming}”稳住。`
+  const memories = Array.isArray(person.role_memories) ? person.role_memories : []
+  const first = memories[0]
+  const latest = memories[memories.length - 1]
+  return `主对话人有 ${memories.length} 条来源人物线。${first?.statement || '暂无可直接引用的证言'}${latest && latest !== first ? `；后续：${latest.statement}` : ''}`
 }
 
 const stringifyStages = (value: any) => JSON.stringify(safeJsonParse(value, []), null, 2)
@@ -2514,7 +2453,7 @@ const resolveOriginalContent = (payload: any, fallback = '') => {
 const getTypesByGroup = (groupLabel: string) => caseTypeGroups.find((item) => item.label === groupLabel)?.options || []
 const getCaseTypeGroup = (caseType: string) => caseTypeGroups.find((group) => group.options.includes(caseType))?.label || ''
 const showTypeNormalizationHint = (payload: any) => Boolean(payload?.ai_case_type_raw && payload?.case_type && payload.ai_case_type_raw !== payload.case_type)
-const shouldWarnOnTitle = (title: string) => /^[\d\W_]+$/u.test(String(title || '').trim())
+const shouldWarnOnTitle = (title: string) => !/[\p{L}\p{N}]/u.test(String(title || '').trim())
 
 const formatFileSize = (size: number) => {
   if (!size) return '0 B'
@@ -2704,7 +2643,7 @@ const startParsing = async () => {
       const payload = new FormData()
       payload.append('file', uploadedFile.value)
       payload.append('source_mode', 'transcript_file')
-      const res: any = await request.post('/cases/parse-file', payload, { _skipErrorToast: true } as any)
+      const res: any = await request.post('/cases/parse-file', payload, { timeout: 600000, _skipErrorToast: true } as any)
       aiParsedData.value = res || {}
       aiParsedData.value.ai_workflows = res?.ai_workflow ? [res.ai_workflow] : []
       aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: true })
@@ -2721,7 +2660,7 @@ const startParsing = async () => {
       return
     }
 
-    const res: any = await request.post('/cases/parse', { text: form.rawText, source_mode: 'plain_case' }, { _skipErrorToast: true } as any)
+    const res: any = await request.post('/cases/parse', { text: form.rawText, source_mode: 'plain_case' }, { timeout: 600000, _skipErrorToast: true } as any)
     aiParsedData.value = res || {}
     aiParsedData.value.ai_workflows = res?.ai_workflow ? [res.ai_workflow] : []
     aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: true })
@@ -2751,7 +2690,7 @@ const startGenerating = async () => {
     const res: any = await request.post(
       '/cases/generate-scenes',
       { case_info: caseInfo, scene_generation_strategy: 'case_driven' },
-      { _skipErrorToast: true } as any,
+      { timeout: 600000, _skipErrorToast: true } as any,
     )
     generatedScenes.value = (res.scenes || []).map((scene: any) => {
       const roleNames = Array.isArray(scene?.roles) ? scene.roles : []
@@ -2765,6 +2704,9 @@ const startGenerating = async () => {
       scene_generation_mode: res.scene_generation_mode || '',
       scene_generation_warning: res.scene_generation_warning || '',
       scene_blueprints: res.scene_blueprints || [],
+      training_tasks: res.training_tasks || [],
+      state_machine: res.state_machine || null,
+      observable_scoring_rules: res.observable_scoring_rules || [],
       scene_ai_workflow: res.ai_workflow || null,
       ai_workflows: [
         ...(Array.isArray(aiParsedData.value?.ai_workflows) ? aiParsedData.value.ai_workflows : []),

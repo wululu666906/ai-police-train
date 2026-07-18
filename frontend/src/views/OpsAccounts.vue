@@ -1,5 +1,5 @@
 <template>
-  <div class="ops-accounts">
+  <div class="ops-accounts" @click="closeGroupContextMenu">
     <section class="ops-toolbar">
       <div class="ops-filters">
         <label>
@@ -17,7 +17,7 @@
         </label>
       </div>
 
-      <div class="ops-actions">
+      <div class="ops-bulk-panel">
         <label class="ops-group-move" title="将已选账号迁移到指定分类">
           <span>迁移到</span>
           <input v-model.trim="moveTargetGroup" list="ops-account-groups" placeholder="分类名" />
@@ -25,6 +25,17 @@
         <button type="button" class="ops-action-btn" :disabled="!selectedDeletableAccountCount || movingGroup" @click="moveSelectedAccounts">
           <OpsIcon name="refresh" />
           <span>迁移分组</span>
+        </button>
+        <button type="button" class="ops-action-btn ops-action-btn--danger" :disabled="!selectedDeletableAccountCount || deletingBatch" @click="batchDeleteSelected">
+          <OpsIcon name="trash" />
+          <span>批量删除{{ selectedDeletableAccountCount ? `（${selectedDeletableAccountCount}）` : '' }}</span>
+        </button>
+      </div>
+
+      <div class="ops-actions">
+        <button type="button" class="ops-action-btn" @click="openGroupDialog">
+          <OpsIcon name="add" />
+          <span>新建分组</span>
         </button>
         <button type="button" class="ops-action-btn" :disabled="loading" @click="fetchAccounts">
           <OpsIcon name="refresh" />
@@ -37,10 +48,6 @@
         <button type="button" class="ops-action-btn" @click="openImportDialog">
           <OpsIcon name="bookmark-plus" />
           <span>文件导入</span>
-        </button>
-        <button type="button" class="ops-action-btn" :disabled="!selectedDeletableAccountCount || deletingBatch" @click="batchDeleteSelected">
-          <OpsIcon name="trash" />
-          <span>批量删除{{ selectedDeletableAccountCount ? `（${selectedDeletableAccountCount}）` : '' }}</span>
         </button>
         <button type="button" class="ops-action-btn ops-action-btn--primary" @click="openCreateDialog">
           <OpsIcon name="add" />
@@ -65,15 +72,36 @@
         未分类
         <strong>{{ ungroupedCount }}</strong>
       </button>
-      <button v-for="group in accountGroups" :key="group.name" type="button" :class="{ active: groupFilter === group.name }" @click="setGroupFilter(group.name)">
+      <button
+        v-for="group in accountGroups"
+        :key="group.name"
+        type="button"
+        :class="{ active: groupFilter === group.name }"
+        @click="setGroupFilter(group.name)"
+        @contextmenu.prevent.stop="openGroupContextMenu($event, group)"
+      >
         {{ group.name }}
         <strong>{{ group.count }}</strong>
+      </button>
+      <button type="button" class="ops-group-nav__create" @click="openGroupDialog">
+        + 新建分组
       </button>
     </section>
 
     <datalist id="ops-account-groups">
       <option v-for="group in accountGroups" :key="group.name" :value="group.name" />
     </datalist>
+
+    <div
+      v-if="groupContextMenu.visible"
+      class="ops-context-menu"
+      :style="{ left: `${groupContextMenu.x}px`, top: `${groupContextMenu.y}px` }"
+      @click.stop
+    >
+      <div class="ops-context-menu__title">{{ groupContextMenu.group?.name }}</div>
+      <button type="button" @click="deleteGroup(false)">删除分组</button>
+      <button type="button" class="danger" @click="deleteGroup(true)">删除分组及账号</button>
+    </div>
 
     <section class="ops-table-wrap">
       <table class="ops-table">
@@ -135,6 +163,29 @@
     </section>
 
     <input ref="importFileInput" class="ops-file-input" type="file" accept=".xlsx,.xls,.csv,.tsv,.json,.docx,.ods,.pdf,.txt" @change="handleImportFileChange" />
+
+    <van-popup v-model:show="showGroupDialog" teleport="body" :style="{ width: 'min(460px, 94vw)', borderRadius: '8px', overflow: 'hidden' }">
+      <div class="ops-dialog">
+        <header>
+          <h3>新建账号分组</h3>
+          <van-icon name="cross" @click="showGroupDialog = false" />
+        </header>
+        <div class="ops-dialog__body ops-dialog__body--single">
+          <label>
+            <span>分组名称</span>
+            <input v-model.trim="groupForm.name" placeholder="例如：7月新开通 / 一班 / 管理端测试" @keyup.enter="createAccountGroup" />
+          </label>
+          <label>
+            <span>说明</span>
+            <textarea v-model.trim="groupForm.description" rows="3" placeholder="可选"></textarea>
+          </label>
+        </div>
+        <footer>
+          <van-button plain @click="showGroupDialog = false">取消</van-button>
+          <van-button type="primary" :loading="savingGroup" @click="createAccountGroup">创建分组</van-button>
+        </footer>
+      </div>
+    </van-popup>
 
     <van-popup v-model:show="showAccountDialog" teleport="body" :style="{ width: 'min(620px, 96vw)', borderRadius: '8px', overflow: 'hidden' }">
       <div class="ops-dialog">
@@ -419,10 +470,11 @@ const loading = ref(false)
 const savingAccount = ref(false)
 const savingBatch = ref(false)
 const savingPassword = ref(false)
+const savingGroup = ref(false)
 const deletingBatch = ref(false)
 const movingGroup = ref(false)
 const accounts = ref<Account[]>([])
-const accountGroups = ref<Array<{ name: string; count: number }>>([])
+const accountGroups = ref<Array<{ id?: number | null; name: string; description?: string; count: number }>>([])
 const ungroupedCount = ref(0)
 const selectedAccountIds = ref<number[]>([])
 const keyword = ref('')
@@ -431,6 +483,7 @@ const groupFilter = ref('')
 const moveTargetGroup = ref('')
 const showAccountDialog = ref(false)
 const showBatchDialog = ref(false)
+const showGroupDialog = ref(false)
 const showResetDialog = ref(false)
 const showImportDialog = ref(false)
 const editingAccount = ref<Account | null>(null)
@@ -466,6 +519,23 @@ const batchForm = reactive({
   end_no: 10,
   password: '123456',
   account_group: '',
+})
+
+const groupForm = reactive({
+  name: '',
+  description: '',
+})
+
+const groupContextMenu = reactive<{
+  visible: boolean
+  x: number
+  y: number
+  group: { id?: number | null; name: string; description?: string; count: number } | null
+}>({
+  visible: false,
+  x: 0,
+  y: 0,
+  group: null,
 })
 
 const importPreviewItems = computed(() => importPreview.value?.items || [])
@@ -567,6 +637,76 @@ const setGroupFilter = async (group: string) => {
   groupFilter.value = group
   selectedAccountIds.value = []
   await fetchAccounts()
+}
+
+const closeGroupContextMenu = () => {
+  groupContextMenu.visible = false
+}
+
+const openGroupContextMenu = (event: MouseEvent, group: { id?: number | null; name: string; description?: string; count: number }) => {
+  groupContextMenu.group = group
+  groupContextMenu.x = Math.min(event.clientX, window.innerWidth - 220)
+  groupContextMenu.y = Math.min(event.clientY, window.innerHeight - 130)
+  groupContextMenu.visible = true
+}
+
+const openGroupDialog = () => {
+  groupForm.name = ''
+  groupForm.description = ''
+  showGroupDialog.value = true
+}
+
+const createAccountGroup = async () => {
+  const name = groupForm.name.trim()
+  if (!name) {
+    showToast('请输入分组名称')
+    return
+  }
+  savingGroup.value = true
+  try {
+    await request.post('/ops/account-groups', {
+      name,
+      description: groupForm.description.trim(),
+    })
+    showToast({ type: 'success', message: '分组已创建' })
+    showGroupDialog.value = false
+    moveTargetGroup.value = name
+    groupFilter.value = name
+    await refreshAccountsAndGroups()
+  } finally {
+    savingGroup.value = false
+  }
+}
+
+const deleteGroup = async (deleteAccounts: boolean) => {
+  const group = groupContextMenu.group
+  if (!group) return
+  const groupName = group.name
+  closeGroupContextMenu()
+  try {
+    await showConfirmDialog({
+      title: deleteAccounts ? '删除分组及账号' : '删除分组',
+      message: deleteAccounts
+        ? `将删除分组「${groupName}」以及组内 ${group.count || 0} 个账号；学员训练记录也会同步清理，是否继续？`
+        : `将删除分组「${groupName}」，组内账号会迁移到未分类，是否继续？`,
+      confirmButtonColor: '#dc2626',
+    })
+  } catch {
+    return
+  }
+  const res: any = await request.post('/ops/account-groups/delete', {
+    name: groupName,
+    delete_accounts: deleteAccounts,
+  })
+  showToast({
+    type: 'success',
+    message: deleteAccounts
+      ? `已删除分组和 ${res.deleted_accounts_count || 0} 个账号`
+      : '分组已删除，账号已迁移到未分类',
+  })
+  if (groupFilter.value === groupName) groupFilter.value = ''
+  selectedAccountIds.value = []
+  await refreshAccountsAndGroups()
 }
 
 const openImportDialog = () => {
@@ -951,19 +1091,44 @@ onMounted(refreshAccountsAndGroups)
 }
 
 .ops-toolbar {
-  display: flex;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) minmax(360px, 520px) minmax(420px, 1fr);
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   padding: 14px;
+  min-height: 68px;
+  overflow: hidden;
 }
 
 .ops-filters,
+.ops-bulk-panel,
 .ops-actions {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.ops-filters {
+  justify-content: flex-start;
+}
+
+.ops-bulk-panel {
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 10px;
+  border-right: 1px solid #e2e8f0;
+  border-left: 1px solid #e2e8f0;
+}
+
+.ops-actions {
+  justify-content: flex-end;
+  overflow-x: auto;
+  padding-bottom: 2px;
 }
 
 .ops-group-move {
@@ -976,7 +1141,8 @@ onMounted(refreshAccountsAndGroups)
 }
 
 .ops-group-move input {
-  width: 150px;
+  width: 156px;
+  min-width: 0;
   height: 36px;
   border: 1px solid #cbd5e1;
   border-radius: 6px;
@@ -1007,19 +1173,25 @@ onMounted(refreshAccountsAndGroups)
 }
 
 .ops-search {
+  min-width: 168px;
   padding: 0 10px;
   color: #64748b;
 }
 
 .ops-search input {
+  width: 100%;
+  min-width: 0;
   border: 0;
   outline: none;
 }
 
 .ops-action-btn {
+  flex: none;
+  min-width: 92px;
   height: 36px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
   border: 1px solid #cbd5e1;
   border-radius: 6px;
@@ -1055,12 +1227,27 @@ onMounted(refreshAccountsAndGroups)
   color: #fff;
 }
 
+.ops-action-btn--danger {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fff;
+}
+
+.ops-action-btn--danger:hover:not(:disabled) {
+  border-color: #fca5a5;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
 .ops-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .ops-group-nav {
+  position: sticky;
+  top: 74px;
+  z-index: 25;
   display: flex;
   gap: 8px;
   overflow-x: auto;
@@ -1089,6 +1276,58 @@ onMounted(refreshAccountsAndGroups)
   border-color: #1d4ed8;
   background: #eff6ff;
   color: #1d4ed8;
+}
+
+.ops-group-nav__create {
+  border-style: dashed;
+  color: #1d4ed8;
+  background: #fff;
+}
+
+.ops-context-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 190px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18);
+  padding: 6px;
+}
+
+.ops-context-menu__title {
+  padding: 8px 10px 6px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 900;
+  border-bottom: 1px solid #eef2f7;
+  margin-bottom: 4px;
+}
+
+.ops-context-menu button {
+  width: 100%;
+  height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #334155;
+  text-align: left;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.ops-context-menu button:hover {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.ops-context-menu button.danger {
+  color: #dc2626;
+}
+
+.ops-context-menu button.danger:hover {
+  background: #fef2f2;
 }
 
 .ops-group-nav strong {
@@ -1505,10 +1744,49 @@ onMounted(refreshAccountsAndGroups)
   color: #b45309;
 }
 
+@media (max-width: 1260px) {
+  .ops-toolbar {
+    grid-template-columns: minmax(320px, 1fr) minmax(420px, 1fr);
+    overflow: visible;
+  }
+
+  .ops-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .ops-bulk-panel {
+    justify-content: flex-end;
+    border-right: 0;
+  }
+}
+
 @media (max-width: 760px) {
   .ops-toolbar,
   .ops-summary {
     display: grid;
+  }
+
+  .ops-toolbar {
+    position: static;
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .ops-filters,
+  .ops-bulk-panel,
+  .ops-actions {
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+
+  .ops-bulk-panel {
+    padding: 0;
+    border: 0;
+  }
+
+  .ops-group-nav {
+    position: static;
   }
 
   .ops-summary {

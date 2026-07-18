@@ -16,7 +16,6 @@ from routers.auth import get_current_user
 from services.ai_service import (
     _build_available_actions,
     _build_feedback,
-    _build_persona_hint,
     _build_recommended_questions,
     _evaluate_stage_coverage,
     _get_case_type,
@@ -79,6 +78,16 @@ def safe_json_loads(value, default):
         return json.loads(value)
     except Exception:
         return default
+
+
+def _redact_internal_role_fields(result: dict[str, Any]) -> dict[str, Any]:
+    """Remove model-only reasoning from learner-facing training responses."""
+    result.pop("inner_thought", None)
+    result.pop("persona_hint", None)
+    for turn in result.get("reply_turns") or []:
+        if isinstance(turn, dict):
+            turn.pop("inner_thought", None)
+    return result
 
 
 def _artifact_url(file_path: str | None) -> str | None:
@@ -356,7 +365,6 @@ def _build_session_guidance(
         "recommended_questions": recommended_questions,
         "recommended_question_items": recommended_question_items,
         "communication_feedback": communication_feedback,
-        "persona_hint": _build_persona_hint(role),
         "role_state_label": _role_state_label(
             state_snapshot["cooperation"],
             session_emotion,
@@ -531,6 +539,8 @@ def training_chat(
     result.pop("state_contract", None)
     result.pop("last_postcheck", None)
     result.pop("state_influence_metrics", None)
+    # Internal reasoning and persona summaries are never part of the learner API.
+    _redact_internal_role_fields(result)
 
     return _trigger_auto_evaluation_if_needed(db, session_id, current_user.id, result)
 
@@ -566,6 +576,7 @@ def training_chat_stream(
     result.pop("state_contract", None)
     result.pop("last_postcheck", None)
     result.pop("state_influence_metrics", None)
+    _redact_internal_role_fields(result)
 
     def _event(name: str, payload: dict[str, Any]) -> str:
         return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -608,7 +619,6 @@ def training_chat_stream(
             "auto_finished": result.get("auto_finished"),
             "redirect_to_evaluation": result.get("redirect_to_evaluation"),
             "closure_summary": result.get("closure_summary"),
-            "inner_thought": result.get("inner_thought"),
             "updated_emotion": result.get("updated_emotion"),
             "updated_trust": result.get("updated_trust"),
             "updated_cooperation": result.get("updated_cooperation"),
@@ -625,7 +635,6 @@ def training_chat_stream(
             "recommended_questions": result.get("recommended_questions"),
             "recommended_question_items": result.get("recommended_question_items"),
             "communication_feedback": result.get("communication_feedback"),
-            "persona_hint": result.get("persona_hint"),
             "role_state_label": result.get("role_state_label"),
             "truth_stage": result.get("truth_stage"),
         })
@@ -822,7 +831,6 @@ def get_session(
             schemas.RecommendedQuestionItem(**item) for item in guidance_payload.get("recommended_question_items") or []
         ],
         communication_feedback=guidance_payload["communication_feedback"],
-        persona_hint=guidance_payload["persona_hint"],
         role_state_label=guidance_payload["role_state_label"],
         truth_stage=guidance_payload["truth_stage"],
         available_actions=guidance_payload["available_actions"],

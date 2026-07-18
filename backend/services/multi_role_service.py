@@ -356,7 +356,7 @@ def generate_multi_role_turn(
             "clarity": 50,
         }
         prior_brain = role_brains.get(brain_key) or {}
-        actor_history = _role_thread_history(history, role)
+        actor_history = _role_thread_history(history, role, limit=6)
         public_scene_utterances = _public_scene_utterances(history, role)
         built_brain = _build_role_brain(
             role=role,
@@ -365,6 +365,7 @@ def generate_multi_role_turn(
             history=actor_history,
             previous_brain=prior_brain,
         )
+        built_brain["scene_role_names"] = [_role_display_name(item) for item in roles]
         actor_output = generate_role_dialogue(
             role=role,
             cast_entry=cast_entry,

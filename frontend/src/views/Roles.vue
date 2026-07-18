@@ -8,11 +8,6 @@ import {
   expandRoleCompactToPerson,
   personToRoleCompact,
 } from '../utils/roleCompact'
-import {
-  buildLegacyInfoBoundary,
-  buildSceneBoundaryGroups,
-  normalizeBehaviorTemplate,
-} from '../utils/personaTemplate'
 import request from '../utils/request'
 
 const router = useRouter()
@@ -61,8 +56,6 @@ const filteredRoles = computed(() => {
       role.name,
       role.role_type,
       role.case_title,
-      role.behavior_archetype,
-      role.police_attitude,
       role.status,
       buildRoleOverview(role),
     ].join(' ')
@@ -119,48 +112,13 @@ const roleSceneBehaviorMode = computed(() => {
 
 const roleDraftProfile = computed(() => {
   const normalized = expandRoleCompactToPerson(roleProfile.value, roleSceneBehaviorMode.value)
-  const relationshipPressure = previewList(normalized.relationship_pressure)
-  const triggerPoints = normalized.trigger_points.slice(0, 4)
-  const calmingPoints = normalized.calming_points.slice(0, 4)
-  const legacyBoundary = buildLegacyInfoBoundary(normalized)
-  const hiddenTruths = legacyBoundary.hidden_truths.slice(0, 4)
-  const knownFacts = legacyBoundary.knows_facts.slice(0, 4)
-  const boundaryGroups = buildSceneBoundaryGroups(normalized).map((field) => ({
-    ...field,
-    items: field.items.slice(0, 4),
-  }))
-
-  const contradictions: string[] = []
-  if (normalized.current_goal.trim() && normalized.core_concern.trim()) {
-    contradictions.push(`一旦${normalized.core_concern.trim()}被碰到，角色会更本能地围绕“${normalized.current_goal.trim()}”防守或求助。`)
-  }
-  if (normalized.core_concern.trim() && triggerPoints.length) {
-    contradictions.push('一旦碰到最担心的后果或敏感点，回答质量会明显波动。')
-  }
-  if (relationshipPressure.length && normalized.pressure_response.trim()) {
-    contradictions.push('既受关系压力牵引，又有固定防御动作，容易先护人或先切责任。')
-  }
-
-  const summaryParts = buildRoleCompactSummary(personToRoleCompact(normalized, roleSceneBehaviorMode.value))
-  const summaryText = [
-    summaryParts.join('；'),
-    normalized.police_attitude ? `面对警方时更像“${normalized.police_attitude}”` : '',
-    relationshipPressure.length ? `现实和关系压力主要来自${relationshipPressure.join('、')}` : '',
-    normalized.pressure_response.trim() ? `承压后常见反应是${normalized.pressure_response.trim()}` : '',
-    triggerPoints.length ? `提到${triggerPoints.join('、')}时更容易情绪起伏或改口` : '',
-    calmingPoints.length ? `更容易被${calmingPoints.join('、')}稳住` : '',
-  ].filter(Boolean).join('；')
-
+  const memories = Array.isArray(normalized.role_memories) ? normalized.role_memories : []
+  const unresolvedClaims = Array.isArray(normalized.unresolved_claims) ? normalized.unresolved_claims : []
   return {
     normalized,
-    relationshipPressure,
-    triggerPoints,
-    calmingPoints,
-    hiddenTruths,
-    knownFacts,
-    boundaryGroups,
-    contradictions,
-    summaryText: summaryText || '当前还缺少足够信息，建议先补行为原型、诉求、顾虑和触发点。',
+    memories,
+    unresolvedClaims,
+    summaryText: memories.length ? `已整理 ${memories.length} 条来源人物线，按时间、地点和证言边界参与运行时回答。` : '当前还没有可回溯的人物线，建议补充原文证言。',
   }
 })
 
@@ -174,39 +132,20 @@ const previewStateLabel = computed(() => {
 })
 
 const previewBreakthroughs = computed(() => {
-  const result: string[] = []
-  if (roleDraftProfile.value.normalized.core_concern.trim()) {
-    result.push(`先围绕“${roleDraftProfile.value.normalized.core_concern.trim()}”追问最现实的后果压力`)
-  }
-  if (roleDraftProfile.value.relationshipPressure.length) {
-    result.push(`从“${roleDraftProfile.value.relationshipPressure[0]}”切入其关系负担和顾虑`)
-  }
-  if (roleDraftProfile.value.triggerPoints.length) {
-    result.push(`提到“${roleDraftProfile.value.triggerPoints[0]}”时更可能出现情绪波动或改口`)
-  }
-  if (roleDraftProfile.value.calmingPoints.length) {
-    result.push(`优先使用“${roleDraftProfile.value.calmingPoints[0]}”这一类安抚动作，更容易让其继续交流`)
-  }
-  if (roleDraftProfile.value.hiddenTruths.length) {
-    result.push(`可核对其刻意没主动提的“${roleDraftProfile.value.hiddenTruths[0]}”`)
-  }
-  return result.slice(0, 4)
+  return roleDraftProfile.value.memories.slice(0, 4).map((item: any) => item.statement).filter(Boolean)
 })
 
 const buildRoleOverview = (role: any) => {
-  const mode = String(role?.scene_behavior_mode || '核查取证型')
-  const summary = buildRoleCompactSummary(personToRoleCompact(role, mode))
-  return summary.join('；') || '还没有补充核心角色驱动。'
+  const memories = Array.isArray(role?.role_memories) ? role.role_memories : []
+  return memories.length ? `人物线 ${memories.length} 条：${memories[0]?.statement || ''}` : '还没有补充来源人物线。'
 }
 
 const getRoleSummaryChips = (role: any) => {
-  const mode = String(role?.scene_behavior_mode || '核查取证型')
-  const compact = personToRoleCompact(role, mode)
+  const compact = personToRoleCompact(role)
   return [
-    compact.behavior_archetype ? `原型 ${compact.behavior_archetype}` : '',
-    compact.current_goal ? `诉求 ${compact.current_goal}` : '',
-    compact.core_concern ? `顾虑 ${compact.core_concern}` : '',
-    compact.trigger_points[0] ? `触发点 ${compact.trigger_points[0]}` : '',
+    `人物线 ${compact.role_memories.length} 条`,
+    compact.unresolved_claims.length ? `待核实 ${compact.unresolved_claims.length} 项` : '',
+    compact.response_constraints.length ? `边界 ${compact.response_constraints.length} 条` : '',
   ].filter(Boolean).slice(0, 3)
 }
 
@@ -452,12 +391,7 @@ onMounted(refreshPage)
                   <h3 class="text-base font-bold text-slate-900">{{ role.name }}</h3>
                   <div class="mt-2 flex flex-wrap gap-2">
                     <span class="role-pill role-pill--slate">{{ role.role_type || '相关人员' }}</span>
-                    <span :class="['role-pill', getInteractionStyleClass(role.behavior_archetype)]">
-                      {{ role.behavior_archetype || '求助配合型' }}
-                    </span>
-                    <span class="role-pill role-pill--sky">
-                      {{ role.police_attitude || role.authority_attitude || '试探观望' }}
-                    </span>
+                    <span class="role-pill role-pill--sky">人物线 {{ Array.isArray(role.role_memories) ? role.role_memories.length : 0 }} 条</span>
                     <span class="role-pill" :class="role.is_public ? 'role-pill--sky' : 'role-pill--emerald'">
                       {{ role.is_public ? '公共模板' : '案件人物' }}
                     </span>
@@ -468,7 +402,7 @@ onMounted(refreshPage)
             </div>
 
             <div class="role-card__summary">
-              <div class="role-card__eyebrow">人物驱动摘要</div>
+              <div class="role-card__eyebrow">来源人物线摘要</div>
               <p class="role-card__summary-text line-clamp-3">{{ buildRoleOverview(role) }}</p>
             </div>
 

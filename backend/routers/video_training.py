@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Optional
 
@@ -213,6 +213,17 @@ def _normalize_option_label(option: object, index: int) -> str:
     return chr(65 + index)
 
 
+def _normalize_option_text(option: object) -> str:
+    if isinstance(option, str):
+        return option.strip()
+    if isinstance(option, dict):
+        for key in ("text", "content", "description", "label", "value"):
+            value = str(option.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
 def _resolve_judge_boolean_answer(node: models.VideoNode, config: dict) -> bool | None:
     raw = config.get("correct_answer")
     if isinstance(raw, bool):
@@ -247,7 +258,9 @@ def _resolve_correct_choice_index(node: models.VideoNode, config: dict) -> int |
         return ord(label) - ord("A")
     options = _parse_choice_options(node)
     for index, option in enumerate(options):
-        if _normalize_option_label(option, index) == label:
+        option_label = _normalize_option_label(option, index)
+        option_text = _normalize_option_text(option).upper()
+        if option_label == label or option_text == label:
             return index
     return None
 
@@ -390,12 +403,17 @@ def _evaluate_speech_rule(
 
 
 def _evaluate_gesture_rule(node: models.VideoNode, answer_data: dict, mode: str = "practice") -> dict:
-    if not node.required_gesture:
-        return {"required": False, "passed": True, "reason": None}
-
     prompt_content = _load_node_prompt_content(node)
     gesture_rule = prompt_content.get("gesture_config") if isinstance(prompt_content, dict) else {}
     gesture_rule = gesture_rule if isinstance(gesture_rule, dict) else {}
+
+    # Browser-side gesture recognition was removed from the training client.
+    # Existing videos may retain required_gesture, but that legacy field must
+    # not turn a normal submit into a failure unless a future client explicitly
+    # opts in through an enabled gesture_config.
+    if not node.required_gesture or gesture_rule.get("enabled") is not True:
+        return {"required": False, "passed": True, "reason": None}
+
     policy = _mode_policy(mode)
     min_confidence = max(min(float(gesture_rule.get("min_confidence") or 0) * float(policy["gesture_confidence_scale"]), 1), 0)
     hold_frames = max(int(gesture_rule.get("hold_frames") or 1) - int(policy["gesture_hold_relief"]), 1)
@@ -1661,6 +1679,9 @@ def get_student_video_history(
     status: Optional[str] = None,
     mode: Optional[str] = None,
     category: Optional[str] = None,
+    keyword: Optional[str] = None,
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
@@ -1679,10 +1700,36 @@ def get_student_video_history(
         base_query = base_query.filter(models.VideoTrainingSession.status == status)
     if mode and mode in ("practice", "exam"):
         base_query = base_query.filter(models.VideoTrainingSession.mode == mode)
+    has_video_join = False
     if category:
         base_query = base_query.join(models.TrainingVideo).filter(
             models.TrainingVideo.scenario_type == category
         )
+        has_video_join = True
+    if keyword and keyword.strip():
+        # A history page is server-paginated, so keyword filtering must happen
+        # before count/offset rather than only against the loaded page.
+        search = f"%{keyword.strip()}%"
+        if not has_video_join:
+            base_query = base_query.join(models.TrainingVideo)
+        base_query = base_query.filter(models.TrainingVideo.title.ilike(search))
+
+    def parse_history_date(value: Optional[str], field_name: str) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).replace(tzinfo=None)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail=f"{field_name} 必须为 YYYY-MM-DD 格式")
+
+    start_at = parse_history_date(date_start, "date_start")
+    end_at = parse_history_date(date_end, "date_end")
+    if start_at:
+        base_query = base_query.filter(models.VideoTrainingSession.created_at >= start_at)
+    if end_at:
+        # The date picker sends an inclusive date; use the next midnight as
+        # an exclusive upper bound so records from the full final day remain.
+        base_query = base_query.filter(models.VideoTrainingSession.created_at < end_at + timedelta(days=1))
 
     total = base_query.count()
     session_ids_query = (

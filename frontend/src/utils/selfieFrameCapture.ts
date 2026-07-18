@@ -17,9 +17,15 @@ export function captureSelfieFrame(
   const {
     size = 640,
     jpegQuality = 0.9,
-    mirror = true,
+    // The preview may be mirrored for a natural selfie experience, but the
+    // submitted image must retain the camera's original orientation so it
+    // matches the (normally unmirrored) registration photo.
+    mirror = false,
     zoom = 1.45,
-    focusY = 0.28,
+    // Keep this aligned with the CSS preview, whose scale transform is
+    // centered.  A top-biased crop made a face that looked centred in the
+    // circular guide appear off-centre to the server.
+    focusY = 0.5,
     mode = 'preview',
   } = options
 

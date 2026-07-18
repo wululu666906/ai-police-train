@@ -477,3 +477,30 @@ class OpsAccountBatchDeleteResponse(BaseModel):
     skipped_count: int
     deleted_usernames: List[str] = []
     skipped_usernames: List[str] = []
+
+
+class AccountGroupCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class AccountGroupOverview(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    count: int = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AccountGroupDeleteRequest(BaseModel):
+    name: str
+    delete_accounts: bool = False
+
+
+class AccountGroupDeleteResponse(BaseModel):
+    deleted_group: str
+    deleted_accounts_count: int = 0
+    skipped_accounts_count: int = 0
+    skipped_usernames: List[str] = []

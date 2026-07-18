@@ -191,12 +191,14 @@
         </header>
 
         <!-- Full-screen video background -->
-        <div class="imm-video-layer">
+        <div class="imm-video-layer" @click="!nodeActive && playTrainingVideo()">
           <video
             ref="videoRef"
             class="imm-video-layer__video"
             :src="playbackVideoUrl"
             preload="auto"
+            @play="playbackPaused = false"
+            @pause="playbackPaused = true"
             @timeupdate="onTimeUpdate"
             @ended="onVideoEnded"
             @seeking="onSeeking"
@@ -206,6 +208,14 @@
 
         <!-- Overlays on top of video -->
         <div class="imm-overlays">
+          <button
+            v-if="playbackPaused && !nodeActive && !showBriefing"
+            type="button"
+            class="imm-play-retry"
+            @click.stop="playTrainingVideo"
+          >
+            ▶ 播放视频并进入训练
+          </button>
           <!-- Video top center toolbar -->
           <div class="imm-toolbar">
             <button class="imm-toolbar__btn" title="截图">📷</button>
@@ -715,6 +725,8 @@
                 class="stage-video"
                 :src="playbackVideoUrl"
                 preload="auto"
+                @play="playbackPaused = false"
+                @pause="playbackPaused = true"
                 @timeupdate="onTimeUpdate"
                 @ended="onVideoEnded"
                 @seeking="onSeeking"
@@ -738,7 +750,7 @@
 
             <div class="stage-controls glass-panel">
               <div class="stage-controls__left">
-                <button class="stage-icon-btn" type="button">{{ videoRef?.paused ? '▶' : 'Ⅱ' }}</button>
+                <button class="stage-icon-btn" type="button" @click="toggleTrainingPlayback">{{ playbackPaused ? '▶' : 'Ⅱ' }}</button>
                 <button class="stage-icon-btn" type="button">🔊</button>
               </div>
               <div class="stage-controls__progress">
@@ -1505,6 +1517,7 @@ const briefingCameraRef = ref<HTMLVideoElement | null>(null)
 const faceCanvasRef = ref<HTMLCanvasElement | null>(null)
 const videoWrapRef = ref<HTMLElement | null>(null)
 const playbackCurrentTime = ref(0)
+const playbackPaused = ref(true)
 const cameraOn = ref(false)
 const camPos = ref({ x: 16, y: 80 })
 const deviceReady = ref(false)
@@ -1789,7 +1802,9 @@ const displayInstruction = computed(() =>
   displayNode.value?.prompt_content?.police_question
   || displayNode.value?.prompt_content?.instruction
   || displayNode.value?.node_config?.question
-  || '等待视频播放至触发点后开始交互。',
+  || (nodeActive.value
+    ? '当前训练节点缺少任务说明，请联系管理员重新分析或编辑该视频节点。'
+    : `视频播放至 ${formatTime(Number(displayNode.value?.trigger_time || 0))} 后将自动进入本节点。`),
 )
 const displaySceneSummary = computed(() => String(displayNode.value?.prompt_content?.scene_summary || '').trim())
 const displayStandardPoints = computed(() => {
@@ -2257,6 +2272,7 @@ let lastAllowedTime = 0
 
 function onTimeUpdate() {
   if (!videoRef.value) return
+  playbackPaused.value = false
   playbackCurrentTime.value = Math.floor(videoRef.value.currentTime)
   if (!video.value?.nodes || nodeActive.value) return
   // 鏇存柊鍚堟硶鏃堕棿鐐?
@@ -2473,9 +2489,21 @@ async function playTrainingVideo() {
   if (!videoRef.value) return
   try {
     await videoRef.value.play()
+    playbackPaused.value = false
   } catch (error) {
+    playbackPaused.value = true
     console.warn('Training video play failed', error)
-    ElMessage.warning('视频未自动开始播放，请检查浏览器自动播放权限')
+    ElMessage.warning('视频未自动开始播放，请点击播放按钮继续训练')
+  }
+}
+
+async function toggleTrainingPlayback() {
+  if (!videoRef.value || nodeActive.value) return
+  if (videoRef.value.paused) {
+    await playTrainingVideo()
+  } else {
+    videoRef.value.pause()
+    playbackPaused.value = true
   }
 }
 
@@ -2907,9 +2935,11 @@ function resolveChoiceCorrectIndex(): number | null {
   const node = currentNode.value
   if (!node) return null
   if (typeof node.node_config?.correct_index === 'number') return node.node_config.correct_index
-  const label = String(node.correct_answer || '').trim()
-  if (!label) return null
-  const idx = resolvedChoiceOptions.value.findIndex((o: any) => o.label === label)
+  const answer = String(node.correct_answer || '').trim()
+  if (!answer) return null
+  const idx = resolvedChoiceOptions.value.findIndex((o: any) =>
+    o.label === answer || String(o.text || '').trim() === answer,
+  )
   return idx >= 0 ? idx : null
 }
 
@@ -6013,6 +6043,27 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   > * {
     pointer-events: auto;
   }
+}
+
+.imm-play-retry {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 30;
+  transform: translate(-50%, -50%);
+  padding: 13px 22px;
+  border: 1px solid rgba(96, 165, 250, 0.65);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.9);
+  color: #dbeafe;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.imm-play-retry:hover {
+  background: rgba(30, 64, 175, 0.92);
 }
 
 .imm-header__left {

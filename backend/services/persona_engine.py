@@ -1577,6 +1577,39 @@ def build_personalized_questions(
     )
 
 
+def format_runtime_persona_block(role: Any, persona_profile: dict[str, Any]) -> str:
+    """Return source-grounded runtime context, never legacy persona descriptors."""
+    try:
+        meta = json.loads(getattr(role, "persona_meta", "{}") or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        meta = {}
+    memories = meta.get("role_memories") if isinstance(meta, dict) else []
+    memories = memories if isinstance(memories, list) else []
+    memory_lines = []
+    for item in memories[:12]:
+        if not isinstance(item, dict):
+            continue
+        statement = str(item.get("statement") or item.get("content") or "").strip()
+        if statement:
+            time_hint = str(item.get("time_hint") or "").strip()
+            place_hint = str(item.get("place_hint") or "").strip()
+            prefix = " / ".join(part for part in (time_hint, place_hint) if part)
+            memory_lines.append(f"{prefix}：{statement}" if prefix else statement)
+    constraints = meta.get("response_constraints") if isinstance(meta, dict) else []
+    constraints = [str(item).strip() for item in constraints if str(item).strip()] if isinstance(constraints, list) else []
+    unresolved = meta.get("unresolved_claims") if isinstance(meta, dict) else []
+    unresolved = [str(item).strip() for item in unresolved if str(item).strip()] if isinstance(unresolved, list) else []
+    return "\n".join(
+        [
+            f"- 身份：{getattr(role, 'role_type', '') or '相关人员'}；当前状态：{getattr(role, 'status', '') or '正常'}",
+            f"- 本人原文证言/还原记忆：{'；'.join(memory_lines) or '暂无单独证言，仅能依据已知事实回答'}",
+            f"- 回答约束：{'；'.join(constraints) or '只陈述本人亲历、亲眼所见或原文明确记载的内容'}",
+            f"- 待核实或无法确认：{'；'.join(unresolved) or '无额外记录，未知内容不得猜测'}",
+            f"- 当前场景模式：{str((persona_profile or {}).get('scene_behavior_mode') or '核查取证型')}",
+        ]
+    )
+
+
 def format_persona_block(
     persona_profile: dict[str, Any],
     role_script: dict[str, Any],
@@ -1584,49 +1617,11 @@ def format_persona_block(
     momentum: dict[str, Any],
     dynamic_adjustment: dict[str, Any] | None = None,
 ) -> str:
-    relation_map = persona_profile.get("relationship_map", {})
-    scene_boundary = persona_profile.get("scene_boundary") or {}
-    boundary_preview = []
-    for key, value in scene_boundary.items():
-        if not isinstance(value, list) or not value:
-            continue
-        boundary_preview.append(f"{key}={'、'.join(value[:2])}")
     sections = [
-        "【以下为人设内部参考，禁止在台词中念出字段名或配置原文】",
-        f"行为原型：{persona_profile.get('behavior_archetype') or '暂无'}",
+        "【来源人物线运行时参考，禁止在台词中念出字段名或配置原文】",
         f"场景行为模式：{persona_profile.get('scene_behavior_mode') or '核查取证型'}",
-        f"角色核心动机：{'; '.join(persona_profile.get('core_motives', []) or ['暂无'])}",
-        f"角色互动风格：{persona_profile.get('interaction_style') or '暂无'}",
-        f"对警方基本态度：{persona_profile.get('police_attitude') or '暂无'}",
         f"四轴状态：情绪={persona_profile.get('emotion_level') or '中'} / 配合={persona_profile.get('cooperation_level') or '中'} / 失控风险={persona_profile.get('risk_level') or '中'} / 表达清晰度={persona_profile.get('clarity_level') or '中'}",
-        f"角色软肋/在意点：{'; '.join(persona_profile.get('soft_spots', []) or ['暂无'])}",
-        f"角色防御本能：{'; '.join(persona_profile.get('defensive_instincts', []) or ['暂无'])}",
-        f"角色情绪触发点：{'; '.join(persona_profile.get('emotional_triggers', []) or ['暂无'])}",
-        f"可安抚点：{'; '.join(persona_profile.get('calming_points', []) or ['暂无'])}",
-        f"角色口头习惯：{'; '.join(persona_profile.get('verbal_habits', []) or ['暂无'])}",
-        f"角色突破线索：{'; '.join(persona_profile.get('breakthrough_cues', []) or ['暂无'])}",
-        f"角色可能偏差：{'; '.join(persona_profile.get('likely_biases', []) or ['暂无'])}",
-        f"披露阶梯：{'; '.join(persona_profile.get('disclosure_ladder', []) or ['暂无'])}",
-        f"关系网直连对象：{'; '.join(relation_map.get('direct_links', []) or ['暂无'])}",
-        f"重点保护对象：{'; '.join(relation_map.get('protected_targets', []) or ['暂无'])}",
-        f"紧张/冲突对象：{'; '.join(relation_map.get('tension_targets', []) or ['暂无'])}",
-        f"人物内在矛盾：{'; '.join(persona_profile.get('contradictions', []) or ['暂无'])}",
-        f"现实压力点：{'; '.join(persona_profile.get('pressure_points', []) or ['暂无'])}",
-        f"当前诉求：{persona_profile.get('current_goal') or persona_profile.get('current_need') or '暂无'}",
-        f"核心顾虑：{persona_profile.get('core_concern') or '暂无'}",
-        f"关系压力：{'; '.join(persona_profile.get('relationship_pressure', []) or ['暂无'])}",
-        f"对外口径：{persona_profile.get('surface_stance') or persona_profile.get('public_mask') or '暂无'}",
-        f"受压反应：{persona_profile.get('pressure_response') or persona_profile.get('stress_response') or '暂无'}",
-        f"触发点：{'; '.join(persona_profile.get('trigger_points', []) or ['暂无'])}",
-        f"本场景动态边界：{'; '.join(boundary_preview[:4]) or '暂无'}",
-        f"自我定位：{persona_profile.get('self_image') or '暂无'}",
-        f"当前最想保住/达成：{persona_profile.get('current_need') or '暂无'}",
-        f"对权威/警方态度：{persona_profile.get('authority_attitude') or '暂无'}",
-        f"受压后的反应：{persona_profile.get('stress_response') or '暂无'}",
-        f"表面口径：{persona_profile.get('public_mask') or '暂无'}",
-        f"内心盘算：{persona_profile.get('private_drive') or '暂无'}",
-        f"本场景开场状态：{role_script.get('opening_tone', '暂无')}",
-        f"可能回避方式：{'; '.join(role_script.get('likely_evasions', []) or ['暂无'])}",
+        "回答顺序：先回应本轮问题，再依据本人原文记忆；无原文依据的内容必须说明无法确认。",
         f"最近民警关注点：{'; '.join(memory.get('user_focuses', []) or ['暂无'])}",
         f"最近角色回应表现：{'; '.join(memory.get('ai_reactions', []) or ['暂无'])}",
         f"当前互动动量：rapport={momentum.get('rapport')} / pressure={momentum.get('pressure')} / notes={'; '.join(momentum.get('notes', [])[:2])}",

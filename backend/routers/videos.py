@@ -44,7 +44,9 @@ FFPROBE_BINARY = FFPROBE_BINARY or shutil.which("ffprobe") or "ffprobe"
 
 ALLOWED_VIDEO_TYPES = {"video/mp4", "video/webm", "video/ogg", "video/quicktime"}
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
-MAX_VIDEO_SIZE = 2 * 1024 * 1024 * 1024   # 2 GB
+# Keep the application limit aligned with the reverse proxy and avoid loading
+# an entire media file into the Uvicorn worker's memory.
+MAX_VIDEO_SIZE = 512 * 1024 * 1024         # 512 MB
 MAX_THUMBNAIL_SIZE = 10 * 1024 * 1024      # 10 MB
 ALLOWED_VIDEO_EXTS = {".mp4", ".webm", ".ogg", ".mov", ".m4v", ".avi"}
 AUTO_IMPORT_SCAN_INTERVAL_SECONDS = 10
@@ -424,7 +426,23 @@ def _probe_video_duration(video_path: str) -> Optional[float]:
         value = (result.stdout or "").strip()
         return float(value) if value else None
     except Exception:
-        return None
+        # User-space ffmpeg bundles such as imageio-ffmpeg do not always ship
+        # a separate ffprobe binary. Keep duration detection available for
+        # uploads by reading ffmpeg's standard Duration line as a fallback.
+        try:
+            result = subprocess.run(
+                [FFMPEG_BINARY, "-i", video_path],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            match = re.search(r"Duration:\s*(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)", result.stderr or "")
+            if not match:
+                return None
+            hours, minutes, seconds = match.groups()
+            return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+        except Exception:
+            return None
 
 
 def _ffmpeg_capture_frame(video_path: str, output_path: str, timestamp: float) -> bool:
@@ -906,15 +924,22 @@ async def upload_video(
     if locked_video_type and locked_video_type not in {"teaching", "interactive"}:
         raise HTTPException(status_code=400, detail="video_type must be teaching or interactive")
 
-    video_data = await file.read()
-    if len(video_data) > MAX_VIDEO_SIZE:
-        raise HTTPException(status_code=413, detail="视频文件不能超过 2GB")
-
     ext = os.path.splitext(file.filename or "video.mp4")[1] or ".mp4"
     filename = f"{uuid.uuid4().hex}{ext}"
     os.makedirs(VIDEOS_DIR, exist_ok=True)
-    with open(os.path.join(VIDEOS_DIR, filename), "wb") as f:
-        f.write(video_data)
+    video_path = os.path.join(VIDEOS_DIR, filename)
+    file_size = 0
+    try:
+        with open(video_path, "wb") as output_file:
+            while chunk := await file.read(1024 * 1024):
+                file_size += len(chunk)
+                if file_size > MAX_VIDEO_SIZE:
+                    raise HTTPException(status_code=413, detail="视频文件不能超过 512MB")
+                output_file.write(chunk)
+    except Exception:
+        if os.path.exists(video_path):
+            os.remove(video_path)
+        raise
 
     # 封面图：用户可选上传，否则后续自动截取
     thumbnail_filename = None
@@ -945,7 +970,7 @@ async def upload_video(
         video_type=locked_video_type or "interactive",
         file_path=filename,
         thumbnail_path=thumbnail_filename,
-        file_size=len(video_data),
+        file_size=file_size,
         duration=resolved_duration,
         case_id=None,
         tags=json.dumps([], ensure_ascii=False),
@@ -961,7 +986,6 @@ async def upload_video(
         _ensure_video_thumbnail(video_obj, db)
 
     video_id = video_obj.id
-    video_path = os.path.join(VIDEOS_DIR, filename)
     locked_type = locked_video_type or None
 
     if auto_configure is True:

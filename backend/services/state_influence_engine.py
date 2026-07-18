@@ -613,21 +613,10 @@ def blend_four_axis_state(
         "clarity": clamp_score(current.get("clarity"), 50),
     }
 
-    proposed = {
-        "emotion": _pick_llm_score(
-            llm_result,
-            "updated_emotion",
-            fallback=base["emotion"],
-        ),
-        "cooperation": _pick_llm_score(
-            llm_result,
-            "updated_cooperation",
-            "updated_trust",
-            fallback=base["cooperation"],
-        ),
-        "risk": _pick_llm_score(llm_result, "updated_risk", fallback=base["risk"]),
-        "clarity": _pick_llm_score(llm_result, "updated_clarity", fallback=base["clarity"]),
-    }
+    # The model writes dialogue, not authoritative simulation state.  Axis
+    # updates come from recognized learner actions and deterministic momentum
+    # rules so a persuasive but incorrect model response cannot move state.
+    proposed = dict(base)
 
     deltas = {
         "emotion": int(momentum.get("emotion_delta", 0)),

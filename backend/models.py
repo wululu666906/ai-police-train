@@ -26,6 +26,16 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class AccountGroup(Base):
+    __tablename__ = "account_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(80), unique=True, nullable=False, index=True)
+    description = Column(String(200), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class OpsAuditLog(Base):
     __tablename__ = "ops_audit_logs"
 

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Optional
 
 import models
 from .human_reaction_engine import build_director_human_context, scene_mood_shift
-from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
+from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model, get_fast_generation_kwargs
 from .multi_role_service import (
     _build_history_block,
     _match_role_by_name,
@@ -429,7 +430,7 @@ def run_director(
         user_text=user_text,
         interaction_mode="",
     )
-    if use_llm:
+    if use_llm and os.getenv("ROLE_DIRECTOR_USE_LLM", "0").strip().lower() in {"1", "true", "yes"}:
         prompt = DIRECTOR_ORCHESTRATION_PROMPT.format(
             user_text=user_text,
             scene_name=_text(scene.name) or "训练场景",
@@ -444,7 +445,8 @@ def run_director(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.45,
                 model=get_chat_model(),
-                max_tokens=1200,
+                max_tokens=max(128, int(os.getenv("ROLE_DIRECTOR_MAX_TOKENS", "320"))),
+                extra_kwargs=get_fast_generation_kwargs(),
             )
             raw = extract_message_text(response) or ""
             match = re.search(r"\{[\s\S]*\}", raw)
