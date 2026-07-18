@@ -40,6 +40,10 @@ COPY data/face_models /app/data/face_models
 COPY frontend /app/frontend
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
+# Download and cache PaddleOCR's Chinese models while building the image.
+# Runtime document parsing must not depend on the server having outbound access.
+RUN python -c "from services.document_extract_service import document_extract_service; document_extract_service._load_paddle_ocr()"
+
 RUN printf '%s\n' \
     '#!/bin/bash' \
     'set -euo pipefail' \

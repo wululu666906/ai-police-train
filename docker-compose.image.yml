@@ -1,0 +1,21 @@
+services:
+  app:
+    image: ${APP_IMAGE:-ghcr.io/wululu666906/ai-police-train:codex-github-deploy-bundle}
+    container_name: ai_police_app
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: sqlite:///data/ai_police.db
+      CHROMA_DB_PATH: data/chroma_db
+      PORT: "8000"
+    ports:
+      - "${WEB_PORT:-5555}:8000"
+    volumes:
+      - ./data:/app/backend/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
