@@ -21,8 +21,10 @@ reproducibly from `backend/requirements.txt` and `frontend/package-lock.json`.
 ## Pulling the prebuilt deployment image
 
 Pushing the `codex/github-deploy-bundle` branch builds a Linux image in GitHub
-Container Registry. It includes Python packages, Node build output, InsightFace
-models, and cached PaddleOCR models. The server therefore does not install
+Container Registry. It includes Python packages, Node build output, ffmpeg,
+PDF rendering support, Chinese fonts, InsightFace models, and cached PaddleOCR
+models. The image build also verifies OpenCV, ONNX Runtime, pypdfium2, ffmpeg,
+and InsightFace model loading. The server therefore does not install
 dependencies or download models.
 
 ```bash

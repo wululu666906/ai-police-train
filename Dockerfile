@@ -22,11 +22,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
+        ca-certificates \
+        curl \
         sqlite3 \
         ffmpeg \
+        fonts-noto-cjk \
         libglib2.0-0 \
         libgl1 \
         libgomp1 \
+        libsm6 \
+        libxext6 \
         libjpeg62-turbo \
         zlib1g \
     && rm -rf /var/lib/apt/lists/*
@@ -43,6 +48,9 @@ COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 # Download and cache PaddleOCR's Chinese models while building the image.
 # Runtime document parsing must not depend on the server having outbound access.
 RUN python -c "from services.document_extract_service import document_extract_service; document_extract_service._load_paddle_ocr()"
+
+# Fail the image build if core local runtimes or bundled face models are broken.
+RUN python -c "import cv2, onnxruntime, pypdfium2, shutil; assert shutil.which('ffmpeg'); from services.face_service import engine_status, _load_engine; status = engine_status(); assert status['model_files_ready'], status; _load_engine()"
 
 RUN printf '%s\n' \
     '#!/bin/bash' \
