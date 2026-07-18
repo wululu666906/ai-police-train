@@ -2954,6 +2954,20 @@ class WorkflowService:
             ]
             person["response_constraints"] = person.get("response_constraints") or ["只陈述本人亲历、亲眼所见或原文明确记载的内容。"]
             person["unresolved_claims"] = person.get("unresolved_claims") or []
+        def person_source_start(person: dict[str, Any]) -> int:
+            positions = []
+            for memory in person.get("role_memories") or []:
+                if not isinstance(memory, dict):
+                    continue
+                for ref in memory.get("source_refs") or []:
+                    if isinstance(ref, dict) and isinstance(ref.get("start"), int):
+                        positions.append(ref["start"])
+            name = str(person.get("name") or "").strip()
+            return min(positions) if positions else (text.find(name) if name and text.find(name) >= 0 else 10**9)
+
+        # Person order is part of the source contract: the admin review and
+        # scene allocator must see people in their first original occurrence.
+        base["persons"].sort(key=lambda person: (person_source_start(person), str(person.get("name") or "")))
         reconstruction["complete_story"] = self._render_complete_story(reconstruction, base["persons"])
         # Persist the completed and normalized role phase before starting the
         # long-form story call. Output-limit failures can only affect the story.
@@ -3652,7 +3666,11 @@ class WorkflowService:
                     if not valid:
                         raise ValueError(f"{blueprint['scene_name']}：{reason}")
                     script_payload = repair_payload
-                script_payload["roles"] = script_payload.get("roles") or blueprint["roles"]
+                # Blueprint scope is authoritative. A script model receives the
+                # full person list for reference, so its own roles array must
+                # never broaden the scene roster or reintroduce all-case facts.
+                script_payload["roles"] = blueprint["roles"]
+                script_payload["fact_ids"] = blueprint["fact_ids"]
                 script_payload["scene_name"] = script_payload.get("scene_name") or blueprint["scene_name"]
                 scenes.append(script_payload)
             result = self._normalize_scenes(
