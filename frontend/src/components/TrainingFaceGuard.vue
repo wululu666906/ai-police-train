@@ -255,23 +255,29 @@ const stopCamera = () => {
   cameraReady.value = false
 }
 
-const captureFrame = (size = 640, jpegQuality = 0.9) => {
+const captureFrame = (size = 360, jpegQuality = 0.72) => {
   const video = videoRef.value
   const canvas = canvasRef.value
   if (!video || !canvas || !cameraReady.value || !video.videoWidth) return null
-  const sourceSize = Math.min(video.videoWidth, video.videoHeight)
-  const sx = Math.max(0, Math.round((video.videoWidth - sourceSize) / 2))
-  const sy = Math.max(0, Math.round((video.videoHeight - sourceSize) / 2))
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return null
-  ctx.drawImage(video, sx, sy, sourceSize, sourceSize, 0, 0, canvas.width, canvas.height)
-  return canvas.toDataURL('image/jpeg', jpegQuality)
+  const drawFrame = (targetSize: number, quality: number) => {
+    const sourceSize = Math.min(video.videoWidth, video.videoHeight)
+    const sx = Math.max(0, Math.round((video.videoWidth - sourceSize) / 2))
+    const sy = Math.max(0, Math.round((video.videoHeight - sourceSize) / 2))
+    canvas.width = targetSize
+    canvas.height = targetSize
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.drawImage(video, sx, sy, sourceSize, sourceSize, 0, 0, canvas.width, canvas.height)
+    return canvas.toDataURL('image/jpeg', quality)
+  }
+  const frame = drawFrame(size, jpegQuality)
+  // Keep every verification and monitoring request below the public proxy body limit.
+  if (!frame || frame.length <= 48_000) return frame
+  return drawFrame(300, 0.62)
 }
 
 const buildPayload = (endpoint: 'verify' | 'heartbeat') => {
-  const frame = endpoint === 'verify' ? captureFrame(512, 0.82) : captureFrame()
+  const frame = captureFrame()
   if (!frame) return null
   return {
     frame,

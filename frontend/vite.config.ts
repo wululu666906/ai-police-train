@@ -10,9 +10,11 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        entryFileNames: 'assets/[name].js',
-        chunkFileNames: 'assets/[name].js',
-        assetFileNames: 'assets/[name][extname]',
+        // Production assets are cached by the reverse proxy. Content hashes
+        // keep a fresh entry page from mixing with stale lazy chunks or CSS.
+        entryFileNames: 'assets/[name]-[hash].js',
+        chunkFileNames: 'assets/[name]-[hash].js',
+        assetFileNames: 'assets/[name]-[hash][extname]',
         manualChunks(id) {
           if (!id.includes('node_modules')) return
           if (id.includes('element-plus') || id.includes('@element-plus')) return 'vendor-element'

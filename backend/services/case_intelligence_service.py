@@ -235,11 +235,23 @@ def validate_supporting_knowledge_ids(
     require_support: bool = False,
 ) -> dict[str, Any]:
     requested = _dedupe_text(_list(ids))
+    # The evidence ledger is populated from both legacy persona fields and the
+    # source-document memory line.  A direct statement/observation is just as
+    # valid a grounding source as a legacy `known` item.
+    allowed_modes = {
+        "known",
+        "withheld",
+        "direct_statement",
+        "personal_experience",
+        "direct_observation",
+        "hearsay",
+        "source_mention",
+    }
     allowed = {
         _text(item.get("knowledge_id"))
         for item in view.get("ledger") or []
         if isinstance(item, dict)
-        and item.get("knowledge_mode") in {"known", "withheld"}
+        and _text(item.get("knowledge_mode")) in allowed_modes
         and _text(item.get("knowledge_id"))
     }
     invalid = [item for item in requested if item not in allowed]

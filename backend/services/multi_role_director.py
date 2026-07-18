@@ -215,6 +215,14 @@ def _enforce_cast_plan(
         plan["cast_plan"] = _build_cast_entries(roles[:2], mode="public_question")
         plan.setdefault("scene_mood", "tense")
         plan["scene_mood_shift"] = scene_mood_shift(plan.get("scene_mood") or "tense")
+        return plan
+
+    # A normal question has one respondent. Letting the director freely keep
+    # two speakers here caused unrelated roles to echo one another and made
+    # their names/avatars look like they had swapped identities.
+    cast_plan = plan.get("cast_plan") if isinstance(plan.get("cast_plan"), list) else []
+    if cast_plan:
+        plan["cast_plan"] = cast_plan[:1]
     return plan
 
 

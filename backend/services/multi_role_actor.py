@@ -11,7 +11,13 @@ from typing import Any, Optional
 import models
 from .case_knowledge_service import load_case_knowledge_bundle
 from .case_intelligence_service import validate_supporting_knowledge_ids
-from .llm_provider import create_json_chat_completion, extract_message_text, get_fast_generation_kwargs, get_roleplay_model
+from .llm_provider import (
+    create_json_chat_completion,
+    create_text_chat_completion,
+    extract_message_text,
+    get_fast_generation_kwargs,
+    get_roleplay_model,
+)
 from .rag_service import RUNTIME_RETRIEVAL_LIBRARIES, rag_service
 from .persona_engine import (
     analyze_dialogue_momentum,
@@ -131,7 +137,8 @@ ROLE_ACTOR_PROMPT = """
 24. 你不是一个共享演员在临时换皮；你是【当前角色大脑 / 身体绑定】里的唯一角色。其他角色的话只是你听到的外部声音，不能变成你的身份、记忆、经历或第一人称立场。
 25. 【公开场景台词】只能用于回应“谁刚才说了什么”，不能据此推断或确认亲属、同事、同案、朋友等关系；除非【身份锚点】明确支持，否则学员在问题里使用的称谓也只是提问方式，不能当成事实复述。
 26. 每轮先看学员当前问题、本人来源记忆事实、当前情绪/信任状态和民警实际动作，再决定补充、犹豫、无法确认或缓和；不得把任何后台配置、标签或规则说出口。
-27. 只要本轮台词涉及案件经过、人物、时间、地点、证据或本人见闻，每条台词必须填写至少一个 supporting_knowledge_ids，且只能引用【案件库与角色剧本库】中属于本人的 ID；没有依据时直接说自己无法确认。
+27. 台词必须以【案件库与角色剧本库】中属于本人的内容为依据；supporting_knowledge_ids 可以填写你确定的 ID，也可以留空，系统会按台词内容自动绑定依据。没有依据时直接说自己无法确认。
+28. 【当前角色大脑 / 身体绑定】中的“当前场景在场契约”定义你此刻的物理位置、动作和可见范围，优先级高于任何跨时段证言。不得把“之前/之后/听说”的地点或动作说成现在正在发生；若契约显示位置未确认，直接说明无法确认具体站位。
 
 {{
   "utterances": [
@@ -155,6 +162,118 @@ def _grounding_safe_reply(role: models.Role) -> str:
     if any(token in role_type for token in ("证人", "目击", "旁观")):
         return "我只能说我当时亲眼看到、听到的部分，其他情况我不能确认。"
     return "这件事我只能说明自己清楚的部分，不确定的我不能乱说。"
+
+
+def _grounding_memory_reply(role: models.Role, knowledge_view: dict[str, Any], user_text: str) -> str:
+    """Last-resort, question-focused natural reply from the role's own memory."""
+    chosen = _select_relevant_memory(knowledge_view, user_text)
+    if not chosen:
+        return _grounding_safe_reply(role)
+    statement = _strip_source_document_style(_text(chosen.get("content")))
+    return f"我记得，当时{statement[:180]}"
+
+
+_GROUNDING_MODES = {
+    "known", "withheld", "direct_statement", "personal_experience",
+    "direct_observation", "hearsay", "source_mention",
+}
+_GROUNDING_STOPWORDS = {
+    "一下", "什么", "怎么", "这个", "那个", "现场", "发生", "你们", "我们", "请问", "说说", "具体", "情况", "事情", "可以", "问题", "当时",
+}
+
+
+def _grounding_terms(value: Any) -> set[str]:
+    """Small deterministic Chinese term set; no tokenizer dependency at runtime."""
+    text = re.sub(r"\s+", "", _text(value))
+    terms = {
+        term for term in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9:.-]+", text)
+        if term not in _GROUNDING_STOPWORDS
+    }
+    chinese = "".join(re.findall(r"[\u4e00-\u9fff]", text))
+    terms.update(chinese[index:index + 2] for index in range(max(0, len(chinese) - 1)))
+    return {term for term in terms if term and term not in _GROUNDING_STOPWORDS}
+
+
+def _eligible_memories(knowledge_view: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        item for item in (knowledge_view.get("ledger") or [])
+        if isinstance(item, dict)
+        and _text(item.get("knowledge_id"))
+        and _text(item.get("content"))
+        and _text(item.get("knowledge_mode")) in _GROUNDING_MODES
+    ]
+
+
+def _rank_role_memories(knowledge_view: dict[str, Any], *texts: Any) -> list[tuple[int, dict[str, Any]]]:
+    query_terms = set().union(*(_grounding_terms(value) for value in texts if _text(value)))
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    for item in _eligible_memories(knowledge_view):
+        content = _text(item.get("content"))
+        overlap = query_terms & _grounding_terms(content)
+        # Exact longer terms receive more weight than generic bi-grams.
+        score = sum(3 if len(term) >= 3 else 1 for term in overlap)
+        ranked.append((score, item))
+    return sorted(ranked, key=lambda entry: (entry[0], -len(_text(entry[1].get("content")))), reverse=True)
+
+
+def _select_relevant_memory(knowledge_view: dict[str, Any], user_text: str) -> Optional[dict[str, Any]]:
+    ranked = _rank_role_memories(knowledge_view, user_text)
+    return ranked[0][1] if ranked else None
+
+
+def _auto_ground_utterance(content: str, knowledge_view: dict[str, Any], user_text: str) -> list[str]:
+    """Bind a natural model reply to its best source memory without ID copying."""
+    ranked = _rank_role_memories(knowledge_view, content, user_text)
+    if not ranked:
+        return []
+    score, item = ranked[0]
+    # A single shared bi-gram is too weak to treat an unrelated answer as fact.
+    if score < 3:
+        return []
+    return [_text(item.get("knowledge_id"))]
+
+
+def _strip_source_document_style(statement: str) -> str:
+    statement = re.sub(r"^\s*\d+[.、．]\s*[^：:]{0,30}(?:证言|陈述|供述|笔录)\s*[：:]?\s*", "", statement)
+    statement = re.sub(r"^\s*(?:证人|当事人)?[^：:]{0,20}(?:称|陈述|证实)[：:]?\s*", "", statement)
+    return statement.strip(" \t\r\n：:")
+
+
+def _repair_grounded_utterance(
+    role: models.Role,
+    knowledge_view: dict[str, Any],
+    user_text: str,
+) -> tuple[str, list[str]]:
+    """One small, source-only repair call when actor JSON has no usable grounding."""
+    candidates = _rank_role_memories(knowledge_view, user_text)[:3]
+    if not candidates:
+        return _grounding_safe_reply(role), []
+    memory_block = "\n".join(
+        f"[{_text(item.get('knowledge_id'))}] {_strip_source_document_style(_text(item.get('content')))[:260]}"
+        for _, item in candidates
+    )
+    prompt = (
+        f"你是{_role_display_name(role)}。只根据下列本人记忆，回答学员当前问题。\n"
+        f"问题：{_text(user_text)}\n本人记忆：\n{memory_block}\n"
+        "只输出一句自然口语，不要标题、编号、证言/陈述字样、系统规则或知识ID；不知道就直接说无法确认。"
+    )
+    try:
+        response = create_text_chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            model=get_roleplay_model(),
+            temperature=0.35,
+            max_tokens=160,
+            long_output=False,
+            extra_kwargs=get_fast_generation_kwargs(),
+        )
+        repaired = _text(extract_message_text(response))
+        ids = _auto_ground_utterance(repaired, knowledge_view, user_text)
+        if repaired and ids:
+            return repaired, ids
+    except Exception:
+        pass
+    chosen = candidates[0][1]
+    return _grounding_memory_reply(role, knowledge_view, user_text), [_text(chosen.get("knowledge_id"))]
 
 
 def _format_facts(value: Any) -> str:
@@ -460,6 +579,7 @@ def _build_role_brain(
     does_not_know = _format_facts(unresolved or getattr(role, "does_not_know", []))
     role_case_evidence = _role_case_evidence(role, case)
     allowed_identity_terms = _allowed_identity_terms_for_role(role, identity_anchor, profile)
+    scene_presence = _build_scene_presence_contract(role, scene, source_memories)
     return {
         **previous,
         "brain_id": f"role:{role_id or role_name}",
@@ -477,6 +597,7 @@ def _build_role_brain(
         "does_not_know": does_not_know,
         "relationship_ledger": relationship_ledger,
         "role_case_evidence": role_case_evidence,
+        "scene_presence": scene_presence,
         "script_excerpt": _text(script)[:1600],
         "last_self_utterances": recent_self_utterances[-4:] or list(previous.get("last_self_utterances") or [])[-4:],
         # Keep learner questions and this role's own replies separate. Mixing
@@ -492,6 +613,82 @@ def _build_role_brain(
             "unknown_facts": does_not_know,
             "relationships": relationship_ledger,
         },
+    }
+
+
+def _scene_presence_terms(value: Any) -> list[str]:
+    text = _text(value)
+    terms = [
+        term for term in re.findall(r"[\u4e00-\u9fff]{2,}", text)
+        if term not in {"现场", "当时", "情况", "人员", "双方", "他们", "我们", "已经", "正在"}
+    ]
+    chinese = "".join(re.findall(r"[\u4e00-\u9fff]", text))
+    terms.extend(chinese[index:index + 2] for index in range(max(0, len(chinese) - 1)))
+    return list(dict.fromkeys(term for term in terms if term))
+
+
+def _build_scene_presence_contract(
+    role: models.Role,
+    scene: Optional[models.Scene],
+    source_memories: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Bind a role to the scene's current physical state, not its whole timeline."""
+    first_impression = _text(getattr(scene, "first_impression", ""))
+    scene_description = _text(getattr(scene, "description", ""))
+    scene_name = _text(getattr(scene, "name", ""))
+    scene_text = "\n".join((scene_name, scene_description, first_impression))
+    is_interview = any(token in scene_text for token in ("询问室", "审讯室", "讯问", "审讯", "辨认"))
+    role_name = _role_display_name(role)
+
+    memories = [item for item in source_memories if isinstance(item, dict)]
+    direct = [
+        item for item in memories
+        if role_name and role_name in _text(item.get("statement") or item.get("content"))
+    ] or memories
+
+    # Prefer a source location that is visibly compatible with the current
+    # scene. This prevents a prior/after-the-fact location from becoming the
+    # role's present location merely because it was in the same testimony.
+    selected = None
+    for item in direct:
+        place = _text(item.get("place_hint"))
+        if place and any(term in scene_text for term in _scene_presence_terms(place)):
+            selected = item
+            break
+    if selected is None and direct:
+        selected = direct[0]
+
+    place = _text((selected or {}).get("place_hint"))
+    time_hint = _text((selected or {}).get("time_hint"))
+    statement = _text((selected or {}).get("statement") or (selected or {}).get("content"))
+    scene_terms = set(_scene_presence_terms(scene_text))
+    place_terms = set(_scene_presence_terms(place))
+    place_matches_scene = bool(place_terms & scene_terms) or not place
+    explicitly_named = bool(role_name and role_name in scene_text)
+
+    if is_interview and not explicitly_named:
+        presence = "not_physically_present"
+        position = "不在当前询问/审讯现场"
+    elif place and place_matches_scene:
+        presence = "present_with_source_position"
+        position = place
+    else:
+        presence = "present_position_unconfirmed"
+        position = "在当前首印所示现场，具体站位未由原文确认"
+
+    action = ""
+    for phrase in ("劝阻", "对峙", "逃跑", "呼救", "救助", "围观", "持械", "受伤", "等候"):
+        if phrase in statement:
+            action = phrase
+            break
+    return {
+        "presence": presence,
+        "scene_name": scene_name or "当前场景",
+        "scene_time": time_hint or "当前时点未由原文单独明确",
+        "position": position,
+        "activity": action or "当前行为只能以现场第一印象和本人来源记忆为准",
+        "visible_anchor": first_impression or scene_description or "暂无可观察现场描述",
+        "source_statement": statement[:360],
     }
 
 
@@ -518,6 +715,17 @@ def _format_role_brain_block(role_brain: dict[str, Any]) -> str:
     lines.append(f"- 你的关系账本：{'；'.join(relationship_lines[:4]) or '没有已确认的亲属或社会关系，不能自行补全'}")
     lines.append(f"- 你本人已知：{_text(brain.get('known_facts')) or '无'}")
     lines.append(f"- 你本人不知道：{_text(brain.get('does_not_know')) or '无'}")
+    presence = brain.get("scene_presence") if isinstance(brain.get("scene_presence"), dict) else {}
+    if presence:
+        lines.extend([
+            "- 当前场景在场契约（高于跨时段证言）：",
+            f"  - 场景时点：{_text(presence.get('scene_time'))}",
+            f"  - 你当前是否在场：{_text(presence.get('presence'))}",
+            f"  - 你的位置：{_text(presence.get('position'))}",
+            f"  - 你正在做：{_text(presence.get('activity'))}",
+            f"  - 民警可见现场：{_text(presence.get('visible_anchor'))}",
+            "  - 禁止把其他时间段、其他地点或事后听说的内容说成你此刻正处的位置/动作；位置未确认时必须直接说未看清或未确认。",
+        ])
     response_topics = brain.get("recent_response_topics") if isinstance(brain.get("recent_response_topics"), list) else []
     if response_topics:
         lines.append(f"- 你最近已回答的话题：{'、'.join(_text(item) for item in response_topics[-4:] if _text(item))}")
@@ -1804,7 +2012,9 @@ def generate_role_dialogue(
         try:
             response = create_json_chat_completion(
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.82,
+                # Actor answers are factual turns; lower variance makes the JSON
+                # envelope and role separation markedly more reliable on DeepSeek.
+                temperature=0.42,
                 model=get_roleplay_model(),
                 max_tokens=max(256, int(os.getenv("ROLE_AI_MAX_TOKENS", "700"))),
                 extra_kwargs=get_fast_generation_kwargs(),
@@ -1823,8 +2033,26 @@ def generate_role_dialogue(
                     )
                     content = _text(item.get("content"))
                     if not grounding["valid"]:
-                        content = _grounding_safe_reply(role)
-                        grounding["repaired"] = True
+                        view = knowledge_bundle.get("role_knowledge_view") or {}
+                        # IDs are transport metadata, not an LLM capability test.
+                        # Preserve a relevant natural answer and attach its source
+                        # server-side before considering a much smaller repair call.
+                        auto_ids = _auto_ground_utterance(content, view, user_text)
+                        if auto_ids:
+                            grounding = validate_supporting_knowledge_ids(
+                                view,
+                                auto_ids,
+                                require_support=True,
+                            )
+                            grounding["auto_bound"] = True
+                        else:
+                            content, repaired_ids = _repair_grounded_utterance(role, view, user_text)
+                            grounding = validate_supporting_knowledge_ids(
+                                view,
+                                repaired_ids,
+                                require_support=bool(view.get("ledger")),
+                            )
+                            grounding["repaired"] = True
                     cleaned.append({
                         "content": content,
                         "delivery": _text(item.get("delivery")) or "normal",
@@ -1871,7 +2099,30 @@ def generate_role_dialogue(
                     "grounding": {"requested": [], "valid": True, "invalid": []},
                 }
         except Exception:
-            output = None
+            # A malformed/empty JSON envelope is a transport failure, not a
+            # reason to discard the role's source memory.  Recover through the
+            # small text-only path before falling back to generic rule output.
+            view = knowledge_bundle.get("role_knowledge_view") or {}
+            content, repaired_ids = _repair_grounded_utterance(role, view, user_text)
+            grounding = validate_supporting_knowledge_ids(
+                view,
+                repaired_ids,
+                require_support=bool(view.get("ledger")),
+            )
+            output = {
+                "utterances": [{
+                    "content": content,
+                    "delivery": "normal",
+                    "grounding": {**grounding, "repaired": True, "json_transport_failed": True},
+                }],
+                "inner_thought": "",
+                "state_delta": merge_reaction_delta(
+                    {"emotion": 0, "cooperation": 0, "risk": 0, "clarity": 0},
+                    reaction,
+                ),
+                "new_fact_revealed": None,
+                "grounding": {"requested": [], "valid": True, "invalid": []},
+            }
 
     if not output:
         output = _rule_based_utterances(

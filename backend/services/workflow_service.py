@@ -618,6 +618,13 @@ class WorkflowService:
             text,
         ):
             add(match.group(2), match.group(1), match.group(0))
+        # Numbered records may omit the identity label, e.g. "12. 韩某陈述".
+        # Register the speaker so the source-block pass can attach their memory.
+        for match in re.finditer(
+            r"(?:^|[\n。])\s*(?:第?\d+[.、．]?\s*)?([\u4e00-\u9fff]{2,4}(?:\d{1,2})?)(?:的)?(?:证言|陈述|供述|辩解|询问笔录|讯问笔录)",
+            text,
+        ):
+            add(match.group(1), "相关人员", match.group(0))
         # Keep legal aliases mentioned inside a statement as separate roles.
         # They must not inherit the current witness's testimony, so their
         # memory remains empty until the source contains their own statement.
@@ -1013,7 +1020,17 @@ class WorkflowService:
             rf"(?P<role>{role_labels})\s*(?P<name>[\u4e00-\u9fff]{{2,4}}?(?:\d{{1,2}})?)"
             rf"(?:的)?(?P<label>证言|陈述|供述|辩解|询问笔录|讯问笔录)"
         )
-        headings = list(heading_pattern.finditer(source))
+        generic_heading_pattern = re.compile(
+            r"(?:^|(?<=\n)|(?<=。))\s*(?:第?\d+[.、．]?\s*)?"
+            r"(?P<name>[\u4e00-\u9fff]{2,4}(?:\d{1,2})?)(?:的)?"
+            r"(?P<label>证言|陈述|供述|辩解|询问笔录|讯问笔录)"
+        )
+        labeled_headings = list(heading_pattern.finditer(source))
+        labeled_starts = {item.start() for item in labeled_headings}
+        headings = sorted(
+            [*labeled_headings, *(item for item in generic_heading_pattern.finditer(source) if item.start() not in labeled_starts)],
+            key=lambda item: item.start(),
+        )
         explicit_testimony_ranges: list[tuple[int, int, str]] = []
         for heading_index, match in enumerate(headings):
             name = self._normalize_person_name(match.group("name"))
@@ -3298,6 +3315,94 @@ class WorkflowService:
                 relevant.append(name)
         return list(dict.fromkeys(relevant))
 
+    def _bind_scene_people_to_story(
+        self,
+        case_info: dict[str, Any],
+        scenes: list[dict[str, Any]],
+        story_world: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Resolve each scene roster from the complete story, after scene design.
+
+        Scene generation may use JSON, Markdown, or a rule fallback. None of
+        those outputs is permitted to decide who is present. This final pass
+        assigns source facts to one scene and admits a person only when their
+        name or source memory is supported by that scene's assigned facts.
+        """
+        if not scenes:
+            return []
+        facts = [item for item in story_world.get("fact_cards") or [] if isinstance(item, dict) and str(item.get("id") or "").strip()]
+        facts.sort(key=self._fact_source_start)
+        if not facts:
+            return scenes
+
+        people = [item for item in case_info.get("persons") or [] if isinstance(item, dict) and self._is_speakable_status(item.get("status"))]
+        fact_by_id = {str(item["id"]): item for item in facts}
+        scene_texts = [" ".join([
+            str(scene.get("scene_name") or ""), str(scene.get("scene_description") or ""),
+            str(scene.get("dispatch_brief") or ""), " ".join(str(stage.get("stage_goal") or "") for stage in scene.get("stages") or [] if isinstance(stage, dict)),
+        ]) for scene in scenes]
+
+        def phase_score(scene_text: str, fact: dict[str, Any]) -> int:
+            fact_text = str(fact.get("content") or "") + " ".join(str(ref.get("summary") or "") for ref in fact.get("source_refs") or [] if isinstance(ref, dict))
+            score = 0
+            if any(token in scene_text for token in ("现场", "先期", "隔离", "稳控", "伤情", "处置")) and any(token in fact_text for token in ("现场", "到场", "争执", "冲突", "受伤", "报警")):
+                score += 4
+            if any(token in scene_text for token in ("证人", "走访", "辨认", "证言")) and any(token in fact_text for token in ("证人", "证言", "陈述", "看见", "听见")):
+                score += 5
+            if any(token in scene_text for token in ("讯问", "审讯", "嫌疑", "供述", "传唤")) and any(token in fact_text for token in ("嫌疑", "供述", "辩解", "被告", "犯罪")):
+                score += 5
+            if any(token in scene_text for token in ("取证", "证据", "固定", "勘验")) and any(token in fact_text for token in ("证据", "监控", "照片", "鉴定", "物证", "伤情")):
+                score += 4
+            return score
+
+        assigned = [[] for _ in scenes]
+        for fact_index, fact in enumerate(facts):
+            requested = [index for index, scene in enumerate(scenes) if str(fact.get("id")) in {str(value) for value in scene.get("fact_ids") or []}]
+            scores = [phase_score(scene_text, fact) + (1 if index in requested else 0) for index, scene_text in enumerate(scene_texts)]
+            best_score = max(scores)
+            candidates = [index for index, score in enumerate(scores) if score == best_score]
+            if best_score == 0:
+                candidates = [fact_index % len(scenes)]
+            target = min(candidates, key=lambda index: (len(assigned[index]), index))
+            assigned[target].append(str(fact["id"]))
+
+        result = []
+        for scene_index, scene in enumerate(scenes):
+            scene_fact_ids = assigned[scene_index]
+            scoped_facts = [fact_by_id[fact_id] for fact_id in scene_fact_ids]
+            scoped_text = "\n".join(str(fact.get("content") or "") + " " + " ".join(str(ref.get("summary") or "") for ref in fact.get("source_refs") or [] if isinstance(ref, dict)) for fact in scoped_facts)
+            source_positions = {self._fact_source_start(fact) for fact in scoped_facts}
+            ranked = []
+            for person_index, person in enumerate(people):
+                name = str(person.get("name") or "").strip()
+                if not name:
+                    continue
+                score = 3 if name in scoped_text else 0
+                for memory in person.get("role_memories") or []:
+                    if not isinstance(memory, dict):
+                        continue
+                    for ref in memory.get("source_refs") or []:
+                        if isinstance(ref, dict) and isinstance(ref.get("start"), int) and any(abs(ref["start"] - pos) < 1200 for pos in source_positions):
+                            score = max(score, 2)
+                if score:
+                    ranked.append((-score, person_index, name))
+            roles = [name for _score, _index, name in sorted(ranked)[:4]]
+            if not roles:
+                # A scene without direct name mentions may retain one explicit
+                # dialogue target, but never inherit the all-case roster.
+                requested = [str(name).strip() for name in scene.get("roles") or [] if str(name).strip() in {str(person.get("name") or "").strip() for person in people}]
+                roles = requested[:1]
+            bound = dict(scene)
+            bound["roles"] = roles
+            bound["fact_ids"] = scene_fact_ids
+            bound["stages"] = [
+                {**stage, "fact_ids": [fact_id for fact_id in stage.get("fact_ids") or [] if fact_id in scene_fact_ids] or scene_fact_ids}
+                if isinstance(stage, dict) else stage
+                for stage in scene.get("stages") or []
+            ]
+            result.append(bound)
+        return result
+
     def _fallback_scenes(self, case_info: dict[str, Any], *, scene_generation_strategy: str = "case_driven") -> dict[str, Any]:
         case_name = str(case_info.get("case_name") or "该案件").strip()
         dispatch_brief = self._default_dispatch_brief(case_info, "接警研判")
@@ -3681,6 +3786,7 @@ class WorkflowService:
             )
             if not result.get("scenes") or str(result.get("scene_generation_mode") or "").startswith("fallback"):
                 raise ValueError("场景标准化未产生可用训练场景")
+            result["scenes"] = self._bind_scene_people_to_story(case_info, result["scenes"], story_world)
             result["scene_blueprints"] = blueprints
             result["training_tasks"] = build_training_tasks(case_info, result.get("scenes") or [])
             result["state_machine"] = compile_state_machine(result["training_tasks"])
@@ -3718,6 +3824,7 @@ class WorkflowService:
                     story_world=story_world,
                 )
                 if text_result.get("scenes") and not str(text_result.get("scene_generation_mode") or "").startswith("fallback"):
+                    text_result["scenes"] = self._bind_scene_people_to_story(case_info, text_result["scenes"], story_world)
                     text_result["scene_generation_mode"] = "ai_text_template"
                     text_result["scene_generation_warning"] = "大 JSON 场景生成未通过校验，已由 AI 纯文本剧本模板生成场景，请人工复核。"
                     text_result["ai_workflow"] = {
@@ -3733,6 +3840,7 @@ class WorkflowService:
             except Exception as text_exc:
                 failure_reason = f"{failure_reason}；AI 纯文本场景模板也失败：{text_exc}"
         fallback = self._fallback_scenes(case_info, scene_generation_strategy=scene_generation_strategy)
+        fallback["scenes"] = self._bind_scene_people_to_story(case_info, fallback.get("scenes") or [], story_world)
         fallback["scene_generation_warning"] = (
             f"{fallback['scene_generation_warning']} 原因：{failure_reason}"
             if failure_reason

@@ -9,7 +9,18 @@ VideoNode 新增：node_interaction_type, ai_instructor_hint, choice_options, co
 import sqlite3
 import os
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "ai_police.db")
+from database import SQLALCHEMY_DATABASE_URL
+
+
+def resolve_db_path() -> str:
+    """Keep the standalone migration aligned with the application's SQLite URL."""
+    prefix = "sqlite:///"
+    if not SQLALCHEMY_DATABASE_URL.startswith(prefix):
+        raise RuntimeError("migrate_video_nodes.py only supports SQLite DATABASE_URL values")
+    return SQLALCHEMY_DATABASE_URL.removeprefix(prefix)
+
+
+DB_PATH = resolve_db_path()
 
 
 def column_exists(cursor, table: str, column: str) -> bool:

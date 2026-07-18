@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from collections import defaultdict
 from typing import List
 
@@ -590,6 +591,19 @@ def read_all_roles(db: Session = Depends(database.get_db)):
     return result
 
 
+def _case_background_preview(case: models.Case, limit: int = 300) -> str:
+    """Return list-safe background text without sending a whole case payload."""
+    structured = _safe_json_loads(case.structured_data, {})
+    candidate = (
+        case.background
+        or structured.get("case_background")
+        or structured.get("transcript_summary")
+        or case.original_content
+        or ""
+    )
+    return re.sub(r"\s+", " ", str(candidate)).strip()[:limit]
+
+
 @router.get("/role-case-options")
 def read_role_case_options(db: Session = Depends(database.get_db)):
     cases = db.query(models.Case).order_by(models.Case.created_at.desc()).all()
@@ -598,6 +612,7 @@ def read_role_case_options(db: Session = Depends(database.get_db)):
             "id": case.id,
             "title": case.title,
             "case_type": case.case_type,
+            "background": _case_background_preview(case),
             "scenes": [
                 {
                     "id": scene.id,

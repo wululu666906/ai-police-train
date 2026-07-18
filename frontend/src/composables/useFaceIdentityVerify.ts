@@ -100,11 +100,15 @@ export function useFaceIdentityVerify() {
     canVerifyFrame = null
   }
 
-  function captureFrame(size = 640, jpegQuality = 0.9) {
+  function captureFrame(size = 360, jpegQuality = 0.72) {
     const video = boundVideo
     const canvas = boundCanvas
     if (!video || !canvas) return null
-    return captureSelfieFrame(video, canvas, { size, jpegQuality, mode: 'preview' })
+    const frame = captureSelfieFrame(video, canvas, { size, jpegQuality, mode: 'preview' })
+    // Some production proxy hops reject camera-frame JSON bodies near 80 KB.
+    // Retry at a smaller encoding before sending a request that would fail upstream.
+    if (!frame || frame.length <= 48_000) return frame
+    return captureSelfieFrame(video, canvas, { size: 300, jpegQuality: 0.62, mode: 'preview' })
   }
 
   function buildPayload() {

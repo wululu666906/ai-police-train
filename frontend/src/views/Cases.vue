@@ -2484,13 +2484,33 @@ const refreshCasesPage = async () => {
   await Promise.all([fetchCases(), fetchSceneRoleAudit()])
 }
 
+const fetchCaseSummaries = async () => {
+  const items: any = await request.get('/cases/role-case-options', { _skipErrorToast: true } as any)
+  if (!Array.isArray(items)) return []
+  return items.map((item: any) => ({
+    ...item,
+    background: String(item.background || '').trim(),
+    original_content: '',
+    structured_data: '{}',
+    scenes: Array.isArray(item.scenes) ? item.scenes : [],
+  }))
+}
+
 const fetchCases = async () => {
   casesLoading.value = true
   casesError.value = ''
   try {
-    let res: any = await request.get('/cases/', { _skipErrorToast: true } as any)
-    if (typeof res === 'string' && res.toLowerCase().includes('<!doctype html')) {
+    let res: any
+    try {
       res = await request.get('/cases/', { _skipErrorToast: true } as any)
+    } catch (bulkError) {
+      // Legacy reverse proxies can truncate large case bodies. The existing
+      // options endpoint carries only the fields required by the list view.
+      console.warn('Bulk case list failed, retrying with summaries:', bulkError)
+      res = await fetchCaseSummaries()
+    }
+    if (typeof res === 'string' && res.toLowerCase().includes('<!doctype html')) {
+      res = await fetchCaseSummaries()
     }
     cases.value = Array.isArray(res) ? [...res] : []
     const focusId = Number(route.query.case_id)

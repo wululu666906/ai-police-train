@@ -1006,8 +1006,16 @@ const fetchClasses = async () => {
 }
 
 const fetchCases = async () => {
-  const res: any = await request.get('/cases/')
-  cases.value = Array.isArray(res) ? res : []
+  try {
+    const res: any = await request.get('/cases/', { _skipErrorToast: true } as any)
+    cases.value = Array.isArray(res) ? res : []
+  } catch (bulkError) {
+    // Assignment creation needs titles and scene ids only. The compact endpoint
+    // avoids reverse proxies truncating large case bodies during page startup.
+    console.warn('Bulk case list failed, retrying with summaries:', bulkError)
+    const summaries: any = await request.get('/cases/role-case-options', { _skipErrorToast: true } as any)
+    cases.value = Array.isArray(summaries) ? summaries : []
+  }
 }
 
 const selectClass = async (classId: number) => {
