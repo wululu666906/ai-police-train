@@ -23,8 +23,8 @@ interface FaceDetectorLike {
   close?: () => void
 }
 
-const REMOTE_FACE_MODEL_URL =
-  'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite'
+const FACE_MODEL_URL =
+  import.meta.env.VITE_MEDIAPIPE_FACE_MODEL_URL || '/mediapipe/models/blaze_face_short_range.tflite'
 
 const CHECK_INTERVAL_MS = 700
 const REQUIRED_SINGLE_FACE_STREAK = 3
@@ -180,7 +180,7 @@ export function usePresenceMonitor() {
       const resolver = await FilesetResolver.forVisionTasks(loaded.wasmUrl)
       faceDetector = await FaceDetector.createFromOptions(resolver, {
         baseOptions: {
-          modelAssetPath: REMOTE_FACE_MODEL_URL,
+          modelAssetPath: FACE_MODEL_URL,
           delegate: 'CPU',
         },
         runningMode: 'VIDEO',

@@ -1,6 +1,8 @@
 .git
 .gitignore
 .pytest_cache
+.codex-*
+backend/.codex-*
 .venv
 venv
 env

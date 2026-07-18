@@ -714,7 +714,12 @@ def _extract_ocr_hints(frames: list[dict[str, Any]], limit: int = 4) -> list[str
 
     hints: list[str] = []
     try:
-        ocr = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
+        try:
+            ocr = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
+        except ValueError as exc:
+            if "show_log" not in str(exc):
+                raise
+            ocr = PaddleOCR(use_angle_cls=True, lang="ch")
     except Exception:
         return []
 
