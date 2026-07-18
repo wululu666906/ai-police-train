@@ -26,7 +26,11 @@ logs
 backend/logs
 backups
 
-data
+# Keep only the tracked InsightFace model files in the build context. Runtime
+# databases, vector indexes, and uploaded data remain excluded.
+data/*
+!data/face_models/
+!data/face_models/**
 deploy_cloud_bundle
 deploy_native_bundle
 
