@@ -12,7 +12,7 @@ services:
       FACE_ENGINE_WARMUP: "1"
       PORT: "8000"
     ports:
-      - "${WEB_PORT:-5555}:8000"
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-5555}:8000"
     volumes:
       - ./data:/app/backend/data
     restart: unless-stopped
