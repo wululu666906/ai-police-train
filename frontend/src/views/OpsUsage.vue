@@ -205,9 +205,14 @@ const detail = ref<UsageAccount | null>(null)
 const activeCategory = ref('admin')
 const globalVersion = ref('')
 const usageVersions = ref<Record<number, string>>({})
+const usageListCache = new Map<string, UsageAccount[]>()
 let refreshTimer: number | undefined
 let versionTimer: number | undefined
 let versionPolling = false
+let usageRequestId = 0
+let detailRequestId = 0
+let initialAccountHandled = false
+const VERSION_POLL_INTERVAL_MS = 10000
 
 const categoryTabs = [
   { key: 'admin', label: '管理端' },
@@ -389,6 +394,14 @@ const computeVersionMap = (items: Array<{ id: number; usage_version?: string; ve
   }, {})
 }
 
+const usageCacheKey = (role = roleFilter.value, search = keyword.value) => `${role || 'all'}::${search.trim()}`
+
+const applyUsageList = (items: UsageAccount[]) => {
+  usageAccounts.value = items
+  usageVersions.value = computeVersionMap(items)
+  globalVersion.value = computeGlobalVersion(items)
+}
+
 const hasVersionChanged = (next: Record<number, string>) => {
   const current = usageVersions.value
   const currentIds = Object.keys(current)
@@ -398,20 +411,25 @@ const hasVersionChanged = (next: Record<number, string>) => {
 }
 
 const fetchUsage = async (silent = false) => {
+  const requestId = ++usageRequestId
   if (!silent) loading.value = true
   try {
     const params: any = {}
     if (roleFilter.value) params.role = roleFilter.value
     if (keyword.value) params.keyword = keyword.value
+    const cacheKey = usageCacheKey()
     const res: any = await request.get('/ops/accounts/usage', { params })
-    usageAccounts.value = Array.isArray(res) ? res : []
-    usageVersions.value = computeVersionMap(usageAccounts.value)
-    globalVersion.value = computeGlobalVersion(usageAccounts.value)
-    if (!selectedId.value && initialAccountId && usageAccounts.value.some((item) => item.id === initialAccountId)) {
-      await fetchDetail(initialAccountId)
+    if (requestId !== usageRequestId) return
+    const items = Array.isArray(res) ? res : []
+    usageListCache.set(cacheKey, items)
+    applyUsageList(items)
+    if (!selectedId.value && !initialAccountHandled && initialAccountId && usageAccounts.value.some((item) => item.id === initialAccountId)) {
+      initialAccountHandled = true
       selectedId.value = initialAccountId
+      await fetchDetail(initialAccountId)
     } else if (!selectedId.value && usageAccounts.value.length) {
-      await selectAccount(usageAccounts.value[0])
+      selectedId.value = usageAccounts.value[0].id
+      await fetchDetail(usageAccounts.value[0].id)
     } else if (selectedId.value) {
       const stillVisible = usageAccounts.value.some((item) => item.id === selectedId.value)
       if (stillVisible) await fetchDetail(selectedId.value)
@@ -426,7 +444,7 @@ const fetchUsage = async (silent = false) => {
 }
 
 const pollUsageVersions = async () => {
-  if (versionPolling) return
+  if (versionPolling || loading.value || document.visibilityState === 'hidden') return
   versionPolling = true
   try {
     const params: any = {}
@@ -444,7 +462,9 @@ const pollUsageVersions = async () => {
 }
 
 const fetchDetail = async (id: number) => {
+  const requestId = ++detailRequestId
   const res: any = await request.get(`/ops/accounts/${id}/usage`)
+  if (requestId !== detailRequestId || selectedId.value !== id) return
   detail.value = res
   if (!categoryCount(activeCategory.value)) {
     const first = categoryTabs.find((item) => categoryCount(item.key) > 0)
@@ -461,13 +481,25 @@ const setRole = async (role: 'admin' | 'student' | '') => {
   roleFilter.value = role
   selectedId.value = null
   detail.value = null
+  activeCategory.value = 'admin'
+  const cached = usageListCache.get(usageCacheKey())
+  if (cached) {
+    applyUsageList(cached)
+    if (cached.length) {
+      selectedId.value = cached[0].id
+      void fetchDetail(cached[0].id)
+    }
+    void fetchUsage(true)
+    return
+  }
+  usageAccounts.value = []
   await fetchUsage()
 }
 
 onMounted(async () => {
   await fetchUsage()
   refreshTimer = window.setInterval(() => fetchUsage(true), 30000)
-  versionTimer = window.setInterval(pollUsageVersions, 2000)
+  versionTimer = window.setInterval(pollUsageVersions, VERSION_POLL_INTERVAL_MS)
 })
 
 onUnmounted(() => {

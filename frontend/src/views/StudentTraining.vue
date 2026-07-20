@@ -850,8 +850,11 @@ const resolveRequestErrorMessage = (error: any, fallback: string) => {
     return detail.map((item: any) => item?.msg || item?.message || String(item)).filter(Boolean).join('；')
   }
   if (!error?.response) {
-    const apiHost = typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : '127.0.0.1'
-    return `无法连接后端，请确认已运行 backend\\start.ps1（${window.location.protocol}//${apiHost}:8000）`
+    if (import.meta.env.DEV) {
+      return '无法连接后端，请确认已运行 backend\\start.ps1（http://127.0.0.1:8000）'
+    }
+    const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '当前云端地址'
+    return `无法连接云端训练服务，请刷新页面后重试（${currentOrigin}）`
   }
   return fallback
 }
