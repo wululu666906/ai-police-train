@@ -166,7 +166,7 @@ export function usePresenceMonitor() {
         status.value = 'unsupported'
         message.value = '本地模型加载超时，已切换后端识别'
       }
-    }, 15000)
+    }, 60000)
 
     try {
       const loaded = await loadVisionTasksModule()
@@ -351,6 +351,7 @@ export function usePresenceMonitor() {
     verified,
     lastMotion,
     source,
+    preload: ensureFaceDetector,
     attachVideo,
     restart,
     stop,

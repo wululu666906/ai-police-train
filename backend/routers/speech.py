@@ -20,6 +20,7 @@ from services.speech_service import (
     get_speech_status,
     transcribe_audio_data_url,
 )
+from services.qwen_config import qwen_default_headers
 
 router = APIRouter(prefix="/speech", tags=["Speech"])
 
@@ -133,6 +134,7 @@ async def speech_realtime(
         "Authorization": f"Bearer {QWEN_ASR_API_KEY}",
         "OpenAI-Beta": "realtime=v1",
     }
+    dashscope_headers.update(qwen_default_headers())
 
     try:
         async with websockets.connect(

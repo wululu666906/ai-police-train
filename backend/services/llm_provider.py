@@ -8,14 +8,15 @@ from typing import Any, List, Optional
 from openai import OpenAI
 
 from env_loader import load_backend_env
+from services.qwen_config import qwen_api_key, qwen_default_headers, resolve_qwen_base_url
 
 load_backend_env()
 
 PROVIDER = (os.getenv("LLM_PROVIDER") or "").strip().lower()
 EMBEDDING_PROVIDER = (os.getenv("EMBEDDING_PROVIDER") or "").strip().lower()
 
-QWEN_API_KEY = os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_API_KEY", "")
-QWEN_BASE_URL = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+QWEN_API_KEY = qwen_api_key()
+QWEN_BASE_URL = resolve_qwen_base_url("QWEN_BASE_URL")
 QWEN_CHAT_MODEL = os.getenv("QWEN_CHAT_MODEL", "qwen-plus")
 QWEN_LONG_OUTPUT_MODEL = os.getenv("QWEN_LONG_OUTPUT_MODEL", QWEN_CHAT_MODEL)
 QWEN_EMBEDDING_MODEL = os.getenv("QWEN_EMBEDDING_MODEL", "text-embedding-v4")
@@ -133,12 +134,14 @@ client = OpenAI(
     api_key=ACTIVE_API_KEY or "missing-api-key",
     base_url=ACTIVE_BASE_URL,
     timeout=LLM_TIMEOUT_SECONDS,
+    default_headers=qwen_default_headers() if ACTIVE_PROVIDER == "qwen" else None,
 )
 
 embedding_client = OpenAI(
     api_key=ACTIVE_EMBEDDING_API_KEY or "missing-api-key",
     base_url=ACTIVE_EMBEDDING_BASE_URL,
     timeout=EMBEDDING_TIMEOUT_SECONDS,
+    default_headers=qwen_default_headers() if ACTIVE_EMBEDDING_PROVIDER == "qwen" else None,
 )
 
 
@@ -161,12 +164,14 @@ case_completion_client = OpenAI(
     api_key=CASE_COMPLETION_API_KEY or "missing-api-key",
     base_url=CASE_COMPLETION_BASE_URL,
     timeout=LLM_TIMEOUT_SECONDS,
+    default_headers=qwen_default_headers() if CASE_COMPLETION_ACTIVE_PROVIDER == "qwen" else None,
 )
 
 qwen_chat_client = OpenAI(
     api_key=QWEN_API_KEY or "missing-api-key",
     base_url=QWEN_BASE_URL,
     timeout=LLM_TIMEOUT_SECONDS,
+    default_headers=qwen_default_headers(),
 )
 
 deepseek_chat_client = OpenAI(

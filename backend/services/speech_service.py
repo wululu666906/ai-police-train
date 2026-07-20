@@ -4,25 +4,26 @@ from typing import Any
 from openai import OpenAI
 
 from env_loader import load_backend_env
+from services.qwen_config import (
+    qwen_api_key,
+    qwen_default_headers,
+    resolve_qwen_base_url,
+    resolve_qwen_realtime_url,
+)
 
 load_backend_env()
 
-QWEN_ASR_API_KEY = os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_API_KEY", "")
-QWEN_ASR_BASE_URL = os.getenv("QWEN_ASR_BASE_URL") or os.getenv(
-    "QWEN_BASE_URL",
-    "https://dashscope.aliyuncs.com/compatible-mode/v1",
-)
+QWEN_ASR_API_KEY = qwen_api_key()
+QWEN_ASR_BASE_URL = resolve_qwen_base_url("QWEN_ASR_BASE_URL")
 QWEN_ASR_MODEL = os.getenv("QWEN_ASR_MODEL", "qwen3-asr-flash")
-QWEN_REALTIME_ASR_URL = os.getenv(
-    "QWEN_REALTIME_ASR_URL",
-    "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
-)
+QWEN_REALTIME_ASR_URL = resolve_qwen_realtime_url("QWEN_REALTIME_ASR_URL")
 QWEN_REALTIME_ASR_MODEL = os.getenv("QWEN_REALTIME_ASR_MODEL", "qwen3-asr-flash-realtime")
 QWEN_ASR_MAX_DATA_URL_BYTES = int(os.getenv("QWEN_ASR_MAX_DATA_URL_BYTES", str(10 * 1024 * 1024)))
 
 _client = OpenAI(
     api_key=QWEN_ASR_API_KEY or "missing-api-key",
     base_url=QWEN_ASR_BASE_URL,
+    default_headers=qwen_default_headers(),
 )
 
 

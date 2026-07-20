@@ -8,7 +8,27 @@ import re
 import shutil
 from typing import Any, Optional
 
-from .llm_provider import extract_json_payload, extract_message_text
+from .llm_provider import (
+    create_json_chat_completion,
+    extract_json_payload,
+    extract_message_text,
+)
+from .qwen_config import qwen_api_key, qwen_default_headers, resolve_qwen_base_url
+
+_LAST_ASR_ERRORS: list[str] = []
+
+
+def _record_asr_error(error: Any) -> None:
+    text = str(error or "").strip()
+    text = re.sub(r"sk-[A-Za-z0-9_.-]+", "sk-***", text)
+    if text:
+        _LAST_ASR_ERRORS.append(text[:500])
+
+
+def _last_asr_error_summary() -> str:
+    if not _LAST_ASR_ERRORS:
+        return ""
+    return _LAST_ASR_ERRORS[-1]
 
 
 def _get_video_analysis_llm() -> tuple[Any, str, str, str]:
@@ -1405,12 +1425,13 @@ def _transcribe_audio_chunk(audio_path: str, start_time: float = 0) -> list[dict
     from openai import OpenAI
     import re
 
-    api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_API_KEY", "")
+    api_key = qwen_api_key()
     if not api_key:
+        _record_asr_error("DASHSCOPE_API_KEY/QWEN_API_KEY is not configured")
         return []
 
     asr_model = os.getenv("QWEN_ASR_MODEL", "qwen3-asr-flash")
-    asr_base_url = os.getenv("QWEN_ASR_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    asr_base_url = resolve_qwen_base_url("QWEN_ASR_BASE_URL")
 
     try:
         with open(audio_path, "rb") as f:
@@ -1422,7 +1443,7 @@ def _transcribe_audio_chunk(audio_path: str, start_time: float = 0) -> list[dict
         if len(data_url.encode("utf-8")) > 10 * 1024 * 1024:
             return []
 
-        client = OpenAI(api_key=api_key, base_url=asr_base_url)
+        client = OpenAI(api_key=api_key, base_url=asr_base_url, default_headers=qwen_default_headers())
         response = client.chat.completions.create(
             model=asr_model,
             messages=[{
@@ -1475,6 +1496,7 @@ def _transcribe_audio_chunk(audio_path: str, start_time: float = 0) -> list[dict
 
         return results
     except Exception as exc:
+        _record_asr_error(exc)
         print(f"ASR chunk transcription error: {exc}")
         return []
 
@@ -1484,6 +1506,7 @@ def _transcribe_video_audio(video_path: str) -> list[dict[str, Any]]:
     从视频提取音频并转写为句子级别带时间戳的文本。
     使用10秒切片 + 句子拆分 实现精确到秒的时间轴。
     """
+    _LAST_ASR_ERRORS.clear()
     audio_path = _extract_audio_from_video(video_path)
     if not audio_path:
         return []
@@ -1570,7 +1593,8 @@ def _stage1_scene_understanding(
 4. key_moments 标注适合设为训练暂停点的时刻（一般在民警标准操作前后）"""
 
     try:
-        response = client.chat.completions.create(
+        response = create_json_chat_completion(
+            llm_client=client,
             model=model,
             messages=[
                 {"role": "system", "content": "你是警务训练视频分析专家。只输出合法JSON。"},
@@ -1578,12 +1602,13 @@ def _stage1_scene_understanding(
             ],
             temperature=0.2,
             max_tokens=3000,
+            retries=2,
         )
         raw = extract_message_text(response)
         payload = extract_json_payload(raw)
         return payload if isinstance(payload, dict) else None
     except Exception as exc:
-        print(f"Stage 1 analysis error: {exc}")
+        print(f"Stage 1 analysis error: {exc.__class__.__name__}: {exc}")
         return None
 
 
@@ -1701,7 +1726,8 @@ def _stage2_training_design(
 10. scene_summary 必须具体描述此刻画面/对方状态，不能用笼统描述"""
 
     try:
-        response = client.chat.completions.create(
+        response = create_json_chat_completion(
+            llm_client=client,
             model=model,
             messages=[
                 {"role": "system", "content": "你是公安实战训练课程编排专家。严格按要求输出合法JSON。核心要求：1)trigger_time必须在答案出现前3秒；2)ai_instructor_hint必须包含场景+任务+要点三部分；3)speech_hint必须是视频原话。"},
@@ -1709,12 +1735,13 @@ def _stage2_training_design(
             ],
             temperature=0.2,
             max_tokens=6000,
+            retries=2,
         )
         raw = extract_message_text(response)
         payload = extract_json_payload(raw)
         return payload if isinstance(payload, dict) else None
     except Exception as exc:
-        print(f"Stage 2 analysis error: {exc}")
+        print(f"Stage 2 analysis error: {exc.__class__.__name__}: {exc}")
         return None
 
 
@@ -2025,6 +2052,13 @@ def analyze_video_file(
         fallback["frame_count"] = len(frames)
         fallback["ocr_hints"] = ocr_hints
         fallback["transcript"] = []
+        asr_error = _last_asr_error_summary()
+        if asr_error:
+            fallback["analysis_warning"] = f"语音识别未返回有效内容：{asr_error}"
+            fallback["description"] = (
+                "系统已自动生成基础交互节点，但语音识别服务未返回有效内容，"
+                "请检查 DASHSCOPE/QWEN ASR 账号状态后重新分析。"
+            )
         return fallback
         return {
             "analysis_mode": "error",

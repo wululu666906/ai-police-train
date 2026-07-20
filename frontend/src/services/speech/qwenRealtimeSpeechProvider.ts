@@ -6,6 +6,7 @@ import type {
 } from './types'
 
 const TARGET_SAMPLE_RATE = 16000
+const CONNECT_TIMEOUT_MS = 8000
 
 const getApiBaseUrl = () =>
   import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '/api')
@@ -73,6 +74,7 @@ export class QwenRealtimeSpeechProvider implements SpeechRecognitionProvider {
   private finalText = ''
   private interimText = ''
   private finishTimer: ReturnType<typeof setTimeout> | null = null
+  private connectTimer: ReturnType<typeof setTimeout> | null = null
 
   isSupported() {
     return typeof window !== 'undefined' && Boolean(window.WebSocket && navigator.mediaDevices?.getUserMedia && window.AudioContext)
@@ -80,6 +82,20 @@ export class QwenRealtimeSpeechProvider implements SpeechRecognitionProvider {
 
   private setStatus(status: SpeechRecognitionStatus) {
     this.callbacks?.onStatusChange?.(status)
+  }
+
+  private clearConnectTimer() {
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer)
+      this.connectTimer = null
+    }
+  }
+
+  private failStartup(message: string) {
+    this.clearConnectTimer()
+    this.setStatus('error')
+    this.callbacks?.onError?.(message)
+    this.cleanup(false)
   }
 
   private handleTranscriptDelta(text: string) {
@@ -100,7 +116,8 @@ export class QwenRealtimeSpeechProvider implements SpeechRecognitionProvider {
   }
 
   private async openAudio(stream: MediaStream) {
-    const context = new AudioContext()
+    const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext
+    const context = new AudioContextCtor()
     if (context.state === 'suspended') await context.resume()
 
     const source = context.createMediaStreamSource(stream)
@@ -132,10 +149,15 @@ export class QwenRealtimeSpeechProvider implements SpeechRecognitionProvider {
       const language = options.lang?.toLowerCase().startsWith('zh') ? 'zh' : options.lang || 'zh'
       this.ws = new WebSocket(getRealtimeWsUrl(language))
     } catch (error: any) {
-      this.setStatus('error')
-      callbacks.onError?.(error?.message || '无法连接千问实时语音识别服务')
+      this.failStartup(error?.message || '无法连接千问实时语音识别服务')
       return
     }
+
+    this.connectTimer = setTimeout(() => {
+      if (!this.started) {
+        this.failStartup('语音识别服务启动超时，请重试或使用手动补录')
+      }
+    }, CONNECT_TIMEOUT_MS)
 
     this.ws.onopen = async () => {
       try {
@@ -143,11 +165,10 @@ export class QwenRealtimeSpeechProvider implements SpeechRecognitionProvider {
         if (!options.mediaStream) this.ownedStream = stream
         await this.openAudio(stream)
         this.started = true
+        this.clearConnectTimer()
         this.setStatus('listening')
       } catch (error: any) {
-        this.setStatus('error')
-        callbacks.onError?.(error?.message || '无法访问麦克风')
-        this.abort()
+        this.failStartup(error?.message || '无法访问麦克风，请检查浏览器权限')
       }
     }
 
@@ -155,6 +176,8 @@ export class QwenRealtimeSpeechProvider implements SpeechRecognitionProvider {
       try {
         const payload = JSON.parse(String(event.data || '{}'))
         if (payload.type === 'ready') {
+          this.started = true
+          this.clearConnectTimer()
           this.setStatus('listening')
         } else if (payload.type === 'transcript_delta') {
           this.handleTranscriptDelta(String(payload.text || ''))
@@ -170,13 +193,16 @@ export class QwenRealtimeSpeechProvider implements SpeechRecognitionProvider {
     }
 
     this.ws.onerror = () => {
-      this.setStatus('error')
-      callbacks.onError?.('千问实时语音识别连接异常')
+      this.failStartup('千问实时语音识别连接异常，请检查 ASR 配置或使用手动补录')
     }
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (event) => {
       if (this.started) {
+        this.clearConnectTimer()
         this.setStatus('idle')
+      } else {
+        const reason = event.reason || '语音识别服务未能启动，请重试或使用手动补录'
+        this.failStartup(reason)
       }
     }
   }
@@ -211,7 +237,8 @@ export class QwenRealtimeSpeechProvider implements SpeechRecognitionProvider {
     this.cleanup()
   }
 
-  private cleanup() {
+  private cleanup(setIdle = true) {
+    this.clearConnectTimer()
     if (this.finishTimer) {
       clearTimeout(this.finishTimer)
       this.finishTimer = null
@@ -229,12 +256,15 @@ export class QwenRealtimeSpeechProvider implements SpeechRecognitionProvider {
     this.audioContext = null
     this.ownedStream?.getTracks().forEach((track) => track.stop())
     this.ownedStream = null
-    try {
-      this.ws?.close()
-    } catch {
-      // noop
-    }
+    const ws = this.ws
     this.ws = null
-    this.setStatus('idle')
+    if (ws && ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
+      try {
+        ws.close()
+      } catch {
+        // noop
+      }
+    }
+    if (setIdle) this.setStatus('idle')
   }
 }

@@ -332,7 +332,7 @@
                   </p>
                   <div class="imm-interaction__speech-status">
                     <span class="imm-speech-dot" :class="'imm-speech-dot--' + speechStatus"></span>
-                    <span>{{ speechStatus === 'listening' ? '正在识别中...' : speechStatus === 'processing' ? '处理中' : '准备中...' }}</span>
+                    <span>{{ resolvedSpeechStatusLabel }}</span>
                   </div>
                   <div v-if="interimText || finalText" class="imm-interaction__transcript">
                     <span v-if="finalText" class="imm-transcript-final">{{ finalText }}</span>
@@ -473,7 +473,7 @@
               <div v-else class="imm-interaction__voice">
                 <div class="imm-interaction__speech-status">
                   <span class="imm-speech-dot" :class="'imm-speech-dot--' + speechStatus"></span>
-                  <span>{{ speechStatus === 'listening' ? '正在识别中...' : speechStatus === 'processing' ? '处理中' : '准备中...' }}</span>
+                  <span>{{ resolvedSpeechStatusLabel }}</span>
                 </div>
                 <div v-if="interimText || finalText" class="imm-interaction__transcript">
                   <span v-if="finalText" class="imm-transcript-final">{{ finalText }}</span>
@@ -1539,6 +1539,7 @@ const {
   liveReady,
   verified: presenceVerified,
   lastMotion,
+  preload: preloadPresenceMonitor,
   attachVideo: attachPresenceVideo,
   stop: stopPresenceMonitor,
 } = usePresenceMonitor()
@@ -1987,6 +1988,7 @@ onMounted(async () => {
   await fetchProfileStatus()
   if (video.value) {
     showBriefing.value = true
+    void preloadPresenceMonitor()
     await nextTick()
     await startCamera()
     setupVisibilityDetection()

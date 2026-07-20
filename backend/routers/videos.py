@@ -923,6 +923,7 @@ async def upload_video(
     locked_video_type = str(video_type or "").strip()
     if locked_video_type and locked_video_type not in {"teaching", "interactive"}:
         raise HTTPException(status_code=400, detail="video_type must be teaching or interactive")
+    analysis_video_type = locked_video_type or "interactive"
 
     ext = os.path.splitext(file.filename or "video.mp4")[1] or ".mp4"
     filename = f"{uuid.uuid4().hex}{ext}"
@@ -967,7 +968,7 @@ async def upload_video(
     video_obj = models.TrainingVideo(
         title=resolved_title,
         description=None,
-        video_type=locked_video_type or "interactive",
+        video_type=analysis_video_type,
         file_path=filename,
         thumbnail_path=thumbnail_filename,
         file_size=file_size,
@@ -986,7 +987,7 @@ async def upload_video(
         _ensure_video_thumbnail(video_obj, db)
 
     video_id = video_obj.id
-    locked_type = locked_video_type or None
+    locked_type = analysis_video_type
 
     if auto_configure is True:
         analysis = video_auto_config_service.analyze_video_file(
@@ -1136,7 +1137,7 @@ def retry_analysis(
                 video_path,
                 title_hint=title_hint,
                 duration_seconds=duration_seconds,
-                preferred_type=None,
+                preferred_type="interactive",
                 scenario_hint=None,
                 training_variant=None,
                 difficulty_level=None,
@@ -1153,7 +1154,7 @@ def retry_analysis(
                 analysis,
                 overwrite_meta=True,
                 overwrite_nodes=True,
-                locked_video_type=None,
+                locked_video_type="interactive",
             )
             vid.status = "published"
             bg_db.commit()
@@ -1313,7 +1314,7 @@ def auto_configure_video(
     vid_id = video.id
     title_hint = video.title
     duration_seconds = video.duration
-    locked_type = None if preferred_type in {None, "", "auto"} else str(preferred_type)
+    locked_type = "interactive" if preferred_type in {None, "", "auto"} else str(preferred_type)
 
     def _background_auto_configure():
         from database import SessionLocal

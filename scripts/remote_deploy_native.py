@@ -124,7 +124,10 @@ def safe_print(text: str) -> None:
 
 
 def run_remote(client: paramiko.SSHClient, cmd: str, timeout: int = 1800) -> tuple[int, str]:
-    safe_print(f">>> {cmd[:160]}...")
+    redacted = cmd.replace(PASSWORD, "***") if PASSWORD else cmd
+    if PASSWORD:
+        redacted = redacted.replace(base64.b64encode(PASSWORD.encode()).decode(), "***")
+    safe_print(f">>> {redacted[:160]}...")
     _, stdout, stderr = client.exec_command(cmd, timeout=timeout)
     out = stdout.read().decode("utf-8", errors="replace")
     err = stderr.read().decode("utf-8", errors="replace")
@@ -136,8 +139,18 @@ def run_remote(client: paramiko.SSHClient, cmd: str, timeout: int = 1800) -> tup
     return code, out + err
 
 
+def remote_sudo_prelude() -> str:
+    password_b64 = base64.b64encode(PASSWORD.encode()).decode()
+    return f"""
+SUDO_PASSWORD=$(printf %s '{password_b64}' | base64 -d)
+sudo() {{
+  printf '%s\\n' "$SUDO_PASSWORD" | command sudo -S -p '' "$@"
+}}
+"""
+
+
 def acceptance_checks(client: paramiko.SSHClient) -> bool:
-    checks = r"""
+    checks = remote_sudo_prelude() + r"""
 set -e
 BASE=https://127.0.0.1
 CURL="curl -fsSk"
@@ -170,7 +183,7 @@ echo "=== public IP :443 ==="
 $CURL -m 8 -o /dev/null -w "public_home=%{http_code}\n" https://{HOST}/ || echo public_home_fail
 sudo supervisorctl status
 sudo systemctl is-active nginx
-"""
+""".replace("{HOST}", HOST)
     code, out = run_remote(client, checks, timeout=120)
     required = [
         "OK_dist_index",
@@ -243,13 +256,43 @@ def main() -> int:
 
     setup = f"""
 set -euo pipefail
+{remote_sudo_prelude()}
 export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update -y
-sudo apt-get install -y python3 python3-venv python3-pip nginx unzip supervisor curl
+sudo apt-get install -y python3 python3-venv python3-pip nginx unzip supervisor curl ffmpeg
+
+BACKUP_DIR=$(mktemp -d)
+if [ -d {REMOTE_DIR}/data ]; then
+  cp -a {REMOTE_DIR}/data "$BACKUP_DIR/data"
+fi
+if [ -d {REMOTE_DIR}/backend/static/videos ]; then
+  mkdir -p "$BACKUP_DIR/static"
+  cp -a {REMOTE_DIR}/backend/static/videos "$BACKUP_DIR/static/videos"
+fi
+if [ -d {REMOTE_DIR}/backend/static/thumbnails ]; then
+  mkdir -p "$BACKUP_DIR/static"
+  cp -a {REMOTE_DIR}/backend/static/thumbnails "$BACKUP_DIR/static/thumbnails"
+fi
 
 sudo rm -rf {REMOTE_DIR}
 sudo mkdir -p {REMOTE_DIR}
 sudo unzip -o {remote_home}/ai_police_deploy.zip -d {REMOTE_DIR}
+sudo chown -R {USER}:{USER} {REMOTE_DIR}
+
+if [ -d "$BACKUP_DIR/data" ]; then
+  rm -rf {REMOTE_DIR}/data
+  cp -a "$BACKUP_DIR/data" {REMOTE_DIR}/data
+fi
+if [ -d "$BACKUP_DIR/static/videos" ]; then
+  rm -rf {REMOTE_DIR}/backend/static/videos
+  mkdir -p {REMOTE_DIR}/backend/static
+  cp -a "$BACKUP_DIR/static/videos" {REMOTE_DIR}/backend/static/videos
+fi
+if [ -d "$BACKUP_DIR/static/thumbnails" ]; then
+  rm -rf {REMOTE_DIR}/backend/static/thumbnails
+  mkdir -p {REMOTE_DIR}/backend/static
+  cp -a "$BACKUP_DIR/static/thumbnails" {REMOTE_DIR}/backend/static/thumbnails
+fi
 sudo chown -R {USER}:{USER} {REMOTE_DIR}
 
 cd {REMOTE_DIR}
@@ -336,6 +379,7 @@ server {{
 
     script = f"""
 set -euo pipefail
+{remote_sudo_prelude()}
 sudo mkdir -p /var/www/certbot /etc/letsencrypt/renewal-hooks/deploy
 sudo chown -R www-data:www-data /var/www/certbot
 
@@ -410,6 +454,7 @@ server {{
 
     issue = f"""
 set -euo pipefail
+{remote_sudo_prelude()}
 export DEBIAN_FRONTEND=noninteractive
 
 sudo mkdir -p /var/www/certbot /etc/letsencrypt/renewal-hooks/deploy
@@ -505,6 +550,7 @@ def enable_https_only() -> int:
 
     setup = f"""
 set -euo pipefail
+{remote_sudo_prelude()}
 echo '{env_b64}' | base64 -d > {REMOTE_DIR}/backend/.env
 chmod 600 {REMOTE_DIR}/backend/.env
 sudo supervisorctl restart ai-police-backend
