@@ -358,6 +358,16 @@ class TestVideoTraining:
         assert analytics_payload["node_failure_summary"][0]["node_id"] == video.nodes[0].id
         assert isinstance(report_payload["dimension_scores"], list)
         assert "weakness_summary" in report_payload
+        assert isinstance(report_payload["common_reviews"], list)
+        assert report_payload["common_reviews"][0]["dimension"]
+        assert isinstance(report_payload["assessment_check_results"], list)
+        assert report_payload["assessment_check_results"][0]["full_score"] >= 1
+        assert report_payload["assessment_check_results"][0]["reason"]
+        assert report_payload["summary"]
+        assert report_payload["grade_level"]
+        assert report_payload["evaluation_meta"]["assessment_completion"]["total_count"] == len(
+            report_payload["assessment_check_results"]
+        )
 
     def test_session_artifact_upload_list_and_replace(self, client, db_session, student_headers):
         student = db_session.query(models.User).filter(models.User.username == "student001").first()

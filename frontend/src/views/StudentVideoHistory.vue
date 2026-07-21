@@ -78,7 +78,11 @@
     <section class="analytics-grid">
       <article class="chart-card">
         <div class="chart-card__title">能力雷达图（已完成训练平均表现）</div>
-        <div ref="radarChartRef" class="chart-card__canvas" />
+        <div v-if="hasRadarData" ref="radarChartRef" class="chart-card__canvas" />
+        <div v-else class="chart-empty">
+          <strong>暂无已完成训练数据</strong>
+          <span>完成训练并生成评估报告后，这里会展示真实能力表现。</span>
+        </div>
       </article>
 
       <article class="chart-card chart-card--issue">
@@ -410,6 +414,9 @@ const pagedSessions = computed(() => filteredSessions.value)
 const finishedSessions = computed(() => sessions.value.filter((item) => item.status === 'finished'))
 const activeSessions = computed(() => sessions.value.filter((item) => item.status === 'active'))
 const retrySessions = computed(() => sessions.value.filter((item) => item.needs_retry === true))
+const hasRadarData = computed(() =>
+  finishedSessions.value.some((item) => Number.isFinite(Number(item.score_percentage)))
+)
 
 const averageScore = computed(() => {
   const values = finishedSessions.value
@@ -473,9 +480,20 @@ const statCards = computed(() => [
 
 const radarMetrics = computed(() => {
   const recent = finishedSessions.value.slice(0, 10)
-  const base = recent.length
-    ? recent.map((item) => item.score_percentage || 0)
-    : [72]
+  const base = recent
+    .map((item) => Number(item.score_percentage))
+    .filter((value) => Number.isFinite(value))
+
+  if (!base.length) {
+    return [
+      { label: '肢体动作规范', value: 0 },
+      { label: '口头沟通规范', value: 0 },
+      { label: '执法专业与安全处置', value: 0 },
+      { label: '虚拟道具操作规范', value: 0 },
+      { label: '流程执行完整度', value: 0 },
+    ]
+  }
+
   const overall = base.reduce((sum, value) => sum + value, 0) / base.length
 
   const metric = (matcher: RegExp, fallbackOffset: number) => {
@@ -690,6 +708,10 @@ function handleDropdownCommand(command: string | number | object, session: Sessi
 }
 
 function renderRadarChart() {
+  if (!hasRadarData.value) {
+    radarChart?.clear()
+    return
+  }
   if (!radarChartRef.value) return
   if (!radarChart) radarChart = echarts.init(radarChartRef.value)
 
@@ -929,6 +951,31 @@ function renderTrendChart() {
 
 .chart-card__canvas--trend {
   height: 250px;
+}
+
+.chart-empty {
+  height: 240px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.72);
+  border: 1px dashed rgba(148, 163, 184, 0.42);
+  color: #64748b;
+  text-align: center;
+}
+
+.chart-empty strong {
+  color: #334155;
+  font-size: 15px;
+}
+
+.chart-empty span {
+  max-width: 260px;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .issue-list {

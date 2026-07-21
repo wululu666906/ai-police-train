@@ -15,6 +15,22 @@ export interface VideoReportNode {
   } | null
 }
 
+export interface VideoAssessmentCheck {
+  id?: string
+  label?: string
+  content?: string
+  stage_name?: string
+  dimension?: string
+  status?: 'hit' | 'partial' | 'missed' | string
+  score?: number
+  full_score?: number
+  weighted_score?: number
+  weight?: number
+  score_share?: number
+  evidence?: string[]
+  reason?: string
+}
+
 export interface VideoReportData {
   session_id?: number
   video_id?: number
@@ -24,6 +40,8 @@ export interface VideoReportData {
   full_score?: number
   percentage?: number
   grade?: string
+  grade_level?: string
+  summary?: string
   pass_count?: number
   skip_count?: number
   fail_count?: number
@@ -48,6 +66,8 @@ export interface VideoReportData {
     percentage: number
   }[]
   weakness_summary?: string[]
+  assessment_check_results?: VideoAssessmentCheck[]
+  assessment_point_results?: VideoAssessmentCheck[]
   ability_profile?: {
     enabled?: boolean
     semantic_average?: number
@@ -94,6 +114,14 @@ export function artifactLabel(type: string) {
   } as Record<string, string>)[type] || type
 }
 
+export function assessmentStatusLabel(status?: string) {
+  return ({
+    hit: '完成',
+    partial: '部分完成',
+    missed: '未完成',
+  } as Record<string, string>)[String(status || '')] || String(status || '未判定')
+}
+
 export function resolveMediaUrl(url?: string) {
   if (!url) return ''
   if (/^https?:\/\//i.test(url)) return url
@@ -136,6 +164,8 @@ export function useVideoReportMetrics(report: VideoReportData | null) {
   const reportNodes = report?.node_summaries || []
   const dimensionScores = report?.dimension_scores || []
   const weaknessSummary = report?.weakness_summary || []
+  const reportSummary = String(report?.summary || '').trim()
+  const assessmentChecks = report?.assessment_check_results || report?.assessment_point_results || []
   const abilityProfile = report?.ability_profile
   const reportArtifacts = report?.artifacts || []
 
@@ -179,6 +209,8 @@ export function useVideoReportMetrics(report: VideoReportData | null) {
     reportNodes,
     dimensionScores,
     weaknessSummary,
+    reportSummary,
+    assessmentChecks,
     abilityProfile,
     reportArtifacts,
     scoreHint,

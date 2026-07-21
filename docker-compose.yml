@@ -15,6 +15,8 @@ services:
     environment:
       DATABASE_URL: sqlite:///data/ai_police.db
       CHROMA_DB_PATH: data/chroma_db
+      INSIGHTFACE_MODEL_DIR: /app/backend/data/face_models
+      FACE_ENGINE_WARMUP: "1"
       PORT: "8000"
     ports:
       - "${WEB_PORT:-5555}:8000"
@@ -46,6 +48,8 @@ services:
     environment:
       DATABASE_URL: sqlite:///data/ai_police.db
       CHROMA_DB_PATH: data/chroma_db
+      INSIGHTFACE_MODEL_DIR: /app/data/face_models
+      FACE_ENGINE_WARMUP: "1"
       PORT: "8000"
     ports:
       - "${APP_PORT:-8000}:8000"

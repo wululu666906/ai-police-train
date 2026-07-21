@@ -186,7 +186,7 @@
               {{ trainingMode === 'exam' ? '考核剩余时间' : (nodeActive ? '本节点剩余' : '训练进度') }} {{ topbarTimerText }}
             </span>
             <button class="imm-header__fullscreen-btn" @click="toggleFullscreen" title="全屏">⛶</button>
-            <button class="imm-header__end-btn" @click="confirmExit">结束训练</button>
+            <button class="imm-header__end-btn" @click="confirmExit">退出训练</button>
           </div>
         </header>
 
@@ -541,6 +541,8 @@
                 class="imm-progress__step"
                 :class="{
                   'imm-progress__step--done': nodeStatuses[i] === 'pass',
+                  'imm-progress__step--fail': nodeStatuses[i] === 'fail',
+                  'imm-progress__step--skip': nodeStatuses[i] === 'skip' || nodeStatuses[i] === 'timeout',
                   'imm-progress__step--active': displayNodeIndex === i,
                   'imm-progress__step--locked': !nodeStatuses[i] && displayNodeIndex !== i,
                 }"
@@ -550,11 +552,13 @@
                 <div v-if="i > 0" class="imm-progress__line" :class="{ 'imm-progress__line--done': nodeStatuses[i - 1] === 'pass' }"></div>
                 <div class="imm-progress__icon">
                   <svg v-if="nodeStatuses[i] === 'pass'" viewBox="0 0 24 24" width="18" height="18" fill="#22c55e"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
+                  <svg v-else-if="nodeStatuses[i] === 'fail'" viewBox="0 0 24 24" width="18" height="18" fill="#ef4444"><path d="M18.3 5.71 12 12l6.3 6.29-1.41 1.41L10.59 13.41 4.29 19.7 2.88 18.29 9.17 12 2.88 5.71 4.29 4.3l6.3 6.29 6.3-6.29z"/></svg>
+                  <svg v-else-if="nodeStatuses[i] === 'skip' || nodeStatuses[i] === 'timeout'" viewBox="0 0 24 24" width="18" height="18" fill="#f59e0b"><path d="M19 13H5v-2h14z"/></svg>
                   <span v-else-if="displayNodeIndex === i" class="imm-progress__num">{{ String(i + 1).padStart(2, '0') }}</span>
                   <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="#94a3b8"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
                 </div>
                 <span class="imm-progress__label">{{ node.title || ('节点' + (i + 1)) }}</span>
-                <span class="imm-progress__status">{{ nodeStatuses[i] === 'pass' ? '已完成' : displayNodeIndex === i ? '进行中' : '未开始' }}</span>
+                <span class="imm-progress__status">{{ nodeStatusText(i) }}</span>
               </div>
             </div>
             <button class="imm-progress__arrow" @click="scrollProgressTrack">›</button>
@@ -591,6 +595,13 @@
               <button class="imm-status-bar__btn imm-status-bar__btn--outline" @click="skipNode('skip')">
                 申请跳过节点
               </button>
+              <button
+                class="imm-status-bar__btn imm-status-bar__btn--finish"
+                :disabled="!sessionId || finishingTraining"
+                @click="confirmFinishTraining"
+              >
+                ⚑ {{ finishingTraining ? '正在生成报告...' : '结束训练并生成评估报告' }}
+              </button>
             </div>
           </footer>
         </div>
@@ -601,7 +612,8 @@
             <h3>节点 {{ immReviewNode + 1 }}：{{ video.nodes[immReviewNode]?.title }}</h3>
             <div class="imm-node-review__status">
               <span v-if="nodeStatuses[immReviewNode] === 'pass'" class="imm-node-review__badge imm-node-review__badge--pass">✓ 已通过</span>
-              <span v-else-if="nodeStatuses[immReviewNode]" class="imm-node-review__badge imm-node-review__badge--skip">跳过</span>
+              <span v-else-if="nodeStatuses[immReviewNode] === 'fail'" class="imm-node-review__badge imm-node-review__badge--fail">未通过</span>
+              <span v-else-if="nodeStatuses[immReviewNode]" class="imm-node-review__badge imm-node-review__badge--skip">{{ resultLabel(nodeStatuses[immReviewNode]) }}</span>
               <span v-else class="imm-node-review__badge">未完成</span>
             </div>
             <p class="imm-node-review__hint">{{ video.nodes[immReviewNode]?.prompt_content?.instruction || '暂无详细信息' }}</p>
@@ -634,6 +646,7 @@
                 :class="{
                   'is-done': nodeStatuses[i] === 'pass',
                   'is-skip': nodeStatuses[i] === 'skip' || nodeStatuses[i] === 'timeout',
+                  'is-fail': nodeStatuses[i] === 'fail',
                   'is-active': displayNodeIndex === i,
                 }"
               />
@@ -648,6 +661,15 @@
             <div class="training-chip training-chip--mode">
               {{ trainingMode === 'exam' ? '考核模式' : '练习模式' }}
             </div>
+            <el-button
+              type="primary"
+              class="training-finish-report"
+              :loading="finishingTraining"
+              :disabled="!sessionId"
+              @click="confirmFinishTraining"
+            >
+              结束训练并生成评估报告
+            </el-button>
             <el-button class="training-exit" @click="confirmExit">退出训练</el-button>
           </div>
         </div>
@@ -824,10 +846,12 @@
                     'is-active': displayNodeIndex === i,
                     'is-pass': nodeStatuses[i] === 'pass',
                     'is-skip': nodeStatuses[i] === 'skip' || nodeStatuses[i] === 'timeout',
+                    'is-fail': nodeStatuses[i] === 'fail',
                   }"
                 >
                   <div class="rail-line__index">
                     <el-icon v-if="nodeStatuses[i] === 'pass'"><CircleCheck /></el-icon>
+                    <el-icon v-else-if="nodeStatuses[i] === 'fail'"><CircleClose /></el-icon>
                     <el-icon v-else-if="nodeStatuses[i] === 'skip' || nodeStatuses[i] === 'timeout'"><Remove /></el-icon>
                     <span v-else>{{ i + 1 }}</span>
                   </div>
@@ -835,7 +859,7 @@
                     <div class="rail-line__title">节点 {{ i + 1 }}</div>
                     <div class="rail-line__name">{{ node.title || ('节点' + (i + 1)) }}</div>
                     <div class="rail-line__meta">
-                      <span>{{ nodeStatuses[i] === 'pass' ? '已完成' : nodeStatuses[i] ? resultLabel(nodeStatuses[i]) : (displayNodeIndex === i ? '进行中' : '未开始') }}</span>
+                      <span>{{ nodeStatusText(i) }}</span>
                       <span>{{ formatTime(node.trigger_time) }}</span>
                     </div>
                   </div>
@@ -2285,14 +2309,7 @@ function onSeeking() {
 
 function onVideoEnded() {
   playbackCurrentTime.value = Number(video.value?.duration || playbackCurrentTime.value)
-  if (video.value && completedCount.value < video.value.nodes.length) {
-    // 瑙嗛缁撴潫浣嗚繕鏈夋湭瑙﹀彂鑺傜偣锛屾爣璁颁负璺宠繃
-    for (let i = 0; i < video.value.nodes.length; i++) {
-      if (nodeStatuses.value[i] === undefined) {
-        nodeStatuses.value[i] = 'skip'
-      }
-    }
-  }
+  markUnfinishedNodesAsSkipped()
   finishTraining()
 }
 
@@ -3238,10 +3255,37 @@ async function waitForVideoReportReady(nextSessionId: number) {
 }
 
 // 鈹€鈹€ 瀹屾垚璁粌 鈹€鈹€
+function markUnfinishedNodesAsSkipped() {
+  const nodes = video.value?.nodes || []
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodeStatuses.value[i] === undefined) {
+      nodeStatuses.value[i] = 'skip'
+    }
+  }
+}
+
+async function confirmFinishTraining() {
+  if (!sessionId.value || finishingTraining.value) return
+  try {
+    await ElMessageBox.confirm(
+      '系统将基于当前已完成、未通过、跳过和未触发节点生成评估报告。未触发节点会计入本次结果。',
+      '确认结束训练？',
+      {
+        confirmButtonText: '结束并生成报告',
+        cancelButtonText: '继续训练',
+        type: 'warning',
+      },
+    )
+    markUnfinishedNodesAsSkipped()
+    await finishTraining()
+  } catch {}
+}
+
 async function finishTraining() {
   if (!sessionId.value || finishingTraining.value) return
   finishingTraining.value = true
   stopGestureDetection()
+  videoRef.value?.pause()
   const targetReportUrl = `/student/evaluation?session_id=${sessionId.value}&type=video`
   try {
     await stopTrainingRecording(true)
@@ -3306,7 +3350,16 @@ function formatTime(sec: number) {
 }
 
 function resultLabel(r: string) {
-  return ({ pass: '通过', skip: '跳过', timeout: '超时', fail: '未完成' } as any)[r] || r
+  return ({ pass: '通过', skip: '跳过', timeout: '超时', fail: '未通过' } as any)[r] || r
+}
+
+function nodeStatusText(index: number) {
+  const status = nodeStatuses.value[index]
+  if (status === 'pass') return '已完成'
+  if (status === 'skip') return '已跳过'
+  if (status === 'timeout') return '已超时'
+  if (status === 'fail') return '未通过'
+  return displayNodeIndex.value === index ? '进行中' : '未开始'
 }
 
 function withCacheBust(url?: string, token = videoCacheBustToken) {
@@ -3415,6 +3468,7 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 
 .training-topbar__right {
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
@@ -3425,6 +3479,16 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   background: rgba(10, 25, 49, 0.88);
   color: #e2e8f0 !important;
   padding-inline: 14px;
+}
+
+.training-finish-report {
+  border-radius: 10px;
+  background: #0f1f3d !important;
+  border-color: rgba(96, 165, 250, 0.28) !important;
+  font-weight: 700;
+  max-width: 220px;
+  white-space: normal;
+  line-height: 1.25;
 }
 
 .training-title-wrap {
@@ -3478,6 +3542,10 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 
 .training-stepper__dot.is-skip {
   background: linear-gradient(90deg, #f59e0b, #d97706);
+}
+
+.training-stepper__dot.is-fail {
+  background: linear-gradient(90deg, #ef4444, #dc2626);
 }
 
 .training-chip {
@@ -4003,6 +4071,11 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 .rail-line.is-skip .rail-line__index {
   background: rgba(245, 158, 11, 0.16);
   color: #fbbf24;
+}
+
+.rail-line.is-fail .rail-line__index {
+  background: rgba(239, 68, 68, 0.16);
+  color: #f87171;
 }
 
 .rail-line__title {
@@ -6959,6 +7032,25 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   .imm-progress__status { color: #22c55e; }
 }
 
+.imm-progress__step--fail {
+  .imm-progress__icon {
+    background: rgba(127, 29, 29, 0.86);
+    border-color: #ef4444;
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.28);
+  }
+  .imm-progress__label { color: #fecaca; }
+  .imm-progress__status { color: #f87171; }
+}
+
+.imm-progress__step--skip {
+  .imm-progress__icon {
+    background: rgba(120, 53, 15, 0.86);
+    border-color: #f59e0b;
+  }
+  .imm-progress__label { color: #fde68a; }
+  .imm-progress__status { color: #fbbf24; }
+}
+
 .imm-progress__step--active {
   .imm-progress__icon {
     background: #1d4ed8;
@@ -7091,6 +7183,8 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 .imm-status-bar__actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 12px;
   margin-left: auto;
 }
@@ -7118,6 +7212,25 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
     color: #60a5fa;
     font-weight: 500;
     &:hover { background: rgba(59, 130, 246, 0.2); }
+  }
+
+  &--finish {
+    background: #0f1f3d;
+    border: 1px solid rgba(96, 165, 250, 0.28);
+    color: #fff;
+    font-weight: 700;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.24);
+
+    &:hover:not(:disabled) {
+      background: #17315f;
+      border-color: rgba(96, 165, 250, 0.48);
+    }
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.58;
+      box-shadow: none;
+    }
   }
 }
 
@@ -7203,6 +7316,7 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 
     &--pass { background: #dcfce7; color: #16a34a; }
     &--skip { background: #fef3c7; color: #d97706; }
+    &--fail { background: #fee2e2; color: #dc2626; }
   }
 
   &__hint {

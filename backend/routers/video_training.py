@@ -1052,6 +1052,64 @@ def _generate_and_store_report(
         raise
 
 
+def _ensure_unfinished_nodes_skipped(
+    db: Session,
+    session: models.VideoTrainingSession,
+) -> list[models.VideoNodeResult]:
+    nodes = sorted(session.video.nodes if session.video and session.video.nodes else [], key=lambda item: item.node_index)
+    if not nodes:
+        return (
+            db.query(models.VideoNodeResult)
+            .filter(models.VideoNodeResult.session_id == session.id)
+            .order_by(models.VideoNodeResult.node_index.asc())
+            .all()
+        )
+
+    existing_results = (
+        db.query(models.VideoNodeResult)
+        .filter(models.VideoNodeResult.session_id == session.id)
+        .all()
+    )
+    existing_by_index = {result.node_index: result for result in existing_results}
+    policy = _mode_policy(session.mode)
+
+    for node in nodes:
+        if node.node_index in existing_by_index:
+            continue
+        score_deducted = _scaled_penalty(node.skip_score_deduct, float(policy["skip_penalty_scale"]), node.score_weight)
+        score_earned = max(0, node.score_weight - score_deducted)
+        answer_data = {
+            "finish_reason": "training_finished_untriggered",
+            "finish_note": "训练结束时节点未触发，系统按跳过计入评估报告。",
+        }
+        node_result = models.VideoNodeResult(
+            session_id=session.id,
+            node_id=node.id,
+            node_index=node.node_index,
+            result="skip",
+            retry_count=0,
+            time_used=0,
+            score_earned=score_earned,
+            score_deducted=score_deducted,
+            answer_data=json.dumps(answer_data, ensure_ascii=False),
+            speech_transcript=None,
+        )
+        db.add(node_result)
+        existing_by_index[node.node_index] = node_result
+        evidence_snapshot = build_node_multimodal_evidence(session, node, node_result)
+        assessment_snapshot = build_runtime_assessment_snapshot(session, node, node_result)
+        node_result.evidence_payload = json.dumps(evidence_snapshot, ensure_ascii=False)
+        node_result.assessment_payload = json.dumps(assessment_snapshot, ensure_ascii=False)
+
+    db.flush()
+    return (
+        db.query(models.VideoNodeResult)
+        .filter(models.VideoNodeResult.session_id == session.id)
+        .order_by(models.VideoNodeResult.node_index.asc())
+        .all()
+    )
+
+
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 # Session 绠＄悊
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
@@ -1462,13 +1520,9 @@ def finish_session(
         # 宸插畬鎴愬垯鐩存帴杩斿洖鎶ュ憡
         return _get_report(db, session)
 
-    node_results = (
-        db.query(models.VideoNodeResult)
-        .filter(models.VideoNodeResult.session_id == session_id)
-        .all()
-    )
+    node_results = _ensure_unfinished_nodes_skipped(db, session)
 
-    _recalculate_session_total_score(session)
+    session.total_score = sum((item.score_earned or 0) for item in node_results)
     session.status = "finished"
     session.finished_at = datetime.utcnow()
     session.evaluation_status = "pending"

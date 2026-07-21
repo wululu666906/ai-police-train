@@ -8,8 +8,7 @@
       <div class="report-crumb">{{ breadcrumb }}</div>
       <div class="page-actions">
         <slot name="actions">
-          <el-button plain size="small" :icon="Printer" @click="emit('print')">打印报告</el-button>
-          <el-button type="primary" size="small" :icon="Download" @click="emit('print')">下载报告</el-button>
+          <el-button type="primary" size="small" :icon="Printer" @click="emit('print')">打印 / 保存 PDF</el-button>
           <el-button plain size="small" :icon="ArrowLeft" @click="emit('back')">返回列表</el-button>
         </slot>
       </div>
@@ -38,7 +37,7 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowLeft, Download, Printer } from '@element-plus/icons-vue'
+import { ArrowLeft, Printer } from '@element-plus/icons-vue'
 
 withDefaults(defineProps<{
   breadcrumb: string

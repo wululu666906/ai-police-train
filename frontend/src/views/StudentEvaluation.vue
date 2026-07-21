@@ -9,8 +9,7 @@
     @print="printReport"
   >
     <template #actions>
-      <el-button plain size="small" :icon="Printer" @click="printReport">打印报告</el-button>
-      <el-button type="primary" size="small" :icon="Download" @click="printReport">下载报告</el-button>
+      <el-button type="primary" size="small" :icon="Printer" @click="printReport">打印 / 保存 PDF</el-button>
       <el-button
         v-if="isVideoReport && videoReport?.video_id"
         plain
@@ -232,7 +231,7 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Download, Printer } from '@element-plus/icons-vue'
+import { ArrowLeft, Printer } from '@element-plus/icons-vue'
 import { showToast } from 'vant'
 import request from '../utils/request'
 import ECharts from '../geeker-adapt/components/ECharts/index.vue'
