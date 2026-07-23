@@ -258,10 +258,10 @@ const loadBackendSpeechStatus = async () => {
   speechStatus = status
   lastModel = String(status?.realtime_model || lastModel || '')
   if (!status?.configured) {
-    throw new Error('语音服务未配置，请先在管理端 API Key 中填写千问 API Key')
+    throw new Error('语音服务未配置，请联系管理员检查服务器 .env 中的千问 API Key')
   }
   if (!status?.realtime_model) {
-    throw new Error('实时语音模型未配置，请先在管理端 API Key 中填写千问实时语音模型')
+    throw new Error('实时语音模型未配置，请联系管理员检查服务器 .env 中的千问实时语音模型')
   }
   return status
 }
@@ -442,7 +442,7 @@ const connectRealtimeSocket = () =>
         const payload = JSON.parse(String(event.data || '{}'))
         if (payload.type === 'ready') {
           lastModel = String(payload.realtime_model || speechStatus?.realtime_model || '')
-          voiceHint.value = '语音电话已连接，正在使用管理端 API Key 中的千问实时语音配置'
+          voiceHint.value = '语音电话已连接，正在使用千问 VAD 实时语音服务'
           emit('voice-event', { event_type: 'call_start', model: lastModel })
         } else if (payload.type === 'transcript_delta') {
           dispatchTranscriptDelta(String(payload.text || ''), String(payload.model || ''))
@@ -496,7 +496,7 @@ const startVoiceCall = async () => {
 
   isConnecting.value = true
   voiceHintType.value = 'info'
-  voiceHint.value = '正在读取管理端语音服务配置...'
+  voiceHint.value = '正在读取服务器 .env 中的千问 VAD 实时语音服务配置...'
   try {
     await loadBackendSpeechStatus()
     voiceHint.value = '正在连接语音电话...'

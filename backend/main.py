@@ -16,7 +16,7 @@ from sqlalchemy import inspect, text
 import database
 import models
 from env_loader import load_backend_env
-from routers import auth, cases, classes, dashboard, face, knowledge, llm_config, ops, speech, student, training, videos, video_training
+from routers import auth, cases, classes, dashboard, face, knowledge, ops, speech, student, training, videos, video_training
 from services.face_service import warmup_face_engine_async
 
 load_backend_env()
@@ -500,7 +500,6 @@ app.include_router(video_training.router)
 app.include_router(face.router)
 app.include_router(speech.router)
 app.include_router(ops.router)
-app.include_router(llm_config.router)
 
 # 兼容 Docker 静态前端的 /api 前缀调用（frontend/.env.production 默认 VITE_API_URL=/api）
 app.include_router(auth.router, prefix="/api")
@@ -515,7 +514,6 @@ app.include_router(video_training.router, prefix="/api")
 app.include_router(face.router, prefix="/api")
 app.include_router(speech.router, prefix="/api")
 app.include_router(ops.router, prefix="/api")
-app.include_router(llm_config.router, prefix="/api")
 
 
 @app.get("/healthz")

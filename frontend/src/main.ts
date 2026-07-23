@@ -50,7 +50,6 @@ const routes = [
       { path: 'students', component: () => import('./views/Students.vue') },
       { path: 'students/:id', component: () => import('./views/StudentProfile.vue') },
       { path: 'face-demo', component: () => import('./views/FaceRecognitionDemo.vue') },
-      { path: 'api-key', component: () => import('./views/LlmApiConfig.vue') },
       { path: 'profile', component: () => import('./views/Profile.vue') }
     ]
   },
