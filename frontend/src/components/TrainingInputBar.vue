@@ -128,6 +128,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { showToast } from 'vant'
+import request from '../utils/request'
 
 const props = withDefaults(
   defineProps<{
@@ -156,6 +157,14 @@ const emit = defineEmits<{
 
 type InputMode = 'voice' | 'typing'
 type VoiceHintType = 'info' | 'error'
+type SpeechStatusPayload = {
+  configured?: boolean
+  provider?: string
+  source?: string
+  realtime_model?: string
+  realtime_url?: string
+  realtime_proxy?: string
+}
 
 const MIN_TRANSCRIPT_LEN = 2
 const TARGET_SAMPLE_RATE = 16000
@@ -182,6 +191,7 @@ let lastSentTranscript = ''
 let lastModel = ''
 let sendTimer: ReturnType<typeof window.setTimeout> | null = null
 let sendFlashTimer: ReturnType<typeof window.setTimeout> | null = null
+let speechStatus: SpeechStatusPayload | null = null
 
 const micButtonTitle = computed(() => {
   if (isConnecting.value) return '正在连接语音电话'
@@ -241,6 +251,19 @@ const getRealtimeWsUrl = () => {
   const wsBase = httpBase.replace(/^http/i, 'ws')
   const token = encodeURIComponent(localStorage.getItem('token') || '')
   return `${wsBase}/speech/realtime?language=zh&token=${token}`
+}
+
+const loadBackendSpeechStatus = async () => {
+  const status = (await request.get('/speech/status', { _skipErrorToast: true } as any)) as SpeechStatusPayload
+  speechStatus = status
+  lastModel = String(status?.realtime_model || lastModel || '')
+  if (!status?.configured) {
+    throw new Error('语音服务未配置，请先在管理端 API Key 中填写千问 API Key')
+  }
+  if (!status?.realtime_model) {
+    throw new Error('实时语音模型未配置，请先在管理端 API Key 中填写千问实时语音模型')
+  }
+  return status
 }
 
 const downsampleTo16k = (samples: Float32Array, sourceRate: number) => {
@@ -418,8 +441,8 @@ const connectRealtimeSocket = () =>
       try {
         const payload = JSON.parse(String(event.data || '{}'))
         if (payload.type === 'ready') {
-          lastModel = String(payload.realtime_model || '')
-          voiceHint.value = '语音电话已连接，千问服务端 VAD 正在监听'
+          lastModel = String(payload.realtime_model || speechStatus?.realtime_model || '')
+          voiceHint.value = '语音电话已连接，正在使用管理端 API Key 中的千问实时语音配置'
           emit('voice-event', { event_type: 'call_start', model: lastModel })
         } else if (payload.type === 'transcript_delta') {
           dispatchTranscriptDelta(String(payload.text || ''), String(payload.model || ''))
@@ -473,8 +496,10 @@ const startVoiceCall = async () => {
 
   isConnecting.value = true
   voiceHintType.value = 'info'
-  voiceHint.value = '正在连接语音电话...'
+  voiceHint.value = '正在读取管理端语音服务配置...'
   try {
+    await loadBackendSpeechStatus()
+    voiceHint.value = '正在连接语音电话...'
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,

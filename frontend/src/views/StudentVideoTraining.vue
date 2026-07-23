@@ -1450,6 +1450,7 @@ function toggleFullscreen() {
 }
 const showBriefing = ref(false)
 const briefingStep = ref(1)
+const briefingIdentityPassed = ref(false)
 const finishingTraining = ref(false)
 
 // 鈹€鈹€ 鑺傜偣鐘舵€?鈹€鈹€
@@ -1677,7 +1678,7 @@ const deviceStatusText = computed(() => {
   return deviceWarningText.value || '正在检查设备权限'
 })
 const precheckHintText = computed(() => [presenceMessage.value, deviceWarningText.value].filter(Boolean).join('；'))
-const canStartTraining = computed(() => deviceReady.value && identityReady.value)
+const canStartTraining = computed(() => deviceReady.value && (identityReady.value || briefingIdentityPassed.value))
 const resolvedIdentityStatusText = computed(() => {
   if (!faceProfileRegistered.value) return '请先注册人脸档案'
   if (!presenceSupported.value) {
@@ -2028,6 +2029,12 @@ watch([singleFaceReady, liveReady, faceCount, presenceSupported, showBriefing, b
 
   if (!presenceOk && faceIdentityVerified.value) {
     resetFaceIdentityVerification()
+  }
+})
+
+watch(identityReady, (ready) => {
+  if (showBriefing.value && briefingStep.value === 1 && ready) {
+    briefingIdentityPassed.value = true
   }
 })
 

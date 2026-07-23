@@ -130,11 +130,13 @@ Set-Location '$BackendRoot'
 "@
 
 $FrontendCommand = @"
+`$env:CI = 'true'
 Set-Location '$FrontendRoot'
 & '$BundledNodeExe' node_modules\vite\bin\vite.js --host 0.0.0.0 --port 5556 --strictPort *> '$FrontendLog'
 "@
 
 $OpsFrontendCommand = @"
+`$env:CI = 'true'
 Set-Location '$FrontendRoot'
 & '$BundledNodeExe' node_modules\vite\bin\vite.js --host 0.0.0.0 --port 6670 --strictPort *> '$OpsFrontendLog'
 "@

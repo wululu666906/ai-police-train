@@ -92,6 +92,33 @@ def _materialize_case_scenes_for_response(case: models.Case) -> None:
         _materialize_scene_stages_for_response(scene, case_type=case_type)
 
 
+def _materialize_case_persons_for_response(case: models.Case) -> None:
+    structured = _safe_json_loads(case.structured_data, {})
+    if not isinstance(structured, dict):
+        structured = {}
+
+    persons = structured.get("persons")
+    if isinstance(persons, list) and persons:
+        return
+
+    roles = [
+        role
+        for role in sorted(case.roles or [], key=lambda item: item.id or 0)
+        if str(role.name or "").strip()
+    ]
+    if not roles:
+        return
+
+    structured["persons"] = [_role_to_person_payload(role) for role in roles]
+    structured, _ = migrate_structured_data_payload(structured)
+    case.structured_data = json.dumps(structured, ensure_ascii=False)
+
+
+def _materialize_case_for_response(case: models.Case) -> None:
+    _materialize_case_scenes_for_response(case)
+    _materialize_case_persons_for_response(case)
+
+
 def _ensure_list(value):
     if isinstance(value, list):
         return value
@@ -468,6 +495,71 @@ def _remove_case_person(case: models.Case, role_name: str):
     case.structured_data = json.dumps(structured, ensure_ascii=False)
 
 
+def _delete_case_dependencies(db: Session, case: models.Case) -> None:
+    scene_ids = [scene.id for scene in case.scenes or [] if scene.id is not None]
+    role_ids = [role.id for role in case.roles or [] if role.id is not None]
+
+    if role_ids:
+        db.query(models.Message).filter(models.Message.speaker_role_id.in_(role_ids)).update(
+            {models.Message.speaker_role_id: None},
+            synchronize_session=False,
+        )
+        db.query(models.SceneRole).filter(models.SceneRole.role_id.in_(role_ids)).delete(synchronize_session=False)
+
+    if scene_ids:
+        session_ids = [
+            row.id
+            for row in db.query(models.TrainingSession.id)
+            .filter(models.TrainingSession.scene_id.in_(scene_ids))
+            .all()
+        ]
+        if session_ids:
+            db.query(models.AssignmentSubmission).filter(
+                models.AssignmentSubmission.training_session_id.in_(session_ids)
+            ).update({models.AssignmentSubmission.training_session_id: None}, synchronize_session=False)
+            db.query(models.FaceVerificationEvent).filter(
+                models.FaceVerificationEvent.session_id.in_(session_ids)
+            ).update({models.FaceVerificationEvent.session_id: None}, synchronize_session=False)
+            db.query(models.Message).filter(models.Message.session_id.in_(session_ids)).delete(synchronize_session=False)
+            db.query(models.TrainingSessionArtifact).filter(
+                models.TrainingSessionArtifact.session_id.in_(session_ids)
+            ).delete(synchronize_session=False)
+            db.query(models.TrainingSession).filter(models.TrainingSession.id.in_(session_ids)).delete(
+                synchronize_session=False
+            )
+
+        db.query(models.TrainingAssignmentScene).filter(
+            models.TrainingAssignmentScene.scene_id.in_(scene_ids)
+        ).delete(synchronize_session=False)
+        db.query(models.SceneRole).filter(models.SceneRole.scene_id.in_(scene_ids)).delete(synchronize_session=False)
+
+    db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.case_id == case.id).delete(
+        synchronize_session=False
+    )
+    db.query(models.TrainingAssignmentCase).filter(models.TrainingAssignmentCase.case_id == case.id).delete(
+        synchronize_session=False
+    )
+    db.query(models.TrainingAssignmentScene).filter(models.TrainingAssignmentScene.case_id == case.id).delete(
+        synchronize_session=False
+    )
+    db.query(models.TrainingVideo).filter(models.TrainingVideo.case_id == case.id).update(
+        {models.TrainingVideo.case_id: None},
+        synchronize_session=False,
+    )
+    db.query(models.AIWorkflowRun).filter(models.AIWorkflowRun.case_id == case.id).update(
+        {models.AIWorkflowRun.case_id: None},
+        synchronize_session=False,
+    )
+    db.query(models.CaseStoryVersion).filter(models.CaseStoryVersion.case_id == case.id).update(
+        {models.CaseStoryVersion.case_id: None},
+        synchronize_session=False,
+    )
+    db.query(models.OpsIssueRecord).filter(models.OpsIssueRecord.case_id == case.id).update(
+        {models.OpsIssueRecord.case_id: None},
+        synchronize_session=False,
+    )
+
+
 def _apply_role_scene_links(
     db: Session,
     role: models.Role,
@@ -524,7 +616,7 @@ def _apply_role_scene_links(
 def read_cases(skip: int = 0, limit: int = 100, db: Session = Depends(database.get_db)):
     cases = db.query(models.Case).offset(skip).limit(limit).all()
     for case in cases:
-        _materialize_case_scenes_for_response(case)
+        _materialize_case_for_response(case)
     return cases
 
 
@@ -1490,7 +1582,7 @@ def rebuild_case_role_memories(case_id: int, payload: dict = Body(default={}), d
         db.commit()
         db.refresh(db_case)
         try_sync_case_to_knowledge(db_case)
-        _materialize_case_scenes_for_response(db_case)
+        _materialize_case_for_response(db_case)
         return db_case
     except HTTPException:
         db.rollback()
@@ -1609,6 +1701,7 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
         db.commit()
         db.refresh(db_case)
         try_sync_case_to_knowledge(db_case)
+        _materialize_case_for_response(db_case)
         return db_case
     except HTTPException:
         db.rollback()
@@ -1624,7 +1717,7 @@ def read_case(case_id: int, db: Session = Depends(database.get_db)):
     case = db.query(models.Case).filter(models.Case.id == case_id).first()
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found")
-    _materialize_case_scenes_for_response(case)
+    _materialize_case_for_response(case)
     return case
 
 
@@ -1637,6 +1730,12 @@ def delete_case(case_id: int, db: Session = Depends(database.get_db)):
         delete_case_from_knowledge(case_id)
     except Exception as exc:
         print(f"Case knowledge delete failed for case {case_id}: {exc}")
-    db.delete(case)
-    db.commit()
-    return {"message": "Case deleted"}
+    try:
+        _delete_case_dependencies(db, case)
+        db.delete(case)
+        db.commit()
+        return {"message": "Case deleted"}
+    except Exception as exc:
+        db.rollback()
+        print(f"Delete case failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Delete case failed: {str(exc)}") from exc

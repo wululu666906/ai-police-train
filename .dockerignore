@@ -23,6 +23,10 @@ backend/*.db
 backend/*.sqlite3
 backend/chroma_db
 chroma_db
+backend/static/face_profiles/**
+backend/static/session_media/**
+backend/static/videos/**
+backend/static/thumbnails/**
 
 logs
 backend/logs

@@ -1443,7 +1443,7 @@ def _transcribe_audio_chunk(audio_path: str, start_time: float = 0) -> list[dict
         if len(data_url.encode("utf-8")) > 10 * 1024 * 1024:
             return []
 
-        client = OpenAI(api_key=api_key, base_url=asr_base_url, default_headers=qwen_default_headers())
+        client = OpenAI(api_key=api_key, base_url=asr_base_url, default_headers=qwen_default_headers(asr_base_url))
         response = client.chat.completions.create(
             model=asr_model,
             messages=[{

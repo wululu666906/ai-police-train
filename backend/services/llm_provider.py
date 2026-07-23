@@ -22,7 +22,7 @@ QWEN_LONG_OUTPUT_MODEL = os.getenv("QWEN_LONG_OUTPUT_MODEL", QWEN_CHAT_MODEL)
 QWEN_EMBEDDING_MODEL = os.getenv("QWEN_EMBEDDING_MODEL", "text-embedding-v4")
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_BASE_URL = (os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").strip()
 # DeepSeek routing: default AI jobs use the low-latency Flash model.  Case
 # reconstruction/scene writing and role performance use Pro explicitly.
 DEEPSEEK_CHAT_MODEL = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash")
@@ -31,6 +31,11 @@ DEEPSEEK_ROLEPLAY_MODEL = os.getenv("DEEPSEEK_ROLEPLAY_MODEL", "deepseek-v4-pro"
 DEEPSEEK_LONG_OUTPUT_MODEL = os.getenv("DEEPSEEK_LONG_OUTPUT_MODEL", DEEPSEEK_CHAT_MODEL)
 DEEPSEEK_EMBEDDING_MODEL = os.getenv("DEEPSEEK_EMBEDDING_MODEL", "")
 DEEPSEEK_REASONING_MODE = (os.getenv("DEEPSEEK_REASONING_MODE") or "disabled").strip().lower()
+
+CUSTOM_LLM_API_KEY = os.getenv("CUSTOM_LLM_API_KEY", "")
+CUSTOM_LLM_BASE_URL = os.getenv("CUSTOM_LLM_BASE_URL", "")
+CUSTOM_LLM_CHAT_MODEL = os.getenv("CUSTOM_LLM_CHAT_MODEL", "")
+CUSTOM_LLM_LONG_OUTPUT_MODEL = os.getenv("CUSTOM_LLM_LONG_OUTPUT_MODEL", CUSTOM_LLM_CHAT_MODEL)
 
 _embedding_dimensions_raw = os.getenv("QWEN_EMBEDDING_DIMENSIONS", "1024").strip()
 EMBEDDING_DIMENSIONS: Optional[int]
@@ -70,6 +75,7 @@ EMBEDDING_TIMEOUT_SECONDS = _env_float("EMBEDDING_TIMEOUT_SECONDS", LLM_TIMEOUT_
 CASE_AI_MAX_TOKENS = _env_int("CASE_AI_MAX_TOKENS", 128000)
 DEEPSEEK_MAX_OUTPUT_TOKENS = _env_int("DEEPSEEK_MAX_OUTPUT_TOKENS", CASE_AI_MAX_TOKENS)
 QWEN_MAX_OUTPUT_TOKENS = _env_int("QWEN_MAX_OUTPUT_TOKENS", 32768)
+CUSTOM_LLM_MAX_OUTPUT_TOKENS = _env_int("CUSTOM_LLM_MAX_OUTPUT_TOKENS", CASE_AI_MAX_TOKENS)
 
 
 def _resolve_provider() -> str:
@@ -77,6 +83,10 @@ def _resolve_provider() -> str:
         return "qwen"
     if PROVIDER == "deepseek":
         return "deepseek"
+    if PROVIDER in {"custom", "local", "openai", "openai_compatible"}:
+        return "custom"
+    if CUSTOM_LLM_BASE_URL and CUSTOM_LLM_CHAT_MODEL:
+        return "custom"
     if DEEPSEEK_API_KEY:
         return "deepseek"
     return "qwen"
@@ -103,6 +113,10 @@ if ACTIVE_PROVIDER == "deepseek":
     ACTIVE_API_KEY = DEEPSEEK_API_KEY
     ACTIVE_BASE_URL = DEEPSEEK_BASE_URL
     ACTIVE_CHAT_MODEL = DEEPSEEK_CHAT_MODEL
+elif ACTIVE_PROVIDER == "custom":
+    ACTIVE_API_KEY = CUSTOM_LLM_API_KEY
+    ACTIVE_BASE_URL = CUSTOM_LLM_BASE_URL
+    ACTIVE_CHAT_MODEL = CUSTOM_LLM_CHAT_MODEL
 else:
     ACTIVE_API_KEY = QWEN_API_KEY
     ACTIVE_BASE_URL = QWEN_BASE_URL
@@ -134,14 +148,14 @@ client = OpenAI(
     api_key=ACTIVE_API_KEY or "missing-api-key",
     base_url=ACTIVE_BASE_URL,
     timeout=LLM_TIMEOUT_SECONDS,
-    default_headers=qwen_default_headers() if ACTIVE_PROVIDER == "qwen" else None,
+    default_headers=qwen_default_headers(ACTIVE_BASE_URL) if ACTIVE_PROVIDER == "qwen" else None,
 )
 
 embedding_client = OpenAI(
     api_key=ACTIVE_EMBEDDING_API_KEY or "missing-api-key",
     base_url=ACTIVE_EMBEDDING_BASE_URL,
     timeout=EMBEDDING_TIMEOUT_SECONDS,
-    default_headers=qwen_default_headers() if ACTIVE_EMBEDDING_PROVIDER == "qwen" else None,
+    default_headers=qwen_default_headers(ACTIVE_EMBEDDING_BASE_URL) if ACTIVE_EMBEDDING_PROVIDER == "qwen" else None,
 )
 
 
@@ -152,31 +166,43 @@ CASE_COMPLETION_MODEL = (os.getenv("CASE_COMPLETION_MODEL") or DEEPSEEK_CHAT_MOD
 def _resolve_case_completion_binding() -> tuple[str, str, str]:
     if CASE_COMPLETION_PROVIDER == "deepseek" and DEEPSEEK_API_KEY:
         return DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, CASE_COMPLETION_MODEL or DEEPSEEK_CHAT_MODEL
+    if CASE_COMPLETION_PROVIDER in {"custom", "local", "openai", "openai_compatible"} and CUSTOM_LLM_BASE_URL:
+        return CUSTOM_LLM_API_KEY, CUSTOM_LLM_BASE_URL, CASE_COMPLETION_MODEL or CUSTOM_LLM_CHAT_MODEL
     return ACTIVE_API_KEY, ACTIVE_BASE_URL, ACTIVE_CHAT_MODEL
 
 
 CASE_COMPLETION_API_KEY, CASE_COMPLETION_BASE_URL, CASE_COMPLETION_ACTIVE_MODEL = _resolve_case_completion_binding()
 CASE_COMPLETION_ACTIVE_PROVIDER = (
-    "deepseek" if CASE_COMPLETION_PROVIDER == "deepseek" and DEEPSEEK_API_KEY else ACTIVE_PROVIDER
+    "deepseek"
+    if CASE_COMPLETION_PROVIDER == "deepseek" and DEEPSEEK_API_KEY
+    else "custom"
+    if CASE_COMPLETION_PROVIDER in {"custom", "local", "openai", "openai_compatible"} and CUSTOM_LLM_BASE_URL
+    else ACTIVE_PROVIDER
 )
 
 case_completion_client = OpenAI(
     api_key=CASE_COMPLETION_API_KEY or "missing-api-key",
     base_url=CASE_COMPLETION_BASE_URL,
     timeout=LLM_TIMEOUT_SECONDS,
-    default_headers=qwen_default_headers() if CASE_COMPLETION_ACTIVE_PROVIDER == "qwen" else None,
+    default_headers=qwen_default_headers(CASE_COMPLETION_BASE_URL) if CASE_COMPLETION_ACTIVE_PROVIDER == "qwen" else None,
 )
 
 qwen_chat_client = OpenAI(
     api_key=QWEN_API_KEY or "missing-api-key",
     base_url=QWEN_BASE_URL,
     timeout=LLM_TIMEOUT_SECONDS,
-    default_headers=qwen_default_headers(),
+    default_headers=qwen_default_headers(QWEN_BASE_URL),
 )
 
 deepseek_chat_client = OpenAI(
     api_key=DEEPSEEK_API_KEY or "missing-api-key",
     base_url=DEEPSEEK_BASE_URL,
+    timeout=LLM_TIMEOUT_SECONDS,
+)
+
+custom_chat_client = OpenAI(
+    api_key=CUSTOM_LLM_API_KEY or "not-required",
+    base_url=CUSTOM_LLM_BASE_URL or "http://127.0.0.1:8000/v1",
     timeout=LLM_TIMEOUT_SECONDS,
 )
 
@@ -188,6 +214,8 @@ def _provider_for_client(llm_client: Optional[OpenAI]) -> str:
         return "qwen"
     if llm_client is deepseek_chat_client:
         return "deepseek"
+    if llm_client is custom_chat_client:
+        return "custom"
     return ACTIVE_PROVIDER
 
 
@@ -196,6 +224,8 @@ def _chat_client_for_provider(provider: str) -> OpenAI:
         return qwen_chat_client
     if provider == "deepseek":
         return deepseek_chat_client
+    if provider == "custom":
+        return custom_chat_client
     return client
 
 
@@ -204,6 +234,8 @@ def _chat_model_for_provider(provider: str) -> str:
         return QWEN_CHAT_MODEL
     if provider == "deepseek":
         return DEEPSEEK_CHAT_MODEL
+    if provider == "custom":
+        return CUSTOM_LLM_CHAT_MODEL or ACTIVE_CHAT_MODEL
     return ACTIVE_CHAT_MODEL
 
 
@@ -215,10 +247,12 @@ def get_chat_completion_binding(
     normalized = (provider or ACTIVE_PROVIDER).strip().lower()
     if normalized == "dashscope":
         normalized = "qwen"
-    if normalized not in {"qwen", "deepseek"}:
+    if normalized in {"local", "openai", "openai_compatible"}:
+        normalized = "custom"
+    if normalized not in {"qwen", "deepseek", "custom"}:
         normalized = ACTIVE_PROVIDER
 
-    api_key = QWEN_API_KEY if normalized == "qwen" else DEEPSEEK_API_KEY
+    api_key = QWEN_API_KEY if normalized == "qwen" else DEEPSEEK_API_KEY if normalized == "deepseek" else CUSTOM_LLM_API_KEY
     return (
         _chat_client_for_provider(normalized),
         (model or _chat_model_for_provider(normalized)).strip(),
@@ -234,6 +268,8 @@ def get_long_output_model(provider: str | None = None) -> str:
         return QWEN_LONG_OUTPUT_MODEL
     if resolved == "deepseek":
         return DEEPSEEK_LONG_OUTPUT_MODEL
+    if resolved == "custom":
+        return CUSTOM_LLM_LONG_OUTPUT_MODEL or CUSTOM_LLM_CHAT_MODEL or ACTIVE_CHAT_MODEL
     return ACTIVE_CHAT_MODEL
 
 
@@ -267,6 +303,8 @@ def get_provider_max_output_tokens(provider: str | None = None) -> int:
         return QWEN_MAX_OUTPUT_TOKENS
     if resolved == "deepseek":
         return DEEPSEEK_MAX_OUTPUT_TOKENS
+    if resolved == "custom":
+        return CUSTOM_LLM_MAX_OUTPUT_TOKENS
     return CASE_AI_MAX_TOKENS
 
 
@@ -275,11 +313,13 @@ def _provider_has_api_key(provider: str) -> bool:
         return bool(QWEN_API_KEY)
     if provider == "deepseek":
         return bool(DEEPSEEK_API_KEY)
+    if provider == "custom":
+        return bool(CUSTOM_LLM_BASE_URL and CUSTOM_LLM_CHAT_MODEL)
     return bool(ACTIVE_API_KEY)
 
 
 def _provider_fallback_order(provider: str) -> list[str]:
-    candidates = ["qwen", "deepseek"] if provider == "deepseek" else ["deepseek", "qwen"]
+    candidates = ["qwen", "deepseek", "custom"] if provider == "deepseek" else ["deepseek", "qwen", "custom"]
     return [item for item in candidates if item != provider and _provider_has_api_key(item)]
 
 

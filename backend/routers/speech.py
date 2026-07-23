@@ -11,12 +11,13 @@ import database
 import models
 from routers.auth import ALGORITHM, SECRET_KEY, get_current_user
 from services.speech_service import (
-    QWEN_ASR_API_KEY,
     SpeechRecognitionError,
     build_realtime_session_update,
     build_realtime_url,
     extract_realtime_transcript,
     extract_realtime_transcript_delta,
+    get_qwen_asr_api_key,
+    get_qwen_realtime_asr_proxy,
     get_speech_status,
     transcribe_audio_data_url,
 )
@@ -108,7 +109,8 @@ async def speech_realtime(
     if not user:
         await websocket.close(code=1008, reason="登录凭证无效")
         return
-    if not QWEN_ASR_API_KEY:
+    qwen_asr_api_key = get_qwen_asr_api_key()
+    if not qwen_asr_api_key:
         await websocket.close(code=1011, reason="语音识别服务未配置")
         return
 
@@ -131,15 +133,17 @@ async def speech_realtime(
     finally:
         db.close()
     dashscope_headers = {
-        "Authorization": f"Bearer {QWEN_ASR_API_KEY}",
+        "Authorization": f"Bearer {qwen_asr_api_key}",
         "OpenAI-Beta": "realtime=v1",
     }
-    dashscope_headers.update(qwen_default_headers())
+    dashscope_headers.update(qwen_default_headers(str(status_payload.get("realtime_url") or "")))
 
     try:
         async with websockets.connect(
             build_realtime_url(),
             additional_headers=dashscope_headers,
+            proxy=get_qwen_realtime_asr_proxy(),
+            open_timeout=15,
             max_size=8 * 1024 * 1024,
         ) as upstream:
             await upstream.send(json.dumps(build_realtime_session_update(language=language)))
@@ -231,7 +235,14 @@ async def speech_realtime(
                     db.commit()
             finally:
                 db.close()
+        error_text = str(error)
+        if isinstance(error, PermissionError) or "WinError 5" in error_text:
+            error_text = "实时语音上游连接被本机/网络拒绝，请检查 QWEN_REALTIME_ASR_URL 是否可达"
+        elif "Name or service not known" in error_text or "Temporary failure in name resolution" in error_text:
+            error_text = "实时语音上游域名无法解析，请检查 QWEN_REALTIME_ASR_URL"
+        elif "Connection refused" in error_text or "timed out" in error_text.lower():
+            error_text = "实时语音上游不可达，请检查网络、代理和 QWEN_REALTIME_ASR_URL"
         try:
-            await websocket.send_json({"type": "error", "message": f"实时语音连接失败：{error}"})
+            await websocket.send_json({"type": "error", "message": f"实时语音连接失败：{error_text}"})
         finally:
             await websocket.close(code=1011)
