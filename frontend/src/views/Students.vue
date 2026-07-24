@@ -1133,9 +1133,15 @@ onMounted(() => {
 
 .student-main-panel {
   min-height: 0;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  align-content: start;
+  overflow: hidden;
+}
+
+.student-list-scroll {
+  min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
-  align-content: start;
 }
 
 .class-panel__footer {
