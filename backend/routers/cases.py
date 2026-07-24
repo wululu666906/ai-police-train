@@ -5,6 +5,7 @@ from collections import defaultdict
 from typing import List
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
+from sqlalchemy import bindparam, inspect, text
 from sqlalchemy.orm import Session
 
 import database
@@ -495,6 +496,16 @@ def _remove_case_person(case: models.Case, role_name: str):
     case.structured_data = json.dumps(structured, ensure_ascii=False)
 
 
+def _delete_optional_table_rows(db: Session, table_name: str, column_name: str, values: list[int]) -> None:
+    ids = [int(value) for value in values if int(value or 0) > 0]
+    if not ids or not inspect(db.get_bind()).has_table(table_name):
+        return
+    statement = text(f'DELETE FROM "{table_name}" WHERE "{column_name}" IN :ids').bindparams(
+        bindparam("ids", expanding=True)
+    )
+    db.execute(statement, {"ids": ids})
+
+
 def _delete_case_dependencies(db: Session, case: models.Case) -> None:
     scene_ids = [scene.id for scene in case.scenes or [] if scene.id is not None]
     role_ids = [role.id for role in case.roles or [] if role.id is not None]
@@ -514,6 +525,9 @@ def _delete_case_dependencies(db: Session, case: models.Case) -> None:
             .all()
         ]
         if session_ids:
+            _delete_optional_table_rows(db, "face_verification_sessions", "session_id", session_ids)
+            _delete_optional_table_rows(db, "multimodal_events", "session_id", session_ids)
+            _delete_optional_table_rows(db, "multimodal_session_metrics", "session_id", session_ids)
             db.query(models.AssignmentSubmission).filter(
                 models.AssignmentSubmission.training_session_id.in_(session_ids)
             ).update({models.AssignmentSubmission.training_session_id: None}, synchronize_session=False)
@@ -696,6 +710,54 @@ def _case_background_preview(case: models.Case, limit: int = 300) -> str:
     return re.sub(r"\s+", " ", str(candidate)).strip()[:limit]
 
 
+def _serialize_admin_role(db: Session, role: models.Role) -> dict:
+    scene_links = db.query(models.SceneRole).filter(models.SceneRole.role_id == role.id).all()
+    case_title = "公共角色模板"
+    case_meta = {}
+    if role.case_id is not None:
+        db_case = db.query(models.Case).filter(models.Case.id == role.case_id).first()
+        if db_case:
+            case_title = db_case.title or "未命名案件"
+            structured = _safe_json_loads(db_case.structured_data, {})
+            persons = structured.get("persons") if isinstance(structured, dict) else []
+            if isinstance(persons, list):
+                person = next(
+                    (
+                        item
+                        for item in persons
+                        if str((item or {}).get("name") or "").strip() == role.name
+                    ),
+                    None,
+                )
+                case_meta = _extract_person_meta({}, person or {})
+
+    person_meta = case_meta if role.case_id else _extract_person_meta({}, _get_role_person_meta(role))
+    base_payload = {
+        "id": role.id,
+        "name": role.name,
+        "role_type": role.role_type,
+        "interaction_style": getattr(role, "interaction_style", None) or "配合型",
+        "personality": role.personality,
+        "speaking_style": role.speaking_style,
+        "init_emotion": role.init_emotion,
+        "init_trust": role.init_trust,
+        "status": role.status,
+        "iq_level": role.iq_level,
+        "eq_level": role.eq_level,
+        "lying_ability": role.lying_ability,
+        "weakness": role.weakness,
+        "knows_facts": _ensure_list(role.knows_facts),
+        "does_not_know": _ensure_list(role.does_not_know),
+        "hidden_truths": _ensure_list(role.hidden_truths),
+        "case_id": role.case_id,
+        "case_title": case_title,
+        "scene_ids": [row.scene_id for row in scene_links],
+        "primary_scene_id": next((row.scene_id for row in scene_links if row.is_primary), None),
+        "is_public": role.case_id is None,
+    }
+    return {**person_meta, **base_payload}
+
+
 @router.get("/role-case-options")
 def read_role_case_options(db: Session = Depends(database.get_db)):
     cases = db.query(models.Case).order_by(models.Case.created_at.desc()).all()
@@ -721,6 +783,14 @@ def read_role_case_options(db: Session = Depends(database.get_db)):
         }
         for case in cases
     ]
+
+
+@router.get("/roles/{role_id}")
+def read_role(role_id: int, db: Session = Depends(database.get_db)):
+    role = db.query(models.Role).filter(models.Role.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    return _serialize_admin_role(db, role)
 
 
 @router.post("/roles")

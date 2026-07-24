@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -306,6 +306,7 @@ class AdminStudentOverview(User):
     finished_sessions: int = 0
     avg_score: Optional[float] = None
     top_gap_missing: List[str] = []
+    classes: List[Dict[str, Any]] = []
 
 
 class StudentProfileSummary(BaseModel):

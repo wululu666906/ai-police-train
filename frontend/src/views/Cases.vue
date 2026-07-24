@@ -78,6 +78,14 @@
 
     <section v-else-if="filteredCases.length" class="case-table-wrap">
       <table class="case-table">
+        <colgroup>
+          <col class="case-col-title" />
+          <col class="case-col-type" />
+          <col class="case-col-summary" />
+          <col class="case-col-scenes" />
+          <col class="case-col-status" />
+          <col class="case-col-actions" />
+        </colgroup>
         <thead>
           <tr>
             <th>案件标题</th>
@@ -94,24 +102,28 @@
               <div class="case-row-title">{{ caseItem.title || '未命名案件' }}</div>
               <div class="case-row-id">ID {{ caseItem.id }}</div>
             </td>
-            <td>
-              <van-tag :type="getTagType(caseItem.case_type)" plain>
+            <td class="case-type-cell">
+              <van-tag :type="getTagType(caseItem.case_type)" plain class="case-type-tag">
                 {{ caseItem.case_type || '未分类' }}
               </van-tag>
             </td>
-            <td class="case-summary-cell">{{ caseItem.background || '暂无案件背景描述。' }}</td>
+            <td class="case-summary-cell">
+              <div class="case-summary-text">{{ caseItem.background || '暂无案件背景描述。' }}</div>
+            </td>
             <td class="case-metric-cell">{{ caseItem.scenes?.length || 0 }}</td>
-            <td>
+            <td class="case-status-cell">
               <span v-if="getCaseIssueCount(caseItem.id)" class="case-issue">{{ getCaseIssueCount(caseItem.id) }} 项</span>
               <span v-else class="case-ok">正常</span>
             </td>
             <td class="case-action-cell">
-              <van-button size="small" type="primary" class="!bg-[#1D3557] !border-none !rounded-[6px]" @click.stop="goEditCase(caseItem)">
-                编辑
-              </van-button>
-              <van-button size="small" plain danger class="!rounded-[6px]" @click.stop="deleteCase(caseItem)">
-                删除
-              </van-button>
+              <div class="case-action-group">
+                <van-button size="small" type="primary" class="case-action-button case-action-button--primary" @click.stop="goEditCase(caseItem)">
+                  编辑
+                </van-button>
+                <van-button size="small" plain danger class="case-action-button" @click.stop="deleteCase(caseItem)">
+                  删除
+                </van-button>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -288,13 +300,22 @@
                 <div class="mt-1 text-sm leading-6 text-slate-600">当前支持 PDF、DOCX、MD，单次仅上传 1 个文件，大小不超过 20MB。扫描版 PDF 暂不支持 OCR。</div>
               </div>
 
-              <div class="file-dropzone">
+              <div
+                class="file-dropzone"
+                :class="{ 'file-dropzone--dragging': transcriptFileDragging }"
+                tabindex="0"
+                @click="chooseFile"
+                @dragover.prevent="transcriptFileDragging = true"
+                @dragleave.prevent="transcriptFileDragging = false"
+                @drop.prevent="handleTranscriptFileDrop"
+                @paste="handleTranscriptFilePaste"
+              >
                 <input ref="fileInputRef" type="file" accept=".pdf,.docx,.md" class="hidden" @change="handleFileChange" />
                 <div v-if="!uploadedFile" class="text-center">
                   <van-icon name="description" size="34" class="text-slate-300" />
                   <div class="mt-3 text-base font-bold text-slate-700">上传笔录文件</div>
-                  <div class="mt-2 text-sm text-slate-500">支持 PDF / DOCX / MD</div>
-                  <van-button plain type="primary" class="mt-4" @click="chooseFile">选择文件</van-button>
+                  <div class="mt-2 text-sm text-slate-500">支持拖入、复制粘贴或点击上传 PDF / DOCX / MD</div>
+                  <van-button plain type="primary" class="mt-4" @click.stop="chooseFile">选择文件</van-button>
                 </div>
                 <div v-else class="space-y-3">
                   <div class="flex items-start justify-between gap-4">
@@ -305,8 +326,8 @@
                     <span class="status-pill" :class="fileParseStatusClass">{{ fileParseStatusText }}</span>
                   </div>
                   <div class="flex gap-3">
-                    <van-button plain size="small" @click="chooseFile">重新上传</van-button>
-                    <van-button plain size="small" type="danger" @click="clearUploadedFile">移除文件</van-button>
+                    <van-button plain size="small" @click.stop="chooseFile">重新上传</van-button>
+                    <van-button plain size="small" type="danger" @click.stop="clearUploadedFile">移除文件</van-button>
                   </div>
                 </div>
               </div>
@@ -1148,7 +1169,24 @@
                           <input v-model="point.label" type="text" class="form-input" placeholder="如：压实双方陈述矛盾" />
                         </div>
                         <div class="scene-flow-stage__col">
-                          <label class="form-label form-label--muted">考察内容（具体训练题目）</label>
+                          <div class="form-field-head">
+                            <label class="form-label form-label--muted">考察内容（具体训练题目）</label>
+                            <van-button
+                              plain
+                              size="mini"
+                              icon="expand-o"
+                              class="textarea-expand-button"
+                              @click.stop="openLargeTextEditor(
+                                point,
+                                'content',
+                                `考察点 ${Number(pointIndex) + 1}`,
+                                '考察内容（具体训练题目）',
+                                '建议三段：①学员应做到什么；②具体要求（怎么问/怎么做）；③怎样算完成（回放记录时能听出什么算达标）。不要只重复上面的名称。'
+                              )"
+                            >
+                              放大
+                            </van-button>
+                          </div>
                           <textarea
                             v-model="point.content"
                             rows="4"
@@ -1177,6 +1215,28 @@
           </div>
           </section>
         </div>
+      </div>
+    </van-popup>
+    <van-popup
+      v-model:show="showLargeTextEditor"
+      position="center"
+      round
+      teleport="body"
+      class="large-text-editor-popup"
+    >
+      <div class="large-text-editor">
+        <div class="large-text-editor__head">
+          <div>
+            <div class="large-text-editor__eyebrow">{{ largeTextEditor?.fieldLabel || '长文本编辑' }}</div>
+            <h3>{{ largeTextEditor?.title || '放大编辑' }}</h3>
+          </div>
+          <van-button plain size="small" icon="cross" @click="showLargeTextEditor = false">关闭</van-button>
+        </div>
+        <textarea
+          v-model="largeTextEditorValue"
+          class="large-text-editor__textarea"
+          :placeholder="largeTextEditor?.placeholder"
+        ></textarea>
       </div>
     </van-popup>
   </div>
@@ -1239,6 +1299,41 @@ const activeReviewModule = ref<ReviewModule>('basic')
 const activeSceneIndex = ref(0)
 const activeSceneTab = ref<SceneEditTab>('overview')
 const showOriginalExpanded = ref(false)
+type LargeTextEditorTarget = {
+  source: Record<string, any>
+  key: string
+  title: string
+  fieldLabel: string
+  placeholder?: string
+}
+
+const largeTextEditor = ref<LargeTextEditorTarget | null>(null)
+const showLargeTextEditor = computed({
+  get: () => largeTextEditor.value !== null,
+  set: (value: boolean) => {
+    if (!value) largeTextEditor.value = null
+  },
+})
+const largeTextEditorValue = computed({
+  get: () => {
+    const target = largeTextEditor.value
+    return target ? String(target.source?.[target.key] || '') : ''
+  },
+  set: (value: string) => {
+    const target = largeTextEditor.value
+    if (target) target.source[target.key] = value
+  },
+})
+
+const openLargeTextEditor = (
+  source: Record<string, any>,
+  key: string,
+  title: string,
+  fieldLabel: string,
+  placeholder = ''
+) => {
+  largeTextEditor.value = { source, key, title, fieldLabel, placeholder }
+}
 
 // ── 角色审核工作台 ────────────────────────────────────────────────
 type RoleAuditTab = 'basic' | 'ai_review' | 'audit_log'
@@ -1725,6 +1820,7 @@ const generatedScenes = ref<any[]>([])
 const auditCases = ref<any[]>([])
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const uploadedFile = ref<File | null>(null)
+const transcriptFileDragging = ref(false)
 const fileParseStatus = ref<'idle' | 'ready' | 'parsed' | 'error'>('idle')
 const fileMeta = reactive({ name: '', type: '', size: 0 })
 
@@ -2626,22 +2722,18 @@ const clearUploadedFile = () => {
   if (fileInputRef.value) fileInputRef.value.value = ''
 }
 
-const handleFileChange = (event: Event) => {
-  const target = event.target as HTMLInputElement
-  const file = target.files?.[0]
+const acceptTranscriptFile = (file: File) => {
   if (!file) return
 
   const lowerName = file.name.toLowerCase()
   if (!['.pdf', '.docx', '.md'].some((ext) => lowerName.endsWith(ext))) {
     fileParseStatus.value = 'error'
     showToast('仅支持 PDF、DOCX、MD 文件')
-    target.value = ''
     return
   }
   if (file.size > 20 * 1024 * 1024) {
     fileParseStatus.value = 'error'
     showToast('文件大小不能超过 20MB')
-    target.value = ''
     return
   }
 
@@ -2650,6 +2742,26 @@ const handleFileChange = (event: Event) => {
   fileMeta.name = file.name
   fileMeta.type = file.name.split('.').pop()?.toUpperCase() || ''
   fileMeta.size = file.size
+}
+
+const handleFileChange = (event: Event) => {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (file) acceptTranscriptFile(file)
+  target.value = ''
+}
+
+const handleTranscriptFileDrop = (event: DragEvent) => {
+  transcriptFileDragging.value = false
+  const file = event.dataTransfer?.files?.[0]
+  if (file) acceptTranscriptFile(file)
+}
+
+const handleTranscriptFilePaste = (event: ClipboardEvent) => {
+  const file = Array.from(event.clipboardData?.files || [])[0]
+  if (!file) return
+  event.preventDefault()
+  acceptTranscriptFile(file)
 }
 
 const startParsing = async () => {
@@ -3353,7 +3465,32 @@ const previewFormatDate = (dt: string | null | undefined) => {
 .case-table {
   width: 100%;
   min-width: 960px;
+  table-layout: fixed;
   border-collapse: collapse;
+}
+
+.case-col-title {
+  width: 25%;
+}
+
+.case-col-type {
+  width: 12%;
+}
+
+.case-col-summary {
+  width: 39%;
+}
+
+.case-col-scenes {
+  width: 8%;
+}
+
+.case-col-status {
+  width: 10%;
+}
+
+.case-col-actions {
+  width: 144px;
 }
 
 .case-table th {
@@ -3369,10 +3506,12 @@ const previewFormatDate = (dt: string | null | undefined) => {
 
 .case-table td {
   border-bottom: 1px solid var(--police-border-light);
-  padding: 13px 14px;
+  height: 92px;
+  padding: 12px 14px;
   vertical-align: middle;
   font-size: 13px;
   color: var(--police-text-primary);
+  overflow: hidden;
 }
 
 .case-table tr:last-child td {
@@ -3389,19 +3528,45 @@ const previewFormatDate = (dt: string | null | undefined) => {
 }
 
 .case-action-cell {
-  white-space: nowrap;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.case-action-group {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 8px;
+  width: 124px;
+  min-width: 124px;
+  margin: 0 auto;
+}
+
+.case-action-button {
+  width: 56px;
+  height: 36px;
+  padding: 0;
+  border-radius: 6px;
+}
+
+.case-action-button--primary {
+  background: #1d3557;
+  border-color: #1d3557;
 }
 
 .case-title-cell {
-  width: 220px;
+  width: 25%;
 }
 
 .case-row-title {
+  display: -webkit-box;
+  height: 44px;
+  overflow: hidden;
   font-weight: 700;
+  line-height: 1.55;
   color: #1e293b;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .case-row-id {
@@ -3411,11 +3576,14 @@ const previewFormatDate = (dt: string | null | undefined) => {
 }
 
 .case-summary-cell {
-  display: -webkit-box;
-  max-width: 520px;
-  overflow: hidden;
-  line-height: 1.6;
   color: #475569;
+}
+
+.case-summary-text {
+  display: -webkit-box;
+  height: 42px;
+  overflow: hidden;
+  line-height: 1.62;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
@@ -3423,20 +3591,42 @@ const previewFormatDate = (dt: string | null | undefined) => {
 .case-metric-cell {
   font-size: 16px;
   font-weight: 800;
+  text-align: center;
   font-variant-numeric: tabular-nums;
+}
+
+.case-type-cell,
+.case-status-cell {
+  text-align: center;
+}
+
+.case-type-tag {
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .case-issue {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  height: 26px;
   border-radius: 20px;
   background: #fff7ed;
   color: #c2410c;
-  padding: 3px 9px;
+  padding: 0 9px;
   font-size: 12px;
   font-weight: 700;
 }
 
 .case-ok {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  height: 26px;
   color: var(--police-success);
   font-size: 12px;
   font-weight: 700;
@@ -3499,6 +3689,26 @@ const previewFormatDate = (dt: string | null | undefined) => {
   gap: 0.35rem;
 }
 
+.form-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.form-field-head .form-label {
+  margin-bottom: 0;
+}
+
+.textarea-expand-button {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 8px;
+  color: #1d3557;
+  border-color: #cbd5e1;
+}
+
 .form-input,
 .form-textarea {
   width: 100%;
@@ -3521,6 +3731,55 @@ const previewFormatDate = (dt: string | null | undefined) => {
 .form-textarea {
   resize: vertical;
   min-height: 2.75rem;
+}
+
+.large-text-editor-popup {
+  width: min(920px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+}
+
+.large-text-editor {
+  display: flex;
+  flex-direction: column;
+  height: min(720px, calc(100vh - 48px));
+  background: #fff;
+}
+
+.large-text-editor__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.large-text-editor__head h3 {
+  margin: 2px 0 0;
+  font-size: 18px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.large-text-editor__eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.large-text-editor__textarea {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  padding: 18px 20px;
+  border: 0;
+  outline: none;
+  resize: none;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f172a;
 }
 
 .cases-compact .space-y-6 > :not([hidden]) ~ :not([hidden]) {
@@ -4798,6 +5057,17 @@ const previewFormatDate = (dt: string | null | undefined) => {
   background: #ffffff;
   border-radius: 20px;
   padding: 28px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.file-dropzone:hover,
+.file-dropzone:focus,
+.file-dropzone--dragging {
+  border-color: #1d3557;
+  background: #f8fbff;
+  box-shadow: 0 0 0 3px rgb(29 53 87 / 8%);
 }
 
 .status-pill {

@@ -1,9 +1,14 @@
 <template>
   <div class="student-page class-task-page">
     <header class="task-header">
-      <div>
-        <h1>班级作业</h1>
-        <p>加入班级后，训练作业会统一下发到这里，支持开始训练、继续训练和查看报告。</p>
+      <div class="task-header__main">
+        <div class="task-header__icon">
+          <el-icon><Tickets /></el-icon>
+        </div>
+        <div>
+          <h1>班级作业</h1>
+          <p>查看班级作业任务，按要求完成训练并提交评估报告。</p>
+        </div>
       </div>
       <div class="join-box">
         <input v-model.trim="inviteCode" type="text" placeholder="输入班级邀请码" />
@@ -32,40 +37,81 @@
       </button>
     </section>
 
-    <section v-if="announcements.length" class="notice-band">
-      <article v-for="item in announcements.slice(0, 3)" :key="item.id">
-        <div>
-          <strong>{{ item.title }}</strong>
-          <span>{{ formatDateTime(item.created_at) }}</span>
+    <section class="overview-grid">
+      <article id="class-announcements" class="notice-card" :class="{ 'notice-card--expanded': showNoticeCenter }">
+        <div class="notice-card__head">
+          <div>
+            <el-icon><Bell /></el-icon>
+            <strong>班级通知</strong>
+          </div>
+          <button v-if="announcements.length" type="button" @click="toggleNoticeCenter">
+            {{ showNoticeCenter ? '收起' : '查看全部' }}
+          </button>
         </div>
-        <p>{{ item.content || '无正文' }}</p>
+        <div v-if="announcements.length" class="notice-list">
+          <button
+            v-for="item in displayedAnnouncements"
+            :key="item.id"
+            type="button"
+            class="notice-row"
+            @click="openAnnouncement(item)"
+          >
+            <span class="notice-dot" />
+            <strong>{{ item.title || '班级通知' }}</strong>
+            <p>{{ item.content || '无正文' }}</p>
+            <time>{{ formatDateTime(item.created_at) }}</time>
+          </button>
+        </div>
+        <div v-else class="notice-empty">暂无班级通知</div>
+      </article>
+
+      <article class="summary-card summary-card--todo">
+        <div class="summary-card__icon"><el-icon><Document /></el-icon></div>
+        <div>
+          <span>待完成</span>
+          <strong>{{ statusCount.pending + statusCount.in_progress }}</strong>
+        </div>
+      </article>
+      <article class="summary-card summary-card--done">
+        <div class="summary-card__icon"><el-icon><CircleCheck /></el-icon></div>
+        <div>
+          <span>已完成</span>
+          <strong>{{ statusCount.completed }}</strong>
+        </div>
+      </article>
+      <article class="summary-card summary-card--warn">
+        <div class="summary-card__icon"><el-icon><Clock /></el-icon></div>
+        <div>
+          <span>逾期未交</span>
+          <strong>{{ statusCount.unsubmitted }}</strong>
+        </div>
       </article>
     </section>
 
-    <section class="summary-grid">
-      <div class="summary-card">
-        <span>待完成</span>
-        <strong>{{ statusCount.pending + statusCount.in_progress }}</strong>
-      </div>
-      <div class="summary-card">
-        <span>已完成</span>
-        <strong>{{ statusCount.completed }}</strong>
-      </div>
-      <div class="summary-card summary-card--warn">
-        <span>逾期未交</span>
-        <strong>{{ statusCount.unsubmitted }}</strong>
-      </div>
-    </section>
-
     <section v-if="priorityAssignment" class="priority-task">
-      <div>
-        <span>当前优先任务</span>
+      <div class="priority-task__body">
+        <span class="section-kicker">当前优先任务</span>
         <strong>{{ priorityAssignment.title }}</strong>
+        <div class="priority-meta">
+          <span>提交截止时间：{{ formatDateTime(priorityAssignment.effective_due_at || priorityAssignment.due_at) }}</span>
+          <em>{{ duePressureText(priorityAssignment) }}</em>
+        </div>
         <p>{{ assignmentActionHint(priorityAssignment) }}</p>
       </div>
-      <el-button type="primary" :disabled="!canStartAssignment(priorityAssignment)" @click="startFirstScene(priorityAssignment)">
-        {{ primaryActionLabel(priorityAssignment) }}
-      </el-button>
+      <div class="priority-task__side">
+        <span class="status-pill" :class="`status-pill--${normalizeStatus(priorityAssignment.status)}`">
+          {{ statusLabel(priorityAssignment.status) }}
+        </span>
+        <strong>{{ progressText(priorityAssignment) }}</strong>
+        <small>场景完成</small>
+        <el-button
+          type="primary"
+          :disabled="!canStartAssignment(priorityAssignment)"
+          @click="startFirstScene(priorityAssignment)"
+        >
+          {{ primaryActionLabel(priorityAssignment) }}
+        </el-button>
+      </div>
     </section>
 
     <section class="task-panel">
@@ -77,7 +123,10 @@
           <el-tab-pane label="已完成" name="completed" />
           <el-tab-pane label="未提交" name="unsubmitted" />
         </el-tabs>
-        <el-button plain :loading="loading" @click="fetchAll">刷新</el-button>
+        <el-button plain :loading="loading" @click="fetchAll">
+          <el-icon><Refresh /></el-icon>
+          刷新
+        </el-button>
       </div>
 
       <div v-if="loading" class="state-panel">
@@ -86,28 +135,34 @@
       <div v-else-if="visibleAssignments.length" class="assignment-list">
         <article v-for="assignment in visibleAssignments" :key="assignment.id" class="assignment-card">
           <header>
-            <div>
+            <div class="assignment-main">
               <div class="assignment-meta">
-                <van-tag :type="statusType(assignment.status)" plain>{{ statusLabel(assignment.status) }}</van-tag>
+                <span class="status-pill" :class="`status-pill--${normalizeStatus(assignment.status)}`">
+                  {{ statusLabel(assignment.status) }}
+                </span>
                 <span>{{ assignment.class_name }}</span>
               </div>
               <h2>{{ assignment.title }}</h2>
               <p>{{ assignment.instructions || '暂无训练要求说明。' }}</p>
             </div>
             <div class="assignment-progress">
-              <strong>{{ assignment.completed_count }}/{{ assignment.required_count }}</strong>
+              <strong>{{ progressText(assignment) }}</strong>
               <span>场景完成</span>
+              <button type="button" @click="toggleAssignment(assignment)">
+                <el-icon><ArrowRight /></el-icon>
+              </button>
             </div>
           </header>
 
           <div class="assignment-info">
-            <span>发布时间：{{ formatDateTime(assignment.published_at) }}</span>
-            <span>截止时间：{{ formatDateTime(assignment.effective_due_at || assignment.due_at) }}</span>
-            <span>{{ duePressureText(assignment) }}</span>
+            <span><el-icon><Calendar /></el-icon>发布时间：{{ formatDateTime(assignment.published_at) }}</span>
+            <span><el-icon><Clock /></el-icon>截止时间：{{ formatDateTime(assignment.effective_due_at || assignment.due_at) }}</span>
+            <span class="assignment-info__danger"><el-icon><Warning /></el-icon>{{ duePressureText(assignment) }}</span>
             <span>{{ assignment.allow_late ? '允许补交' : '按时截止' }}</span>
           </div>
 
           <div class="completion-standard">
+            <el-icon><InfoFilled /></el-icon>
             <strong>完成标准</strong>
             <span>{{ completionStandardText(assignment) }}</span>
           </div>
@@ -185,11 +240,24 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import {
+  ArrowRight,
+  Bell,
+  Calendar,
+  CircleCheck,
+  Clock,
+  Document,
+  InfoFilled,
+  Refresh,
+  Tickets,
+  Warning,
+} from '@element-plus/icons-vue'
 import { showToast } from 'vant'
 import request from '../utils/request'
 
 const router = useRouter()
 const setMainScrollable = inject<(value: boolean) => void>('setMainScrollable')
+const openStudentAnnouncementPanel = inject<((announcement?: any) => void) | null>('openStudentAnnouncementPanel', null)
 
 const classes = ref<any[]>([])
 const assignments = ref<any[]>([])
@@ -203,6 +271,8 @@ const loading = ref(false)
 const joining = ref(false)
 const startingSceneId = ref<number | null>(null)
 const startingAssignmentId = ref<number | null>(null)
+const showNoticeCenter = ref(false)
+const displayedAnnouncements = computed(() => (showNoticeCenter.value ? announcements.value.slice(0, 6) : announcements.value.slice(0, 1)))
 
 const visibleAssignments = computed(() => {
   let result = assignments.value
@@ -217,6 +287,14 @@ const visibleAssignments = computed(() => {
     return leftDue - rightDue
   })
 })
+
+const toggleNoticeCenter = () => {
+  showNoticeCenter.value = !showNoticeCenter.value
+}
+
+const openAnnouncement = (announcement: any) => {
+  openStudentAnnouncementPanel?.(announcement)
+}
 
 const priorityAssignment = computed(() =>
   visibleAssignments.value.find((assignment: any) => normalizeStatus(assignment.status) !== 'completed') || null,
@@ -286,6 +364,12 @@ const completionStandardText = (assignment: any) => {
   return `需完成 ${required} 个训练场景并生成评估报告，当前已完成 ${completed} 个；${lateText}。`
 }
 
+const progressText = (assignment: any) => {
+  const completed = Number(assignment?.completed_count || 0)
+  const required = Number(assignment?.required_count || assignment?.cases?.length || 0)
+  return `${completed}/${required || 0}`
+}
+
 const compactRuleText = (value: any) =>
   String(value || '')
     .split(/\n+/)
@@ -314,6 +398,9 @@ const fetchAll = async () => {
     classes.value = Array.isArray(classRes) ? classRes : []
     assignments.value = Array.isArray(assignmentRes) ? assignmentRes : []
     announcements.value = Array.isArray(announcementRes) ? announcementRes : []
+    if (announcements.value.length <= 1) {
+      showNoticeCenter.value = false
+    }
   } finally {
     loading.value = false
   }
@@ -476,17 +563,18 @@ onUnmounted(() => {
 <style scoped>
 .class-task-page {
   display: grid;
-  gap: 14px;
-  padding: 20px 28px 32px;
+  gap: 18px;
+  padding: 18px 28px 32px;
+  background: #f3f6fa;
 }
 
 .task-header,
 .task-toolbar,
 .assignment-card header,
-.assignment-card footer,
 .scene-card,
 .case-row,
-.notice-band article div {
+.notice-card__head,
+.notice-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -494,36 +582,58 @@ onUnmounted(() => {
 }
 
 .task-header {
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fff;
-  padding: 18px 20px;
+  padding: 22px 24px;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+}
+
+.task-header__main {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+}
+
+.task-header__icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #0b4bb3;
+  color: #fff;
+  font-size: 26px;
 }
 
 .task-header h1 {
   margin: 0;
   color: #111827;
-  font-size: 24px;
+  font-size: 26px;
   font-weight: 900;
+  letter-spacing: 0;
 }
 
 .task-header p {
-  margin: 5px 0 0;
+  margin: 7px 0 0;
   color: #64748b;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .join-box {
   display: grid;
-  grid-template-columns: 190px auto;
+  grid-template-columns: 220px auto;
   gap: 8px;
+  flex: 0 0 auto;
 }
 
 .join-box input {
-  height: 32px;
+  height: 38px;
   border: 1px solid #dbe3ee;
   border-radius: 6px;
-  padding: 0 10px;
+  padding: 0 12px;
   color: #0f172a;
   outline: none;
 }
@@ -536,16 +646,17 @@ onUnmounted(() => {
 }
 
 .class-filter {
-  height: 32px;
+  height: 36px;
   flex-shrink: 0;
   border: 1px solid #dbe3ee;
   border-radius: 999px;
   background: #fff;
-  padding: 0 14px;
+  padding: 0 18px;
   color: #475569;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 800;
   cursor: pointer;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
 }
 
 .class-filter--active {
@@ -554,61 +665,154 @@ onUnmounted(() => {
   color: #fff;
 }
 
-.notice-band {
+.overview-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: minmax(360px, 1.5fr) repeat(3, minmax(150px, 0.62fr));
+  gap: 14px;
 }
 
-.notice-band article {
-  border: 1px solid #dbeafe;
+.notice-card,
+.summary-card {
+  min-height: 132px;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
-  background: #f8fbff;
-  padding: 12px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
 }
 
-.notice-band strong {
+.notice-card {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 16px 18px;
+  overflow: hidden;
+}
+
+.notice-card--expanded {
+  min-height: 172px;
+}
+
+.notice-card__head > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: #0f172a;
-  font-size: 14px;
+  font-size: 15px;
+  font-weight: 900;
 }
 
-.notice-band span,
-.notice-band p {
-  margin: 6px 0 0;
+.notice-card__head button {
+  border: 0;
+  background: transparent;
+  color: #165dff;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.notice-list {
+  display: grid;
+  gap: 8px;
+}
+
+.notice-row {
+  width: 100%;
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+  background: #f8fbff;
+  padding: 11px 12px;
+  text-align: left;
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: 8px minmax(96px, 0.9fr) minmax(0, 1.6fr) auto;
+  align-items: center;
+}
+
+.notice-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #165dff;
+}
+
+.notice-row strong,
+.notice-row p {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notice-row strong {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.notice-row p,
+.notice-row time,
+.notice-empty {
   color: #64748b;
   font-size: 12px;
-  line-height: 1.6;
 }
 
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+.notice-row time {
+  white-space: nowrap;
+}
+
+.notice-empty {
+  border: 1px dashed #dbe3ee;
+  border-radius: 6px;
+  padding: 18px;
+  text-align: center;
 }
 
 .summary-card {
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #fff;
-  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px;
+}
+
+.summary-card__icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: #eaf2ff;
+  color: #165dff;
+  font-size: 28px;
+}
+
+.summary-card--done .summary-card__icon {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.summary-card--warn .summary-card__icon {
+  background: #fee2e2;
+  color: #dc2626;
 }
 
 .summary-card span {
-  color: #64748b;
-  font-size: 13px;
+  color: #334155;
+  font-size: 14px;
   font-weight: 800;
 }
 
 .summary-card strong {
   display: block;
-  margin-top: 8px;
-  color: #165dff;
-  font-size: 30px;
+  margin-top: 7px;
+  color: #0f172a;
+  font-size: 32px;
   line-height: 1;
   font-weight: 900;
 }
 
-.summary-card--warn strong {
+.summary-card--warn strong,
+.assignment-info__danger {
   color: #dc2626;
 }
 
@@ -616,39 +820,84 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  border: 1px solid #bfdbfe;
+  gap: 24px;
+  min-height: 158px;
+  border: 1px solid #93c5fd;
   border-radius: 8px;
-  background: #eff6ff;
-  padding: 14px 16px;
+  background: #eef6ff;
+  padding: 20px 24px;
 }
 
-.priority-task span {
+.priority-task__body {
+  min-width: 0;
+}
+
+.section-kicker {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  border-radius: 6px;
+  background: #dbeafe;
+  padding: 0 9px;
   color: #1d4ed8;
   font-size: 12px;
   font-weight: 900;
 }
 
-.priority-task strong {
+.priority-task__body > strong {
   display: block;
-  margin-top: 4px;
+  margin-top: 16px;
   color: #0f172a;
-  font-size: 16px;
+  font-size: 22px;
   font-weight: 900;
 }
 
+.priority-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  color: #334155;
+  font-size: 13px;
+}
+
+.priority-meta em {
+  color: #dc2626;
+  font-style: normal;
+  font-weight: 800;
+}
+
 .priority-task p {
-  margin: 5px 0 0;
+  margin: 12px 0 0;
   color: #475569;
   font-size: 13px;
   line-height: 1.6;
 }
 
+.priority-task__side {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  min-width: 150px;
+}
+
+.priority-task__side > strong {
+  color: #165dff;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.priority-task__side small {
+  color: #64748b;
+  font-size: 12px;
+}
+
 .task-panel {
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fff;
   overflow: hidden;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
 }
 
 .task-toolbar {
@@ -670,7 +919,11 @@ onUnmounted(() => {
   border: 1px solid #e5e7eb;
   border-radius: 10px;
   background: #fff;
-  padding: 16px;
+  padding: 18px 20px;
+}
+
+.assignment-main {
+  min-width: 0;
 }
 
 .assignment-meta {
@@ -693,33 +946,54 @@ onUnmounted(() => {
   color: #64748b;
   font-size: 13px;
   line-height: 1.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .assignment-progress {
-  min-width: 112px;
+  min-width: 118px;
   display: grid;
   justify-items: end;
+  gap: 6px;
 }
 
 .assignment-progress strong {
   color: #165dff;
-  font-size: 28px;
+  font-size: 30px;
   line-height: 1;
 }
 
 .assignment-progress span {
-  margin-top: 6px;
   color: #64748b;
   font-size: 12px;
+}
+
+.assignment-progress button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: #f1f5f9;
+  color: #475569;
+  cursor: pointer;
 }
 
 .assignment-info {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 14px;
   margin-top: 14px;
   color: #475569;
-  font-size: 12px;
+  font-size: 13px;
+}
+
+.assignment-info span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .completion-standard,
@@ -727,7 +1001,7 @@ onUnmounted(() => {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin: 0 0 12px;
+  margin: 14px 0 12px;
   border: 1px solid #e0f2fe;
   border-radius: 8px;
   background: #f8fbff;
@@ -796,23 +1070,65 @@ onUnmounted(() => {
   flex-wrap: wrap;
 }
 
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  padding: 3px 9px;
+  color: #165dff;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.status-pill--completed {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #16a34a;
+}
+
+.status-pill--in_progress {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.status-pill--unsubmitted {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #dc2626;
+}
+
 .state-panel {
   padding: 18px;
+}
+
+@media (max-width: 1180px) {
+  .overview-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .notice-card {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 960px) {
   .task-header,
   .assignment-card header,
-  .assignment-card footer,
   .scene-card,
-  .case-row {
+  .case-row,
+  .priority-task {
     display: grid;
     grid-template-columns: 1fr;
   }
 
   .join-box,
-  .summary-grid,
-  .notice-band {
+  .overview-grid {
     grid-template-columns: 1fr;
   }
 

@@ -316,16 +316,54 @@
       </div>
     </van-popup>
 
-    <van-popup v-model:show="showStudentPopup" teleport="body" :style="popupStyle">
-      <div class="popup-panel">
+    <van-popup v-model:show="showStudentPopup" teleport="body" :style="{ ...popupStyle, width: 'min(680px, 96vw)' }">
+      <div class="popup-panel popup-panel--student-import">
         <header>
           <h3>添加学员</h3>
           <van-icon name="cross" @click="showStudentPopup = false" />
         </header>
-        <label class="field-block">
-          <span>学员账号</span>
-          <textarea v-model.trim="studentForm.usernames" rows="5" placeholder="每行一个学员账号，例如 student001" />
-        </label>
+        <section class="student-import-section student-import-section--text">
+          <label class="field-block">
+            <span>学员账号</span>
+            <textarea v-model.trim="studentForm.usernames" rows="4" placeholder="每行一个学员账号，例如 student001" />
+          </label>
+        </section>
+        <section class="student-import-section student-import-section--file">
+          <div class="student-import-head">
+            <div>
+              <strong>名单文件导入</strong>
+              <span>支持 xlsx / csv，识别学号、username、账号、account 列；无表头时读取第一列。</span>
+            </div>
+            <button type="button" @click="downloadStudentImportTemplate">下载模板</button>
+          </div>
+          <input ref="studentFileInputRef" type="file" accept=".xlsx,.csv" class="hidden" @change="handleStudentFileChange" />
+          <div
+            class="student-file-dropzone"
+            :class="{ 'student-file-dropzone--dragging': studentFileDragging, 'student-file-dropzone--ready': importedStudentUsernames.length }"
+            tabindex="0"
+            @click="chooseStudentFile"
+            @dragover.prevent="studentFileDragging = true"
+            @dragleave.prevent="studentFileDragging = false"
+            @drop.prevent="handleStudentFileDrop"
+            @paste="handleStudentFilePaste"
+          >
+            <van-icon name="description" size="34" />
+            <strong>{{ studentImportFileName || '拖入名单文件，或点击上传' }}</strong>
+            <span>也可以复制文件后在此区域粘贴上传</span>
+            <small v-if="studentImportError">{{ studentImportError }}</small>
+            <small v-else-if="importedStudentUsernames.length">
+              已识别 {{ importedStudentUsernames.length }} 个账号，去重 {{ studentImportSummary.duplicateCount }} 个
+            </small>
+          </div>
+          <div v-if="studentImportPreviewVisibleList.length" class="student-import-preview">
+            <span v-for="item in studentImportPreviewVisibleList" :key="item">{{ item }}</span>
+            <em v-if="studentImportPreviewHiddenCount">另有 {{ studentImportPreviewHiddenCount }} 个</em>
+          </div>
+          <label class="field-block">
+            <span>导入初始密码</span>
+            <input v-model.trim="studentImportForm.password" type="text" placeholder="新开通账号统一初始密码" />
+          </label>
+        </section>
         <van-button block type="primary" :loading="savingStudents" class="!rounded-[6px] !border-none !bg-[#1D3557]" @click="addStudents">
           添加到班级
         </van-button>
@@ -658,6 +696,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { showToast } from 'vant'
+import * as XLSX from 'xlsx'
 import request from '../utils/request'
 
 const classes = ref<any[]>([])
@@ -680,6 +719,12 @@ const savingClass = ref(false)
 const savingStudents = ref(false)
 const savingAnnouncement = ref(false)
 const savingAssignment = ref(false)
+const studentFileInputRef = ref<HTMLInputElement | null>(null)
+const studentFileDragging = ref(false)
+const studentImportFileName = ref('')
+const importedStudentUsernames = ref<string[]>([])
+const studentImportError = ref('')
+const studentImportPreviewLimit = 12
 
 const showClassPopup = ref(false)
 const showStudentPopup = ref(false)
@@ -690,6 +735,12 @@ const showEvaluationPopup = ref(false)
 
 const classForm = reactive({ name: '', description: '' })
 const studentForm = reactive({ usernames: '' })
+const studentImportForm = reactive({ password: '123456' })
+const studentImportSummary = reactive({
+  totalRows: 0,
+  validCount: 0,
+  duplicateCount: 0,
+})
 const announcementForm = reactive({ title: '', content: '' })
 const assignmentForm = reactive({
   title: '',
@@ -744,6 +795,10 @@ const evaluationPopupStyle = {
 }
 
 const selectedClass = computed(() => classes.value.find((item) => item.id === selectedClassId.value))
+const studentImportPreviewVisibleList = computed(() => importedStudentUsernames.value.slice(0, studentImportPreviewLimit))
+const studentImportPreviewHiddenCount = computed(() =>
+  Math.max(importedStudentUsernames.value.length - studentImportPreviewVisibleList.value.length, 0),
+)
 
 const assignmentRows = computed(() => Array.isArray(classDetail.value?.assignments) ? classDetail.value.assignments : [])
 
@@ -1058,21 +1113,136 @@ const createClass = async () => {
   }
 }
 
-const addStudents = async () => {
-  if (!selectedClassId.value) return
-  const usernames = studentForm.usernames
-    .split(/\r?\n|,|，/)
+const parseStudentTextUsernames = () =>
+  studentForm.usernames
+    .split(/[\r\n,，]+/)
     .map((item) => item.trim())
     .filter(Boolean)
+
+const resetStudentImportSummary = () => {
+  studentImportSummary.totalRows = 0
+  studentImportSummary.validCount = 0
+  studentImportSummary.duplicateCount = 0
+}
+
+const normalizeImportedStudentUsernames = (rows: any[][]) => {
+  if (!rows.length) {
+    resetStudentImportSummary()
+    return []
+  }
+  const firstRow = rows[0].map((cell) => String(cell ?? '').trim())
+  const normalizedHeaderRow = firstRow.map((item) => item.toLowerCase())
+  const headerIndex = normalizedHeaderRow.findIndex((item) => ['学号', '学生', 'username', '账号', 'account'].includes(item))
+  const dataRows = headerIndex >= 0 ? rows.slice(1) : rows
+  const targetIndex = headerIndex >= 0 ? headerIndex : 0
+  const usernames = dataRows.map((row) => String(row?.[targetIndex] ?? '').trim()).filter(Boolean)
+  const uniqueUsernames = Array.from(new Set(usernames))
+  studentImportSummary.totalRows = dataRows.length
+  studentImportSummary.validCount = usernames.length
+  studentImportSummary.duplicateCount = usernames.length - uniqueUsernames.length
+  return uniqueUsernames
+}
+
+const parseStudentImportFile = async (file: File) => {
+  const lowerName = file.name.toLowerCase()
+  if (!lowerName.endsWith('.xlsx') && !lowerName.endsWith('.csv')) {
+    studentImportError.value = '仅支持 xlsx 或 csv 名单文件'
+    importedStudentUsernames.value = []
+    resetStudentImportSummary()
+    return
+  }
+  studentImportFileName.value = file.name
+  studentImportError.value = ''
+  try {
+    const buffer = await file.arrayBuffer()
+    const workbook = XLSX.read(buffer, { type: 'array' })
+    const firstSheetName = workbook.SheetNames[0]
+    const firstSheet = workbook.Sheets[firstSheetName]
+    const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, raw: false }) as any[][]
+    const usernames = normalizeImportedStudentUsernames(rows)
+    if (!usernames.length) {
+      studentImportError.value = '未从文件中识别到有效账号，请检查表头或第一列内容'
+      importedStudentUsernames.value = []
+      return
+    }
+    importedStudentUsernames.value = usernames
+  } catch {
+    studentImportError.value = '文件解析失败，请使用 xlsx 或 csv 格式'
+    importedStudentUsernames.value = []
+    resetStudentImportSummary()
+  }
+}
+
+const chooseStudentFile = () => studentFileInputRef.value?.click()
+
+const handleStudentFileChange = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (file) await parseStudentImportFile(file)
+  input.value = ''
+}
+
+const handleStudentFileDrop = async (event: DragEvent) => {
+  studentFileDragging.value = false
+  const file = event.dataTransfer?.files?.[0]
+  if (file) await parseStudentImportFile(file)
+}
+
+const handleStudentFilePaste = async (event: ClipboardEvent) => {
+  const files = Array.from(event.clipboardData?.files || [])
+  const file = files[0]
+  if (!file) return
+  event.preventDefault()
+  await parseStudentImportFile(file)
+}
+
+const downloadStudentImportTemplate = () => {
+  const rows = [
+    ['学号'],
+    ['student001'],
+    ['student002'],
+  ]
+  const csv = rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n')
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = 'class-student-import-template.csv'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+const addStudents = async () => {
+  if (!selectedClassId.value) return
+  const textUsernames = parseStudentTextUsernames()
+  const fileUsernames = importedStudentUsernames.value
+  const usernames = Array.from(new Set([...textUsernames, ...fileUsernames]))
   if (!usernames.length) {
     showToast('请输入学员账号')
     return
   }
+  if (fileUsernames.length && !studentImportForm.password.trim()) {
+    showToast('请输入导入初始密码')
+    return
+  }
   savingStudents.value = true
   try {
+    if (fileUsernames.length) {
+      await request.post('/auth/students/import', {
+        usernames: fileUsernames,
+        password: studentImportForm.password.trim(),
+      })
+    }
     const res: any = await request.post(`/classes/${selectedClassId.value}/students`, { usernames })
-    showToast({ type: 'success', message: `已匹配 ${res.matched_count || 0} 名学员` })
+    const createdHint = fileUsernames.length ? `，名单 ${fileUsernames.length} 个已开户或跳过已有账号` : ''
+    showToast({ type: 'success', message: `已匹配 ${res.matched_count || 0} 名学员${createdHint}` })
     studentForm.usernames = ''
+    studentImportFileName.value = ''
+    importedStudentUsernames.value = []
+    studentImportError.value = ''
+    resetStudentImportSummary()
     showStudentPopup.value = false
     await fetchClassDetail()
   } finally {
@@ -2275,6 +2445,122 @@ onMounted(async () => {
   max-height: 88vh;
   overflow: auto;
   background: #fff;
+}
+
+.popup-panel--student-import {
+  grid-template-rows: auto auto minmax(280px, 1fr) auto;
+}
+
+.student-import-section {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #e5ebf3;
+  border-radius: 10px;
+  background: #fbfdff;
+  padding: 12px;
+}
+
+.student-import-section--text {
+  min-height: 138px;
+}
+
+.student-import-section--file {
+  min-height: 300px;
+}
+
+.student-import-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.student-import-head strong {
+  display: block;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.student-import-head span {
+  display: block;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.student-import-head button {
+  border: 1px solid #dbe3ee;
+  border-radius: 6px;
+  background: #fff;
+  padding: 7px 10px;
+  color: #1d3557;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.student-file-dropzone {
+  display: grid;
+  place-items: center;
+  min-height: 158px;
+  border: 1px dashed #b9c7d8;
+  border-radius: 10px;
+  background: #fff;
+  padding: 18px;
+  color: #64748b;
+  text-align: center;
+  cursor: pointer;
+  outline: none;
+}
+
+.student-file-dropzone:hover,
+.student-file-dropzone:focus,
+.student-file-dropzone--dragging {
+  border-color: #1d3557;
+  background: #f6f9fd;
+}
+
+.student-file-dropzone--ready {
+  border-color: #16a34a;
+  background: #f7fef9;
+}
+
+.student-file-dropzone strong {
+  margin-top: 10px;
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.student-file-dropzone span,
+.student-file-dropzone small {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.student-file-dropzone small {
+  color: #1d3557;
+  font-weight: 800;
+}
+
+.student-import-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.student-import-preview span,
+.student-import-preview em {
+  border: 1px solid #dbe3ee;
+  border-radius: 999px;
+  background: #fff;
+  padding: 4px 9px;
+  color: #334155;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
 }
 
 .popup-panel header,

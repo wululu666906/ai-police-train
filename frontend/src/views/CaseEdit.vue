@@ -55,6 +55,41 @@ const activeReviewModule = ref<ReviewModule>('basic')
 const activeSceneIndex = ref(0)
 const activeSceneTab = ref<SceneEditTab>('overview')
 const showOriginalExpanded = ref(false)
+type LargeTextEditorTarget = {
+  source: Record<string, any>
+  key: string
+  title: string
+  fieldLabel: string
+  placeholder?: string
+}
+
+const largeTextEditor = ref<LargeTextEditorTarget | null>(null)
+const showLargeTextEditor = computed({
+  get: () => largeTextEditor.value !== null,
+  set: (value: boolean) => {
+    if (!value) largeTextEditor.value = null
+  },
+})
+const largeTextEditorValue = computed({
+  get: () => {
+    const target = largeTextEditor.value
+    return target ? String(target.source?.[target.key] || '') : ''
+  },
+  set: (value: string) => {
+    const target = largeTextEditor.value
+    if (target) target.source[target.key] = value
+  },
+})
+
+const openLargeTextEditor = (
+  source: Record<string, any>,
+  key: string,
+  title: string,
+  fieldLabel: string,
+  placeholder = ''
+) => {
+  largeTextEditor.value = { source, key, title, fieldLabel, placeholder }
+}
 
 // ── 角色审核工作台 ────────────────────────────────────────────────
 type RoleAuditTab = 'basic' | 'ai_review' | 'audit_log'
@@ -2558,7 +2593,24 @@ const previewFormatDate = (dt: string | null | undefined) => {
                           <input v-model="point.label" type="text" class="form-input" placeholder="如：压实双方陈述矛盾" />
                         </div>
                         <div class="scene-flow-stage__col">
-                          <label class="form-label form-label--muted">考察内容（具体训练题目）</label>
+                          <div class="form-field-head">
+                            <label class="form-label form-label--muted">考察内容（具体训练题目）</label>
+                            <van-button
+                              plain
+                              size="mini"
+                              icon="expand-o"
+                              class="textarea-expand-button"
+                              @click.stop="openLargeTextEditor(
+                                point,
+                                'content',
+                                `考察点 ${Number(pointIndex) + 1}`,
+                                '考察内容（具体训练题目）',
+                                '建议三段：①学员应做到什么；②具体要求（怎么问/怎么做）；③怎样算完成（回放记录时能听出什么算达标）。不要只重复上面的名称。'
+                              )"
+                            >
+                              放大
+                            </van-button>
+                          </div>
                           <textarea
                             v-model="point.content"
                             rows="4"
@@ -2588,6 +2640,28 @@ const previewFormatDate = (dt: string | null | undefined) => {
           </section>
     </div>
 </div>
+  <van-popup
+    v-model:show="showLargeTextEditor"
+    position="center"
+    round
+    teleport="body"
+    class="large-text-editor-popup"
+  >
+    <div class="large-text-editor">
+      <div class="large-text-editor__head">
+        <div>
+          <div class="large-text-editor__eyebrow">{{ largeTextEditor?.fieldLabel || '长文本编辑' }}</div>
+          <h3>{{ largeTextEditor?.title || '放大编辑' }}</h3>
+        </div>
+        <van-button plain size="small" icon="cross" @click="showLargeTextEditor = false">关闭</van-button>
+      </div>
+      <textarea
+        v-model="largeTextEditorValue"
+        class="large-text-editor__textarea"
+        :placeholder="largeTextEditor?.placeholder"
+      ></textarea>
+    </div>
+  </van-popup>
 </template>
 
 <style scoped>
@@ -2792,6 +2866,7 @@ const previewFormatDate = (dt: string | null | undefined) => {
 .case-table {
   width: 100%;
   min-width: 960px;
+  table-layout: fixed;
   border-collapse: collapse;
 }
 
@@ -2808,10 +2883,12 @@ const previewFormatDate = (dt: string | null | undefined) => {
 
 .case-table td {
   border-bottom: 1px solid var(--police-border-light);
-  padding: 13px 14px;
+  height: 92px;
+  padding: 12px 14px;
   vertical-align: middle;
   font-size: 13px;
   color: var(--police-text-primary);
+  overflow: hidden;
 }
 
 .case-table tr:last-child td {
@@ -2828,19 +2905,45 @@ const previewFormatDate = (dt: string | null | undefined) => {
 }
 
 .case-action-cell {
-  white-space: nowrap;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.case-action-group {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 8px;
+  width: 124px;
+  min-width: 124px;
+  margin: 0 auto;
+}
+
+.case-action-button {
+  width: 56px;
+  height: 36px;
+  padding: 0;
+  border-radius: 6px;
+}
+
+.case-action-button--primary {
+  background: #1d3557;
+  border-color: #1d3557;
 }
 
 .case-title-cell {
-  width: 220px;
+  width: 25%;
 }
 
 .case-row-title {
+  display: -webkit-box;
+  height: 44px;
+  overflow: hidden;
   font-weight: 700;
+  line-height: 1.55;
   color: #1e293b;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .case-row-id {
@@ -2850,11 +2953,14 @@ const previewFormatDate = (dt: string | null | undefined) => {
 }
 
 .case-summary-cell {
-  display: -webkit-box;
-  max-width: 520px;
-  overflow: hidden;
-  line-height: 1.6;
   color: #475569;
+}
+
+.case-summary-text {
+  display: -webkit-box;
+  height: 42px;
+  overflow: hidden;
+  line-height: 1.62;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
@@ -2862,20 +2968,42 @@ const previewFormatDate = (dt: string | null | undefined) => {
 .case-metric-cell {
   font-size: 16px;
   font-weight: 800;
+  text-align: center;
   font-variant-numeric: tabular-nums;
+}
+
+.case-type-cell,
+.case-status-cell {
+  text-align: center;
+}
+
+.case-type-tag {
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .case-issue {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  height: 26px;
   border-radius: 20px;
   background: #fff7ed;
   color: #c2410c;
-  padding: 3px 9px;
+  padding: 0 9px;
   font-size: 12px;
   font-weight: 700;
 }
 
 .case-ok {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  height: 26px;
   color: var(--police-success);
   font-size: 12px;
   font-weight: 700;
@@ -2938,6 +3066,26 @@ const previewFormatDate = (dt: string | null | undefined) => {
   gap: 0.35rem;
 }
 
+.form-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.form-field-head .form-label {
+  margin-bottom: 0;
+}
+
+.textarea-expand-button {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 8px;
+  color: #1d3557;
+  border-color: #cbd5e1;
+}
+
 .form-input,
 .form-textarea {
   width: 100%;
@@ -2960,6 +3108,55 @@ const previewFormatDate = (dt: string | null | undefined) => {
 .form-textarea {
   resize: vertical;
   min-height: 2.75rem;
+}
+
+.large-text-editor-popup {
+  width: min(920px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+}
+
+.large-text-editor {
+  display: flex;
+  flex-direction: column;
+  height: min(720px, calc(100vh - 48px));
+  background: #fff;
+}
+
+.large-text-editor__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.large-text-editor__head h3 {
+  margin: 2px 0 0;
+  font-size: 18px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.large-text-editor__eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.large-text-editor__textarea {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  padding: 18px 20px;
+  border: 0;
+  outline: none;
+  resize: none;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f172a;
 }
 
 .cases-compact .space-y-6 > :not([hidden]) ~ :not([hidden]) {

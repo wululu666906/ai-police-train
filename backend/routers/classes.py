@@ -656,6 +656,29 @@ def add_class_students(
     return {"added_count": added, "reactivated_count": reactivated, "matched_count": len(students)}
 
 
+@router.delete("/{class_id}/students/{student_id}", dependencies=[Depends(require_admin_user)])
+def remove_class_student(
+    class_id: int,
+    student_id: int,
+    db: Session = Depends(database.get_db),
+):
+    ensure_classroom(db, class_id)
+    membership = (
+        db.query(models.ClassMembership)
+        .filter(
+            models.ClassMembership.class_id == class_id,
+            models.ClassMembership.user_id == student_id,
+            models.ClassMembership.role == "student",
+        )
+        .first()
+    )
+    if not membership:
+        raise HTTPException(status_code=404, detail="Student membership not found")
+    db.delete(membership)
+    db.commit()
+    return {"message": "Student removed from class"}
+
+
 @router.post("/{class_id}/announcements", dependencies=[Depends(require_admin_user)])
 def create_announcement(
     class_id: int,

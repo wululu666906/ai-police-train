@@ -549,8 +549,12 @@ onUnmounted(() => {
   border-radius: 8px;
   background: #eff6ff;
   color: #1d4ed8;
-  font-size: 22px;
+  padding: 6px;
+  font-size: 18px;
   font-weight: 900;
+  line-height: 1.1;
+  text-align: center;
+  word-break: keep-all;
 }
 
 .avatar-preview img {
@@ -673,13 +677,18 @@ onUnmounted(() => {
   gap: 10px;
   width: 100%;
   height: 100%;
+  padding: 14px;
   color: #94a3b8;
+  text-align: center;
 }
 
 .face-preview-empty span {
   color: #334155;
-  font-size: 26px;
+  max-width: 100%;
+  font-size: clamp(18px, 12px + 1vw, 24px);
   font-weight: 900;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
 }
 
 .face-status {

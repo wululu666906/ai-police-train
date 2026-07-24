@@ -622,6 +622,23 @@ def list_students(
         return []
 
     user_ids = [student.id for student in students]
+    memberships = (
+        db.query(
+            models.ClassMembership.user_id,
+            models.TrainingClass.id,
+            models.TrainingClass.name,
+            models.ClassMembership.status,
+            models.ClassMembership.joined_at,
+        )
+        .join(models.TrainingClass, models.TrainingClass.id == models.ClassMembership.class_id)
+        .filter(
+            models.ClassMembership.user_id.in_(user_ids),
+            models.ClassMembership.role == "student",
+            models.ClassMembership.status == "active",
+        )
+        .order_by(models.ClassMembership.joined_at.desc())
+        .all()
+    )
     sessions = (
         db.query(
             models.TrainingSession.user_id,
@@ -656,6 +673,17 @@ def list_students(
             if clean:
                 current["gap_counter"][clean] += 1
 
+    classes_by_user: dict[int, list[dict]] = {user_id: [] for user_id in user_ids}
+    for user_id, class_id, class_name, status, joined_at in memberships:
+        classes_by_user.setdefault(user_id, []).append(
+            {
+                "id": class_id,
+                "name": class_name,
+                "status": status,
+                "joined_at": joined_at,
+            }
+        )
+
     results = []
     for student in students:
         stats = stats_by_user.get(student.id, {})
@@ -671,6 +699,7 @@ def list_students(
                 finished_sessions=int(stats.get("finished_sessions") or 0),
                 avg_score=round(sum(scores) / len(scores), 1) if scores else None,
                 top_gap_missing=[label for label, _ in gap_counter.most_common(3)],
+                classes=classes_by_user.get(student.id, []),
             )
         )
     return results

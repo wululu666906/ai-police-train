@@ -1,10 +1,16 @@
 <template>
   <header class="student-topbar flx-align-center">
-    <div class="breadcrumb">训练历史 / <strong>{{ title }}</strong></div>
+    <nav class="breadcrumb" aria-label="当前位置">
+      <template v-for="(item, index) in breadcrumbItems" :key="`${item}-${index}`">
+        <span v-if="index" class="breadcrumb-separator">/</span>
+        <strong v-if="index === breadcrumbItems.length - 1">{{ item }}</strong>
+        <span v-else>{{ item }}</span>
+      </template>
+    </nav>
 
     <div class="topbar-actions flx-align-center">
-      <el-badge :value="notificationCount" :max="99" class="notify-badge">
-        <button type="button" class="icon-btn" @click="onNotifyClick">
+      <el-badge :value="notificationCount" :max="99" :hidden="!notificationCount" class="notify-badge">
+        <button type="button" class="icon-btn" @click="emit('notify')">
           <el-icon :size="18"><Bell /></el-icon>
         </button>
       </el-badge>
@@ -31,28 +37,31 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
 import { Bell } from '@element-plus/icons-vue'
-import { MOCK_NOTIFICATION_COUNT } from '../../mocks/studentHallMock'
 
 const props = defineProps<{
   displayName: string
   canBackToAdmin?: boolean
+  notificationCount?: number
 }>()
 
 const emit = defineEmits<{
   logout: []
   'back-admin': []
+  notify: []
 }>()
 
 const route = useRoute()
-const notificationCount = MOCK_NOTIFICATION_COUNT
+const notificationCount = computed(() => Number(props.notificationCount || 0))
 const avatarLetter = computed(() => (props.displayName || '学').slice(0, 1).toUpperCase())
-const title = computed(() => (route.path === '/student/evaluation' ? '训练评估报告' : route.meta?.title || '训练大厅'))
+const breadcrumbItems = computed(() => {
+  const titles = route.matched
+    .map((record) => record.meta?.title)
+    .filter((title): title is string => typeof title === 'string' && title.trim().length > 0)
 
-const onNotifyClick = () => {
-  ElMessage.info('通知功能开发中')
-}
+  if (titles.length) return titles
+  return [String(route.meta?.title || '学生控制台')]
+})
 </script>
 
 <style scoped lang="scss">
@@ -63,11 +72,24 @@ const onNotifyClick = () => {
   background: #fff;
   border-bottom: 1px solid #e5e7eb;
   box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
+  flex-shrink: 0;
 }
 
 .breadcrumb {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
   color: #667085;
   font-size: 14px;
+
+  span,
+  strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   strong {
     color: #344054;
@@ -75,8 +97,14 @@ const onNotifyClick = () => {
   }
 }
 
+.breadcrumb-separator {
+  flex: 0 0 auto;
+  color: #c0c4cc;
+}
+
 .topbar-actions {
   gap: 14px;
+  flex: 0 0 auto;
 }
 
 .icon-btn {
