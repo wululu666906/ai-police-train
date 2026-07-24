@@ -154,16 +154,17 @@
           </article>
         </div>
 
-        <div v-if="loading" class="rounded-2xl border border-slate-100 bg-white py-24 text-center">
-          <van-loading color="#1D3557" vertical>正在加载学员账号...</van-loading>
-        </div>
-        <div v-else-if="pageError" class="rounded-2xl border border-amber-200 bg-amber-50 px-6 py-12 text-center">
-          <van-icon name="warning-o" size="30" class="text-amber-500" />
-          <p class="mt-4 text-sm font-bold text-amber-800">{{ pageError }}</p>
-          <van-button plain type="primary" class="mt-5" @click="fetchStudents">重新加载</van-button>
-        </div>
-        <div v-else-if="filteredStudents.length" class="student-table-wrap">
-          <table class="student-table">
+        <div class="student-list-scroll">
+          <div v-if="loading" class="rounded-2xl border border-slate-100 bg-white py-24 text-center">
+            <van-loading color="#1D3557" vertical>正在加载学员账号...</van-loading>
+          </div>
+          <div v-else-if="pageError" class="rounded-2xl border border-amber-200 bg-amber-50 px-6 py-12 text-center">
+            <van-icon name="warning-o" size="30" class="text-amber-500" />
+            <p class="mt-4 text-sm font-bold text-amber-800">{{ pageError }}</p>
+            <van-button plain type="primary" class="mt-5" @click="fetchStudents">重新加载</van-button>
+          </div>
+          <div v-else-if="filteredStudents.length" class="student-table-wrap">
+            <table class="student-table">
             <thead>
               <tr>
                 <th>学员账号</th>
@@ -214,10 +215,11 @@
                 </td>
               </tr>
             </tbody>
-          </table>
-        </div>
-        <div v-else class="rounded-2xl border border-dashed border-slate-200 bg-white py-20 text-center text-slate-400">
-          暂无符合条件的学员账号
+            </table>
+          </div>
+          <div v-else class="rounded-2xl border border-dashed border-slate-200 bg-white py-20 text-center text-slate-400">
+            暂无符合条件的学员账号
+          </div>
         </div>
       </section>
     </section>
