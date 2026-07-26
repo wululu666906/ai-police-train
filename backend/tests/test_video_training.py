@@ -1,4 +1,3 @@
-import io
 import json
 
 import models
@@ -365,7 +364,7 @@ class TestVideoTraining:
         assert report_payload["violation_count"] == 1
         assert report_payload["failure_reason_summary"]["keyword_mismatch"] == 1
         assert report_payload["node_summaries"][0]["failure_reasons"] == ["keyword_mismatch"]
-        assert "artifacts" in report_payload
+        assert "artifacts" not in report_payload
 
         analytics_response = client.get(
             f"/video-training/admin/analytics?video_id={video.id}",
@@ -378,57 +377,6 @@ class TestVideoTraining:
         assert analytics_payload["node_failure_summary"][0]["node_id"] == video.nodes[0].id
         assert isinstance(report_payload["dimension_scores"], list)
         assert "weakness_summary" in report_payload
-
-    def test_session_artifact_upload_list_and_replace(self, client, db_session, student_headers):
-        student = db_session.query(models.User).filter(models.User.username == "student001").first()
-        video = ensure_interactive_video(db_session, title="视频实训练音视频留痕")
-        reset_video_training_sessions(db_session, student.id, video.id)
-
-        start_response = client.post(f"/video-training/start/{video.id}?mode=practice", headers=student_headers)
-        assert start_response.status_code == 200
-        session_id = start_response.json()["id"]
-
-        first_upload = client.post(
-            f"/video-training/session/{session_id}/artifacts/upload",
-            headers=student_headers,
-            files={"artifact_file": ("recording.webm", io.BytesIO(b"first-recording"), "video/webm;codecs=vp9")},
-            data={"artifact_type": "camera_recording", "duration_seconds": "12"},
-        )
-        assert first_upload.status_code == 200
-        first_payload = first_upload.json()
-        assert first_payload["artifact_type"] == "camera_recording"
-        assert first_payload["mime_type"] == "video/webm"
-        assert first_payload["file_size"] == len(b"first-recording")
-        assert first_payload["duration_seconds"] == 12
-        assert first_payload["file_url"].startswith("/static/session_media/")
-
-        list_response = client.get(f"/video-training/session/{session_id}/artifacts", headers=student_headers)
-        assert list_response.status_code == 200
-        listed_items = list_response.json()["items"]
-        assert len(listed_items) == 1
-        assert listed_items[0]["id"] == first_payload["id"]
-
-        second_upload = client.post(
-            f"/video-training/session/{session_id}/artifacts/upload",
-            headers=student_headers,
-            files={"artifact_file": ("recording.webm", io.BytesIO(b"second-recording"), "video/webm")},
-            data={"artifact_type": "camera_recording"},
-        )
-        assert second_upload.status_code == 200
-        second_payload = second_upload.json()
-        assert second_payload["id"] != first_payload["id"]
-
-        list_after_replace = client.get(f"/video-training/session/{session_id}/artifacts", headers=student_headers)
-        assert list_after_replace.status_code == 200
-        replaced_items = list_after_replace.json()["items"]
-        assert len(replaced_items) == 1
-        assert replaced_items[0]["id"] == second_payload["id"]
-
-        history_response = client.get("/video-training/history", headers=student_headers)
-        assert history_response.status_code == 200
-        history_item = next(item for item in history_response.json()["items"] if item["id"] == session_id)
-        assert len(history_item["artifacts"]) == 1
-        assert history_item["artifacts"][0]["id"] == second_payload["id"]
 
     def test_admin_can_review_and_override_ai_result(self, client, db_session, student_headers, admin_headers):
         student = db_session.query(models.User).filter(models.User.username == "student001").first()

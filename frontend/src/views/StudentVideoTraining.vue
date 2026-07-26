@@ -216,13 +216,6 @@
           >
             ▶ 播放视频并进入训练
           </button>
-          <!-- Video top center toolbar -->
-          <div class="imm-toolbar">
-            <button class="imm-toolbar__btn" title="截图">📷</button>
-            <button class="imm-toolbar__btn" title="录屏">⏺</button>
-            <button class="imm-toolbar__btn" title="静音">🔇</button>
-          </div>
-
           <!-- Camera PIP (draggable, auto-snap) -->
           <div
             class="imm-pip"
@@ -1524,12 +1517,6 @@ const camPos = ref({ x: 16, y: 80 })
 const deviceReady = ref(false)
 const deviceWarningText = ref('')
 let cameraStream: MediaStream | null = null
-let mediaRecorder: MediaRecorder | null = null
-let recordingChunks: Blob[] = []
-let recordingStartedAt = 0
-let recordingMimeType = 'video/webm'
-let recordingUploadAttempted = false
-let recordingUploadUnsupported = false
 
 const {
   status: presenceStatus,
@@ -2078,13 +2065,11 @@ async function confirmBriefing() {
   if (trainingMode.value === 'exam') {
     startExamTimer()
   }
-  await startTrainingRecording()
   await playTrainingVideo()
 }
 
 // 路由离开时立即释放摄像头和麦克风（不等过渡动画结束）
 onBeforeRouteLeave((_to, _from, next) => {
-  void stopTrainingRecording(false)
   stopCamera()
   stopPresenceMonitor()
   stopFaceIdentityVerify()
@@ -2095,7 +2080,6 @@ onBeforeRouteLeave((_to, _from, next) => {
 })
 
 onUnmounted(() => {
-  void stopTrainingRecording(false)
   stopCamera()
   stopPresenceMonitor()
   stopFaceIdentityVerify()
@@ -2381,117 +2365,6 @@ async function bindTrainingCameraIfNeeded(retryCount = 0) {
   await bindCameraStream(videoEl)
   await attachPresenceVideo(videoEl)
   await attachGestureVideo(videoEl)
-}
-
-function getSupportedRecordingMimeType(): string {
-  if (typeof MediaRecorder === 'undefined') return ''
-  const candidates = [
-    'video/webm;codecs=vp9,opus',
-    'video/webm;codecs=vp8,opus',
-    'video/webm',
-    'video/mp4',
-  ]
-  return candidates.find((item) => MediaRecorder.isTypeSupported(item)) || ''
-}
-
-async function startTrainingRecording() {
-  if (!sessionId.value || !cameraStream || typeof MediaRecorder === 'undefined') return
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') return
-
-  try {
-    const supportedMimeType = getSupportedRecordingMimeType()
-    mediaRecorder = supportedMimeType
-      ? new MediaRecorder(cameraStream, { mimeType: supportedMimeType })
-      : new MediaRecorder(cameraStream)
-    recordingMimeType = mediaRecorder.mimeType || supportedMimeType || 'video/webm'
-    recordingChunks = []
-    recordingStartedAt = Date.now()
-    recordingUploadAttempted = false
-    mediaRecorder.ondataavailable = (event: BlobEvent) => {
-      if (event.data && event.data.size > 0) {
-        recordingChunks.push(event.data)
-      }
-    }
-    mediaRecorder.onerror = () => {
-      ElMessage.warning('训练录制中断，系统将继续保留当前训练进度')
-    }
-    mediaRecorder.start(1000)
-  } catch (error) {
-    console.warn('MediaRecorder init failed', error)
-  }
-}
-
-async function uploadTrainingRecording() {
-  if (!sessionId.value || !recordingChunks.length || recordingUploadAttempted || recordingUploadUnsupported) return
-
-  const blob = new Blob(recordingChunks, { type: recordingMimeType || 'video/webm' })
-  if (!blob.size) return
-
-  const formData = new FormData()
-  const extension = blob.type.includes('mp4') ? 'mp4' : 'webm'
-  const durationSeconds = recordingStartedAt ? Math.max(1, Math.round((Date.now() - recordingStartedAt) / 1000)) : undefined
-  formData.append('artifact_file', blob, `session-recording.${extension}`)
-  formData.append('artifact_type', 'camera_recording')
-  if (durationSeconds) {
-    formData.append('duration_seconds', String(durationSeconds))
-  }
-
-  try {
-    await request.post(
-      `/video-training/session/${sessionId.value}/artifacts/upload`,
-      formData,
-      {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        _skipErrorToast: true,
-      } as any,
-    )
-    recordingUploadAttempted = true
-    recordingChunks = []
-  } catch (error) {
-    const status = (error as any)?.response?.status
-    if (status === 404 || status === 405) {
-      recordingUploadUnsupported = true
-      recordingUploadAttempted = true
-      recordingChunks = []
-      console.info('Training recording upload is not supported by current backend service')
-      return
-    }
-    console.warn('Training recording upload failed', error)
-  }
-}
-
-async function stopTrainingRecording(uploadAfterStop = true) {
-  if (!mediaRecorder) {
-    if (uploadAfterStop) {
-      await uploadTrainingRecording()
-    }
-    return
-  }
-
-  const recorder = mediaRecorder
-  if (recorder.state === 'inactive') {
-    mediaRecorder = null
-    if (uploadAfterStop) {
-      await uploadTrainingRecording()
-    }
-    return
-  }
-
-  await new Promise<void>((resolve) => {
-    recorder.addEventListener(
-      'stop',
-      () => {
-        mediaRecorder = null
-        resolve()
-      },
-      { once: true },
-    )
-    recorder.stop()
-  })
-
-  if (uploadAfterStop) {
-    await uploadTrainingRecording()
-  }
 }
 
 async function playTrainingVideo() {
@@ -3283,7 +3156,6 @@ async function finishTraining() {
   stopGestureDetection()
   const targetReportUrl = `/student/evaluation?session_id=${sessionId.value}&type=video`
   try {
-    await stopTrainingRecording(true)
     const res: any = await request.post(`/video-training/session/${sessionId.value}/finish`)
     if (!isVideoReportReady(res)) {
       await waitForVideoReportReady(sessionId.value)
@@ -3315,7 +3187,6 @@ async function confirmExit() {
     await ElMessageBox.confirm('退出后本次训练进度将保留，下次可继续。确认退出？', '退出实训', {
       confirmButtonText: '确认退出', cancelButtonText: '继续训练', type: 'warning',
     })
-    await stopTrainingRecording(true)
     router.back()
   } catch {}
 }
@@ -6758,41 +6629,6 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   margin-top: 4px !important;
 }
 
-/* Video top toolbar */
-.imm-toolbar {
-  position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 9;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  background: rgba(15, 23, 42, 0.7);
-  backdrop-filter: blur(8px);
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.imm-toolbar__btn {
-  width: 32px;
-  height: 32px;
-  border: none;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.2s;
-
-  &:hover {
-    background: rgba(255, 255, 255, 0.14);
-  }
-}
-
 /* Prop toast feedback */
 .imm-prop-toast {
   position: absolute;
@@ -6976,9 +6812,8 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   align-items: center;
   flex: 1;
   overflow-x: auto;
-  scrollbar-width: none;
   scroll-behavior: smooth;
-  &::-webkit-scrollbar { display: none; }
+  overscroll-behavior: contain;
 }
 
 .imm-progress__step {

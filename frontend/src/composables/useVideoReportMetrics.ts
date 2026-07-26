@@ -32,14 +32,6 @@ export interface VideoReportData {
   violation_count?: number
   violation_summary?: Record<string, number>
   failure_reason_summary?: Record<string, number>
-  artifacts?: {
-    id: number
-    artifact_type: string
-    file_url?: string
-    mime_type?: string
-    duration_seconds?: number | null
-    created_at?: string
-  }[]
   dimension_scores?: {
     key: string
     label: string
@@ -87,25 +79,6 @@ export function formatViolationType(type: string) {
   } as Record<string, string>)[type] || type
 }
 
-export function artifactLabel(type: string) {
-  return ({
-    camera_recording: '训练录屏',
-    microphone_recording: '语音留痕',
-  } as Record<string, string>)[type] || type
-}
-
-export function resolveMediaUrl(url?: string) {
-  if (!url) return ''
-  if (/^https?:\/\//i.test(url)) return url
-  if (!url.startsWith('/')) return url
-
-  const apiBase = String(import.meta.env.VITE_API_URL || '').trim()
-  if (apiBase && /^https?:\/\//i.test(apiBase)) {
-    return `${apiBase.replace(/\/$/, '')}${url}`
-  }
-  return `${window.location.origin}${url}`
-}
-
 export function formatDateTime(value?: string) {
   if (!value) return ''
   const date = new Date(value)
@@ -137,7 +110,6 @@ export function useVideoReportMetrics(report: VideoReportData | null) {
   const dimensionScores = report?.dimension_scores || []
   const weaknessSummary = report?.weakness_summary || []
   const abilityProfile = report?.ability_profile
-  const reportArtifacts = report?.artifacts || []
 
   const scoreHint = reportPercentage >= 90
     ? '训练表现稳定，动作、话术和流程控制较完整。'
@@ -180,7 +152,6 @@ export function useVideoReportMetrics(report: VideoReportData | null) {
     dimensionScores,
     weaknessSummary,
     abilityProfile,
-    reportArtifacts,
     scoreHint,
     failureReasonList,
     violationList,

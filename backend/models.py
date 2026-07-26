@@ -547,13 +547,6 @@ class VideoTrainingSession(Base):
         cascade="all, delete-orphan",
         order_by="VideoNodeResult.node_index",
     )
-    artifacts = relationship(
-        "VideoTrainingArtifact",
-        back_populates="session",
-        cascade="all, delete-orphan",
-        order_by="VideoTrainingArtifact.created_at",
-    )
-
 
 class VideoNodeResult(Base):
     """单个节点的判定结果"""
@@ -579,19 +572,3 @@ class VideoNodeResult(Base):
 
     session = relationship("VideoTrainingSession", back_populates="node_results")
     node = relationship("VideoNode")
-
-
-class VideoTrainingArtifact(Base):
-    """训练过程媒体留存：当前用于摄像头/麦克风录制回放"""
-    __tablename__ = "video_training_artifacts"
-
-    id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(Integer, ForeignKey("video_training_sessions.id"), nullable=False)
-    artifact_type = Column(String(30), nullable=False, default="camera_recording")
-    file_path = Column(String(500), nullable=False)
-    mime_type = Column(String(120), nullable=True)
-    file_size = Column(Integer, nullable=True)
-    duration_seconds = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    session = relationship("VideoTrainingSession", back_populates="artifacts")

@@ -109,22 +109,6 @@
       </ol>
     </section>
 
-    <section v-if="reportArtifacts.length" class="report-section">
-      <div class="section-title"><i></i><span>训练留痕</span></div>
-      <div class="artifact-grid">
-        <article v-for="item in reportArtifacts" :key="item.id" class="artifact-item">
-          <div>
-            <strong>{{ artifactLabel(item.artifact_type) }}</strong>
-            <p>
-              <span v-if="item.duration_seconds">时长 {{ item.duration_seconds }}s · </span>
-              <span v-if="item.created_at">{{ formatDateTime(item.created_at) }}</span>
-            </p>
-          </div>
-          <a v-if="item.file_url" :href="resolveMediaUrl(item.file_url)" target="_blank" rel="noreferrer">查看文件</a>
-        </article>
-      </div>
-    </section>
-
     <section class="report-section">
       <div class="section-title"><i></i><span>节点明细</span></div>
       <div class="node-list">
@@ -158,10 +142,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {
-  artifactLabel,
   formatDateTime,
   formatFailureReason,
-  resolveMediaUrl,
   resultLabel,
   useVideoReportMetrics,
   type VideoReportData,
@@ -198,7 +180,6 @@ const reportNodes = computed(() => metrics.value.reportNodes)
 const dimensionScores = computed(() => metrics.value.dimensionScores)
 const weaknessSummary = computed(() => metrics.value.weaknessSummary)
 const abilityProfile = computed(() => metrics.value.abilityProfile)
-const reportArtifacts = computed(() => metrics.value.reportArtifacts)
 const scoreHint = computed(() => metrics.value.scoreHint)
 const failureReasonList = computed(() => metrics.value.failureReasonList)
 const violationList = computed(() => metrics.value.violationList)

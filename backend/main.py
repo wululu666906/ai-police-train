@@ -198,7 +198,6 @@ def ensure_video_schema_compatibility():
             models.VideoNode.__table__,
             models.VideoTrainingSession.__table__,
             models.VideoNodeResult.__table__,
-            models.VideoTrainingArtifact.__table__,
         ):
             table.create(bind=database.engine, checkfirst=True)
         # 为已存在的 training_videos 表补充 briefing 列

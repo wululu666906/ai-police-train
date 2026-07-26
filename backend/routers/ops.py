@@ -288,7 +288,6 @@ def delete_video_training_sessions(db: Session, session_ids: list[int]) -> None:
         return
     db.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.video_session_id.in_(ids)).delete(synchronize_session=False)
     db.query(models.VideoNodeResult).filter(models.VideoNodeResult.session_id.in_(ids)).delete(synchronize_session=False)
-    db.query(models.VideoTrainingArtifact).filter(models.VideoTrainingArtifact.session_id.in_(ids)).delete(synchronize_session=False)
     db.query(models.VideoTrainingSession).filter(models.VideoTrainingSession.id.in_(ids)).delete(synchronize_session=False)
 
 
@@ -650,7 +649,6 @@ def account_usage_changed_at(db: Session, user: models.User) -> datetime | None:
         db.query(func.max(models.VideoTrainingSession.finished_at)).filter(models.VideoTrainingSession.user_id == user.id).scalar(),
         db.query(func.max(models.VideoTrainingSession.evaluation_completed_at)).filter(models.VideoTrainingSession.user_id == user.id).scalar(),
         db.query(func.max(models.VideoNodeResult.created_at)).filter(models.VideoNodeResult.session_id.in_(video_session_ids)).scalar(),
-        db.query(func.max(models.VideoTrainingArtifact.created_at)).filter(models.VideoTrainingArtifact.session_id.in_(video_session_ids)).scalar(),
         db.query(func.max(models.FaceProfile.created_at)).filter(models.FaceProfile.student_id == user.id).scalar(),
         db.query(func.max(models.FaceProfile.updated_at)).filter(models.FaceProfile.student_id == user.id).scalar(),
         db.query(func.max(models.FaceVerificationEvent.created_at)).filter(models.FaceVerificationEvent.student_id == user.id).scalar(),
@@ -692,12 +690,6 @@ def account_usage_stats(db: Session, user: models.User) -> dict:
         .filter(models.TrainingSession.user_id == user.id)
         .count()
     )
-    video_artifact_count = (
-        db.query(models.VideoTrainingArtifact)
-        .join(models.VideoTrainingSession, models.VideoTrainingSession.id == models.VideoTrainingArtifact.session_id)
-        .filter(models.VideoTrainingSession.user_id == user.id)
-        .count()
-    )
     face_event_count = len(face_usage_records(db, user))
     speech_usage_count = db.query(models.SpeechUsageLog).filter(models.SpeechUsageLog.user_id == user.id).count()
     speech_failed_count = db.query(models.SpeechUsageLog).filter(
@@ -712,7 +704,7 @@ def account_usage_stats(db: Session, user: models.User) -> dict:
         "training_artifact_count": training_artifact_count,
         "video_training_count": video_sessions.count(),
         "video_finished_count": video_sessions.filter(models.VideoTrainingSession.status == "finished").count(),
-        "video_artifact_count": video_artifact_count,
+        "video_artifact_count": 0,
         "assignment_submission_count": submissions.count(),
         "class_join_count": class_memberships.count(),
         "admin_class_count": admin_class_count,
@@ -877,14 +869,12 @@ def account_recent_activities(db: Session, user: models.User, limit: int = 30) -
     )
     for session, video in video_rows:
         node_count = db.query(models.VideoNodeResult).filter(models.VideoNodeResult.session_id == session.id).count()
-        artifact_count = db.query(models.VideoTrainingArtifact).filter(models.VideoTrainingArtifact.session_id == session.id).count()
         activities.append(activity_item("video", "视频训练", "video_training_session", f"视频训练：{video.title if video else '未知视频'}", session.created_at, {
             "session_id": session.id,
             "status": session.status,
             "mode": session.mode,
             "score": session.total_score,
             "node_count": node_count,
-            "artifact_count": artifact_count,
             "finished_at": session.finished_at.isoformat() if session.finished_at else None,
         }))
 

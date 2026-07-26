@@ -62,47 +62,6 @@
       </div>
     </section>
 
-    <section class="stats-grid">
-      <article v-for="card in statCards" :key="card.label" class="stat-card">
-        <div class="stat-card__main">
-          <div class="stat-card__label">{{ card.label }}</div>
-          <div class="stat-card__value" :class="`is-${card.tone}`">{{ card.value }}</div>
-          <div class="stat-card__desc">{{ card.desc }}</div>
-        </div>
-        <div class="stat-card__icon" :class="`is-${card.tone}`">
-          <el-icon><component :is="card.icon" /></el-icon>
-        </div>
-      </article>
-    </section>
-
-    <section class="analytics-grid">
-      <article class="chart-card">
-        <div class="chart-card__title">能力雷达图（已完成训练平均表现）</div>
-        <div ref="radarChartRef" class="chart-card__canvas" />
-      </article>
-
-      <article class="chart-card chart-card--issue">
-        <div class="chart-card__title">高频失分原因 TOP5</div>
-        <div class="issue-list">
-          <div v-for="item in issueTopList" :key="item.label" class="issue-item">
-            <div class="issue-item__head">
-              <span>{{ item.label }}</span>
-              <strong>{{ item.value }}%</strong>
-            </div>
-            <div class="issue-item__bar">
-              <span :style="{ width: `${item.value}%` }" />
-            </div>
-          </div>
-          <div v-if="!issueTopList.length" class="issue-empty">暂无明显失分项，继续保持。</div>
-        </div>
-      </article>
-
-      <article class="chart-card chart-card--trend">
-        <div class="chart-card__title">训练趋势（近 7 次）</div>
-        <div ref="trendChartRef" class="chart-card__canvas chart-card__canvas--trend" />
-      </article>
-    </section>
-
     <section class="table-panel">
       <div v-if="loading" class="state-panel">
         <el-skeleton :rows="8" animated />
@@ -135,7 +94,7 @@
               v-for="(item, index) in pagedSessions"
               :key="item.id"
               class="history-row"
-              :class="{ 'history-row--clickable': canViewReport(item) }"
+              :class="{ 'history-row--clickable': canViewReport(item), 'history-row--menu-open': openActionMenuId === item.id }"
               @click="handleRowClick(item)"
             >
               <div class="cell-center">{{ (currentPage - 1) * pageSize + index + 1 }}</div>
@@ -198,19 +157,28 @@
                   <el-button type="warning" plain size="small" @click="handleAction('redo', item)">去重修</el-button>
                 </template>
 
-                <el-dropdown trigger="click" @command="handleDropdownCommand($event, item)">
-                  <button type="button" class="more-btn">
+                <div class="more-menu">
+                  <button
+                    type="button"
+                    class="more-btn"
+                    :aria-expanded="openActionMenuId === item.id"
+                    aria-haspopup="menu"
+                    @click.stop="toggleActionMenu(item.id, $event)"
+                  >
                     <el-icon><MoreFilled /></el-icon>
                   </button>
-                  <template #dropdown>
-                    <el-dropdown-menu>
-                      <el-dropdown-item v-if="canViewReport(item)" command="report">查看报告</el-dropdown-item>
-                      <el-dropdown-item v-if="canViewReport(item) && latestReplayArtifact(item)" command="replay">查看回放</el-dropdown-item>
-                      <el-dropdown-item v-if="item.status === 'active'" command="continue">继续训练</el-dropdown-item>
-                      <el-dropdown-item v-if="item.video_id" command="redo">重新训练</el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
+                  <div
+                    v-if="openActionMenuId === item.id"
+                    class="more-menu__panel"
+                    :class="`more-menu__panel--${actionMenuPlacement}`"
+                    role="menu"
+                    @click.stop
+                  >
+                    <button v-if="canViewReport(item)" type="button" class="more-menu__item" role="menuitem" @click="handleMenuAction('report', item)">查看报告</button>
+                    <button v-if="item.status === 'active'" type="button" class="more-menu__item" role="menuitem" @click="handleMenuAction('continue', item)">继续训练</button>
+                    <button v-if="item.video_id" type="button" class="more-menu__item" role="menuitem" @click="handleMenuAction('redo', item)">重新训练</button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -218,57 +186,55 @@
 
         <div class="table-footer">
           <span class="table-footer__count">共 {{ totalCount }} 条</span>
-          <el-pagination
-            v-model:current-page="currentPage"
-            v-model:page-size="pageSize"
-            background
-            layout="prev, pager, next, sizes"
-            :page-sizes="[8, 10, 20]"
-            :total="totalCount"
-            @current-change="fetchHistory"
-            @size-change="fetchHistory"
-          />
+          <div class="pager-controls">
+            <el-pagination
+              v-model:current-page="currentPage"
+              background
+              layout="prev, pager, next"
+              :page-size="pageSize"
+              :total="totalCount"
+              @current-change="fetchHistory"
+            />
+            <div class="page-size-menu" @click.stop>
+              <button
+                type="button"
+                class="page-size-menu__trigger"
+                :aria-expanded="showPageSizeMenu"
+                aria-haspopup="listbox"
+                @click="togglePageSizeMenu"
+              >
+                <span>{{ pageSize }}条/页</span>
+                <el-icon><ArrowUp /></el-icon>
+              </button>
+              <div v-if="showPageSizeMenu" class="page-size-menu__panel" role="listbox">
+                <button
+                  v-for="size in pageSizeOptions"
+                  :key="size"
+                  type="button"
+                  class="page-size-menu__item"
+                  :class="{ 'page-size-menu__item--active': pageSize === size }"
+                  role="option"
+                  :aria-selected="pageSize === size"
+                  @click="selectPageSize(size)"
+                >
+                  {{ size }}条/页
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </template>
     </section>
 
-    <el-dialog
-      v-model="showReplayDialog"
-      title="训练录制回放"
-      width="720px"
-      destroy-on-close
-      class="replay-dialog"
-    >
-      <template v-if="replayArtifactUrl">
-        <video class="replay-video" :src="replayArtifactUrl" controls preload="metadata" />
-      </template>
-      <el-empty v-else description="未找到可回放的训练录制" />
-    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { CircleCheck, MoreFilled, Opportunity, Refresh, Star, Search, Warning } from '@element-plus/icons-vue'
-import * as echarts from 'echarts'
+import { ArrowUp, MoreFilled, Refresh, Search } from '@element-plus/icons-vue'
 import request from '../utils/request'
-
-interface ArtifactItem {
-  id: number
-  artifact_type: string
-  file_url?: string
-  mime_type?: string
-  duration_seconds?: number | null
-  created_at?: string
-}
-
-interface IssueItem {
-  key: string
-  label: string
-  count: number
-}
 
 interface SessionItem {
   id: number
@@ -289,7 +255,6 @@ interface SessionItem {
   report_ready?: boolean
   evaluation_status?: string
   failure_reasons?: Record<string, number>
-  artifacts?: ArtifactItem[]
   created_at: string
   finished_at?: string
 }
@@ -300,7 +265,6 @@ interface HistoryResponse {
   page: number
   page_size: number
   has_more: boolean
-  issue_top: IssueItem[]
   available_categories: string[]
 }
 
@@ -310,11 +274,12 @@ const setMainScrollable = inject<(value: boolean) => void>('setMainScrollable')
 
 const sessions = ref<SessionItem[]>([])
 const totalCount = ref(0)
-const issueTopFromServer = ref<IssueItem[]>([])
 const availableCategories = ref<string[]>([])
 const loading = ref(true)
-const showReplayDialog = ref(false)
-const replayArtifactUrl = ref('')
+const openActionMenuId = ref<number | null>(null)
+const showPageSizeMenu = ref(false)
+const pageSizeOptions = [8, 10, 20]
+const actionMenuPlacement = ref<'up' | 'down'>('down')
 
 // 从 URL query 恢复筛选状态
 const typeFilter = ref(String(route.query.category || 'all'))
@@ -329,11 +294,6 @@ const dateRange = ref<[string, string] | []>(
 const currentPage = ref(Number(route.query.page) || 1)
 const pageSize = ref(Number(route.query.page_size) || 10)
 
-const radarChartRef = ref<HTMLElement | null>(null)
-const trendChartRef = ref<HTMLElement | null>(null)
-let radarChart: echarts.ECharts | null = null
-let trendChart: echarts.ECharts | null = null
-
 // debounce 工具
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 function debounce(fn: () => void, ms = 300) {
@@ -342,16 +302,16 @@ function debounce(fn: () => void, ms = 300) {
 }
 
 onMounted(() => {
-  setMainScrollable?.(true)
+  setMainScrollable?.(false)
   void fetchHistory()
-  window.addEventListener('resize', handleResize)
+  document.addEventListener('click', closeFloatingMenus)
+  window.addEventListener('resize', closeFloatingMenus)
 })
 
 onUnmounted(() => {
   setMainScrollable?.(false)
-  radarChart?.dispose()
-  trendChart?.dispose()
-  window.removeEventListener('resize', handleResize)
+  document.removeEventListener('click', closeFloatingMenus)
+  window.removeEventListener('resize', closeFloatingMenus)
   if (debounceTimer) clearTimeout(debounceTimer)
 })
 
@@ -407,114 +367,6 @@ const filteredSessions = computed(() => {
 // 服务端分页，pagedSessions 就是当前页数据
 const pagedSessions = computed(() => filteredSessions.value)
 
-const finishedSessions = computed(() => sessions.value.filter((item) => item.status === 'finished'))
-const activeSessions = computed(() => sessions.value.filter((item) => item.status === 'active'))
-const retrySessions = computed(() => sessions.value.filter((item) => item.needs_retry === true))
-
-const averageScore = computed(() => {
-  const values = finishedSessions.value
-    .map((item) => item.score_percentage)
-    .filter((value): value is number => value != null)
-  if (!values.length) return 0
-  return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(1))
-})
-
-const averageScoreDelta = computed(() => {
-  const values = finishedSessions.value
-    .map((item) => item.score_percentage)
-    .filter((value): value is number => value != null)
-  if (values.length < 2) return 0
-  const mid = Math.floor(values.length / 2)
-  const prev = values.slice(0, mid)
-  const next = values.slice(mid)
-  if (!prev.length || !next.length) return 0
-  const prevAvg = prev.reduce((sum, value) => sum + value, 0) / prev.length
-  const nextAvg = next.reduce((sum, value) => sum + value, 0) / next.length
-  return Number((nextAvg - prevAvg).toFixed(1))
-})
-
-const statCards = computed(() => [
-  {
-    label: '全部记录',
-    value: totalCount.value,
-    desc: `共完成 ${finishedSessions.value.length} 次训练`,
-    icon: Opportunity,
-    tone: 'blue',
-  },
-  {
-    label: '已完成',
-    value: finishedSessions.value.length,
-    desc: `完成率 ${totalCount.value ? ((finishedSessions.value.length / totalCount.value) * 100).toFixed(1) : '0.0'}%`,
-    icon: CircleCheck,
-    tone: 'green',
-  },
-  {
-    label: '进行中',
-    value: activeSessions.value.length,
-    desc: activeSessions.value.length ? `最近训练：${relativeTime(activeSessions.value[0]?.created_at)}` : '最近暂无进行中的训练',
-    icon: Refresh,
-    tone: 'indigo',
-  },
-  {
-    label: '待重修',
-    value: retrySessions.value.length,
-    desc: `需重修节点 ${retrySessions.value.reduce((sum, item) => sum + Math.max((item.node_total || 0) - (item.current_node_index || 0), 0), 0)} 个`,
-    icon: Warning,
-    tone: 'orange',
-  },
-  {
-    label: '平均得分',
-    value: averageScore.value,
-    desc: `较上周期 ${averageScoreDelta.value > 0 ? '+' : ''}${averageScoreDelta.value}`,
-    icon: Star,
-    tone: 'purple',
-  },
-])
-
-const radarMetrics = computed(() => {
-  const recent = finishedSessions.value.slice(0, 10)
-  const base = recent.length
-    ? recent.map((item) => item.score_percentage || 0)
-    : [72]
-  const overall = base.reduce((sum, value) => sum + value, 0) / base.length
-
-  const metric = (matcher: RegExp, fallbackOffset: number) => {
-    const scoped = recent
-      .filter((item) => matcher.test(item.category || item.video_title || ''))
-      .map((item) => item.score_percentage || 0)
-    const value = scoped.length
-      ? scoped.reduce((sum, current) => sum + current, 0) / scoped.length
-      : Math.max(45, Math.min(98, overall + fallbackOffset))
-    return Number(value.toFixed(1))
-  }
-
-  return [
-    { label: '肢体动作规范', value: metric(/盘查|队列|姿势|处置|动作/, 2) },
-    { label: '口头沟通规范', value: metric(/话术|询问|文明用语|沟通/, -2) },
-    { label: '执法专业与安全处置', value: metric(/现场|法律|执法|防卫|安全/, 1) },
-    { label: '虚拟道具操作规范', value: metric(/证件|装备|盘查|道具/, -5) },
-    { label: '流程执行完整度', value: metric(/流程|观察|标准|完整/, -1) },
-  ]
-})
-
-// 使用后端返回的真实失分数据
-const issueTopList = computed(() => {
-  const issues = issueTopFromServer.value
-  if (!issues.length) return []
-  const total = issues.reduce((sum, item) => sum + item.count, 0)
-  return issues.map((item) => ({
-    label: item.label,
-    value: total ? Math.round((item.count / total) * 100) : 0,
-  }))
-})
-
-const trendSeries = computed(() => {
-  return [...finishedSessions.value]
-    .filter((item) => item.finished_at)
-    .sort((a, b) => new Date(a.finished_at || a.created_at).getTime() - new Date(b.finished_at || b.created_at).getTime())
-    .slice(-7)
-})
-
 async function fetchHistory() {
   loading.value = true
   try {
@@ -544,19 +396,13 @@ async function fetchHistory() {
     if (Array.isArray(res)) {
       sessions.value = res
       totalCount.value = res.length
-      issueTopFromServer.value = []
     } else {
       sessions.value = Array.isArray(res.items) ? res.items : []
       totalCount.value = res.total || 0
-      issueTopFromServer.value = Array.isArray(res.issue_top) ? res.issue_top : []
       if (res.available_categories?.length) {
         availableCategories.value = res.available_categories
       }
     }
-
-    await nextTick()
-    renderRadarChart()
-    renderTrendChart()
   } catch {
     ElMessage.error('加载视频实训历史失败')
   } finally {
@@ -574,37 +420,58 @@ function handleRowClick(session: SessionItem) {
 }
 
 async function handleAction(command: string, session: SessionItem) {
+  closeFloatingMenus()
   if (command === 'report') {
     router.push(`/student/evaluation?session_id=${session.id}&type=video`)
-    return
-  }
-
-  if (command === 'replay') {
-    const artifact = latestReplayArtifact(session)
-    if (!artifact?.file_url) {
-      ElMessage.warning('当前记录暂无可回放的训练录制')
-      return
-    }
-    replayArtifactUrl.value = resolveMediaUrl(artifact.file_url)
-    showReplayDialog.value = true
     return
   }
 
   router.push(`/student/video-training/${session.video_id}`)
 }
 
-function latestReplayArtifact(session: SessionItem): ArtifactItem | null {
-  const items = Array.isArray(session.artifacts) ? session.artifacts : []
-  const sorted = [...items].sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
-  return sorted.find((item) => item.artifact_type === 'camera_recording' && item.file_url) || null
+function toggleActionMenu(sessionId: number, event: MouseEvent) {
+  showPageSizeMenu.value = false
+  if (openActionMenuId.value === sessionId) {
+    openActionMenuId.value = null
+    return
+  }
+  positionActionMenu(event.currentTarget as HTMLElement)
+  openActionMenuId.value = sessionId
 }
 
-function resolveMediaUrl(url?: string): string {
-  if (!url) return ''
-  if (/^https?:\/\//i.test(url)) return url
-  const baseUrl = String(request.defaults.baseURL || '').replace(/\/$/, '')
-  if (!baseUrl) return url
-  return `${baseUrl}${url.startsWith('/') ? url : `/${url}`}`
+function handleMenuAction(command: string, session: SessionItem) {
+  void handleAction(command, session)
+}
+
+function togglePageSizeMenu() {
+  openActionMenuId.value = null
+  showPageSizeMenu.value = !showPageSizeMenu.value
+}
+
+function selectPageSize(size: number) {
+  if (pageSize.value !== size) {
+    pageSize.value = size
+    currentPage.value = 1
+    syncQueryParams()
+    void fetchHistory()
+  }
+  showPageSizeMenu.value = false
+}
+
+function closeFloatingMenus() {
+  openActionMenuId.value = null
+  showPageSizeMenu.value = false
+}
+
+function positionActionMenu(trigger: HTMLElement) {
+  const rect = trigger.getBoundingClientRect()
+  const panelWidth = 118
+  const panelHeight = 128
+  const margin = 8
+  const containerBottom = document.querySelector('.student-main')?.getBoundingClientRect().bottom || window.innerHeight
+  const opensUp = containerBottom - rect.bottom < panelHeight + margin * 2
+
+  actionMenuPlacement.value = opensUp ? 'up' : 'down'
 }
 
 function calcProgress(session: SessionItem): number {
@@ -662,14 +529,6 @@ function formatDateTime(iso?: string): string {
   return `${date} ${time}`
 }
 
-function relativeTime(iso?: string): string {
-  if (!iso) return '--'
-  const diff = Date.now() - new Date(iso).getTime()
-  const hours = Math.max(1, Math.round(diff / 3600000))
-  if (hours < 24) return `${hours} 小时前`
-  return `${Math.round(hours / 24)} 天前`
-}
-
 function resetPagination() {
   currentPage.value = 1
   syncQueryParams()
@@ -687,107 +546,6 @@ function resetFilters() {
   // watch 会触发 fetchHistory，这里不重复调用
 }
 
-function handleResize() {
-  radarChart?.resize()
-  trendChart?.resize()
-}
-
-function handleDropdownCommand(command: string | number | object, session: SessionItem) {
-  void handleAction(String(command), session)
-}
-
-function renderRadarChart() {
-  if (!radarChartRef.value) return
-  if (!radarChart) radarChart = echarts.init(radarChartRef.value)
-
-  radarChart.setOption({
-    animation: false,
-    tooltip: { trigger: 'item' },
-    radar: {
-      radius: '60%',
-      splitNumber: 5,
-      axisName: { color: '#475569', fontSize: 12 },
-      axisLabel: { show: false },
-      splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.28)' } },
-      splitArea: { areaStyle: { color: ['rgba(37, 99, 235, 0.02)', 'rgba(37, 99, 235, 0.04)'] } },
-      indicator: radarMetrics.value.map((item) => ({
-        name: item.label,
-        min: 0,
-        max: 100,
-        axisLabel: { show: false },
-      })),
-      alignTicks: false,
-    },
-    series: [
-      {
-        type: 'radar',
-        data: [
-          {
-            value: radarMetrics.value.map((item) => item.value),
-            name: '我的得分',
-            areaStyle: { color: 'rgba(37, 99, 235, 0.18)' },
-            lineStyle: { color: '#2563eb', width: 2 },
-            itemStyle: { color: '#2563eb' },
-          },
-        ],
-      },
-    ],
-  }, { notMerge: true })
-}
-
-function renderTrendChart() {
-  if (!trendChartRef.value) return
-  if (!trendChart) trendChart = echarts.init(trendChartRef.value)
-
-  const data = trendSeries.value.map((item) => ({
-    label: formatDateTime(item.finished_at || item.created_at).slice(5, 10),
-    score: item.score_percentage || 0,
-  }))
-
-  trendChart.setOption({
-    animation: false,
-    tooltip: {
-      trigger: 'axis',
-      formatter: (params: { axisValue?: string; data?: number }[]) => {
-        const point = params?.[0]
-        return `${point?.axisValue || '--'}<br/>得分：${point?.data ?? '--'}`
-      },
-    },
-    grid: { left: 42, right: 20, top: 24, bottom: 28 },
-    xAxis: {
-      type: 'category',
-      data: data.map((item) => item.label),
-      axisLine: { lineStyle: { color: '#dbe2ef' } },
-      axisLabel: { color: '#64748b' },
-    },
-    yAxis: {
-      type: 'value',
-      min: 0,
-      max: 100,
-      interval: 20,
-      alignTicks: false,
-      splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.18)' } },
-      axisLabel: { color: '#64748b' },
-    },
-    series: [
-      {
-        data: data.map((item) => item.score),
-        type: 'line',
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 8,
-        lineStyle: { color: '#2563eb', width: 3 },
-        itemStyle: { color: '#2563eb' },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(37,99,235,0.18)' },
-            { offset: 1, color: 'rgba(37,99,235,0.02)' },
-          ]),
-        },
-      },
-    ],
-  })
-}
 </script>
 
 <style scoped lang="scss">
@@ -801,9 +559,7 @@ function renderTrendChart() {
 }
 
 .filter-panel,
-.table-panel,
-.chart-card,
-.stat-card {
+.table-panel {
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(214, 223, 237, 0.95);
   box-shadow: 0 18px 44px rgba(15, 23, 42, 0.06);
@@ -842,144 +598,9 @@ function renderTrendChart() {
   border-radius: 10px;
 }
 
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.stat-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 18px 20px;
-  border-radius: 8px;
-}
-
-.stat-card__label {
-  font-size: 14px;
-  font-weight: 700;
-  color: #475569;
-}
-
-.stat-card__value {
-  margin-top: 8px;
-  font-size: 42px;
-  line-height: 1;
-  font-weight: 800;
-  color: #0f172a;
-}
-
-.stat-card__value.is-blue,
-.stat-card__icon.is-blue {
-  color: #2563eb;
-}
-
-.stat-card__value.is-green,
-.stat-card__icon.is-green {
-  color: #16a34a;
-}
-
-.stat-card__value.is-indigo,
-.stat-card__icon.is-indigo {
-  color: #3b82f6;
-}
-
-.stat-card__value.is-orange,
-.stat-card__icon.is-orange {
-  color: #f97316;
-}
-
-.stat-card__value.is-purple,
-.stat-card__icon.is-purple {
-  color: #9333ea;
-}
-
-.stat-card__desc {
-  margin-top: 8px;
-  font-size: 14px;
-  color: #64748b;
-}
-
-.stat-card__icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 16px;
-  font-size: 24px;
-  background: rgba(37, 99, 235, 0.08);
-}
-
-.analytics-grid {
-  display: grid;
-  grid-template-columns: 1.1fr 1fr 1.8fr;
-  gap: 16px;
-}
-
-.chart-card {
-  padding: 16px 18px;
-  border-radius: 8px;
-}
-
-.chart-card__title {
-  margin-bottom: 12px;
-  font-size: 16px;
-  font-weight: 800;
-  color: #13213a;
-}
-
-.chart-card__canvas {
-  height: 240px;
-}
-
-.chart-card__canvas--trend {
-  height: 250px;
-}
-
-.issue-list {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding-top: 8px;
-}
-
-.issue-item__head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 14px;
-  color: #334155;
-}
-
-.issue-item__head strong {
-  color: #475569;
-}
-
-.issue-item__bar {
-  height: 8px;
-  margin-top: 8px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #e8eef8;
-}
-
-.issue-item__bar span {
-  display: block;
-  height: 100%;
-  border-radius: 999px;
-  background: #2563eb;
-}
-
-.issue-empty {
-  font-size: 14px;
-  line-height: 1.7;
-  color: #64748b;
-}
-
 .table-panel {
   overflow-x: auto;
+  overflow-y: visible;
 }
 
 .history-table {
@@ -992,8 +613,10 @@ function renderTrendChart() {
   grid-template-columns: 52px minmax(180px, 1.4fr) minmax(120px, 1fr) 96px 88px 72px 96px 110px 80px 130px 132px;
   gap: 12px;
   align-items: center;
+  justify-items: center;
   padding: 16px 18px;
   min-width: 1180px;
+  overflow: visible;
 }
 
 .history-table__head {
@@ -1002,12 +625,15 @@ function renderTrendChart() {
   color: #334155;
   border-bottom: 1px solid #e8eef7;
   background: #f8fafc;
+  text-align: center;
 }
 
 .history-row {
+  position: relative;
   font-size: 14px;
   color: #334155;
   border-bottom: 1px solid #edf2f7;
+  text-align: center;
 }
 
 .history-row--clickable {
@@ -1016,6 +642,10 @@ function renderTrendChart() {
 
 .history-row--clickable:hover {
   background: #f8fbff;
+}
+
+.history-row--menu-open {
+  z-index: 20;
 }
 
 .history-row:last-child {
@@ -1030,6 +660,7 @@ function renderTrendChart() {
   font-size: 15px;
   font-weight: 700;
   color: #0f172a;
+  text-align: center;
 }
 
 .history-row__sub,
@@ -1041,12 +672,14 @@ function renderTrendChart() {
 
 .history-row__sub {
   margin-top: 4px;
+  text-align: center;
 }
 
 .history-row__scene,
 .time-cell {
   font-size: 13px;
   color: #475569;
+  text-align: center;
 }
 
 .mode-badge,
@@ -1149,6 +782,7 @@ function renderTrendChart() {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  overflow: visible;
 }
 
 .action-cell--sticky {
@@ -1157,6 +791,10 @@ function renderTrendChart() {
   z-index: 2;
   background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, #fff 18%);
   padding-left: 12px;
+}
+
+.history-row--menu-open .action-cell--sticky {
+  z-index: 30;
 }
 
 .history-table__head .action-cell--sticky {
@@ -1208,6 +846,80 @@ function renderTrendChart() {
   border-color: #93c5fd;
 }
 
+.more-menu {
+  position: relative;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.more-menu__panel {
+  position: absolute;
+  right: 0;
+  z-index: 80;
+  box-sizing: border-box;
+  width: 118px;
+  padding: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+}
+
+.more-menu__panel--down {
+  top: calc(100% + 8px);
+}
+
+.more-menu__panel--up {
+  bottom: calc(100% + 8px);
+}
+
+.more-menu__panel--down::before,
+.more-menu__panel--up::after {
+  content: '';
+  position: absolute;
+  right: 17px;
+  width: 9px;
+  height: 9px;
+  background: #fff;
+}
+
+.more-menu__panel--down::before {
+  top: -5px;
+  border-top: 1px solid #e5e7eb;
+  border-left: 1px solid #e5e7eb;
+  transform: rotate(45deg);
+}
+
+.more-menu__panel--up::after {
+  bottom: -5px;
+  border-right: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  transform: rotate(45deg);
+}
+
+.more-menu__item {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.more-menu__item:hover {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
 .table-footer {
   display: flex;
   align-items: center;
@@ -1222,26 +934,85 @@ function renderTrendChart() {
   color: #64748b;
 }
 
-.replay-video {
-  display: block;
-  width: 100%;
-  max-height: 70vh;
-  border-radius: 8px;
-  background: #020617;
+.pager-controls {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-width: 0;
 }
 
-@media (max-width: 1480px) {
-  .stats-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
+.page-size-menu {
+  position: relative;
+  display: inline-flex;
+  justify-content: center;
+}
 
-  .analytics-grid {
-    grid-template-columns: 1fr 1fr;
-  }
+.page-size-menu__trigger {
+  display: inline-flex;
+  width: 128px;
+  height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 14px;
+  border: 1px solid #1d4ed8;
+  border-radius: 6px;
+  background: #fff;
+  color: #64748b;
+  font-size: 15px;
+  cursor: pointer;
+}
 
-  .chart-card--trend {
-    grid-column: 1 / -1;
-  }
+.page-size-menu__trigger[aria-expanded='true'] {
+  color: #1d4ed8;
+  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.08);
+}
+
+.page-size-menu__panel {
+  position: absolute;
+  z-index: 60;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  width: 118px;
+  padding: 8px 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+  transform: translateX(-50%);
+}
+
+.page-size-menu__panel::after {
+  content: '';
+  position: absolute;
+  bottom: -5px;
+  left: calc(50% - 5px);
+  width: 10px;
+  height: 10px;
+  border-right: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+  transform: rotate(45deg);
+}
+
+.page-size-menu__item {
+  display: flex;
+  width: 100%;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: #64748b;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.page-size-menu__item:hover,
+.page-size-menu__item--active {
+  background: #eff6ff;
+  color: #2563eb;
 }
 
 @media (max-width: 1280px) {
@@ -1264,15 +1035,17 @@ function renderTrendChart() {
     padding: 14px;
   }
 
-  .stats-grid,
-  .analytics-grid,
   .filter-grid {
     grid-template-columns: 1fr;
   }
 
   .table-footer {
     flex-direction: column;
-    align-items: stretch;
+    align-items: center;
+  }
+
+  .pager-controls {
+    flex-wrap: wrap;
   }
 }
 </style>

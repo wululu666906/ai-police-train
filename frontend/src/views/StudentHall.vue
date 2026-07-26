@@ -200,7 +200,7 @@ const showExpanded = ref(false)
 const expandedCase = ref<CaseItem | null>(null)
 
 onMounted(() => {
-  setMainScrollable?.(true)
+  setMainScrollable?.(false)
   fetchCases()
 })
 

@@ -541,7 +541,6 @@ class TestOpsAccounts:
         db_session.add(video_session)
         db_session.flush()
         db_session.add(models.VideoNodeResult(session_id=video_session.id, node_id=node.id, node_index=0))
-        db_session.add(models.VideoTrainingArtifact(session_id=video_session.id, artifact_type="camera_recording", file_path="tmp.mp4"))
         admin_training = models.TrainingSession(
             user_id=admin_id,
             scene_id=scene.id,

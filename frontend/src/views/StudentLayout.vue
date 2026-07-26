@@ -31,44 +31,59 @@
         :overlay-style="{ backgroundColor: 'rgba(15, 23, 42, 0.24)', backdropFilter: 'blur(6px)' }"
         teleport="body"
       >
-        <div v-if="activeAnnouncement" class="notice-popup-card">
-          <div class="notice-popup-header">
-            <div>
-              <span class="notice-popup-kicker">班级通知</span>
-              <h2>{{ activeAnnouncement.title || '班级通知' }}</h2>
-              <p>{{ activeAnnouncement.created_at ? formatDateTime(activeAnnouncement.created_at) : '最新通知' }}</p>
-            </div>
-            <van-icon name="cross" class="notice-popup-close" @click="showAnnouncementDialog = false" />
-          </div>
+        <div class="notice-popup-card">
+          <transition name="notice-panel" mode="out-in">
+            <section v-if="announcementPopupMode === 'list'" key="notice-list" class="notice-panel">
+              <div class="notice-popup-header">
+                <div>
+                  <h2>通知中心</h2>
+                  <p>{{ previewAnnouncements.length ? `共 ${previewAnnouncements.length} 条最新通知` : '暂无班级通知' }}</p>
+                </div>
+                <van-icon name="cross" class="notice-popup-close" @click="showAnnouncementDialog = false" />
+              </div>
 
-          <div class="notice-popup-body">
-            <section class="notice-popup-detail">
-              <div class="notice-popup-label">通知内容</div>
-              <p>{{ activeAnnouncement.content || '暂无正文' }}</p>
+              <div class="notice-popup-body">
+                <section class="notice-popup-list">
+                  <button
+                    v-for="item in previewAnnouncements"
+                    :key="item.id"
+                    type="button"
+                    class="notice-popup-item"
+                    @click="openAnnouncementDetail(item)"
+                  >
+                    <strong>{{ item.title || '班级通知' }}</strong>
+                    <span>{{ firstAnnouncementLine(item.content) }}</span>
+                    <small>来源：{{ announcementSourceLabel(item) }}</small>
+                  </button>
+                  <div v-if="!previewAnnouncements.length" class="notice-popup-empty">暂无班级通知</div>
+                </section>
+              </div>
             </section>
 
-            <section v-if="previewAnnouncements.length > 1" class="notice-popup-list">
-              <div class="notice-popup-label">最近通知</div>
-              <button
-                v-for="item in previewAnnouncements"
-                :key="item.id"
-                type="button"
-                class="notice-popup-item"
-                :class="{ 'notice-popup-item--active': item.id === activeAnnouncement.id }"
-                @click="openNotificationCenter(item)"
-              >
-                <strong>{{ item.title || '班级通知' }}</strong>
-                <span>{{ item.content || '暂无正文' }}</span>
-              </button>
-            </section>
-          </div>
+            <section v-else key="notice-detail" class="notice-panel">
+              <div class="notice-popup-header">
+                <div>
+                  <h2>{{ activeAnnouncement?.title || '班级通知' }}</h2>
+                  <p>{{ activeAnnouncement?.created_at ? formatDateTime(activeAnnouncement.created_at) : '最新通知' }}</p>
+                </div>
+                <van-icon name="cross" class="notice-popup-close" @click="showAnnouncementDialog = false" />
+              </div>
 
-          <div class="notice-popup-actions">
-            <el-button v-if="route.path !== '/student/classes'" plain @click="goToClasses">
-              前往班级作业
-            </el-button>
-            <el-button type="primary" @click="showAnnouncementDialog = false">关闭</el-button>
-          </div>
+              <div class="notice-popup-body notice-popup-body--detail">
+                <section class="notice-popup-detail">
+                  <p>{{ activeAnnouncement?.content || '暂无正文' }}</p>
+                </section>
+              </div>
+
+              <div class="notice-popup-actions">
+                <span class="notice-popup-source">来源：{{ announcementSourceLabel(activeAnnouncement) }}</span>
+                <el-button plain @click="announcementPopupMode = 'list'">返回列表</el-button>
+                <el-button v-if="route.path !== '/student/classes'" plain @click="goToClasses">
+                  前往班级作业
+                </el-button>
+              </div>
+            </section>
+          </transition>
         </div>
       </van-popup>
     </div>
@@ -99,6 +114,7 @@ const sidebarCollapsed = ref(false)
 const studentAnnouncements = ref<any[]>([])
 const showAnnouncementDialog = ref(false)
 const activeAnnouncementId = ref<number | null>(null)
+const announcementPopupMode = ref<'list' | 'detail'>('list')
 const ANNOUNCEMENT_SEEN_KEY = 'student.announcement.latest_seen'
 const previewAnnouncements = computed(() => studentAnnouncements.value.slice(0, 8))
 const activeAnnouncement = computed(() => {
@@ -120,6 +136,7 @@ const setAnnouncementPanel = (announcement?: any) => {
     activeAnnouncementId.value = Number(studentAnnouncements.value[0].id)
   }
   if (studentAnnouncements.value.length) {
+    announcementPopupMode.value = 'list'
     showAnnouncementDialog.value = true
   } else {
     showToast('暂无班级通知')
@@ -160,9 +177,31 @@ const openNotificationCenter = (announcement?: any) => {
   setAnnouncementPanel(announcement || activeAnnouncement.value || studentAnnouncements.value[0])
 }
 
+const openAnnouncementDetail = (announcement: any) => {
+  if (announcement?.id) {
+    activeAnnouncementId.value = Number(announcement.id)
+  }
+  announcementPopupMode.value = 'detail'
+}
+
 const goToClasses = () => {
   showAnnouncementDialog.value = false
   router.push('/student/classes')
+}
+
+const firstAnnouncementLine = (content: any) => {
+  const lines = String(content || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  return lines[0] || '暂无正文'
+}
+
+const announcementSourceLabel = (announcement: any) => {
+  const sourceName = String(announcement?.source_label || announcement?.source_name || '').trim()
+  if (sourceName) return sourceName
+  if (announcement?.source_type === 'system' || announcement?.category === 'system') return '系统通知'
+  return '班级通知'
 }
 
 const formatDateTime = (value: any) => {
@@ -184,9 +223,17 @@ watch(sidebarCollapsed, (value) => {
 </script>
 
 <style scoped lang="scss">
+.student-app {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .student-shell {
   display: flex;
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
   overflow: hidden;
 }
 
@@ -208,24 +255,40 @@ watch(sidebarCollapsed, (value) => {
 .student-main {
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: auto;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
 
   &--scrollable {
-    overflow: auto;
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 }
 
 .student-notice-popup {
-  width: min(820px, calc(100vw - 24px));
-  max-height: calc(100vh - 32px);
-  overflow: auto;
-  background: transparent;
+  width: min(820px, calc(100vw - 40px));
+  height: min(640px, calc(100vh - 48px));
+  max-height: none;
+  overflow: hidden;
+  border: 1px solid #dbe3ee;
+  border-radius: 12px !important;
+  background: #fff !important;
+  box-shadow: 0 22px 70px rgba(15, 23, 42, 0.22);
 }
 
 .notice-popup-card {
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
+  height: 100%;
   background: #fff;
+  overflow: hidden;
+}
+
+.notice-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
   padding: 24px;
 }
 
@@ -269,17 +332,29 @@ watch(sidebarCollapsed, (value) => {
 }
 
 .notice-popup-body {
-  display: grid;
-  gap: 18px;
+  flex: 1;
+  min-height: 0;
   margin-top: 20px;
+  overflow: hidden;
+}
+
+.notice-popup-body--detail {
+  overflow: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
 }
 
 .notice-popup-detail,
 .notice-popup-list {
   display: grid;
   gap: 10px;
-  max-height: 280px;
+  align-content: start;
+  height: 100%;
+  min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  scrollbar-gutter: stable;
 }
 
 .notice-popup-detail p {
@@ -301,14 +376,16 @@ watch(sidebarCollapsed, (value) => {
   cursor: pointer;
 
   strong,
-  span {
+  span,
+  small {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   strong,
-  span {
+  span,
+  small {
     min-width: 0;
   }
 
@@ -322,6 +399,12 @@ watch(sidebarCollapsed, (value) => {
     color: #64748b;
     font-size: 12px;
   }
+
+  small {
+    color: #94a3b8;
+    font-size: 12px;
+    font-weight: 700;
+  }
 }
 
 .notice-popup-item--active {
@@ -329,10 +412,58 @@ watch(sidebarCollapsed, (value) => {
   background: #eef6ff;
 }
 
+.notice-popup-empty {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  color: #94a3b8;
+  font-size: 14px;
+}
+
 .notice-popup-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 10px;
   margin-top: 20px;
+}
+
+.notice-popup-source {
+  margin-right: auto;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.notice-panel-enter-active,
+.notice-panel-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.notice-panel-enter-from {
+  opacity: 0;
+  transform: translateX(12px);
+}
+
+.notice-panel-leave-to {
+  opacity: 0;
+  transform: translateX(-12px);
+}
+
+:global(body.van-overflow-hidden) {
+  padding-right: 0 !important;
+}
+
+.student-notice-popup ::-webkit-scrollbar {
+  width: 6px;
+}
+
+.student-notice-popup ::-webkit-scrollbar-thumb {
+  border-radius: 10px;
+  background: rgba(100, 116, 139, 0.32);
+}
+
+.student-notice-popup ::-webkit-scrollbar-track {
+  background: transparent;
 }
 </style>

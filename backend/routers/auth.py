@@ -530,7 +530,8 @@ def get_my_settings(
             models.ClassMembership.user_id == current_user.id,
             models.ClassMembership.status == "active",
         )
-        .order_by(models.TrainingClass.created_at.desc())
+        .order_by(models.ClassMembership.joined_at.desc())
+        .limit(1)
         .all()
     )
     return schemas.MySettingsResponse(
@@ -675,6 +676,8 @@ def list_students(
 
     classes_by_user: dict[int, list[dict]] = {user_id: [] for user_id in user_ids}
     for user_id, class_id, class_name, status, joined_at in memberships:
+        if classes_by_user.get(user_id):
+            continue
         classes_by_user.setdefault(user_id, []).append(
             {
                 "id": class_id,
@@ -930,9 +933,6 @@ def batch_delete_students(
         ]
         if video_session_ids:
             db.query(models.VideoNodeResult).filter(models.VideoNodeResult.session_id.in_(video_session_ids)).delete(
-                synchronize_session=False
-            )
-            db.query(models.VideoTrainingArtifact).filter(models.VideoTrainingArtifact.session_id.in_(video_session_ids)).delete(
                 synchronize_session=False
             )
             db.query(models.VideoTrainingSession).filter(models.VideoTrainingSession.id.in_(video_session_ids)).delete(

@@ -165,6 +165,16 @@
           </div>
           <div v-else-if="filteredStudents.length" class="student-table-wrap">
             <table class="student-table">
+            <colgroup>
+              <col class="student-table__col-account" />
+              <col class="student-table__col-class" />
+              <col class="student-table__col-date" />
+              <col class="student-table__col-metric" />
+              <col class="student-table__col-metric" />
+              <col class="student-table__col-score" />
+              <col class="student-table__col-gap" />
+              <col class="student-table__col-actions" />
+            </colgroup>
             <thead>
               <tr>
                 <th>学员账号</th>
@@ -371,12 +381,19 @@
         <div class="space-y-3">
           <div class="rounded-xl border border-slate-100 bg-slate-50 p-4">
             <div class="text-sm font-bold text-slate-700">{{ activeStudent?.username || '未选择学员' }}</div>
-            <div class="mt-1 text-xs text-slate-500">勾选右侧班级后保存，系统会自动同步加入或移出。</div>
+            <div class="mt-1 text-xs text-slate-500">选择一个班级后保存，学员会从原班级转入当前班级。</div>
           </div>
           <div v-if="activeStudent" class="space-y-2">
             <div v-for="item in classroomList" :key="item.id" class="class-switch-item">
               <label class="flex items-center gap-3">
-                <input v-model="studentClassDraftIds" type="checkbox" :value="item.id" class="h-4 w-4 rounded border-slate-300" />
+                <input
+                  :checked="studentClassDraftIds[0] === Number(item.id)"
+                  type="radio"
+                  name="student-class-draft"
+                  :value="item.id"
+                  class="h-4 w-4 border-slate-300"
+                  @change="selectStudentClass(item.id)"
+                />
                 <div>
                   <div class="font-bold text-slate-800">{{ item.name }}</div>
                   <div class="text-xs text-slate-400">{{ item.student_count || 0 }} 人 · {{ item.assignment_count || 0 }} 个作业</div>
@@ -395,7 +412,7 @@
             <div v-else class="mt-3 text-sm text-slate-400">未分班</div>
           </div>
           <div class="rounded-xl border border-slate-100 bg-white p-4 text-sm text-slate-500 leading-7">
-            这个面板会同步用户所属班级，适合把新开户账号快速分到训练班、复训班或未分班池里。
+            学员账号同一时间只能归属一个班级；重新选择班级后，系统会自动解除旧班级归属。
           </div>
         </div>
       </div>
@@ -682,15 +699,21 @@ const refreshPage = async () => {
 
 const openClassManager = (student: any) => {
   activeStudent.value = student
-  studentClassDraftIds.value = Array.isArray(student?.classes) ? student.classes.map((item: any) => Number(item.id)) : []
+  const currentClass = Array.isArray(student?.classes) ? student.classes[0] : null
+  studentClassDraftIds.value = currentClass?.id ? [Number(currentClass.id)] : []
   showClassManager.value = true
+}
+
+const selectStudentClass = (classId: number | string) => {
+  studentClassDraftIds.value = [Number(classId)]
 }
 
 const saveStudentClasses = async () => {
   if (!activeStudent.value?.id) return
   const studentId = Number(activeStudent.value.id)
   const currentIds = new Set((activeStudent.value.classes || []).map((item: any) => Number(item.id)))
-  const nextIds = new Set(studentClassDraftIds.value.map((item) => Number(item)))
+  const nextClassId = studentClassDraftIds.value.length ? Number(studentClassDraftIds.value[0]) : null
+  const nextIds = new Set(nextClassId ? [nextClassId] : [])
   const toAdd = [...nextIds].filter((id) => !currentIds.has(id))
   const toRemove = [...currentIds].filter((id) => !nextIds.has(id))
 
@@ -953,9 +976,11 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  height: calc(100vh - 104px);
+  height: 100%;
+  max-height: 100%;
   min-height: 0;
   overflow: hidden;
+  overscroll-behavior: none;
 }
 
 .admin-list-header {
@@ -977,9 +1002,7 @@ onMounted(() => {
 }
 
 .admin-list-header p {
-  margin: 4px 0 0;
-  color: var(--police-text-muted);
-  font-size: 13px;
+  display: none;
 }
 
 .admin-list-actions {
@@ -1021,7 +1044,7 @@ onMounted(() => {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -1040,7 +1063,8 @@ onMounted(() => {
   background: #fff;
   padding: 14px;
   max-height: 100%;
-  grid-template-rows: auto auto auto;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: start;
   overflow: hidden;
 }
 
@@ -1058,10 +1082,7 @@ onMounted(() => {
 }
 
 .class-panel__sub {
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
+  display: none;
 }
 
 .class-chip {
@@ -1117,14 +1138,12 @@ onMounted(() => {
 }
 
 .student-stat-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  display: none;
 }
 
 .class-panel__list {
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   padding-right: 2px;
   display: grid;
   gap: 10px;
@@ -1133,24 +1152,27 @@ onMounted(() => {
 
 .student-main-panel {
   min-height: 0;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
-  align-content: start;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-content: stretch;
+  height: 100%;
   overflow: hidden;
 }
 
 .student-list-scroll {
+  grid-row: -2 / -1;
+  height: 100%;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 4px;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
 }
 
 .class-panel__footer {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  padding-top: 10px;
-  border-top: 1px solid #e2e8f0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0), #fff 38%);
+  display: none;
 }
 
 .class-panel__footer > div {
@@ -1272,9 +1294,7 @@ onMounted(() => {
 }
 
 .admin-filter-summary {
-  color: var(--police-text-muted);
-  font-size: 13px;
-  white-space: nowrap;
+  display: none;
 }
 
 .student-checkbox-filter {
@@ -1378,23 +1398,51 @@ onMounted(() => {
 
 /* 学员表格 */
 .student-table-wrap {
-  overflow-x: auto;
   border: 1px solid var(--police-border);
   border-radius: var(--police-radius-lg);
   background: #fff;
+  overflow: visible;
 }
 
 .student-table {
   width: 100%;
-  min-width: 1040px;
+  table-layout: fixed;
   border-collapse: collapse;
 }
 
+.student-table__col-account {
+  width: 16%;
+}
+
+.student-table__col-class {
+  width: 17%;
+}
+
+.student-table__col-date {
+  width: 13%;
+}
+
+.student-table__col-metric,
+.student-table__col-score {
+  width: 7%;
+}
+
+.student-table__col-gap {
+  width: 20%;
+}
+
+.student-table__col-actions {
+  width: 16%;
+}
+
 .student-table th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   background: #f8fafc;
   border-bottom: 1px solid var(--police-border);
-  padding: 12px 14px;
-  text-align: left;
+  padding: 12px 10px;
+  text-align: center;
   font-size: 13px;
   font-weight: 700;
   color: var(--police-text-secondary);
@@ -1403,10 +1451,12 @@ onMounted(() => {
 
 .student-table td {
   border-bottom: 1px solid var(--police-border-light);
-  padding: 13px 14px;
+  padding: 13px 10px;
   vertical-align: middle;
+  text-align: center;
   font-size: 13px;
   color: var(--police-text-primary);
+  overflow-wrap: anywhere;
 }
 
 .student-table tr:last-child td {
@@ -1415,6 +1465,10 @@ onMounted(() => {
 
 .student-table tbody tr:hover td {
   background: #f8fafc;
+}
+
+.student-table thead th {
+  box-shadow: inset 0 -1px 0 var(--police-border);
 }
 
 .student-name {
@@ -1426,6 +1480,7 @@ onMounted(() => {
 .student-link {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   border: none;
   background: transparent;
   padding: 0;
@@ -1440,7 +1495,7 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 88px;
+  min-width: 72px;
   height: 34px;
   border-radius: 999px;
   border: 1px solid #cbd5e1;
@@ -1462,8 +1517,9 @@ onMounted(() => {
 
 .student-actions {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: nowrap;
 }
 
 .metric-cell {
@@ -1475,20 +1531,23 @@ onMounted(() => {
 .student-gap-list {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 6px;
 }
 
 .student-class-list {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 6px;
   max-width: 260px;
+  margin: 0 auto;
 }
 
 .student-class-chip {
   display: inline-flex;
   align-items: center;
-  max-width: 180px;
+  max-width: 150px;
   border: 1px solid #bfdbfe;
   border-radius: 999px;
   background: #eff6ff;
@@ -1531,17 +1590,16 @@ onMounted(() => {
 
 @media (max-width: 1180px) {
   .student-workbench {
-    grid-template-columns: 1fr;
-    overflow: auto;
+    grid-template-columns: 260px minmax(0, 1fr);
   }
 
   .class-panel {
     position: static;
-    max-height: none;
+    max-height: 100%;
   }
 
   .student-main-panel {
-    overflow: visible;
+    overflow: hidden;
     padding-right: 0;
   }
 }

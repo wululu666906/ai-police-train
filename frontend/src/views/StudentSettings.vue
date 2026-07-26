@@ -1,30 +1,11 @@
 <template>
   <div class="student-settings">
-    <section class="settings-header">
-      <div>
-        <p class="settings-eyebrow">个人设置</p>
-        <h1>{{ headerName }}</h1>
-        <p class="settings-subtitle">维护训练身份、人脸识别档案和账号安全信息。个人照片上传后会同步进入管理端学员档案，用于训练前核验和训练过程识别。</p>
-      </div>
-      <div class="header-badges">
-        <van-tag :type="faceProfile?.registered ? 'success' : 'warning'" plain>
-          {{ faceProfile?.registered ? '人脸档案已建立' : '待上传人脸照片' }}
-        </van-tag>
-        <van-tag plain>学员端</van-tag>
-      </div>
-    </section>
-
     <section class="settings-grid settings-grid--top">
       <div class="settings-card account-card">
         <div class="avatar-block">
           <div class="avatar-preview">
-            <img
-              v-if="facePhotoReady"
-              :src="faceProfile?.face_image_url"
-              alt="学员照片"
-              @error="markFacePhotoFailed"
-            />
-            <span v-else>{{ initials }}</span>
+            <img v-if="faceProfile?.registered && faceProfile.face_image_url" :src="faceProfile.face_image_url" alt="学员照片" />
+            <van-icon v-else name="contact" />
           </div>
           <div>
             <h2>账号摘要</h2>
@@ -38,7 +19,9 @@
           </div>
           <div>
             <span>所属班级</span>
-            <strong>{{ classLabel }}</strong>
+            <strong class="class-summary">
+              <span v-for="part in classSegments" :key="part">{{ part }}</span>
+            </strong>
           </div>
           <div>
             <span>创建时间</span>
@@ -70,7 +53,6 @@
         <div class="card-title-row">
           <div>
             <h2>个人资料</h2>
-            <p>这些信息用于学员端展示和管理端识别，不影响登录账号。</p>
           </div>
           <van-button type="primary" size="small" :loading="savingProfile" @click="saveProfile">保存资料</van-button>
         </div>
@@ -111,22 +93,15 @@
         <div class="card-title-row">
           <div>
             <h2>人脸识别档案</h2>
-            <p>建议上传本人清晰正脸照片，画面中只保留一张人脸。</p>
           </div>
           <van-button size="small" plain :loading="faceLoading" @click="fetchFaceProfile">刷新</van-button>
         </div>
 
         <div class="face-upload-panel">
           <div class="face-preview">
-            <img
-              v-if="facePhotoReady"
-              :src="faceProfile?.face_image_url"
-              alt="学员人脸照片"
-              @error="markFacePhotoFailed"
-            />
+            <img v-if="faceProfile?.registered && faceProfile.face_image_url" :src="faceProfile.face_image_url" alt="学员人脸照片" />
             <div v-else class="face-preview-empty">
-              <van-icon name="contact" size="42" />
-              <span>{{ initials }}</span>
+              <van-icon name="contact" size="52" />
             </div>
           </div>
 
@@ -136,10 +111,6 @@
               <span>{{ faceProfile?.registered ? '已同步至管理端学员档案' : '尚未上传可识别照片' }}</span>
             </div>
             <dl>
-              <div>
-                <dt>识别模型</dt>
-                <dd>{{ faceProfile?.embedding_model || faceEngineLabel }}</dd>
-              </div>
               <div>
                 <dt>更新时间</dt>
                 <dd>{{ fmtDateTime(faceProfile?.updated_at) }}</dd>
@@ -157,22 +128,6 @@
           <van-button type="primary" icon="photograph" :loading="faceUploading" @click="fileInputRef?.click()">
             {{ faceProfile?.registered ? '重新上传照片' : '上传个人照片' }}
           </van-button>
-          <span>支持 JPG、PNG 等图片格式，单张不超过 8MB。</span>
-        </div>
-
-        <div class="guide-list">
-          <div class="guide-item">
-            <van-icon name="user-circle-o" />
-            <p>训练前比对当前摄像头画面与个人照片特征。</p>
-          </div>
-          <div class="guide-item">
-            <van-icon name="video-o" />
-            <p>训练中离开画面、多人入镜或非本人参与会记录为异常。</p>
-          </div>
-          <div class="guide-item">
-            <van-icon name="records-o" />
-            <p>管理员可在学员档案查看同一份照片和识别数据。</p>
-          </div>
         </div>
       </div>
     </section>
@@ -212,7 +167,6 @@ import { useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import request from '../utils/request'
 import { clearAuth } from '../utils/auth'
-import { resolveMediaUrl } from '../utils/media'
 
 type SettingsUser = {
   id: number
@@ -242,18 +196,12 @@ type FaceProfile = {
   updated_at?: string
 }
 
-type FaceEngine = {
-  model?: string
-}
-
 const router = useRouter()
 const setMainScrollable = inject<(value: boolean) => void>('setMainScrollable')
 const settings = ref<SettingsResponse | null>(null)
 const faceProfile = ref<FaceProfile | null>(null)
-const faceEngine = ref<FaceEngine | null>(null)
 const faceLoading = ref(false)
 const faceUploading = ref(false)
-const failedFacePhotoUrl = ref('')
 const savingProfile = ref(false)
 const changingPassword = ref(false)
 const showPasswordPopup = ref(false)
@@ -279,14 +227,15 @@ const displayName = computed(() => settings.value?.user.username || localStorage
 const headerName = computed(() => profileForm.display_name || profileForm.real_name || displayName.value)
 const userId = computed(() => Number(settings.value?.user.id || localStorage.getItem('user_id') || 0))
 const studentCode = computed(() => `STU${String(userId.value || 0).padStart(5, '0')}`)
-const initials = computed(() => headerName.value.trim().slice(0, 2).toUpperCase() || 'ST')
-const classLabel = computed(() => settings.value?.classes?.length ? settings.value.classes.join('、') : '暂未加入班级')
-const roleLabel = computed(() => settings.value?.user.role === 'admin' ? '管理员' : '学员')
-const faceEngineLabel = computed(() => (faceEngine.value?.model ? `insightface:${faceEngine.value.model}` : 'insightface:buffalo_l'))
-const facePhotoReady = computed(() => {
-  const url = faceProfile.value?.face_image_url || ''
-  return Boolean(faceProfile.value?.registered && url && url !== failedFacePhotoUrl.value)
+const classSegments = computed(() => {
+  const classes = settings.value?.classes || []
+  if (!classes.length) return ['暂未加入班级']
+  return classes
+    .flatMap((item) => String(item).split(/[、,，;；]/))
+    .map((item) => item.trim())
+    .filter(Boolean)
 })
+const roleLabel = computed(() => settings.value?.user.role === 'admin' ? '管理员' : '学员')
 
 const fillProfileForm = (user: SettingsUser) => {
   profileForm.display_name = user.display_name || ''
@@ -299,19 +248,15 @@ const fillProfileForm = (user: SettingsUser) => {
 }
 
 const normalizeFaceProfile = (payload: any): FaceProfile => {
-  const imageUrl = resolveMediaUrl(payload?.face_image_url)
-  failedFacePhotoUrl.value = ''
+  const imageUrl = String(payload?.face_image_url || '')
+  const apiBase = String((request as any).defaults?.baseURL || '').replace(/\/$/, '')
   return {
     registered: Boolean(payload?.registered),
     student_id: payload?.student_id,
-    face_image_url: imageUrl,
+    face_image_url: imageUrl && imageUrl.startsWith('/') && apiBase ? `${apiBase}${imageUrl}` : imageUrl,
     embedding_model: payload?.embedding_model,
     updated_at: payload?.updated_at,
   }
-}
-
-const markFacePhotoFailed = () => {
-  failedFacePhotoUrl.value = faceProfile.value?.face_image_url || ''
 }
 
 const fmtDateTime = (value: string | null | undefined) => {
@@ -342,14 +287,6 @@ const saveProfile = async () => {
     showToast(error?.response?.data?.detail || '个人资料保存失败')
   } finally {
     savingProfile.value = false
-  }
-}
-
-const fetchFaceEngine = async () => {
-  try {
-    faceEngine.value = await request.get('/face/engine', { _skipErrorToast: true } as any)
-  } catch {
-    faceEngine.value = null
   }
 }
 
@@ -437,9 +374,8 @@ const handleLogout = async () => {
 }
 
 onMounted(() => {
-  setMainScrollable?.(true)
+  setMainScrollable?.(false)
   fetchSettings()
-  fetchFaceEngine()
   fetchFaceProfile()
 })
 
@@ -489,14 +425,6 @@ onUnmounted(() => {
   font-size: 24px;
 }
 
-.settings-subtitle {
-  max-width: 760px;
-  margin: 8px 0 0;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.8;
-}
-
 .header-badges {
   display: flex;
   gap: 8px;
@@ -509,6 +437,10 @@ onUnmounted(() => {
   grid-template-columns: minmax(0, 1.1fr) minmax(380px, 0.9fr);
   gap: 16px;
   margin-top: 16px;
+}
+
+.settings-grid--top {
+  margin-top: 0;
 }
 
 .settings-card {
@@ -544,23 +476,21 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   width: 72px;
+  height: 72px;
+  flex: 0 0 72px;
   aspect-ratio: 1;
   overflow: hidden;
   border-radius: 8px;
   background: #eff6ff;
   color: #1d4ed8;
-  padding: 6px;
-  font-size: 18px;
-  font-weight: 900;
-  line-height: 1.1;
-  text-align: center;
-  word-break: keep-all;
+  font-size: 34px;
 }
 
 .avatar-preview img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
 }
 
 .summary-grid {
@@ -571,10 +501,15 @@ onUnmounted(() => {
 }
 
 .summary-grid div {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   border: 1px solid #eef2f7;
   border-radius: 8px;
   background: #f8fafc;
   padding: 12px;
+  min-height: 86px;
+  text-align: left;
 }
 
 .summary-grid span,
@@ -590,8 +525,24 @@ onUnmounted(() => {
   display: block;
   margin-top: 6px;
   color: #1e293b;
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.45;
   word-break: break-word;
+}
+
+.class-summary {
+  display: grid !important;
+  gap: 3px;
+  justify-items: center;
+  text-align: center;
+}
+
+.class-summary span {
+  display: block;
+  color: #1e293b;
+  font-size: 14px;
+  font-weight: 900;
+  line-height: 1.45;
 }
 
 .security-actions {
@@ -649,13 +600,17 @@ onUnmounted(() => {
 
 .face-upload-panel {
   display: grid;
-  grid-template-columns: 148px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: 156px minmax(0, 1fr);
+  align-items: center;
+  gap: 22px;
   margin-top: 20px;
 }
 
 .face-preview {
-  width: 148px;
+  width: 156px;
+  height: 156px;
+  min-width: 156px;
+  flex: 0 0 156px;
   aspect-ratio: 1;
   overflow: hidden;
   border: 1px solid #dbe3ee;
@@ -667,28 +622,16 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
 }
 
 .face-preview-empty {
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
   width: 100%;
   height: 100%;
-  padding: 14px;
   color: #94a3b8;
-  text-align: center;
-}
-
-.face-preview-empty span {
-  color: #334155;
-  max-width: 100%;
-  font-size: clamp(18px, 12px + 1vw, 24px);
-  font-weight: 900;
-  line-height: 1.15;
-  overflow-wrap: anywhere;
 }
 
 .face-status {
@@ -712,20 +655,22 @@ onUnmounted(() => {
 
 .face-meta dl {
   display: grid;
-  gap: 10px;
-  margin: 14px 0 0;
+  gap: 14px;
+  margin: 18px 0 0;
 }
 
 .face-meta dt {
   color: #94a3b8;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .face-meta dd {
-  margin: 4px 0 0;
+  margin: 5px 0 0;
   color: #1e293b;
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 16px;
+  font-weight: 900;
+  line-height: 1.45;
   word-break: break-all;
 }
 
@@ -733,40 +678,13 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 20px;
-  padding-top: 18px;
+  margin-top: 22px;
+  padding-top: 22px;
   border-top: 1px solid #f1f5f9;
 }
 
 .upload-actions span {
   color: #94a3b8;
-  font-size: 12px;
-}
-
-.guide-list {
-  display: grid;
-  gap: 10px;
-  margin-top: 16px;
-}
-
-.guide-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  border: 1px solid #eef2f7;
-  border-radius: 8px;
-  background: #f8fafc;
-  padding: 12px;
-}
-
-.guide-item > .van-icon {
-  margin-top: 2px;
-  color: #2563eb;
-  font-size: 18px;
-}
-
-.guide-item p {
-  margin: 0;
   font-size: 12px;
 }
 

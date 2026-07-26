@@ -1,5 +1,9 @@
 <template>
-  <div class="space-y-4 pb-20">
+  <div class="student-profile-page space-y-4 pb-20">
+    <div class="student-profile-backbar">
+      <van-button plain icon="arrow-left" type="primary" @click="goBackToStudents">返回学员账号</van-button>
+      <span>学员画像</span>
+    </div>
 
     <!-- 加载 -->
     <div v-if="loading" class="bg-white rounded-xl border border-gray-100 shadow-sm py-24 text-center">
@@ -89,54 +93,6 @@
       <!-- ════════════════════════════════════════
            BLOCK 2  能力概览 + 成长趋势（左右各一）
       ════════════════════════════════════════ -->
-      <div class="bg-white rounded-xl border border-gray-100 shadow-sm px-5 py-4">
-        <div class="flex items-center justify-between gap-4">
-          <div>
-            <div class="text-sm font-black text-gray-800">人脸档案</div>
-            <div class="mt-1 text-xs text-gray-400">用于训练开始前身份校验和训练过程持续监控。</div>
-          </div>
-          <div class="flex items-center gap-2">
-            <input ref="faceFileInput" class="hidden" type="file" accept="image/*" @change="handleFaceFileChange" />
-            <van-button size="small" plain :loading="faceLoading" @click="fetchFaceProfile">刷新状态</van-button>
-            <van-button size="small" type="primary" :loading="faceUploading" @click="faceFileInput?.click()">上传正脸照</van-button>
-          </div>
-        </div>
-
-        <div class="mt-4 grid gap-4" style="grid-template-columns: 120px 1fr auto;">
-          <div class="w-[120px] h-[120px] rounded-xl overflow-hidden bg-slate-100 border border-slate-200 flex items-center justify-center">
-            <img
-              v-if="facePhotoReady"
-              :src="faceProfile?.face_image_url"
-              alt="学员人脸档案"
-              class="w-full h-full object-cover"
-              @error="markFacePhotoFailed"
-            />
-            <van-icon v-else name="contact" size="38" class="text-slate-300" />
-          </div>
-          <div class="min-w-0 self-center">
-            <div class="flex items-center gap-2">
-              <span
-                :class="[
-                  'inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold',
-                  faceProfile?.registered ? 'bg-green-50 text-green-600 border border-green-100' : 'bg-amber-50 text-amber-600 border border-amber-100'
-                ]"
-              >
-                {{ faceProfile?.registered ? '已注册' : '未注册' }}
-              </span>
-              <span class="text-xs text-gray-400">{{ faceProfile?.embedding_model || faceEngineLabel }}</span>
-            </div>
-            <div class="mt-2 text-xs text-gray-500 leading-relaxed">
-              注册后，学员进入场景训练页时必须先通过圆形摄像头人脸验证；训练中离开画面、多人入镜或本人不匹配会计入异常。
-            </div>
-            <div class="mt-2 text-[11px] text-gray-400">更新时间：{{ fmtDateTime(faceProfile?.updated_at) }}</div>
-          </div>
-          <div class="self-center text-right text-xs text-gray-400">
-            <div>相似度阈值 ≥ {{ Math.round((faceEngine?.similarity_threshold || 0.8) * 100) }}%</div>
-            <div class="mt-1">异常上限 {{ faceEngine?.max_failures || 3 }} 次</div>
-          </div>
-        </div>
-      </div>
-
       <div class="grid grid-cols-2 gap-4">
 
         <!-- 能力概览 -->
@@ -491,10 +447,8 @@
 
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
-import { showToast } from 'vant'
 import { useRoute, useRouter } from 'vue-router'
 import request from '../utils/request'
-import { resolveMediaUrl } from '../utils/media'
 
 // ─── 类型 ─────────────────────────────────────────────────────
 type SceneItem = {
@@ -518,18 +472,6 @@ type ProfileResponse = {
   trend_points: Array<{ session_id: number; score: number; created_at: string | null }>
   suggestions: string[]
 }
-type FaceProfile = {
-  registered: boolean
-  student_id?: number
-  face_image_url?: string
-  embedding_model?: string
-  updated_at?: string
-}
-type FaceEngine = {
-  model?: string
-  similarity_threshold?: number
-  max_failures?: number
-}
 
 // ─── 状态 ─────────────────────────────────────────────────────
 const route = useRoute()
@@ -538,21 +480,18 @@ const setMainScrollable = inject<(v: boolean) => void>('setMainScrollable')
 const loading = ref(false)
 const pageError = ref('')
 const profile = ref<ProfileResponse | null>(null)
-const faceProfile = ref<FaceProfile | null>(null)
-const faceEngine = ref<FaceEngine | null>(null)
-const faceLoading = ref(false)
-const faceUploading = ref(false)
-const failedFacePhotoUrl = ref('')
-const faceFileInput = ref<HTMLInputElement | null>(null)
-const faceEngineLabel = computed(() => (faceEngine.value?.model ? `insightface:${faceEngine.value.model}` : 'insightface:buffalo_l'))
-const facePhotoReady = computed(() => {
-  const url = faceProfile.value?.face_image_url || ''
-  return Boolean(faceProfile.value?.registered && url && url !== failedFacePhotoUrl.value)
-})
 
 // ─── 工具 ─────────────────────────────────────────────────────
 const studentId = computed(() => Number(route.params.id || 0))
 const studentCode = computed(() => `STU${String(studentId.value || 0).padStart(5, '0')}`)
+
+const goBackToStudents = () => {
+  if (window.history.length > 1) {
+    router.back()
+    return
+  }
+  router.push('/admin/students')
+}
 
 function fmt(v: number | null | undefined): string {
   if (v == null || Number.isNaN(Number(v))) return '--'
@@ -567,12 +506,6 @@ function fmtDateShort(v: string | null | undefined): string {
   const d = new Date(v)
   if (isNaN(d.getTime())) return '--'
   return `${d.getMonth() + 1}/${d.getDate()}`
-}
-function fmtDateTime(v: string | null | undefined): string {
-  if (!v) return '--'
-  const d = new Date(v)
-  if (isNaN(d.getTime())) return '--'
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 function isValid(v: unknown): v is ProfileResponse {
   const o = v as any
@@ -720,68 +653,37 @@ const fetchProfile = async () => {
   finally { loading.value=false }
 }
 
-const normalizeFaceProfile = (payload: any): FaceProfile => {
-  const imageUrl = resolveMediaUrl(payload?.face_image_url)
-  failedFacePhotoUrl.value = ''
-  return {
-    registered: Boolean(payload?.registered),
-    student_id: payload?.student_id,
-    face_image_url: imageUrl,
-    embedding_model: payload?.embedding_model,
-    updated_at: payload?.updated_at,
-  }
-}
-
-const markFacePhotoFailed = () => {
-  failedFacePhotoUrl.value = faceProfile.value?.face_image_url || ''
-}
-
-const fetchFaceEngine = async () => {
-  try {
-    faceEngine.value = await request.get('/face/engine', { _skipErrorToast: true } as any)
-  } catch {
-    faceEngine.value = null
-  }
-}
-
-const fetchFaceProfile = async () => {
-  if (!studentId.value) return
-  faceLoading.value = true
-  try {
-    const result = await request.get(`/face/students/${studentId.value}/profile`, { _skipErrorToast: true } as any)
-    faceProfile.value = normalizeFaceProfile(result)
-  } catch (error: any) {
-    faceProfile.value = { registered: false }
-    showToast(error?.response?.data?.detail || '人脸档案加载失败')
-  } finally {
-    faceLoading.value = false
-  }
-}
-
-const handleFaceFileChange = async (event: Event) => {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file || !studentId.value) return
-  faceUploading.value = true
-  try {
-    const form = new FormData()
-    form.append('file', file)
-    const result = await request.post(`/face/students/${studentId.value}/register`, form, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      _skipErrorToast: true,
-      timeout: 120000,
-    } as any)
-    faceProfile.value = normalizeFaceProfile(result)
-    showToast({ type: 'success', message: '人脸档案已注册' })
-  } catch (error: any) {
-    showToast(error?.response?.data?.detail || '人脸注册失败，请上传清晰正脸照片')
-  } finally {
-    faceUploading.value = false
-    input.value = ''
-  }
-}
-
-onMounted(()=>{ setMainScrollable?.(true); fetchProfile(); fetchFaceEngine(); fetchFaceProfile() })
+onMounted(()=>{ setMainScrollable?.(false); fetchProfile() })
 onUnmounted(()=>{ setMainScrollable?.(false) })
-watch(()=>route.params.id, () => { fetchProfile(); fetchFaceProfile() })
+watch(()=>route.params.id, fetchProfile)
 </script>
+
+<style scoped>
+.student-profile-page {
+  min-height: 100%;
+  overflow: visible;
+  padding-right: 4px;
+}
+
+.student-profile-backbar {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.96);
+  padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(8px);
+}
+
+.student-profile-backbar span {
+  color: #334155;
+  font-size: 14px;
+  font-weight: 800;
+}
+</style>

@@ -53,8 +53,9 @@
 
 html,
 body {
+  height: 100%;
   width: 100%;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 /* Keep compact touch layouts at their original density. */
@@ -73,8 +74,9 @@ body {
 }
 
 #app {
+  height: 100%;
   width: 100%;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 body {
@@ -86,22 +88,57 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+html.student-classes-scroll-lock,
+body.student-classes-scroll-lock {
+  overflow: hidden !important;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--police-border-light);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--police-border);
-  border-radius: 3px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.58);
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--police-text-muted);
+  background: rgba(100, 116, 139, 0.72);
+  background-clip: padding-box;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.58) transparent;
+}
+
+:where(
+  .admin-content,
+  .ops-content,
+  .student-main,
+  .student-list-scroll,
+  .cases-compact,
+  .van-popup,
+  .el-scrollbar__wrap
+) {
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+}
+
+.student-page,
+.student-settings,
+.student-profile-page,
+.face-demo-page,
+.evaluation-page {
+  min-height: 100%;
+  overflow: visible;
 }
 
 button,
