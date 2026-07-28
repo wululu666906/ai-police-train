@@ -73,12 +73,16 @@ const breadcrumbItems = computed(() => {
   border-bottom: 1px solid #e5e7eb;
   box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
   flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .breadcrumb {
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
   min-width: 0;
+  max-width: 100%;
   gap: 8px;
   color: #667085;
   font-size: 14px;
@@ -104,7 +108,10 @@ const breadcrumbItems = computed(() => {
 
 .topbar-actions {
   gap: 14px;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .icon-btn {
@@ -133,6 +140,7 @@ const breadcrumbItems = computed(() => {
   gap: 10px;
   padding: 4px 8px;
   border-radius: 8px;
+  min-width: 0;
 }
 
 .user-avatar {
@@ -146,9 +154,14 @@ const breadcrumbItems = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .user-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 13px;
   font-weight: 600;
   color: #1f2937;

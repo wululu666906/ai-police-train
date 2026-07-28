@@ -15,6 +15,9 @@ services:
     environment:
       DATABASE_URL: sqlite:///data/ai_police.db
       CHROMA_DB_PATH: data/chroma_db
+      VIDEO_ANALYSIS_PROVIDER: ${VIDEO_ANALYSIS_PROVIDER:-qwen}
+      VIDEO_ANALYSIS_MODEL: ${VIDEO_ANALYSIS_MODEL:-qwen-plus}
+      VIDEO_ASR_CHUNK_SECONDS: ${VIDEO_ASR_CHUNK_SECONDS:-30}
       PORT: "8000"
     ports:
       - "${WEB_PORT:-5555}:8000"
@@ -46,6 +49,9 @@ services:
     environment:
       DATABASE_URL: sqlite:///data/ai_police.db
       CHROMA_DB_PATH: data/chroma_db
+      VIDEO_ANALYSIS_PROVIDER: ${VIDEO_ANALYSIS_PROVIDER:-qwen}
+      VIDEO_ANALYSIS_MODEL: ${VIDEO_ANALYSIS_MODEL:-qwen-plus}
+      VIDEO_ASR_CHUNK_SECONDS: ${VIDEO_ASR_CHUNK_SECONDS:-30}
       PORT: "8000"
     ports:
       - "${APP_PORT:-8000}:8000"

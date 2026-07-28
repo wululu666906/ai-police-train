@@ -25,9 +25,11 @@ data/*
 backend/static/videos/*
 backend/static/thumbnails/*
 backend/static/face_profiles/*
+backend/static/profile_avatars/*
 !backend/static/videos/.gitkeep
 !backend/static/thumbnails/.gitkeep
 !backend/static/face_profiles/.gitkeep
+!backend/static/profile_avatars/.gitkeep
 
 # 实训录制的摄像头视频（学员实训录像，不入库）
 backend/static/session_media/**/

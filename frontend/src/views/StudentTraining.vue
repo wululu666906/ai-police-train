@@ -1862,19 +1862,23 @@ onMounted(fetchSessionData)
 }
 
 .training-header {
-  height: 48px;
+  min-height: 48px;
   background: #fff;
   border-bottom: 1px solid #e2e8f0;
   box-shadow: none;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 20px;
+  padding: 6px 20px;
   flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .training-header__case {
+  flex: 1 1 auto;
   min-width: 0;
+  max-width: 100%;
 }
 
 .training-header__label {
@@ -1892,7 +1896,9 @@ onMounted(fetchSessionData)
 }
 
 .training-header__title {
-  max-width: min(58vw, 760px);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1915,10 +1921,14 @@ onMounted(fetchSessionData)
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
   margin-top: 2px;
   color: #64748b;
   font-size: 11px;
   font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .training-header__assignment span {
@@ -1929,16 +1939,21 @@ onMounted(fetchSessionData)
   margin-left: auto;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 42%;
   color: var(--police-text-muted);
   font-size: 12px;
 }
 
 .training-header__target {
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.25;
   padding: 3px 12px;
   border: 1px solid #bfdbfe;
   border-radius: 20px;

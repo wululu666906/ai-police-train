@@ -62,14 +62,8 @@
             <span>显示名称</span>
             <input v-model.trim="profileForm.display_name" type="text" maxlength="80" placeholder="例如：张三" />
           </label>
-          <label>
-            <span>真实姓名</span>
-            <input v-model.trim="profileForm.real_name" type="text" maxlength="80" placeholder="用于档案核对" />
-          </label>
-          <label>
-            <span>单位</span>
-            <input v-model.trim="profileForm.unit" type="text" maxlength="120" placeholder="例如：某某分局" />
-          </label>
+
+
           <label>
             <span>部门</span>
             <input v-model.trim="profileForm.department" type="text" maxlength="120" placeholder="例如：巡逻防控大队" />
@@ -209,10 +203,8 @@ const fileInputRef = ref<HTMLInputElement | null>(null)
 
 const profileForm = reactive({
   display_name: '',
-  real_name: '',
   phone: '',
   email: '',
-  unit: '',
   department: '',
   bio: '',
 })
@@ -224,7 +216,7 @@ const passwordForm = reactive({
 })
 
 const displayName = computed(() => settings.value?.user.username || localStorage.getItem('username') || '学员')
-const headerName = computed(() => profileForm.display_name || profileForm.real_name || displayName.value)
+const headerName = computed(() => profileForm.display_name || displayName.value)
 const userId = computed(() => Number(settings.value?.user.id || localStorage.getItem('user_id') || 0))
 const studentCode = computed(() => `STU${String(userId.value || 0).padStart(5, '0')}`)
 const classSegments = computed(() => {
@@ -239,10 +231,8 @@ const roleLabel = computed(() => settings.value?.user.role === 'admin' ? '管理
 
 const fillProfileForm = (user: SettingsUser) => {
   profileForm.display_name = user.display_name || ''
-  profileForm.real_name = user.real_name || ''
   profileForm.phone = user.phone || ''
   profileForm.email = user.email || ''
-  profileForm.unit = user.unit || ''
   profileForm.department = user.department || ''
   profileForm.bio = user.bio || ''
 }

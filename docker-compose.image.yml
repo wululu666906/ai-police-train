@@ -8,6 +8,9 @@ services:
       DATABASE_URL: sqlite:///data/ai_police.db
       CHROMA_DB_PATH: data/chroma_db
       FFMPEG_BINARY: ffmpeg
+      VIDEO_ANALYSIS_PROVIDER: ${VIDEO_ANALYSIS_PROVIDER:-qwen}
+      VIDEO_ANALYSIS_MODEL: ${VIDEO_ANALYSIS_MODEL:-qwen-plus}
+      VIDEO_ASR_CHUNK_SECONDS: ${VIDEO_ASR_CHUNK_SECONDS:-30}
       INSIGHTFACE_MODEL_DIR: /app/data/face_models
       FACE_ENGINE_WARMUP: "1"
       PORT: "8000"

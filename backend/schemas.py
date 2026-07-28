@@ -259,6 +259,7 @@ class PromptTemplate(PromptTemplateBase):
 class UserBase(BaseModel):
     username: str
     role: str = "student"
+    avatar_url: Optional[str] = None
     display_name: Optional[str] = None
     real_name: Optional[str] = None
     phone: Optional[str] = None

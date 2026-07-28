@@ -6,6 +6,7 @@ import math
 import os
 import re
 import shutil
+import time
 from typing import Any, Optional
 
 from .llm_provider import (
@@ -1383,8 +1384,8 @@ def _get_audio_duration(audio_path: str) -> float:
         return 0
 
 
-def _split_audio_to_chunks(audio_path: str, chunk_seconds: int = 10) -> list[dict[str, Any]]:
-    """将音频文件按 chunk_seconds 切割为多段（10秒一段，实现句子级精度）"""
+def _split_audio_to_chunks(audio_path: str, chunk_seconds: int = 30) -> list[dict[str, Any]]:
+    """将音频文件按 chunk_seconds 切割为多段，减少云端 ASR 请求次数。"""
     import subprocess
     import tempfile
 
@@ -1416,7 +1417,11 @@ def _split_audio_to_chunks(audio_path: str, chunk_seconds: int = 10) -> list[dic
     return chunks if chunks else [{"path": audio_path, "start_time": 0, "end_time": duration}]
 
 
-def _transcribe_audio_chunk(audio_path: str, start_time: float = 0) -> list[dict[str, Any]]:
+def _transcribe_audio_chunk(
+    audio_path: str,
+    start_time: float = 0,
+    chunk_duration: float = 10.0,
+) -> list[dict[str, Any]]:
     """
     用千问 ASR 转写单个音频片段。
     返回句子级别的结果：[{time, end_time, text}]
@@ -1474,8 +1479,8 @@ def _transcribe_audio_chunk(audio_path: str, start_time: float = 0) -> list[dict
         if not sentences:
             return [{"time": round(start_time, 1), "end_time": round(start_time + 10, 1), "text": text}]
 
-        # 每个句子在chunk内按比例分配时间
-        chunk_duration = 10.0  # 每段10秒
+        # 每个句子在 chunk 内按比例分配时间
+        chunk_duration = max(float(chunk_duration or 10.0), 1.0)
         results: list[dict[str, Any]] = []
         total_chars = sum(len(s) for s in sentences)
         current_offset = 0.0
@@ -1512,10 +1517,31 @@ def _transcribe_video_audio(video_path: str) -> list[dict[str, Any]]:
         return []
 
     try:
-        chunks = _split_audio_to_chunks(audio_path, chunk_seconds=10)
+        try:
+            chunk_seconds = int(os.getenv("VIDEO_ASR_CHUNK_SECONDS", "30"))
+        except ValueError:
+            chunk_seconds = 30
+        chunk_seconds = max(10, min(chunk_seconds, 60))
+        chunks = _split_audio_to_chunks(audio_path, chunk_seconds=chunk_seconds)
+        print(
+            "[video-analysis-timing] "
+            f"phase=asr_chunks chunks={len(chunks)} chunk_seconds={chunk_seconds}"
+        )
         transcript: list[dict[str, Any]] = []
         for chunk in chunks:
-            segments = _transcribe_audio_chunk(chunk["path"], chunk["start_time"])
+            chunk_started_at = time.monotonic()
+            chunk_duration_actual = max(float(chunk.get("end_time") or 0) - float(chunk.get("start_time") or 0), 1.0)
+            segments = _transcribe_audio_chunk(
+                chunk["path"],
+                chunk["start_time"],
+                chunk_duration=chunk_duration_actual,
+            )
+            print(
+                "[video-analysis-timing] "
+                f"phase=asr_chunk start_s={float(chunk.get('start_time') or 0):.1f} "
+                f"end_s={float(chunk.get('end_time') or 0):.1f} "
+                f"segments={len(segments)} elapsed_s={time.monotonic() - chunk_started_at:.2f}"
+            )
             transcript.extend(segments)
             if chunk["path"] != audio_path:
                 try:
@@ -1884,12 +1910,17 @@ def _request_llm_analysis(
         return None
 
     print("[AI分析] Stage 1: 场景理解与角色标注...")
+    stage1_started_at = time.monotonic()
     stage1 = _stage1_scene_understanding(
         title_hint=title_hint,
         duration_seconds=duration_seconds,
         transcript=transcript,
         ocr_hints=ocr_hints,
         scene_changes=scene_changes or [],
+    )
+    print(
+        "[video-analysis-timing] "
+        f"phase=llm_stage1 ok={bool(stage1)} elapsed_s={time.monotonic() - stage1_started_at:.2f}"
     )
 
     if not stage1:
@@ -1905,11 +1936,16 @@ def _request_llm_analysis(
     print(f"[AI分析] Stage 1 完成: scenario={stage1.get('scenario_type')}, phases={len(stage1.get('phases', []))}, moments={len(stage1.get('key_moments', []))}")
     print("[AI分析] Stage 2: 训练节点编排...")
 
+    stage2_started_at = time.monotonic()
     stage2 = _stage2_training_design(
         title_hint=title_hint,
         duration_seconds=duration_seconds,
         stage1_result=stage1,
         transcript=transcript,
+    )
+    print(
+        "[video-analysis-timing] "
+        f"phase=llm_stage2 ok={bool(stage2)} elapsed_s={time.monotonic() - stage2_started_at:.2f}"
     )
 
     if not stage2:
@@ -1989,6 +2025,7 @@ def analyze_video_file(
     
     不使用模板兜底，不依赖 Vision 模型。
     """
+    analysis_started_at = time.monotonic()
     _, _, _, llm_api_key = _get_video_analysis_llm()
 
     if not llm_api_key:
@@ -2026,18 +2063,36 @@ def analyze_video_file(
         }
 
     # Step 1: 提取视频帧用于 OCR
+    frames_started_at = time.monotonic()
     frames = _sample_video_frames(video_path)
+    print(
+        "[video-analysis-timing] "
+        f"phase=sample_frames frames={len(frames)} elapsed_s={time.monotonic() - frames_started_at:.2f}"
+    )
+    ocr_started_at = time.monotonic()
     ocr_hints = _extract_ocr_hints(frames) if frames else []
+    print(
+        "[video-analysis-timing] "
+        f"phase=ocr hints={len(ocr_hints)} elapsed_s={time.monotonic() - ocr_started_at:.2f}"
+    )
 
     # Step 2: 检测场景切换点
     print(f"[视频分析] 检测场景切换...")
+    scene_started_at = time.monotonic()
     scene_changes = _detect_scene_changes(video_path)
-    print(f"[视频分析] 检测到 {len(scene_changes)} 个镜头切换点")
+    print(
+        "[video-analysis-timing] "
+        f"phase=scene_changes changes={len(scene_changes)} elapsed_s={time.monotonic() - scene_started_at:.2f}"
+    )
 
     # Step 3: 提取音频并 ASR 转写（句子级精度，10秒切片）
     print(f"[视频分析] 开始提取音频并转写: {video_path}")
+    asr_started_at = time.monotonic()
     transcript = _transcribe_video_audio(video_path)
-    print(f"[视频分析] 转写完成，共 {len(transcript)} 段句子")
+    print(
+        "[video-analysis-timing] "
+        f"phase=asr_total segments={len(transcript)} elapsed_s={time.monotonic() - asr_started_at:.2f}"
+    )
 
     # 如果既没有转写也没有 OCR，报错
     if not transcript and not ocr_hints:
@@ -2059,6 +2114,11 @@ def analyze_video_file(
                 "系统已自动生成基础交互节点，但语音识别服务未返回有效内容，"
                 "请检查 DASHSCOPE/QWEN ASR 账号状态后重新分析。"
             )
+        print(
+            "[video-analysis-timing] "
+            f"phase=analysis_total mode={fallback.get('analysis_mode')} "
+            f"nodes={len(fallback.get('nodes') or [])} elapsed_s={time.monotonic() - analysis_started_at:.2f}"
+        )
         return fallback
         return {
             "analysis_mode": "error",
@@ -2078,6 +2138,7 @@ def analyze_video_file(
 
     # Step 4: 两阶段 AI 分析（场景理解 → 训练编排）
     try:
+        llm_started_at = time.monotonic()
         payload = _request_llm_analysis(
             title_hint=title_hint,
             duration_seconds=duration_seconds,
@@ -2089,6 +2150,10 @@ def analyze_video_file(
             scenario_hint=scenario_hint,
             training_variant=training_variant,
             difficulty_level=difficulty_level,
+        )
+        print(
+            "[video-analysis-timing] "
+            f"phase=llm_total ok={bool(payload)} elapsed_s={time.monotonic() - llm_started_at:.2f}"
         )
         if not payload:
             return {
@@ -2112,6 +2177,11 @@ def analyze_video_file(
         normalized["frame_count"] = len(frames)
         normalized["ocr_hints"] = ocr_hints
         normalized["transcript"] = transcript
+        print(
+            "[video-analysis-timing] "
+            f"phase=analysis_total mode={normalized.get('analysis_mode')} "
+            f"nodes={len(normalized.get('nodes') or [])} elapsed_s={time.monotonic() - analysis_started_at:.2f}"
+        )
         return normalized
     except Exception as exc:
         return {

@@ -3295,7 +3295,7 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 
 .training-topbar {
   display: grid;
-  grid-template-columns: minmax(240px, 1.4fr) minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(0, 1.35fr) minmax(180px, 0.9fr) minmax(0, auto);
   align-items: center;
   gap: 18px;
   padding: 10px 16px;
@@ -3303,6 +3303,8 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   background: linear-gradient(180deg, rgba(8, 18, 36, 0.98), rgba(6, 14, 28, 0.94));
   border: 1px solid rgba(83, 120, 181, 0.22);
   box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .training-topbar__left,
@@ -3310,6 +3312,7 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 .training-topbar__center {
   display: flex;
   align-items: center;
+  min-width: 0;
 }
 
 .training-topbar__left {
@@ -3321,11 +3324,14 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   flex-direction: column;
   justify-content: center;
   gap: 8px;
+  overflow: hidden;
 }
 
 .training-topbar__right {
   justify-content: flex-end;
   gap: 12px;
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 
 .training-back,
@@ -3338,7 +3344,9 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 }
 
 .training-title-wrap {
+  flex: 1 1 auto;
   min-width: 0;
+  max-width: 100%;
 }
 
 .training-title {
@@ -3358,15 +3366,20 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 }
 
 .training-step__summary {
+  width: 100%;
   color: #e2e8f0;
   font-size: 14px;
   font-weight: 700;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .training-stepper {
   display: flex;
   align-items: center;
   gap: 10px;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .training-stepper__dot {
@@ -3394,11 +3407,14 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   padding: 10px 14px;
   border-radius: 10px;
   background: rgba(8, 22, 43, 0.94);
   border: 1px solid rgba(87, 120, 173, 0.26);
   color: #e2e8f0;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .training-chip__label {
@@ -5989,6 +6005,11 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .imm-header__timer {

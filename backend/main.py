@@ -142,6 +142,7 @@ def ensure_user_schema_compatibility():
 
         user_columns = {column["name"] for column in inspector.get_columns("users")}
         column_defs = {
+            "avatar_url": "VARCHAR(300)",
             "display_name": "VARCHAR(80)",
             "real_name": "VARCHAR(80)",
             "phone": "VARCHAR(30)",
@@ -553,6 +554,10 @@ app.mount("/static/thumbnails", StaticFiles(directory=_thumbnails_dir), name="th
 _face_profiles_dir = os.path.join(os.path.dirname(__file__), "static", "face_profiles")
 os.makedirs(_face_profiles_dir, exist_ok=True)
 app.mount("/static/face-profiles", StaticFiles(directory=_face_profiles_dir), name="face_profiles_static")
+
+_profile_avatars_dir = os.path.join(os.path.dirname(__file__), "static", "profile_avatars")
+os.makedirs(_profile_avatars_dir, exist_ok=True)
+app.mount("/static/profile-avatars", StaticFiles(directory=_profile_avatars_dir), name="profile_avatars_static")
 
 _session_media_dir = os.path.join(os.path.dirname(__file__), "static", "session_media")
 os.makedirs(_session_media_dir, exist_ok=True)

@@ -13,6 +13,7 @@ class User(Base):
     username = Column(String(50), unique=True, index=True)
     hashed_password = Column(String(255))
     role = Column(String(20), default="student")
+    avatar_url = Column(String(300), nullable=True)
     display_name = Column(String(80), nullable=True)
     real_name = Column(String(80), nullable=True)
     phone = Column(String(30), nullable=True)

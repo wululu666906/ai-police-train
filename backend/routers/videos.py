@@ -910,6 +910,7 @@ async def upload_video(
     只需传入视频文件，标题可选（不填则从文件名自动推断）。
     上传后 AI 自动分析视频内容，生成：类型、简报、标签、难度、训练节点。
     """
+    upload_started_at = time.monotonic()
     content_type = file.content_type or ""
     file_ext = os.path.splitext(file.filename or "")[1].lower()
     if content_type not in ALLOWED_VIDEO_TYPES and file_ext not in ALLOWED_VIDEO_EXTS:
@@ -930,6 +931,7 @@ async def upload_video(
     os.makedirs(VIDEOS_DIR, exist_ok=True)
     video_path = os.path.join(VIDEOS_DIR, filename)
     file_size = 0
+    write_started_at = time.monotonic()
     try:
         with open(video_path, "wb") as output_file:
             while chunk := await file.read(1024 * 1024):
@@ -941,6 +943,14 @@ async def upload_video(
         if os.path.exists(video_path):
             os.remove(video_path)
         raise
+    write_elapsed = time.monotonic() - write_started_at
+    upload_mib = file_size / 1024 / 1024
+    upload_rate = upload_mib / write_elapsed if write_elapsed > 0 else 0
+    print(
+        "[video-upload-timing] "
+        f"phase=receive file={file.filename!r} size_mib={upload_mib:.2f} "
+        f"elapsed_s={write_elapsed:.2f} rate_mib_s={upload_rate:.2f}"
+    )
 
     # 封面图：用户可选上传，否则后续自动截取
     thumbnail_filename = None
@@ -960,9 +970,15 @@ async def upload_video(
 
     # 探测视频时长（如前端未传）
     resolved_duration = duration
+    probe_started_at = time.monotonic()
     if not resolved_duration:
         probed = _probe_video_duration(os.path.join(VIDEOS_DIR, filename))
         resolved_duration = int(round(probed)) if probed else None
+    print(
+        "[video-upload-timing] "
+        f"phase=probe file={filename!r} elapsed_s={time.monotonic() - probe_started_at:.2f} "
+        f"duration_s={resolved_duration or 0}"
+    )
 
     # 创建视频记录（状态: analyzing，AI分析在后台执行）
     video_obj = models.TrainingVideo(
@@ -984,7 +1000,12 @@ async def upload_video(
 
     # 自动截取封面（同步，很快）
     if not thumbnail_filename:
+        thumbnail_started_at = time.monotonic()
         _ensure_video_thumbnail(video_obj, db)
+        print(
+            "[video-upload-timing] "
+            f"phase=thumbnail video_id={video_obj.id} elapsed_s={time.monotonic() - thumbnail_started_at:.2f}"
+        )
 
     video_id = video_obj.id
     locked_type = analysis_video_type
@@ -1073,6 +1094,10 @@ async def upload_video(
 
     result = _serialize_video(video_obj, include_nodes=False)
     result["analysis_status"] = "analyzing"
+    print(
+        "[video-upload-timing] "
+        f"phase=response video_id={video_obj.id} total_elapsed_s={time.monotonic() - upload_started_at:.2f}"
+    )
     return result
 
 
