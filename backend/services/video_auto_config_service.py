@@ -5,66 +5,9 @@ import json
 import math
 import os
 import re
-import shutil
-import time
 from typing import Any, Optional
 
-from .llm_provider import (
-    create_json_chat_completion,
-    extract_json_payload,
-    extract_message_text,
-)
-from .qwen_config import qwen_api_key, qwen_default_headers, resolve_qwen_base_url
-
-_LAST_ASR_ERRORS: list[str] = []
-
-
-def _record_asr_error(error: Any) -> None:
-    text = str(error or "").strip()
-    text = re.sub(r"sk-[A-Za-z0-9_.-]+", "sk-***", text)
-    if text:
-        _LAST_ASR_ERRORS.append(text[:500])
-
-
-def _last_asr_error_summary() -> str:
-    if not _LAST_ASR_ERRORS:
-        return ""
-    return _LAST_ASR_ERRORS[-1]
-
-
-def _get_video_analysis_llm() -> tuple[Any, str, str, str]:
-    """Resolve a dedicated provider/model for video analysis."""
-    from .llm_provider import get_chat_completion_binding
-
-    provider = (os.getenv("VIDEO_ANALYSIS_PROVIDER") or "").strip().lower()
-    model = (os.getenv("VIDEO_ANALYSIS_MODEL") or "").strip()
-    return get_chat_completion_binding(provider=provider or None, model=model or None)
-
-
-def _ffmpeg_executable() -> str:
-    configured = os.getenv("FFMPEG_BINARY", "").strip()
-    if configured and not os.path.isabs(configured):
-        configured = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", configured))
-    if configured and (os.path.isfile(configured) or shutil.which(configured)):
-        return configured
-    return shutil.which("ffmpeg") or "ffmpeg"
-
-
-def _ffprobe_executable() -> str:
-    configured = os.getenv("FFPROBE_BINARY", "").strip()
-    if configured:
-        return configured
-    ffmpeg = _ffmpeg_executable()
-    if os.path.isabs(ffmpeg):
-        sibling = os.path.join(os.path.dirname(ffmpeg), "ffprobe.exe" if os.name == "nt" else "ffprobe")
-        if os.path.exists(sibling):
-            return sibling
-    return shutil.which("ffprobe") or "ffprobe"
-
-
-def _ffmpeg_available() -> bool:
-    candidate = _ffmpeg_executable()
-    return bool(shutil.which(candidate) or os.path.isfile(candidate))
+from .llm_provider import extract_json_payload, extract_message_text
 
 
 def _default_assessment_points_for_auto_node(
@@ -735,12 +678,7 @@ def _extract_ocr_hints(frames: list[dict[str, Any]], limit: int = 4) -> list[str
 
     hints: list[str] = []
     try:
-        try:
-            ocr = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
-        except ValueError as exc:
-            if "show_log" not in str(exc):
-                raise
-            ocr = PaddleOCR(use_angle_cls=True, lang="ch")
+        ocr = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
     except Exception:
         return []
 
@@ -1452,7 +1390,7 @@ def _extract_audio_from_video(video_path: str) -> Optional[str]:
         import subprocess
         result = subprocess.run(
             [
-                _ffmpeg_executable(), "-y", "-i", video_path,
+                "ffmpeg", "-y", "-i", video_path,
                 "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
                 audio_path,
             ],
@@ -1474,7 +1412,7 @@ def _detect_scene_changes(video_path: str, threshold: float = 0.35) -> list[floa
     try:
         result = subprocess.run(
             [
-                _ffmpeg_executable(), "-i", video_path,
+                "ffmpeg", "-i", video_path,
                 "-vf", f"select='gt(scene,{threshold})',showinfo",
                 "-vsync", "vfr", "-f", "null", "-",
             ],
@@ -1499,7 +1437,7 @@ def _get_audio_duration(audio_path: str) -> float:
     import subprocess
     try:
         result = subprocess.run(
-            [_ffprobe_executable(), "-v", "error", "-show_entries", "format=duration",
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
             capture_output=True, text=True, timeout=30,
         )
@@ -1508,8 +1446,8 @@ def _get_audio_duration(audio_path: str) -> float:
         return 0
 
 
-def _split_audio_to_chunks(audio_path: str, chunk_seconds: int = 30) -> list[dict[str, Any]]:
-    """将音频文件按 chunk_seconds 切割为多段，减少云端 ASR 请求次数。"""
+def _split_audio_to_chunks(audio_path: str, chunk_seconds: int = 10) -> list[dict[str, Any]]:
+    """将音频文件按 chunk_seconds 切割为多段（10秒一段，实现句子级精度）"""
     import subprocess
     import tempfile
 
@@ -1525,7 +1463,7 @@ def _split_audio_to_chunks(audio_path: str, chunk_seconds: int = 30) -> list[dic
         try:
             subprocess.run(
                 [
-                    _ffmpeg_executable(), "-y", "-i", audio_path,
+                    "ffmpeg", "-y", "-i", audio_path,
                     "-ss", str(start), "-t", str(chunk_seconds),
                     "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
                     chunk_path,
@@ -1541,11 +1479,7 @@ def _split_audio_to_chunks(audio_path: str, chunk_seconds: int = 30) -> list[dic
     return chunks if chunks else [{"path": audio_path, "start_time": 0, "end_time": duration}]
 
 
-def _transcribe_audio_chunk(
-    audio_path: str,
-    start_time: float = 0,
-    chunk_duration: float = 10.0,
-) -> list[dict[str, Any]]:
+def _transcribe_audio_chunk(audio_path: str, start_time: float = 0) -> list[dict[str, Any]]:
     """
     用千问 ASR 转写单个音频片段。
     返回句子级别的结果：[{time, end_time, text}]
@@ -1554,13 +1488,12 @@ def _transcribe_audio_chunk(
     from openai import OpenAI
     import re
 
-    api_key = qwen_api_key()
+    api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_API_KEY", "")
     if not api_key:
-        _record_asr_error("DASHSCOPE_API_KEY/QWEN_API_KEY is not configured")
         return []
 
     asr_model = os.getenv("QWEN_ASR_MODEL", "qwen3-asr-flash")
-    asr_base_url = resolve_qwen_base_url("QWEN_ASR_BASE_URL")
+    asr_base_url = os.getenv("QWEN_ASR_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 
     try:
         with open(audio_path, "rb") as f:
@@ -1572,7 +1505,7 @@ def _transcribe_audio_chunk(
         if len(data_url.encode("utf-8")) > 10 * 1024 * 1024:
             return []
 
-        client = OpenAI(api_key=api_key, base_url=asr_base_url, default_headers=qwen_default_headers(asr_base_url))
+        client = OpenAI(api_key=api_key, base_url=asr_base_url)
         response = client.chat.completions.create(
             model=asr_model,
             messages=[{
@@ -1603,8 +1536,8 @@ def _transcribe_audio_chunk(
         if not sentences:
             return [{"time": round(start_time, 1), "end_time": round(start_time + 10, 1), "text": text}]
 
-        # 每个句子在 chunk 内按比例分配时间
-        chunk_duration = max(float(chunk_duration or 10.0), 1.0)
+        # 每个句子在chunk内按比例分配时间
+        chunk_duration = 10.0  # 每段10秒
         results: list[dict[str, Any]] = []
         total_chars = sum(len(s) for s in sentences)
         current_offset = 0.0
@@ -1625,7 +1558,6 @@ def _transcribe_audio_chunk(
 
         return results
     except Exception as exc:
-        _record_asr_error(exc)
         print(f"ASR chunk transcription error: {exc}")
         return []
 
@@ -1635,37 +1567,15 @@ def _transcribe_video_audio(video_path: str) -> list[dict[str, Any]]:
     从视频提取音频并转写为句子级别带时间戳的文本。
     使用10秒切片 + 句子拆分 实现精确到秒的时间轴。
     """
-    _LAST_ASR_ERRORS.clear()
     audio_path = _extract_audio_from_video(video_path)
     if not audio_path:
         return []
 
     try:
-        try:
-            chunk_seconds = int(os.getenv("VIDEO_ASR_CHUNK_SECONDS", "30"))
-        except ValueError:
-            chunk_seconds = 30
-        chunk_seconds = max(10, min(chunk_seconds, 60))
-        chunks = _split_audio_to_chunks(audio_path, chunk_seconds=chunk_seconds)
-        print(
-            "[video-analysis-timing] "
-            f"phase=asr_chunks chunks={len(chunks)} chunk_seconds={chunk_seconds}"
-        )
+        chunks = _split_audio_to_chunks(audio_path, chunk_seconds=10)
         transcript: list[dict[str, Any]] = []
         for chunk in chunks:
-            chunk_started_at = time.monotonic()
-            chunk_duration_actual = max(float(chunk.get("end_time") or 0) - float(chunk.get("start_time") or 0), 1.0)
-            segments = _transcribe_audio_chunk(
-                chunk["path"],
-                chunk["start_time"],
-                chunk_duration=chunk_duration_actual,
-            )
-            print(
-                "[video-analysis-timing] "
-                f"phase=asr_chunk start_s={float(chunk.get('start_time') or 0):.1f} "
-                f"end_s={float(chunk.get('end_time') or 0):.1f} "
-                f"segments={len(segments)} elapsed_s={time.monotonic() - chunk_started_at:.2f}"
-            )
+            segments = _transcribe_audio_chunk(chunk["path"], chunk["start_time"])
             transcript.extend(segments)
             if chunk["path"] != audio_path:
                 try:
@@ -1693,8 +1603,8 @@ def _stage1_scene_understanding(
     第一阶段：场景理解 + 角色标注
     快速分析视频内容结构，识别说话人、场景类型、处置阶段。
     """
-    client, model, _, llm_api_key = _get_video_analysis_llm()
-    if not llm_api_key:
+    from .llm_provider import client, get_chat_model, ACTIVE_API_KEY as LLM_API_KEY
+    if not LLM_API_KEY:
         return None
 
     # 构建精确时间轴文本
@@ -1743,22 +1653,20 @@ def _stage1_scene_understanding(
 4. key_moments 标注适合设为训练暂停点的时刻（一般在民警标准操作前后）"""
 
     try:
-        response = create_json_chat_completion(
-            llm_client=client,
-            model=model,
+        response = client.chat.completions.create(
+            model=get_chat_model(),
             messages=[
                 {"role": "system", "content": "你是警务训练视频分析专家。只输出合法JSON。"},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
             max_tokens=3000,
-            retries=2,
         )
         raw = extract_message_text(response)
         payload = extract_json_payload(raw)
         return payload if isinstance(payload, dict) else None
     except Exception as exc:
-        print(f"Stage 1 analysis error: {exc.__class__.__name__}: {exc}")
+        print(f"Stage 1 analysis error: {exc}")
         return None
 
 
@@ -1773,8 +1681,8 @@ def _stage2_training_design(
     第二阶段：基于场景理解结果，设计训练节点。
     已知角色标注和阶段划分，精确编排训练点。
     """
-    client, model, _, llm_api_key = _get_video_analysis_llm()
-    if not llm_api_key:
+    from .llm_provider import client, get_chat_model, ACTIVE_API_KEY as LLM_API_KEY
+    if not LLM_API_KEY:
         return None
 
     scenario_type = stage1_result.get("scenario_type", "未知场景")
@@ -1898,22 +1806,20 @@ def _stage2_training_design(
 12. scene_summary 必须具体描述此刻画面/对方状态，不能用笼统描述。"""
 
     try:
-        response = create_json_chat_completion(
-            llm_client=client,
-            model=model,
+        response = client.chat.completions.create(
+            model=get_chat_model(),
             messages=[
                 {"role": "system", "content": "你是公安实战训练课程编排专家。严格按要求输出合法JSON。核心要求：1)节点必须是训练决策点，不是答案复述点；2)每个节点必须包含训练目标、暂停原因、现场压力、标准要点、可接受答案和常见错误；3)trigger_time必须早于示范处置或答案出现。"},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
             max_tokens=6000,
-            retries=2,
         )
         raw = extract_message_text(response)
         payload = extract_json_payload(raw)
         return payload if isinstance(payload, dict) else None
     except Exception as exc:
-        print(f"Stage 2 analysis error: {exc.__class__.__name__}: {exc}")
+        print(f"Stage 2 analysis error: {exc}")
         return None
 
 
@@ -2049,24 +1955,19 @@ def _request_llm_analysis(
     Stage 1: 场景理解 + 角色标注（快速）
     Stage 2: 基于结构化理解做训练编排（精确）
     """
-    _, _, _, llm_api_key = _get_video_analysis_llm()
-    if not llm_api_key:
+    from .llm_provider import ACTIVE_API_KEY as LLM_API_KEY
+    if not LLM_API_KEY:
         return None
     if not transcript and not ocr_hints:
         return None
 
     print("[AI分析] Stage 1: 场景理解与角色标注...")
-    stage1_started_at = time.monotonic()
     stage1 = _stage1_scene_understanding(
         title_hint=title_hint,
         duration_seconds=duration_seconds,
         transcript=transcript,
         ocr_hints=ocr_hints,
         scene_changes=scene_changes or [],
-    )
-    print(
-        "[video-analysis-timing] "
-        f"phase=llm_stage1 ok={bool(stage1)} elapsed_s={time.monotonic() - stage1_started_at:.2f}"
     )
 
     if not stage1:
@@ -2082,16 +1983,11 @@ def _request_llm_analysis(
     print(f"[AI分析] Stage 1 完成: scenario={stage1.get('scenario_type')}, phases={len(stage1.get('phases', []))}, moments={len(stage1.get('key_moments', []))}")
     print("[AI分析] Stage 2: 训练节点编排...")
 
-    stage2_started_at = time.monotonic()
     stage2 = _stage2_training_design(
         title_hint=title_hint,
         duration_seconds=duration_seconds,
         stage1_result=stage1,
         transcript=transcript,
-    )
-    print(
-        "[video-analysis-timing] "
-        f"phase=llm_stage2 ok={bool(stage2)} elapsed_s={time.monotonic() - stage2_started_at:.2f}"
     )
 
     if not stage2:
@@ -2115,7 +2011,7 @@ def _single_step_analysis(
     ocr_hints: list[str],
 ) -> Optional[dict[str, Any]]:
     """单步分析回退（当两阶段分析第一步失败时使用）"""
-    client, model, _, _ = _get_video_analysis_llm()
+    from .llm_provider import client, get_chat_model
 
     transcript_text = ""
     if transcript:
@@ -2139,7 +2035,7 @@ OCR：{' / '.join(ocr_hints[:6]) if ocr_hints else '无'}
 
     try:
         response = client.chat.completions.create(
-            model=model,
+            model=get_chat_model(),
             messages=[
                 {"role": "system", "content": "只输出合法JSON。"},
                 {"role": "user", "content": prompt},
@@ -2171,10 +2067,8 @@ def analyze_video_file(
     
     不使用模板兜底，不依赖 Vision 模型。
     """
-    analysis_started_at = time.monotonic()
-    _, _, _, llm_api_key = _get_video_analysis_llm()
+    from .llm_provider import ACTIVE_API_KEY as LLM_KEY
 
-<<<<<<< HEAD
     if not LLM_KEY:
         return _fallback_analysis_with_warning(
             title_hint,
@@ -2185,77 +2079,23 @@ def analyze_video_file(
             training_variant=training_variant,
             difficulty_level=difficulty_level,
         )
-=======
-    if not llm_api_key:
-        return {
-            "analysis_mode": "error",
-            "analysis_error": "未配置 AI API Key（DEEPSEEK_API_KEY），无法进行视频分析。请在 .env 中配置后重试。",
-            "title": title_hint or "未命名视频",
-            "description": "",
-            "video_type": "interactive",
-            "briefing": None,
-            "tags": [],
-            "status": "draft",
-            "nodes": [],
-            "suggested_timestamps": [],
-            "frame_count": 0,
-            "ocr_hints": [],
-            "transcript": [],
-        }
->>>>>>> c75d28e11697d318d584360255fb4e860ec8271e
-
-    if not _ffmpeg_available():
-        return {
-            "analysis_mode": "error",
-            "analysis_error": "未检测到 ffmpeg，无法提取视频音频并生成训练节点。请安装 ffmpeg 后重试。",
-            "title": title_hint or "未命名视频",
-            "description": "",
-            "video_type": "interactive",
-            "briefing": None,
-            "tags": [],
-            "status": "draft",
-            "nodes": [],
-            "suggested_timestamps": [],
-            "frame_count": 0,
-            "ocr_hints": [],
-            "transcript": [],
-        }
 
     # Step 1: 提取视频帧用于 OCR
-    frames_started_at = time.monotonic()
     frames = _sample_video_frames(video_path)
-    print(
-        "[video-analysis-timing] "
-        f"phase=sample_frames frames={len(frames)} elapsed_s={time.monotonic() - frames_started_at:.2f}"
-    )
-    ocr_started_at = time.monotonic()
     ocr_hints = _extract_ocr_hints(frames) if frames else []
-    print(
-        "[video-analysis-timing] "
-        f"phase=ocr hints={len(ocr_hints)} elapsed_s={time.monotonic() - ocr_started_at:.2f}"
-    )
 
     # Step 2: 检测场景切换点
     print(f"[视频分析] 检测场景切换...")
-    scene_started_at = time.monotonic()
     scene_changes = _detect_scene_changes(video_path)
-    print(
-        "[video-analysis-timing] "
-        f"phase=scene_changes changes={len(scene_changes)} elapsed_s={time.monotonic() - scene_started_at:.2f}"
-    )
+    print(f"[视频分析] 检测到 {len(scene_changes)} 个镜头切换点")
 
     # Step 3: 提取音频并 ASR 转写（句子级精度，10秒切片）
     print(f"[视频分析] 开始提取音频并转写: {video_path}")
-    asr_started_at = time.monotonic()
     transcript = _transcribe_video_audio(video_path)
-    print(
-        "[video-analysis-timing] "
-        f"phase=asr_total segments={len(transcript)} elapsed_s={time.monotonic() - asr_started_at:.2f}"
-    )
+    print(f"[视频分析] 转写完成，共 {len(transcript)} 段句子")
 
     # 如果既没有转写也没有 OCR，先返回可编辑的基础训练节点
     if not transcript and not ocr_hints:
-<<<<<<< HEAD
         return _fallback_analysis_with_warning(
             title_hint,
             duration_seconds,
@@ -2269,51 +2109,9 @@ def analyze_video_file(
             transcript=[],
             scene_changes=scene_changes,
         )
-=======
-        fallback = _fallback_analysis(
-            title_hint,
-            duration_seconds,
-            preferred_type,
-            scenario_hint,
-            training_variant,
-            difficulty_level,
-        )
-        fallback["frame_count"] = len(frames)
-        fallback["ocr_hints"] = ocr_hints
-        fallback["transcript"] = []
-        asr_error = _last_asr_error_summary()
-        if asr_error:
-            fallback["analysis_warning"] = f"语音识别未返回有效内容：{asr_error}"
-            fallback["description"] = (
-                "系统已自动生成基础交互节点，但语音识别服务未返回有效内容，"
-                "请检查 DASHSCOPE/QWEN ASR 账号状态后重新分析。"
-            )
-        print(
-            "[video-analysis-timing] "
-            f"phase=analysis_total mode={fallback.get('analysis_mode')} "
-            f"nodes={len(fallback.get('nodes') or [])} elapsed_s={time.monotonic() - analysis_started_at:.2f}"
-        )
-        return fallback
-        return {
-            "analysis_mode": "error",
-            "analysis_error": "无法从视频中提取语音或文字内容。请确认：1) 视频有声音 2) ffmpeg 已安装 3) DASHSCOPE_API_KEY 已配置。",
-            "title": title_hint or "未命名视频",
-            "description": "",
-            "video_type": "interactive",
-            "briefing": None,
-            "tags": [],
-            "status": "draft",
-            "nodes": [],
-            "suggested_timestamps": [],
-            "frame_count": len(frames),
-            "ocr_hints": ocr_hints,
-            "transcript": [],
-        }
->>>>>>> c75d28e11697d318d584360255fb4e860ec8271e
 
     # Step 4: 两阶段 AI 分析（场景理解 → 训练编排）
     try:
-        llm_started_at = time.monotonic()
         payload = _request_llm_analysis(
             title_hint=title_hint,
             duration_seconds=duration_seconds,
@@ -2325,10 +2123,6 @@ def analyze_video_file(
             scenario_hint=scenario_hint,
             training_variant=training_variant,
             difficulty_level=difficulty_level,
-        )
-        print(
-            "[video-analysis-timing] "
-            f"phase=llm_total ok={bool(payload)} elapsed_s={time.monotonic() - llm_started_at:.2f}"
         )
         if not payload:
             return _fallback_analysis_with_warning(
@@ -2372,15 +2166,7 @@ def analyze_video_file(
         normalized["frame_count"] = len(frames)
         normalized["ocr_hints"] = ocr_hints
         normalized["transcript"] = transcript
-<<<<<<< HEAD
         normalized["scene_changes"] = scene_changes
-=======
-        print(
-            "[video-analysis-timing] "
-            f"phase=analysis_total mode={normalized.get('analysis_mode')} "
-            f"nodes={len(normalized.get('nodes') or [])} elapsed_s={time.monotonic() - analysis_started_at:.2f}"
-        )
->>>>>>> c75d28e11697d318d584360255fb4e860ec8271e
         return normalized
     except Exception as exc:
         return _fallback_analysis_with_warning(
