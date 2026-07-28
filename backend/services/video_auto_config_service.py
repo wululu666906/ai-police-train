@@ -723,12 +723,36 @@ def _build_default_nodes(
         standard_points = spec.get("standard_points") if isinstance(spec.get("standard_points"), list) else []
         risk_signals = spec.get("risk_signals") if isinstance(spec.get("risk_signals"), list) else []
         law_points = spec.get("law_points") if isinstance(spec.get("law_points"), list) else []
+        training_objective = str(
+            spec.get("training_objective")
+            or spec.get("instruction")
+            or f"训练学员完成{spec.get('title') or '当前处置'}"
+        ).strip()
+        decision_reason = str(
+            spec.get("decision_reason")
+            or "当前节点用于让学员在关键处置环节先完成判断或表达，再观看示范。"
+        ).strip()
+        scene_pressure = str(
+            spec.get("scene_pressure")
+            or spec.get("scene_summary")
+            or "现场情况需要快速、规范、稳妥处置。"
+        ).strip()
+        acceptable_answers = spec.get("acceptable_answers") if isinstance(spec.get("acceptable_answers"), list) else []
+        if not acceptable_answers:
+            acceptable_answers = standard_points[:3] or required_keywords[:3] or [spec.get("speech_hint") or spec.get("instruction") or "按规范流程完成处置"]
+        common_mistakes = spec.get("common_mistakes") if isinstance(spec.get("common_mistakes"), list) else []
+        if not common_mistakes:
+            common_mistakes = ["直接照搬视频话术但未说明处置理由", "忽视现场安全和人员情绪", "缺少依法告知或事实核实"]
+        node_interaction_type = "action" if required_gesture else ("voice_qa" if required_keywords else node_type)
         prompt_content = {
             "instruction": spec.get("instruction") or f"请完成第 {index + 1} 个自动生成的训练动作。",
             "gesture_hint": spec.get("gesture_hint") or "",
             "speech_hint": spec.get("speech_hint") or "",
             "prop_label": spec.get("prop_label") or ("执法证件" if required_gesture == "show_id" else ""),
             "prop_hint": spec.get("prop_hint") or "",
+            "training_objective": training_objective,
+            "decision_reason": decision_reason,
+            "scene_pressure": scene_pressure,
             "gesture_config": {
                 "min_confidence": 0.55,
                 "hold_frames": 5,
@@ -771,6 +795,13 @@ def _build_default_nodes(
                 "skip_score_deduct": 15,
                 "prop_mode": "manual" if spec.get("prop_label") else "auto",
                 "node_type": node_type,
+                "node_interaction_type": node_interaction_type,
+                "training_objective": training_objective,
+                "decision_reason": decision_reason,
+                "scene_pressure": scene_pressure,
+                "standard_points": standard_points,
+                "acceptable_answers": acceptable_answers,
+                "common_mistakes": common_mistakes,
                 "required_gesture": required_gesture,
                 "required_keywords": required_keywords,
                 "score_weight": 10,
@@ -797,6 +828,13 @@ def _build_default_nodes(
                     "pass_rule": {
                         "mode": "speech_only" if police_node_type else ("all" if required_gesture and required_keywords else ("gesture_only" if required_gesture else "speech_only")),
                     },
+                    "training_objective": training_objective,
+                    "decision_reason": decision_reason,
+                    "scene_pressure": scene_pressure,
+                    "standard_points": standard_points,
+                    "acceptable_answers": acceptable_answers,
+                    "common_mistakes": common_mistakes,
+                    "score_rubric": POLICE_SCORE_RUBRIC,
                     "assessment_points": assessment_points,
                     "hybrid_signals": {
                         "use_template": True,
@@ -952,6 +990,41 @@ def _fallback_analysis(
     return payload
 
 
+def _fallback_analysis_with_warning(
+    title_hint: str,
+    duration_seconds: Optional[int],
+    *,
+    reason: str,
+    preferred_type: Optional[str] = None,
+    scenario_hint: Optional[str] = None,
+    training_variant: Optional[str] = None,
+    difficulty_level: Optional[str] = None,
+    frames: Optional[list[dict[str, Any]]] = None,
+    ocr_hints: Optional[list[str]] = None,
+    transcript: Optional[list[dict[str, Any]]] = None,
+    scene_changes: Optional[list[float]] = None,
+) -> dict[str, Any]:
+    fallback_type = preferred_type if preferred_type in {"teaching", "interactive"} else "interactive"
+    payload = _fallback_analysis(
+        title_hint,
+        duration_seconds,
+        fallback_type,
+        scenario_hint,
+        training_variant,
+        difficulty_level,
+    )
+    clean_reason = str(reason or "AI精细分析未完成").strip()
+    payload["analysis_mode"] = "fallback_generated"
+    payload["analysis_warning"] = clean_reason
+    payload["description"] = f"已先生成基础训练节点；AI精细分析未完成：{clean_reason}。可手动编辑或重新分析。"
+    payload["node_generation_mode"] = "fallback_generated" if payload.get("nodes") else payload.get("node_generation_mode")
+    payload["frame_count"] = len(frames or [])
+    payload["ocr_hints"] = ocr_hints or []
+    payload["transcript"] = transcript or []
+    payload["scene_changes"] = scene_changes or []
+    return payload
+
+
 VALID_INTERACTION_TYPES = {"voice_qa", "choice", "judgment", "prop_select", "action"}
 
 
@@ -985,6 +1058,12 @@ def _normalize_choice_options_list(raw_options: Any) -> list[dict[str, str]] | N
             text = str(option.get("text") or option.get("content") or option.get("description") or label).strip()
             normalized.append({"label": label, "text": text})
     return normalized or None
+
+
+def _normalize_string_list(raw_items: Any, *, max_items: int = 8) -> list[str]:
+    if not isinstance(raw_items, list):
+        return []
+    return [str(item).strip() for item in raw_items if str(item).strip()][:max_items]
 
 
 def _is_true_judgment_options(options: list[dict[str, str]]) -> bool:
@@ -1059,12 +1138,45 @@ def _normalize_node(raw: dict[str, Any], index: int, duration_seconds: Optional[
     law_points = node_config.get("law_points")
     if not isinstance(law_points, list):
         law_points = raw.get("law_points") if isinstance(raw.get("law_points"), list) else []
+    training_objective = str(
+        raw.get("training_objective")
+        or node_config.get("training_objective")
+        or prompt_content.get("training_objective")
+        or ""
+    ).strip()
+    decision_reason = str(
+        raw.get("decision_reason")
+        or node_config.get("decision_reason")
+        or prompt_content.get("decision_reason")
+        or ""
+    ).strip()
+    scene_pressure = str(
+        raw.get("scene_pressure")
+        or node_config.get("scene_pressure")
+        or prompt_content.get("scene_pressure")
+        or ""
+    ).strip()
+    acceptable_answers = _normalize_string_list(
+        raw.get("acceptable_answers") or node_config.get("acceptable_answers"),
+        max_items=6,
+    )
+    common_mistakes = _normalize_string_list(
+        raw.get("common_mistakes") or node_config.get("common_mistakes"),
+        max_items=6,
+    )
+    score_rubric = raw.get("score_rubric") or node_config.get("score_rubric")
+    if not isinstance(score_rubric, dict):
+        score_rubric = POLICE_SCORE_RUBRIC
+    answer_appears_at = raw.get("answer_appears_at") or node_config.get("answer_appears_at")
 
     prompt_content.setdefault("instruction", raw.get("instruction") or f"请完成节点 {index + 1} 的训练要求。")
     prompt_content.setdefault("gesture_hint", raw.get("gesture_hint") or "")
     prompt_content.setdefault("speech_hint", raw.get("speech_hint") or "")
     prompt_content.setdefault("prop_label", raw.get("prop_label") or "")
     prompt_content.setdefault("prop_hint", raw.get("prop_hint") or "")
+    prompt_content.setdefault("training_objective", training_objective)
+    prompt_content.setdefault("decision_reason", decision_reason)
+    prompt_content.setdefault("scene_pressure", scene_pressure)
     if police_node_type:
         prompt_content.setdefault("scene_summary", raw.get("scene_summary") or prompt_content.get("scene_summary") or "")
         prompt_content.setdefault("police_question", raw.get("police_question") or prompt_content.get("police_question") or prompt_content["instruction"])
@@ -1084,9 +1196,21 @@ def _normalize_node(raw: dict[str, Any], index: int, duration_seconds: Optional[
         node_config.setdefault("standard_points", [str(item) for item in standard_points if str(item).strip()])
         node_config.setdefault("risk_signals", [str(item) for item in risk_signals if str(item).strip()])
         node_config.setdefault("law_points", [str(item) for item in law_points if str(item).strip()])
-        node_config.setdefault("score_rubric", POLICE_SCORE_RUBRIC)
         node_config.setdefault("semantic_pass_threshold", 50)
         node_config.setdefault("semantic_full_threshold", 85)
+
+    node_config.setdefault("training_objective", training_objective)
+    node_config.setdefault("decision_reason", decision_reason)
+    node_config.setdefault("scene_pressure", scene_pressure)
+    node_config.setdefault("standard_points", [str(item) for item in standard_points if str(item).strip()])
+    node_config.setdefault("acceptable_answers", acceptable_answers)
+    node_config.setdefault("common_mistakes", common_mistakes)
+    node_config.setdefault("score_rubric", score_rubric)
+    if answer_appears_at is not None:
+        try:
+            node_config.setdefault("answer_appears_at", int(answer_appears_at))
+        except (TypeError, ValueError):
+            pass
 
     default_pass_mode = "speech_only"
     if not police_node_type:
@@ -1619,51 +1743,73 @@ def _stage2_training_design(
 
 每个节点格式：
 {{
-  "title": "节点名称（简洁描述该步骤，如'表明身份'、'安抚劝导'）",
-  "trigger_time": 精确暂停秒数,
-  "answer_appears_at": 该节点答案在视频中出现的秒数（即★标注话术的时间戳）,
+  "title": "节点名称（简洁描述该训练任务，如'先稳控再分离'、'识别升级风险'）",
+  "training_objective": "训练目标：本节点要训练学员哪项能力，如风险识别、现场控场、规范询问、依法告知",
+  "decision_reason": "为什么此刻要暂停：说明这里是决策点/风险点/处置转折点，而不是答案复述点",
+  "scene_pressure": "现场压力：描述对方情绪、围观、冲突趋势、时间压力等",
+  "trigger_time": 精确暂停秒数（必须停在学员需要做处置判断之前）,
+  "answer_appears_at": 视频中示范处置或参考答案出现的秒数（可为空；不得作为唯一切点依据）,
   "node_interaction_type": "judgment 或 voice_qa 或 choice",
   "ai_instructor_hint": "AI教官引导语（见下方格式要求）",
   "choice_options": [选项数组，仅choice/judgment需要],
   "correct_answer": "正确答案",
-  "required_keywords": ["关键词"]（仅voice_qa，从★话术中提取3-5个核心词）,
+  "required_keywords": ["关键词"]（仅voice_qa，提取3-5个处置要点词，不限于原话）,
+  "standard_points": ["标准处置要点1", "标准处置要点2", "标准处置要点3"],
+  "acceptable_answers": ["可接受表达/做法1", "可接受表达/做法2"],
+  "common_mistakes": ["常见错误1", "常见错误2"],
+  "score_rubric": {{"risk_awareness": 30, "procedure": 25, "communication": 20, "lawfulness": 15, "safety": 10}},
   "timeout_seconds": 45,
   "score_weight": 10,
   "prompt_content": {{
     "instruction": "节点任务说明（一句话告诉学员需要做什么）",
     "scene_summary": "当前场景描述（50-80字，描述此刻现场状况：对方在做什么、情绪如何、周围环境）",
+    "training_objective": "同 training_objective，写给学员/教官查看",
+    "decision_reason": "同 decision_reason",
+    "scene_pressure": "同 scene_pressure",
     "speech_hint": "标准话术原文（直接从★标注的民警话术复制，完整不删减）"
+  }},
+  "node_config": {{
+    "training_objective": "同 training_objective",
+    "decision_reason": "同 decision_reason",
+    "scene_pressure": "同 scene_pressure",
+    "standard_points": ["标准处置要点"],
+    "acceptable_answers": ["可接受表达/做法"],
+    "common_mistakes": ["常见错误与扣分点"],
+    "score_rubric": {{"risk_awareness": 30, "procedure": 25, "communication": 20, "lawfulness": 15, "safety": 10}},
+    "answer_appears_at": 参考答案出现秒数
   }}
 }}
 
 ━━━━━━━━━━━ 核心规则（必须严格遵守）━━━━━━━━━━━
 
 【trigger_time 定位规则 — 最重要】
-1. 找到每个训练点对应的★标注民警话术的起始时间（即 answer_appears_at）
-2. trigger_time = answer_appears_at - 3（在答案出现前3秒暂停）
-3. trigger_time 必须 > 0 且 < 总时长
-4. 如果两个相邻节点的★话术间隔 < 8 秒，合并为一个节点
-5. trigger_time 绝对不能等于或大于 answer_appears_at（否则学员会先看到答案再答题）
-6. 优先选择处置阶段转换点、关键决策点作为训练节点
+1. 优先选择“学员必须做判断或行动”的瞬间：冲突升级前、双方接近前、询问切入前、需要依法告知前、需要固定事实前。
+2. trigger_time 必须停在示范民警给出做法之前，让学员先处置，不是看完答案后复述。
+3. 如果能定位示范答案，填写 answer_appears_at；trigger_time 应早于 answer_appears_at 2-6 秒。
+4. 如果视频没有明确答案时间，也可以在风险/决策点暂停，但必须写清 decision_reason。
+5. 相邻节点间隔至少 8 秒，过近的动作合并为一个更完整的训练任务。
+6. 不要为了凑数量按固定时间切点；宁可少一点，也要保证每个节点有真实训练价值。
 
 【ai_instructor_hint 格式要求 — 带着练】
 必须包含三部分，用换行分隔：
 - 第1行：场景描述（"现在的情况是：..."，20-30字描述当前局势）
 - 第2行：任务引导（"你需要：..."，明确告诉学员该做什么动作/说什么方向的话）
-- 第3行：关键提示（"注意要点：..."，给出1-2个关键提示词但不给完整答案）
+- 第3行：关键提示（"注意要点：..."，给出1-2个判断方向或安全提醒，但不要泄露完整标准答案）
 示例："现在的情况是：当事双方情绪激动，正在互相推搡。\\n你需要：上前控制局面，表明执法身份，将双方分开。\\n注意要点：先控制局面确保安全，再表明身份。"
 
 【其他规则】
-7. 交互类型多样化：judgment→voice_qa→choice→voice_qa 交替使用
-8. voice_qa 的 required_keywords 从★标注的民警话术中提取3-5个核心动词/名词
-9. speech_hint 必须是视频中民警说的原话（★标注内容），完整复制不能改写
-10. scene_summary 必须具体描述此刻画面/对方状态，不能用笼统描述"""
+7. 每个节点必须先有明确 training_objective，再决定题型；不要把视频原话直接包装成题目。
+8. 交互类型按训练目标选择：风险识别适合 judgment/choice，处置表达适合 voice_qa，动作流程适合 action。
+9. voice_qa 的 required_keywords 是合格处置要点，不要求逐字复述视频原话。
+10. speech_hint 可记录视频中民警示范话术，但 acceptable_answers 必须允许同义、合法、规范的不同表达。
+11. standard_points 写处置框架，common_mistakes 写会导致扣分或风险升级的错误。
+12. scene_summary 必须具体描述此刻画面/对方状态，不能用笼统描述。"""
 
     try:
         response = client.chat.completions.create(
             model=get_chat_model(),
             messages=[
-                {"role": "system", "content": "你是公安实战训练课程编排专家。严格按要求输出合法JSON。核心要求：1)trigger_time必须在答案出现前3秒；2)ai_instructor_hint必须包含场景+任务+要点三部分；3)speech_hint必须是视频原话。"},
+                {"role": "system", "content": "你是公安实战训练课程编排专家。严格按要求输出合法JSON。核心要求：1)节点必须是训练决策点，不是答案复述点；2)每个节点必须包含训练目标、暂停原因、现场压力、标准要点、可接受答案和常见错误；3)trigger_time必须早于示范处置或答案出现。"},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
@@ -1884,8 +2030,8 @@ OCR：{' / '.join(ocr_hints[:6]) if ocr_hints else '无'}
 {transcript_text}
 
 输出JSON，包含title, description, video_type, scenario_type, difficulty, briefing, tags, nodes(4-6个)。
-每个node含：title, trigger_time, node_interaction_type(judgment/voice_qa/choice), ai_instructor_hint, choice_options, correct_answer, required_keywords, timeout_seconds, score_weight, prompt_content(instruction/scene_summary/speech_hint)。
-交互类型必须多样化。trigger_time必须基于语音时间戳。"""
+每个node含：title, training_objective, decision_reason, scene_pressure, trigger_time, answer_appears_at, node_interaction_type(judgment/voice_qa/choice/action), ai_instructor_hint, choice_options, correct_answer, required_keywords, standard_points, acceptable_answers, common_mistakes, score_rubric, timeout_seconds, score_weight, prompt_content(instruction/scene_summary/training_objective/decision_reason/scene_pressure/speech_hint), node_config(training_objective/decision_reason/scene_pressure/standard_points/acceptable_answers/common_mistakes/score_rubric/answer_appears_at)。
+交互类型必须服务训练目标。trigger_time必须选择风险点、决策点或处置转折点，并早于示范答案。"""
 
     try:
         response = client.chat.completions.create(
@@ -1924,21 +2070,15 @@ def analyze_video_file(
     from .llm_provider import ACTIVE_API_KEY as LLM_KEY
 
     if not LLM_KEY:
-        return {
-            "analysis_mode": "error",
-            "analysis_error": "未配置 AI API Key（DEEPSEEK_API_KEY），无法进行视频分析。请在 .env 中配置后重试。",
-            "title": title_hint or "未命名视频",
-            "description": "",
-            "video_type": "interactive",
-            "briefing": None,
-            "tags": [],
-            "status": "draft",
-            "nodes": [],
-            "suggested_timestamps": [],
-            "frame_count": 0,
-            "ocr_hints": [],
-            "transcript": [],
-        }
+        return _fallback_analysis_with_warning(
+            title_hint,
+            duration_seconds,
+            reason="未配置 AI API Key，已改用本地模板生成基础训练节点",
+            preferred_type=preferred_type,
+            scenario_hint=scenario_hint,
+            training_variant=training_variant,
+            difficulty_level=difficulty_level,
+        )
 
     # Step 1: 提取视频帧用于 OCR
     frames = _sample_video_frames(video_path)
@@ -1954,23 +2094,21 @@ def analyze_video_file(
     transcript = _transcribe_video_audio(video_path)
     print(f"[视频分析] 转写完成，共 {len(transcript)} 段句子")
 
-    # 如果既没有转写也没有 OCR，报错
+    # 如果既没有转写也没有 OCR，先返回可编辑的基础训练节点
     if not transcript and not ocr_hints:
-        return {
-            "analysis_mode": "error",
-            "analysis_error": "无法从视频中提取语音或文字内容。请确认：1) 视频有声音 2) ffmpeg 已安装 3) DASHSCOPE_API_KEY 已配置。",
-            "title": title_hint or "未命名视频",
-            "description": "",
-            "video_type": "interactive",
-            "briefing": None,
-            "tags": [],
-            "status": "draft",
-            "nodes": [],
-            "suggested_timestamps": [],
-            "frame_count": len(frames),
-            "ocr_hints": ocr_hints,
-            "transcript": [],
-        }
+        return _fallback_analysis_with_warning(
+            title_hint,
+            duration_seconds,
+            reason="未提取到语音转写或画面文字，已改用本地模板生成基础训练节点",
+            preferred_type=preferred_type,
+            scenario_hint=scenario_hint,
+            training_variant=training_variant,
+            difficulty_level=difficulty_level,
+            frames=frames,
+            ocr_hints=ocr_hints,
+            transcript=[],
+            scene_changes=scene_changes,
+        )
 
     # Step 4: 两阶段 AI 分析（场景理解 → 训练编排）
     try:
@@ -1987,41 +2125,60 @@ def analyze_video_file(
             difficulty_level=difficulty_level,
         )
         if not payload:
-            return {
-                "analysis_mode": "error",
-                "analysis_error": "AI 分析未返回有效结果。已成功提取语音内容，但 LLM 未能生成训练节点。请重试。",
-                "title": title_hint or "未命名视频",
-                "description": "",
-                "video_type": "interactive",
-                "briefing": None,
-                "tags": [],
-                "status": "draft",
-                "nodes": [],
-                "suggested_timestamps": [],
-                "frame_count": len(frames),
-                "ocr_hints": ocr_hints,
-                "transcript": transcript,
-            }
+            return _fallback_analysis_with_warning(
+                title_hint,
+                duration_seconds,
+                reason="AI 未返回有效 JSON，已改用本地模板生成基础训练节点",
+                preferred_type=preferred_type,
+                scenario_hint=scenario_hint,
+                training_variant=training_variant,
+                difficulty_level=difficulty_level,
+                frames=frames,
+                ocr_hints=ocr_hints,
+                transcript=transcript,
+                scene_changes=scene_changes,
+            )
 
-        # AI 成功返回，规范化
-        normalized = _normalize_analysis_strict(payload, title_hint, duration_seconds)
+        # AI 成功返回，使用容错规范化；若节点缺失则自动补模板节点
+        normalized = _normalize_analysis(
+            payload,
+            title_hint,
+            duration_seconds,
+            preferred_type,
+            scenario_hint,
+            training_variant,
+            difficulty_level,
+        )
+        if normalized.get("video_type") == "interactive" and not normalized.get("nodes"):
+            return _fallback_analysis_with_warning(
+                title_hint,
+                duration_seconds,
+                reason="AI 返回内容缺少可用训练节点，已改用本地模板生成基础训练节点",
+                preferred_type=preferred_type,
+                scenario_hint=scenario_hint,
+                training_variant=training_variant,
+                difficulty_level=difficulty_level,
+                frames=frames,
+                ocr_hints=ocr_hints,
+                transcript=transcript,
+                scene_changes=scene_changes,
+            )
         normalized["frame_count"] = len(frames)
         normalized["ocr_hints"] = ocr_hints
         normalized["transcript"] = transcript
+        normalized["scene_changes"] = scene_changes
         return normalized
     except Exception as exc:
-        return {
-            "analysis_mode": "error",
-            "analysis_error": f"AI 分析过程中出错：{exc}。请稍后重试。",
-            "title": title_hint or "未命名视频",
-            "description": "",
-            "video_type": "interactive",
-            "briefing": None,
-            "tags": [],
-            "status": "draft",
-            "nodes": [],
-            "suggested_timestamps": [],
-            "frame_count": len(frames),
-            "ocr_hints": ocr_hints,
-            "transcript": transcript,
-        }
+        return _fallback_analysis_with_warning(
+            title_hint,
+            duration_seconds,
+            reason=f"AI 分析过程中出错：{exc}",
+            preferred_type=preferred_type,
+            scenario_hint=scenario_hint,
+            training_variant=training_variant,
+            difficulty_level=difficulty_level,
+            frames=frames,
+            ocr_hints=ocr_hints,
+            transcript=transcript,
+            scene_changes=scene_changes,
+        )
