@@ -125,9 +125,11 @@ const localizeFaceMessage = (value: any, fallback = '人脸验证失败，请调
   const text = String(value || '').trim()
   const lowered = text.toLowerCase()
   if (!text || /^\?+$/.test(text)) return fallback
+  if (lowered.includes('request failed with status code') || lowered.includes('internal server error')) return '人脸识别服务处理失败，请稍后重试'
+  if (lowered.includes('network error') || lowered.includes('failed to fetch')) return '人脸识别服务连接异常，请检查网络后重试'
   if (lowered.includes('no registered face profile')) return '当前账号尚未注册人脸档案'
   if (lowered.includes('no face detected') || lowered.includes('no face')) return '未检测到人脸，请正对摄像头'
-  if (lowered.includes('multiple faces') || lowered.includes('multiple')) return '检测到多人入镜，请保持单人验证'
+  if (lowered.includes('multiple faces') || lowered.includes('multiple')) return '已选取画面中的主脸进行验证'
   if (lowered.includes('face mismatch') || lowered.includes('mismatch')) return '当前人脸与注册学员不一致'
   if (lowered.includes('invalid camera frame')) return '摄像头画面无效，请继续调整'
   if (lowered.includes('invalid image')) return '画面格式无效，请继续调整'
@@ -137,7 +139,7 @@ const localizeFaceMessage = (value: any, fallback = '人脸验证失败，请调
     return '人脸识别模型暂不可用，请检查后端模型服务'
   }
   if (lowered === 'passed') return '人脸验证通过'
-  return text
+  return /[a-z]/i.test(text) && !/[\u4e00-\u9fff]/.test(text) ? fallback : text
 }
 
 const waitForVideoReady = async (video: HTMLVideoElement | null, timeoutMs = 3000) => {
@@ -253,23 +255,29 @@ const stopCamera = () => {
   cameraReady.value = false
 }
 
-const captureFrame = (size = 640, jpegQuality = 0.9) => {
+const captureFrame = (size = 360, jpegQuality = 0.72) => {
   const video = videoRef.value
   const canvas = canvasRef.value
   if (!video || !canvas || !cameraReady.value || !video.videoWidth) return null
-  const sourceSize = Math.min(video.videoWidth, video.videoHeight)
-  const sx = Math.max(0, Math.round((video.videoWidth - sourceSize) / 2))
-  const sy = Math.max(0, Math.round((video.videoHeight - sourceSize) / 2))
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return null
-  ctx.drawImage(video, sx, sy, sourceSize, sourceSize, 0, 0, canvas.width, canvas.height)
-  return canvas.toDataURL('image/jpeg', jpegQuality)
+  const drawFrame = (targetSize: number, quality: number) => {
+    const sourceSize = Math.min(video.videoWidth, video.videoHeight)
+    const sx = Math.max(0, Math.round((video.videoWidth - sourceSize) / 2))
+    const sy = Math.max(0, Math.round((video.videoHeight - sourceSize) / 2))
+    canvas.width = targetSize
+    canvas.height = targetSize
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.drawImage(video, sx, sy, sourceSize, sourceSize, 0, 0, canvas.width, canvas.height)
+    return canvas.toDataURL('image/jpeg', quality)
+  }
+  const frame = drawFrame(size, jpegQuality)
+  // Keep every verification and monitoring request below the public proxy body limit.
+  if (!frame || frame.length <= 48_000) return frame
+  return drawFrame(300, 0.62)
 }
 
 const buildPayload = (endpoint: 'verify' | 'heartbeat') => {
-  const frame = endpoint === 'verify' ? captureFrame(512, 0.82) : captureFrame()
+  const frame = captureFrame()
   if (!frame) return null
   return {
     frame,

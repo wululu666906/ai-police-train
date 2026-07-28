@@ -1,466 +1,115 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import {
-  behaviorArchetypeOptions,
-  expandRoleCompactToPerson,
-  listToTextarea,
-  openingPresetOptions,
-  personToRoleCompact,
-  textareaToList,
-} from '../utils/roleCompact'
+import { expandRoleCompactToPerson, listToTextarea, personToRoleCompact, textareaToList } from '../utils/roleCompact'
 
-const props = withDefaults(
-  defineProps<{
-    modelValue: Record<string, any>
-    sceneBehaviorMode?: string
-  }>(),
-  {
-    sceneBehaviorMode: '核查取证型',
-  }
-)
+const props = withDefaults(defineProps<{ modelValue: Record<string, any>; sceneBehaviorMode?: string }>(), {
+  sceneBehaviorMode: '核查取证型',
+})
+const emit = defineEmits<{ 'update:modelValue': [value: Record<string, any>] }>()
 
-const emit = defineEmits<{
-  'update:modelValue': [value: Record<string, any>]
-}>()
-
-const roleTypeOptions = ['相关人员', '证人', '嫌疑人', '被害人', '民警']
+const roleTypeOptions = ['相关人员', '证人', '嫌疑人', '被害人', '报警人', '民警']
 const statusOptions = ['正常', '受伤可交流', '死亡', '重伤', '昏迷', '无法接受询问']
+const memoryTypeOptions = [
+  { value: 'direct_statement', label: '直接陈述' },
+  { value: 'personal_experience', label: '亲历' },
+  { value: 'direct_observation', label: '亲眼所见' },
+  { value: 'hearsay', label: '听他人说' },
+  { value: 'later_learned', label: '事后得知' },
+  { value: 'source_mention', label: '原文提及' },
+]
+const legacyRoleFields = [
+  'behavior_archetype', 'opening_preset', 'current_goal', 'current_need', 'core_concern', 'weakness',
+  'relationship_pressure', 'surface_stance', 'pressure_response', 'trigger_points', 'calming_points',
+  'police_attitude', 'interaction_style', 'personality', 'speaking_style', 'authority_attitude',
+  'stress_response', 'public_mask', 'private_drive', 'self_image', 'boundary_primary', 'boundary_secondary',
+  'known_key_points', 'withheld_key_points', 'hidden_truths', 'does_not_know', 'cannot_answer',
+]
 
 const compact = ref(personToRoleCompact(props.modelValue, props.sceneBehaviorMode))
+watch(() => [props.modelValue, props.sceneBehaviorMode], () => {
+  compact.value = personToRoleCompact(props.modelValue, props.sceneBehaviorMode)
+}, { deep: true })
 
-watch(
-  () => [props.modelValue, props.sceneBehaviorMode],
-  () => {
-    compact.value = personToRoleCompact(props.modelValue, props.sceneBehaviorMode)
-  },
-  { deep: true }
-)
-
-const boundaryPrimaryLabel = computed(() => compact.value._boundary_primary_label || '可核实事实')
-const boundarySecondaryLabel = computed(() => compact.value._boundary_secondary_label || '暂不主动说')
+const memoryRows = computed(() => Array.isArray(compact.value.role_memories) ? compact.value.role_memories : [])
 
 const syncOut = () => {
-  const expanded = expandRoleCompactToPerson(compact.value, props.sceneBehaviorMode)
-  emit('update:modelValue', { ...props.modelValue, ...expanded })
+  const next = { ...props.modelValue, ...expandRoleCompactToPerson(compact.value, props.sceneBehaviorMode) }
+  for (const field of legacyRoleFields) delete next[field]
+  next.role_template_version = 'source_memory_v2'
+  emit('update:modelValue', next)
 }
-
 const updateField = (key: string, value: any) => {
   compact.value = { ...compact.value, [key]: value }
   syncOut()
 }
-
-const updateListField = (
-  key: 'trigger_points' | 'calming_points' | 'cannot_answer' | 'boundary_primary' | 'boundary_secondary' | 'relationship_pressure',
-  text: string,
-  limit = 0
-) => {
-  updateField(key, textareaToList(text, limit))
+const updateList = (key: string, text: string) => updateField(key, textareaToList(text, 12))
+const updateMemory = (index: number, key: string, value: string) => {
+  const rows = memoryRows.value.map((item: any) => ({ ...item }))
+  rows[index] = { ...rows[index], [key]: value }
+  updateField('role_memories', rows)
 }
-
-const archetypeSummary = computed(() => {
-  const item = behaviorArchetypeOptions.find((option) => option.value === compact.value.behavior_archetype)
-  return item?.summary || ''
-})
-
-const presetSummary = computed(() => {
-  const item = openingPresetOptions.find((option) => option.value === compact.value.opening_preset)
-  return item?.summary || ''
-})
+const addMemory = () => updateField('role_memories', [
+  ...memoryRows.value,
+  { memory_id: `M${memoryRows.value.length + 1}`, memory_type: 'direct_statement', statement: '', time_hint: '', place_hint: '', actors: [], source_refs: [] },
+])
+const removeMemory = (index: number) => updateField('role_memories', memoryRows.value.filter((_: any, i: number) => i !== index))
 </script>
 
 <template>
-  <div class="rcf-sheet">
-
-    <!-- 基础信息组 -->
-    <section class="rcf-card">
-      <div class="rcf-card__header">
-        <span class="rcf-card__title">角色设定</span>
-        <span class="rcf-card__desc">{{ archetypeSummary || '选择行为原型后会自动填入人设描述' }}</span>
-      </div>
-
-      <div class="rcf-grid rcf-grid--four">
-        <div class="rcf-field">
-          <label class="rcf-label">角色姓名 <span class="rcf-required">*</span></label>
-          <input
-            :value="compact.name"
-            type="text"
-            class="rcf-input"
-            placeholder="如：李娜"
-            @input="updateField('name', ($event.target as HTMLInputElement).value)"
-          />
-        </div>
-        <div class="rcf-field">
-          <label class="rcf-label">行为类型</label>
-          <select
-            :value="compact.role_type"
-            class="rcf-input"
-            @change="updateField('role_type', ($event.target as HTMLSelectElement).value)"
-          >
-            <option v-for="option in roleTypeOptions" :key="option" :value="option">{{ option }}</option>
-          </select>
-        </div>
-        <div class="rcf-field">
-          <label class="rcf-label">激活配合型</label>
-          <select
-            :value="compact.status"
-            class="rcf-input"
-            @change="updateField('status', ($event.target as HTMLSelectElement).value)"
-          >
-            <option v-for="option in statusOptions" :key="option" :value="option">{{ option }}</option>
-          </select>
-        </div>
-        <div class="rcf-field">
-          <label class="rcf-label">人物身份</label>
-          <select
-            :value="compact.behavior_archetype"
-            class="rcf-input"
-            @change="updateField('behavior_archetype', ($event.target as HTMLSelectElement).value)"
-          >
-            <option v-for="option in behaviorArchetypeOptions" :key="option.value" :value="option.value">{{ option.value }}</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="rcf-grid rcf-grid--three rcf-mt">
-        <div class="rcf-field">
-          <label class="rcf-label">角色类型</label>
-          <select
-            :value="compact.role_type"
-            class="rcf-input"
-            @change="updateField('role_type', ($event.target as HTMLSelectElement).value)"
-          >
-            <option v-for="option in roleTypeOptions" :key="option" :value="option">{{ option }}</option>
-          </select>
-        </div>
-        <div class="rcf-field">
-          <label class="rcf-label">当前状态</label>
-          <select
-            :value="compact.status"
-            class="rcf-input"
-            @change="updateField('status', ($event.target as HTMLSelectElement).value)"
-          >
-            <option v-for="option in statusOptions" :key="option" :value="option">{{ option }}</option>
-          </select>
-        </div>
-        <div class="rcf-field">
-          <label class="rcf-label">开场状态</label>
-          <select
-            :value="compact.opening_preset"
-            class="rcf-input"
-            @change="updateField('opening_preset', ($event.target as HTMLSelectElement).value)"
-          >
-            <option v-for="option in openingPresetOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-          </select>
-        </div>
-      </div>
-      <div v-if="presetSummary" class="rcf-hint-row">{{ presetSummary }}</div>
-    </section>
-
-    <!-- 诉求与顾虑 -->
-    <section class="rcf-card">
-      <div class="rcf-card__header">
-        <span class="rcf-card__title">诉求与顾虑</span>
-      </div>
-      <div class="rcf-grid rcf-grid--two">
-        <div class="rcf-field">
-          <label class="rcf-label">当前诉求</label>
-          <textarea
-            :value="compact.current_goal"
-            rows="3"
-            class="rcf-textarea"
-            placeholder="例如：先把人稳下来，不想把事情继续闹大"
-            @input="updateField('current_goal', ($event.target as HTMLTextAreaElement).value)"
-          />
-        </div>
-        <div class="rcf-field">
-          <label class="rcf-label">最怕后果</label>
-          <textarea
-            :value="compact.core_concern"
-            rows="3"
-            class="rcf-textarea"
-            placeholder="例如：最怕被认定先动手"
-            @input="updateField('core_concern', ($event.target as HTMLTextAreaElement).value)"
-          />
-        </div>
-        <div class="rcf-field">
-          <label class="rcf-label">表面姿态</label>
-          <textarea
-            :value="compact.surface_stance"
-            rows="3"
-            class="rcf-textarea"
-            placeholder="例如：嘴上愿意配合，但会反复强调自己没错"
-            @input="updateField('surface_stance', ($event.target as HTMLTextAreaElement).value)"
-          />
-        </div>
-        <div class="rcf-field">
-          <label class="rcf-label">承压反应</label>
-          <textarea
-            :value="compact.pressure_response"
-            rows="3"
-            class="rcf-textarea"
-            placeholder="例如：被追问细节时会先辩解，再试探性改口"
-            @input="updateField('pressure_response', ($event.target as HTMLTextAreaElement).value)"
-          />
-        </div>
+  <div class="role-memory-form">
+    <section class="form-section">
+      <header><strong>角色身份</strong><span>只保存原文可回溯信息，不再使用旧版人格参数。</span></header>
+      <div class="grid grid-3">
+        <label>角色姓名<input :value="compact.name" @input="updateField('name', ($event.target as HTMLInputElement).value)" /></label>
+        <label>角色类型<select :value="compact.role_type" @change="updateField('role_type', ($event.target as HTMLSelectElement).value)"><option v-for="item in roleTypeOptions" :key="item" :value="item">{{ item }}</option></select></label>
+        <label>人物状态<select :value="compact.status" @change="updateField('status', ($event.target as HTMLSelectElement).value)"><option v-for="item in statusOptions" :key="item" :value="item">{{ item }}</option></select></label>
       </div>
     </section>
 
-    <!-- 触发与安抚 -->
-    <section class="rcf-card">
-      <div class="rcf-card__header">
-        <span class="rcf-card__title">触发与安抚</span>
-      </div>
-      <div class="rcf-grid rcf-grid--three">
-        <div class="rcf-field">
-          <div class="rcf-label-row">
-            <label class="rcf-label">触发点</label>
-            <span class="rcf-hint">最多 3 条</span>
-          </div>
-          <textarea
-            :value="listToTextarea(compact.trigger_points)"
-            rows="4"
-            class="rcf-textarea"
-            placeholder="每行一条"
-            @input="updateListField('trigger_points', ($event.target as HTMLTextAreaElement).value, 3)"
-          />
+    <section class="form-section">
+      <header><strong>人物线与角色证言</strong><span>按角色经历顺序整理，尽量保留原文，仅做轻微润色。</span></header>
+      <div v-if="!memoryRows.length" class="empty">暂未提取到该角色的陈述、证言或亲历内容</div>
+      <article v-for="(memory, index) in memoryRows" :key="memory.memory_id || index" class="memory-row">
+        <div class="grid grid-3">
+          <label>记忆来源<select :value="memory.memory_type" @change="updateMemory(index, 'memory_type', ($event.target as HTMLSelectElement).value)"><option v-for="item in memoryTypeOptions" :key="item.value" :value="item.value">{{ item.label }}</option></select></label>
+          <label>时间线索<input :value="memory.time_hint" placeholder="如：7月19日上午、冲突后" @input="updateMemory(index, 'time_hint', ($event.target as HTMLInputElement).value)" /></label>
+          <label>空间线索<input :value="memory.place_hint" placeholder="如：山脚、公路边" @input="updateMemory(index, 'place_hint', ($event.target as HTMLInputElement).value)" /></label>
         </div>
-        <div class="rcf-field">
-          <div class="rcf-label-row">
-            <label class="rcf-label">安抚点</label>
-            <span class="rcf-hint">最多 3 条</span>
-          </div>
-          <textarea
-            :value="listToTextarea(compact.calming_points)"
-            rows="4"
-            class="rcf-textarea"
-            placeholder="每行一条"
-            @input="updateListField('calming_points', ($event.target as HTMLTextAreaElement).value, 3)"
-          />
-        </div>
-        <div class="rcf-field">
-          <div class="rcf-label-row">
-            <label class="rcf-label">关系压力</label>
-            <span class="rcf-hint">最多 3 条</span>
-          </div>
-          <textarea
-            :value="listToTextarea(compact.relationship_pressure)"
-            rows="4"
-            class="rcf-textarea"
-            placeholder="每行一条"
-            @input="updateListField('relationship_pressure', ($event.target as HTMLTextAreaElement).value, 3)"
-          />
-        </div>
-      </div>
+        <label>证言 / 陈述 / 亲历记忆<textarea :value="memory.statement" rows="4" placeholder="该角色自己说了什么、经历了什么、看见或听见了什么" @input="updateMemory(index, 'statement', ($event.target as HTMLTextAreaElement).value)" /></label>
+        <p v-if="memory.quote" class="source-quote">原文回溯：{{ memory.quote }}</p>
+        <button type="button" class="danger" @click="removeMemory(index)">删除该条</button>
+      </article>
+      <button type="button" @click="addMemory">添加角色证言</button>
     </section>
 
-    <!-- 信息边界 -->
-    <section class="rcf-card">
-      <div class="rcf-card__header">
-        <span class="rcf-card__title">信息边界</span>
-        <span class="rcf-card__desc">随场景训练范式「{{ sceneBehaviorMode }}」自动切换边界字段</span>
-      </div>
-      <div class="rcf-grid rcf-grid--three">
-        <div class="rcf-subcard">
-          <div class="rcf-field">
-            <label class="rcf-label">{{ boundaryPrimaryLabel }}</label>
-            <textarea
-              :value="listToTextarea(compact.boundary_primary)"
-              rows="5"
-              class="rcf-textarea"
-              placeholder="每行一条"
-              @input="updateListField('boundary_primary', ($event.target as HTMLTextAreaElement).value, 6)"
-            />
-          </div>
-        </div>
-        <div class="rcf-subcard">
-          <div class="rcf-field">
-            <label class="rcf-label">{{ boundarySecondaryLabel }}</label>
-            <textarea
-              :value="listToTextarea(compact.boundary_secondary)"
-              rows="5"
-              class="rcf-textarea"
-              placeholder="每行一条"
-              @input="updateListField('boundary_secondary', ($event.target as HTMLTextAreaElement).value, 6)"
-            />
-          </div>
-        </div>
-        <div class="rcf-subcard">
-          <div class="rcf-field">
-            <label class="rcf-label">确实无法回答</label>
-            <textarea
-              :value="listToTextarea(compact.cannot_answer)"
-              rows="5"
-              class="rcf-textarea"
-              :placeholder="compact.cannot_answer?.length ? '每行一条' : '暂无明确限制时，可先留空'"
-              @input="updateListField('cannot_answer', ($event.target as HTMLTextAreaElement).value, 6)"
-            />
-          </div>
-        </div>
-      </div>
-
-      <div v-if="sceneBehaviorMode === '管控型'" class="rcf-field rcf-mt">
-        <label class="rcf-label">酒精 / 药物 / 精神状态</label>
-        <textarea
-          :value="compact.impairment_state"
-          rows="3"
-          class="rcf-textarea"
-          placeholder="例如：饮酒明显，语无伦次"
-          @input="updateField('impairment_state', ($event.target as HTMLTextAreaElement).value)"
-        />
+    <section class="form-section">
+      <header><strong>事实边界</strong><span>约束角色只能依据本人人物线回答。</span></header>
+      <div class="grid grid-2">
+        <label>回答约束<textarea :value="listToTextarea(compact.response_constraints)" rows="5" placeholder="每行一条" @input="updateList('response_constraints', ($event.target as HTMLTextAreaElement).value)" /></label>
+        <label>待核实 / 无法确认<textarea :value="listToTextarea(compact.unresolved_claims)" rows="5" placeholder="每行一条" @input="updateList('unresolved_claims', ($event.target as HTMLTextAreaElement).value)" /></label>
       </div>
     </section>
-
   </div>
 </template>
 
 <style scoped>
-/* ── 整体容器 ──────────────────────────────────────────── */
-.rcf-sheet {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-/* ── 卡片 ──────────────────────────────────────────────── */
-.rcf-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  background: #fff;
-  overflow: hidden;
-}
-
-.rcf-card__header {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 11px 16px 10px;
-  border-bottom: 1px solid #f1f5f9;
-  background: #f8fafc;
-}
-
-.rcf-card__title {
-  font-size: 13px;
-  font-weight: 700;
-  color: #1e293b;
-  white-space: nowrap;
-}
-
-.rcf-card__desc {
-  font-size: 12px;
-  color: #94a3b8;
-  line-height: 1.5;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rcf-subcard {
-  border: 1px solid #f1f5f9;
-  border-radius: 10px;
-  background: #fafcff;
-  padding: 12px;
-}
-
-/* ── 网格 ──────────────────────────────────────────────── */
-.rcf-grid {
-  display: grid;
-  gap: 12px;
-  padding: 14px 16px;
-  grid-template-columns: 1fr;
-}
-
-.rcf-mt {
-  padding-top: 0;
-}
-
-/* ── 字段 ──────────────────────────────────────────────── */
-.rcf-field {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.rcf-label-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.rcf-label {
-  font-size: 12px;
-  font-weight: 700;
-  color: #64748b;
-  line-height: 1;
-}
-
-.rcf-required {
-  color: #ef4444;
-  font-size: 12px;
-}
-
-.rcf-hint {
-  font-size: 11px;
-  color: #94a3b8;
-}
-
-.rcf-hint-row {
-  padding: 0 16px 12px;
-  font-size: 12px;
-  color: #94a3b8;
-  line-height: 1.6;
-}
-
-/* ── 输入控件 ──────────────────────────────────────────── */
-.rcf-input,
-.rcf-textarea {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 7px 10px;
-  border: 1.5px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-  font-size: 13px;
-  font-weight: 500;
-  color: #0f172a;
-  outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-  font-family: inherit;
-}
-
-.rcf-input:focus,
-.rcf-textarea:focus {
-  border-color: #1d3557;
-  box-shadow: 0 0 0 3px rgba(29, 53, 87, 0.08);
-}
-
-.rcf-input::placeholder,
-.rcf-textarea::placeholder {
-  color: #cbd5e1;
-  font-weight: 400;
-}
-
-.rcf-textarea {
-  resize: vertical;
-  min-height: 80px;
-  line-height: 1.6;
-}
-
-/* ── 响应式 ────────────────────────────────────────────── */
-@media (min-width: 700px) {
-  .rcf-grid--two {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-@media (min-width: 900px) {
-  .rcf-grid--three {
-    grid-template-columns: repeat(3, 1fr);
-  }
-  .rcf-grid--four {
-    grid-template-columns: repeat(4, 1fr);
-  }
-}
+.role-memory-form { display: flex; flex-direction: column; gap: 14px; }
+.form-section { border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; overflow: hidden; }
+header { display: flex; align-items: baseline; gap: 10px; padding: 12px 16px; background: #f8fafc; border-bottom: 1px solid #eef2f7; }
+header strong { color: #172033; font-size: 14px; }
+header span { color: #8290a6; font-size: 12px; }
+.grid { display: grid; gap: 14px; padding: 16px; }
+.grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+label { display: flex; flex-direction: column; gap: 7px; color: #52627a; font-size: 13px; font-weight: 600; }
+input, select, textarea { width: 100%; border: 1px solid #d7e0ec; border-radius: 6px; padding: 9px 11px; color: #1e293b; background: #fff; font: inherit; font-weight: 400; box-sizing: border-box; }
+textarea { resize: vertical; line-height: 1.6; }
+.memory-row { margin: 14px 16px; padding: 14px; border: 1px solid #e5eaf1; border-radius: 8px; background: #fbfcfe; }
+.memory-row .grid { padding: 0 0 12px; }
+button { margin: 0 16px 16px; border: 1px solid #bfdbfe; border-radius: 6px; padding: 7px 12px; background: #eff6ff; color: #1d4ed8; cursor: pointer; }
+.memory-row button { margin: 10px 0 0; }
+.source-quote { margin: 0; padding: 8px 10px; border-left: 3px solid #93c5fd; color: #64748b; background: #f8fafc; font-size: 12px; line-height: 1.6; }
+button.danger { border-color: #fecaca; background: #fff1f2; color: #b91c1c; }
+.empty { margin: 16px; padding: 18px; border: 1px dashed #cbd5e1; color: #94a3b8; text-align: center; }
+@media (max-width: 900px) { .grid-3, .grid-2 { grid-template-columns: 1fr; } header { align-items: flex-start; flex-direction: column; } }
 </style>

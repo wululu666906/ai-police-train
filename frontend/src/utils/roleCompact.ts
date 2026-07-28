@@ -1,10 +1,7 @@
 import {
   behaviorArchetypeOptions,
-  buildLegacyInfoBoundary,
   dedupeStringList,
-  getBehaviorArchetypeMeta,
   getSceneBoundaryFields,
-  normalizeBehaviorTemplate,
   parseTextList,
   stringifyTextList,
 } from './personaTemplate'
@@ -98,99 +95,130 @@ export const inferTrainingFocus = (sceneName = '', behaviorMode = '') => {
   return 'interview'
 }
 
-export const personToRoleCompact = (person: any, sceneBehaviorMode = '核查取证型') => {
-  const normalized = normalizeBehaviorTemplate({ ...person, scene_behavior_mode: sceneBehaviorMode })
-  const mode = normalized.scene_behavior_mode || sceneBehaviorMode
-  const [primaryKey, secondaryKey] = boundaryFieldKeysByMode[mode] || boundaryFieldKeysByMode['核查取证型']
-  const [primaryLabel, secondaryLabel] = boundaryFieldLabelsByMode[mode] || boundaryFieldLabelsByMode['核查取证型']
+const normalizeKnowledgeLedger = (person: any) => {
+  const explicit = Array.isArray(person?.knowledge_ledger) ? person.knowledge_ledger : []
+  const rows = explicit
+    .filter((item: any) => item && typeof item === 'object' && String(item.content || '').trim())
+    .map((item: any, index: number) => ({
+      knowledge_id: String(item.knowledge_id || `K${index + 1}`).trim(),
+      claim_id: String(item.claim_id || '').trim(),
+      knowledge_mode: String(item.knowledge_mode || 'source_mention').trim(),
+      content: String(item.content || '').trim(),
+      certainty: String(item.certainty || 'source_supported').trim(),
+      disclosure_policy: String(item.disclosure_policy || 'answer_when_asked').trim(),
+      verbalization: String(item.verbalization || item.content || '').trim(),
+      source_refs: Array.isArray(item.source_refs) ? item.source_refs : [],
+    }))
+  if (rows.length) return rows
 
-  return {
-    name: String(person?.name || '').trim(),
-    role_type: String(person?.role_type || person?.role || '相关人员').trim() || '相关人员',
-    status: String(person?.status || '正常').trim() || '正常',
-    behavior_archetype: normalized.behavior_archetype,
-    opening_preset: inferOpeningPreset(person),
-    current_goal: normalized.current_goal,
-    core_concern: normalized.core_concern,
-    trigger_points: normalized.trigger_points.slice(0, 3),
-    calming_points: normalized.calming_points.slice(0, 3),
-    cannot_answer: dedupeStringList(person?.cannot_answer || person?.does_not_know).slice(0, 6),
-    boundary_primary: dedupeStringList(normalized[primaryKey as keyof typeof normalized]).slice(0, 6),
-    boundary_secondary: dedupeStringList(normalized[secondaryKey as keyof typeof normalized]).slice(0, 6),
-    impairment_state: normalized.impairment_state,
-    relationship_pressure: normalized.relationship_pressure.slice(0, 2),
-    surface_stance: normalized.surface_stance,
-    pressure_response: normalized.pressure_response,
-    _boundary_primary_key: primaryKey,
-    _boundary_secondary_key: secondaryKey,
-    _boundary_primary_label: primaryLabel,
-    _boundary_secondary_label: secondaryLabel,
+  const legacyRows: any[] = []
+  const append = (values: any, knowledge_mode: string, disclosure_policy: string) => {
+    for (const content of dedupeStringList(values)) {
+      legacyRows.push({
+        knowledge_id: `K${legacyRows.length + 1}`,
+        claim_id: '',
+        knowledge_mode,
+        content,
+        certainty: 'legacy_config',
+        disclosure_policy,
+        verbalization: content,
+        source_refs: [],
+      })
+    }
   }
+  append(person?.known_key_points || person?.knows_facts, 'known', 'answer_when_asked')
+  append(person?.withheld_key_points || person?.hidden_truths, 'withheld', 'withhold_until_triggered')
+  append(person?.cannot_answer || person?.does_not_know, 'unknown', 'must_not_assert')
+  return legacyRows
 }
 
-export const expandRoleCompactToPerson = (compact: any, sceneBehaviorMode = '核查取证型'): Record<string, any> => {
-  const mode = sceneBehaviorMode || '核查取证型'
-  const [primaryKey, secondaryKey] = boundaryFieldKeysByMode[mode] || boundaryFieldKeysByMode['核查取证型']
-  const archetypeMeta = getBehaviorArchetypeMeta(compact?.behavior_archetype)
-  const preset = inferOpeningPreset(compact)
-  const scores = openingPresetScores[preset]
+const normalizeRoleMemories = (person: any) => {
+  const explicit = Array.isArray(person?.role_memories) ? person.role_memories : []
+  if (explicit.length) {
+    return explicit
+      .filter((item: any) => item && String(item.statement || item.content || '').trim())
+      .map((item: any, index: number) => ({
+        memory_id: String(item.memory_id || `M${index + 1}`),
+        memory_type: String(item.memory_type || item.knowledge_mode || 'direct_statement'),
+        statement: String(item.statement || item.content || '').trim(),
+        quote: String(item.quote || '').trim(),
+        time_hint: String(item.time_hint || '').trim(),
+        place_hint: String(item.place_hint || '').trim(),
+        actors: Array.isArray(item.actors) ? item.actors : [],
+        certainty: String(item.certainty || 'source_supported'),
+        source_refs: Array.isArray(item.source_refs) ? item.source_refs : [],
+        event_id: String(item.event_id || ''),
+      }))
+  }
+  return normalizeKnowledgeLedger(person).map((item: any, index: number) => ({
+    memory_id: String(item.knowledge_id || `M${index + 1}`),
+    memory_type: String(item.knowledge_mode || 'source_mention'),
+    statement: String(item.content || '').trim(),
+    quote: String(item.verbalization || item.content || '').trim(),
+    time_hint: '', place_hint: '', actors: [], certainty: String(item.certainty || 'legacy_config'),
+    source_refs: Array.isArray(item.source_refs) ? item.source_refs : [], event_id: String(item.claim_id || ''),
+  }))
+}
 
-  const payload: Record<string, any> = {
+export const personToRoleCompact = (person: any, sceneBehaviorMode = '核查取证型') => ({
+  name: String(person?.name || '').trim(),
+  role_type: String(person?.role_type || person?.role || '相关人员').trim() || '相关人员',
+  status: String(person?.status || '正常').trim() || '正常',
+  source_verification: String(person?.source_verification || '').trim(),
+  source_refs: Array.isArray(person?.source_refs) ? person.source_refs : [],
+  role_memories: normalizeRoleMemories(person),
+  knowledge_ledger: normalizeKnowledgeLedger(person),
+  unresolved_claims: Array.isArray(person?.unresolved_claims) ? person.unresolved_claims : [],
+  response_constraints: dedupeStringList(person?.response_constraints),
+  scene_behavior_mode: String(person?.scene_behavior_mode || sceneBehaviorMode || '核查取证型').trim(),
+  persona_autofill: false,
+})
+
+export const expandRoleCompactToPerson = (compact: any, sceneBehaviorMode = '核查取证型'): Record<string, any> => {
+  const roleMemories = normalizeRoleMemories(compact)
+  const ledger = roleMemories.length
+    ? roleMemories.map((memory: any, index: number) => ({
+        knowledge_id: String(memory.memory_id || `K${index + 1}`), claim_id: String(memory.event_id || ''),
+        knowledge_mode: String(memory.memory_type || 'source_mention'), content: String(memory.statement || '').trim(),
+        certainty: String(memory.certainty || 'source_supported'), disclosure_policy: 'answer_when_asked',
+        verbalization: String(memory.statement || '').trim(), source_refs: Array.isArray(memory.source_refs) ? memory.source_refs : [],
+      }))
+    : normalizeKnowledgeLedger(compact)
+  const contents = (modes: string[]) => ledger
+    .filter((item: any) => modes.includes(item.knowledge_mode))
+    .map((item: any) => item.content)
+    .filter(Boolean)
+  const known = dedupeStringList(contents(['known', 'direct_observation', 'personal_experience', 'personal_statement', 'hearsay', 'later_learned', 'source_mention']))
+  const withheld = dedupeStringList(contents(['withheld']))
+  const unknown = dedupeStringList(contents(['unknown', 'unresolved']))
+  return {
     name: String(compact?.name || '').trim(),
     role_type: String(compact?.role_type || '相关人员').trim() || '相关人员',
     status: String(compact?.status || '正常').trim() || '正常',
-    behavior_archetype: String(compact?.behavior_archetype || archetypeMeta.value).trim() || archetypeMeta.value,
-    opening_preset: preset,
-    current_goal: String(compact?.current_goal || '').trim(),
-    core_concern: String(compact?.core_concern || '').trim(),
-    trigger_points: dedupeStringList(compact?.trigger_points).slice(0, 3),
-    calming_points: dedupeStringList(compact?.calming_points).slice(0, 3),
-    cannot_answer: dedupeStringList(compact?.cannot_answer).slice(0, 6),
-    does_not_know: dedupeStringList(compact?.cannot_answer).slice(0, 6),
-    scene_behavior_mode: mode,
-    impairment_state: String(compact?.impairment_state || '').trim(),
-    relationship_pressure: dedupeStringList(compact?.relationship_pressure).slice(0, 2),
-    surface_stance: String(compact?.surface_stance || archetypeMeta.surface_stance || '').trim(),
-    pressure_response: String(compact?.pressure_response || archetypeMeta.pressure_response || '').trim(),
-    interaction_style: archetypeMeta.interaction_style,
-    police_attitude: archetypeMeta.police_attitude,
-    personality: archetypeMeta.personality,
-    speaking_style: archetypeMeta.speaking_style,
-    init_emotion: scores.init_emotion,
-    init_trust: scores.init_trust,
-    init_risk: scores.init_risk,
-    init_expression_clarity: scores.init_expression_clarity,
-    compact_v1: true,
+    source_verification: String(compact?.source_verification || '').trim(),
+    source_refs: Array.isArray(compact?.source_refs) ? compact.source_refs : [],
+    role_memories: roleMemories,
+    knowledge_ledger: ledger,
+    unresolved_claims: Array.isArray(compact?.unresolved_claims) ? compact.unresolved_claims : [],
+    response_constraints: dedupeStringList(compact?.response_constraints),
+    knows_facts: known,
+    known_key_points: known,
+    hidden_truths: withheld,
+    withheld_key_points: withheld,
+    does_not_know: unknown,
+    cannot_answer: unknown,
+    scene_behavior_mode: String(compact?.scene_behavior_mode || sceneBehaviorMode || '核查取证型').trim(),
+    persona_autofill: false,
+    persona_source: 'source_grounded_role_memory',
+    persona_contract_version: 'role_memory_v2',
   }
-
-  payload[primaryKey] = dedupeStringList(compact?.boundary_primary)
-  payload[secondaryKey] = dedupeStringList(compact?.boundary_secondary)
-
-  const legacy = buildLegacyInfoBoundary(payload)
-  payload.knows_facts = legacy.knows_facts
-  payload.hidden_truths = legacy.hidden_truths
-  payload.does_not_know = dedupeStringList(compact?.cannot_answer).slice(0, 6)
-
-  const normalized = normalizeBehaviorTemplate(payload)
-  return {
-    ...normalized,
-    name: payload.name,
-    role_type: payload.role_type,
-    status: payload.status,
-    opening_preset: payload.opening_preset,
-    does_not_know: payload.does_not_know,
-    cannot_answer: payload.cannot_answer,
-    compact_v1: true,
-  } as Record<string, any>
 }
 
 export const buildRoleCompactSummary = (compact: any) => {
-  const parts = [
-    compact?.behavior_archetype ? `原型 ${compact.behavior_archetype}` : '',
-    compact?.current_goal ? `诉求 ${compact.current_goal}` : '',
-    compact?.core_concern ? `顾虑 ${compact.core_concern}` : '',
-  ].filter(Boolean)
-  return parts.slice(0, 3)
+  const ledger = normalizeKnowledgeLedger(compact)
+  const known = ledger.filter((item: any) => !['unknown', 'unresolved'].includes(item.knowledge_mode)).length
+  const unknown = ledger.filter((item: any) => ['unknown', 'unresolved'].includes(item.knowledge_mode)).length
+  return [`认知条目 ${ledger.length}`, `可回答 ${known}`, `未知/未决 ${unknown}`]
 }
 
 export const listToTextarea = (value: any) => stringifyTextList(value)

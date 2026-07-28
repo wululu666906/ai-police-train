@@ -2,7 +2,7 @@
   <div class="student-page student-page--hall hall-page">
     <div class="hall-layout hall-layout--list">
       <div class="list-toolbar">
-        <span class="list-title">全部训练案件（{{ displayCases.length }}）</span>
+        <span class="list-title">{{ resultSummary }}</span>
       </div>
 
       <section class="card card--compact filter-card">
@@ -148,7 +148,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import { Grid, List } from '@element-plus/icons-vue'
@@ -200,7 +200,7 @@ const showExpanded = ref(false)
 const expandedCase = ref<CaseItem | null>(null)
 
 onMounted(() => {
-  setMainScrollable?.(true)
+  setMainScrollable?.(false)
   fetchCases()
 })
 
@@ -237,12 +237,22 @@ const filterData = computed(() => [
   },
 ])
 
-const displayCases = computed(() => {
-  let result = [...filteredCases.value]
+const sceneFilterStatus = computed<'active' | 'completed' | 'idle' | ''>(() => (
+  activeTaskTab.value === 'all' ? (selectedStatus.value as 'active' | 'completed' | 'idle' | '') : activeTaskTab.value
+))
 
-  if (activeTaskTab.value !== 'all') {
-    result = result.filter((caseItem) => getCaseStatus(caseItem) === activeTaskTab.value)
-  }
+const resultSummary = computed(() => {
+  const sceneCount = displayCases.value.reduce((total, caseItem) => total + (caseItem.scenes?.length || 0), 0)
+  return `筛选结果（${sceneCount} 个场景 / ${displayCases.value.length} 个案件）`
+})
+
+const displayCases = computed(() => {
+  let result = filteredCases.value
+    .map((caseItem) => ({
+      ...caseItem,
+      scenes: getFilteredScenes(caseItem),
+    }))
+    .filter((caseItem) => (caseItem.scenes?.length || 0) > 0)
 
   if (sortBy.value === 'train_count') {
     result.sort((a, b) => Number(b.train_count || 0) - Number(a.train_count || 0))
@@ -272,16 +282,28 @@ const openExpandedDetail = (caseItem: CaseItem) => {
   showExpanded.value = true
 }
 
-const getVisibleScenes = (caseItem: CaseItem) => {
+const getVisibleScenes = (caseItem: CaseItem) => getFilteredScenes(caseItem)
+
+const getFilteredScenes = (caseItem: CaseItem) => {
   const scenes = Array.isArray(caseItem?.scenes) ? caseItem.scenes : []
-  if (!selectedDifficulty.value) return scenes
-  return scenes.filter((scene) => normalizeDifficulty(scene.difficulty || '') === selectedDifficulty.value)
+  return scenes.filter((scene) => {
+    const difficultyMatched = !selectedDifficulty.value || normalizeDifficulty(scene.difficulty || '') === selectedDifficulty.value
+    const statusMatched = !sceneFilterStatus.value || matchSceneStatus(scene, sceneFilterStatus.value)
+    return difficultyMatched && statusMatched
+  })
 }
 
 const getSceneTrainingStatus = (scene: SceneItem) => {
   if (scene.training_status) return scene.training_status
   if (scene.has_active_session) return 'in_progress'
   return 'not_started'
+}
+
+const matchSceneStatus = (scene: SceneItem, status: 'active' | 'completed' | 'idle') => {
+  const sceneStatus = getSceneTrainingStatus(scene)
+  if (status === 'active') return sceneStatus === 'in_progress' || sceneStatus === 'evaluating'
+  if (status === 'completed') return sceneStatus === 'completed'
+  return sceneStatus === 'not_started'
 }
 
 const getSceneStatusLabel = (scene: SceneItem) => {
@@ -350,6 +372,7 @@ const onFilterChange = (values: Record<string, unknown>) => {
   selectedType.value = String(values.type ?? '')
   selectedStatus.value = String(values.status ?? '')
   selectedDifficulty.value = String(values.difficulty ?? '')
+  activeTaskTab.value = selectedStatus.value ? (selectedStatus.value as 'active' | 'idle' | 'completed') : 'all'
   filterCases()
 }
 
@@ -360,16 +383,15 @@ const filterCases = () => {
     result = result.filter((caseItem) => caseItem.case_type === selectedType.value)
   }
 
-  if (selectedStatus.value) {
-    result = result.filter((caseItem) => getCaseStatus(caseItem) === selectedStatus.value)
-  }
-
-  if (selectedDifficulty.value) {
-    result = result.filter((caseItem) => getVisibleScenes(caseItem).length > 0)
-  }
-
   filteredCases.value = result
 }
+
+watch(activeTaskTab, (value) => {
+  const nextStatus = value === 'all' ? '' : value
+  if (selectedStatus.value !== nextStatus) {
+    selectedStatus.value = nextStatus
+  }
+})
 
 const startTraining = async (scene: SceneItem) => {
   const sceneId = Number(scene?.id)

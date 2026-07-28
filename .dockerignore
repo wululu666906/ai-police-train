@@ -1,6 +1,8 @@
 .git
 .gitignore
 .pytest_cache
+.codex-*
+backend/.codex-*
 .venv
 venv
 env
@@ -21,12 +23,20 @@ backend/*.db
 backend/*.sqlite3
 backend/chroma_db
 chroma_db
+backend/static/face_profiles/**
+backend/static/session_media/**
+backend/static/videos/**
+backend/static/thumbnails/**
 
 logs
 backend/logs
 backups
 
-data
+# Keep only the tracked InsightFace model files in the build context. Runtime
+# databases, vector indexes, and uploaded data remain excluded.
+data/*
+!data/face_models/
+!data/face_models/**
 deploy_cloud_bundle
 deploy_native_bundle
 

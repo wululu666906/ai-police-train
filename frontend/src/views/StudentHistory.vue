@@ -115,7 +115,7 @@
               </div>
 
               <div class="history-row__time">
-                <div class="history-row__time-main">{{ formatTime(record.display_time || record.training_finished_at || record.training_started_at || record.created_at) }}</div>
+                <div class="history-row__time-main">{{ formatTime(record.created_at) }}</div>
                 <div class="history-row__time-sub">对话 {{ record.turn_count ?? 0 }} 轮次</div>
               </div>
 
@@ -131,47 +131,43 @@
               </div>
 
               <div class="history-row__actions">
-                <el-dropdown
-                  trigger="click"
-                  popper-class="history-action-dropdown"
-                  :disabled="isActionLocked(record.id)"
-                  @command="(command: string | number | object) => handleRecordAction(command, record)"
-                >
+                <div class="action-menu" @click.stop>
                   <button
                     type="button"
                     class="action-menu-trigger"
                     :class="{ 'action-menu-trigger--loading': isActionLocked(record.id) }"
                     :disabled="isActionLocked(record.id)"
+                    :aria-expanded="openActionMenuId === record.id"
+                    aria-haspopup="menu"
+                    @click="toggleActionMenu(record.id)"
                   >
                     <span>操作</span>
                     <span v-if="isActionLocked(record.id)" class="action-loading-dot" aria-hidden="true"></span>
                     <el-icon v-else><ArrowDown /></el-icon>
                   </button>
-                  <template #dropdown>
-                    <el-dropdown-menu>
-                      <el-dropdown-item command="dialogue">
-                        <el-icon><ChatLineRound /></el-icon>
-                        <span>查看对话</span>
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="record.status === 'finished'" command="report">
-                        <el-icon><Document /></el-icon>
-                        <span>查看报告</span>
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="record.status === 'finished'" command="reevaluate" :disabled="reEvaluatingId !== null">
-                        <el-icon><Refresh /></el-icon>
-                        <span>重新评估</span>
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="record.status !== 'finished'" command="continue">
-                        <el-icon><VideoPlay /></el-icon>
-                        <span>继续训练</span>
-                      </el-dropdown-item>
-                      <el-dropdown-item command="delete" divided :disabled="deletingId !== null || reEvaluatingId !== null" class="history-action-dropdown__danger">
-                        <el-icon><Delete /></el-icon>
-                        <span>删除记录</span>
-                      </el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
+                  <div v-if="openActionMenuId === record.id" class="action-menu__panel" role="menu">
+                    <button type="button" class="action-menu__item" role="menuitem" @click="handleRecordAction('dialogue', record)">
+                      <el-icon><ChatLineRound /></el-icon>
+                      <span>查看对话</span>
+                    </button>
+                    <button v-if="record.status === 'finished'" type="button" class="action-menu__item" role="menuitem" @click="handleRecordAction('report', record)">
+                      <el-icon><Document /></el-icon>
+                      <span>查看报告</span>
+                    </button>
+                    <button v-if="record.status === 'finished'" type="button" class="action-menu__item" role="menuitem" :disabled="reEvaluatingId !== null" @click="handleRecordAction('reevaluate', record)">
+                      <el-icon><Refresh /></el-icon>
+                      <span>重新评估</span>
+                    </button>
+                    <button v-if="record.status !== 'finished'" type="button" class="action-menu__item" role="menuitem" @click="handleRecordAction('continue', record)">
+                      <el-icon><VideoPlay /></el-icon>
+                      <span>继续训练</span>
+                    </button>
+                    <button type="button" class="action-menu__item action-menu__item--danger" role="menuitem" :disabled="deletingId !== null || reEvaluatingId !== null" @click="handleRecordAction('delete', record)">
+                      <el-icon><Delete /></el-icon>
+                      <span>删除记录</span>
+                    </button>
+                  </div>
+                </div>
               </div>
             </article>
           </div>
@@ -213,6 +209,7 @@ const showEmptySessions = ref(false)
 const hiddenEmptyCount = ref(0)
 const reEvaluatingId = ref<number | null>(null)
 const deletingId = ref<number | null>(null)
+const openActionMenuId = ref<number | null>(null)
 const loadError = ref('')
 const statusFilter = ref<'all' | 'active' | 'finished'>('all')
 const activeCount = ref(0)
@@ -265,7 +262,7 @@ const filteredRecords = computed(() => {
     const title = String(record.case_title || '').toLowerCase()
     const type = String(record.case_type || '').toLowerCase()
     const scene = String(record.scene_name || '').toLowerCase()
-    const created = String(record.display_time || record.training_finished_at || record.training_started_at || record.created_at || '')
+    const created = String(record.created_at || '')
     const day = created ? created.slice(0, 10) : ''
 
     const matchKeyword = !keyword || title.includes(keyword) || type.includes(keyword) || scene.includes(keyword)
@@ -336,7 +333,7 @@ const reEvaluate = async (sessionId: number) => {
   try {
     await request.post(`/training/re-evaluate/${sessionId}`, null, { _skipErrorToast: true } as any)
     showToast({ type: 'success', message: '评估报告已重新生成' })
-    router.push(`/student/evaluation?session_id=${sessionId}`)
+    router.push(`/student/evaluation?session_id=${sessionId}&refresh=1`)
   } catch (error: any) {
     showToast(error?.response?.data?.detail || '重新评估失败')
   } finally {
@@ -355,8 +352,18 @@ const openDialogue = (sessionId: number) => {
 
 const isActionLocked = (sessionId: number) => deletingId.value === sessionId || reEvaluatingId.value === sessionId
 
+const toggleActionMenu = (sessionId: number) => {
+  if (isActionLocked(sessionId)) return
+  openActionMenuId.value = openActionMenuId.value === sessionId ? null : sessionId
+}
+
+const closeActionMenu = () => {
+  openActionMenuId.value = null
+}
+
 const handleRecordAction = async (rawCommand: string | number | object, record: any) => {
   if (!record?.id || isActionLocked(record.id)) return
+  closeActionMenu()
   const command = String(rawCommand)
 
   if (command === 'dialogue') {
@@ -453,25 +460,18 @@ const getScoreClass = (score: number | null | undefined) => {
 const formatTime = (iso: string) => {
   if (!iso) return '-'
   const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return String(iso)
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    month: 'numeric',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(date)
-  const pick = (type: string) => parts.find((part) => part.type === type)?.value || ''
-  return `${pick('month')}/${pick('day')} ${pick('hour')}:${pick('minute')}`
+  return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`
 }
 
 onMounted(() => {
-  setMainScrollable?.(true)
+  setMainScrollable?.(false)
+  document.addEventListener('click', closeActionMenu)
   fetchHistory()
 })
 
 onUnmounted(() => {
   setMainScrollable?.(false)
+  document.removeEventListener('click', closeActionMenu)
 })
 </script>
 
@@ -623,67 +623,34 @@ onUnmounted(() => {
 }
 
 .history-table-card {
-  --history-table-columns: minmax(320px, 2.2fr) minmax(118px, 0.85fr) minmax(150px, 1fr) minmax(360px, 1.7fr) minmax(118px, 0.72fr) minmax(96px, 0.6fr);
-  --history-table-gap: 16px;
-  --history-table-x: 24px;
-
   overflow: visible;
   padding: 0;
   border-radius: 6px;
 }
 
-.history-table__head,
-.history-row {
-  display: grid;
-  grid-template-columns: var(--history-table-columns);
-  gap: var(--history-table-gap);
-  box-sizing: border-box;
-}
-
 .history-table__head {
-  position: sticky;
-  top: 0;
-  z-index: 20;
+  display: grid;
+  grid-template-columns: 2.2fr 1fr 1.2fr 1.8fr 0.8fr 0.9fr;
+  gap: 16px;
   border-bottom: 1px solid #f3f4f6;
-  background: #fff;
-  padding: 18px var(--history-table-x) 16px;
+  padding: 18px 24px 16px;
   color: #111827;
   font-size: 13px;
   font-weight: 700;
 }
 
-.history-table__head > div {
-  min-width: 0;
-}
-
-.history-table__head > div:not(:first-child) {
-  text-align: center;
-}
-
-.history-table__head::after {
-  content: '';
-  position: absolute;
-  right: 0;
-  bottom: -8px;
-  left: 0;
-  height: 8px;
-  pointer-events: none;
-  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
-}
-
 .history-table__body {
-  padding: 0;
+  padding: 0 14px;
 }
 
 .history-row {
+  display: grid;
+  grid-template-columns: 2.2fr 1fr 1.2fr 1.8fr 0.8fr 0.9fr;
+  gap: 16px;
   align-items: center;
   border-bottom: 1px solid #f3f4f6;
-  padding: 18px var(--history-table-x);
+  padding: 18px 10px;
   min-height: 140px;
-}
-
-.history-row > div {
-  min-width: 0;
 }
 
 .history-row__case-text {
@@ -842,13 +809,12 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  width: 84px;
-  height: 38px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  width: 86px;
+  height: 34px;
+  border: 1px solid #d8e2f0;
+  border-radius: var(--police-radius);
   background: #fff;
-  color: #111827;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
+  color: #334155;
   font-size: 13px;
   font-weight: 800;
   cursor: pointer;
@@ -872,12 +838,108 @@ onUnmounted(() => {
 }
 
 .action-loading-dot {
-  width: 12px;
-  height: 12px;
-  border: 2px solid #bfdbfe;
-  border-top-color: #165dff;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  animation: action-spin 0.8s linear infinite;
+  background: #165dff;
+  animation: action-pulse 0.9s ease-in-out infinite;
+}
+
+@keyframes action-pulse {
+  0%,
+  100% {
+    transform: scale(0.7);
+    opacity: 0.45;
+  }
+
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.action-menu {
+  position: relative;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.action-menu__panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  right: 50%;
+  display: grid;
+  width: 132px;
+  gap: 2px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.13);
+  transform: translateX(50%);
+}
+
+.action-menu__panel::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  right: calc(50% - 4px);
+  width: 9px;
+  height: 9px;
+  border-left: 1px solid #e5e7eb;
+  border-top: 1px solid #e5e7eb;
+  background: #fff;
+  transform: rotate(45deg);
+}
+
+.action-menu__item {
+  display: flex;
+  width: 100%;
+  align-items: center !important;
+  justify-content: flex-start;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent !important;
+  padding: 8px 10px;
+  color: #334155 !important;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: left;
+  cursor: pointer;
+}
+
+.action-menu__item:hover:not(:disabled) {
+  background: #f2f7ff !important;
+  color: #2563eb !important;
+}
+
+.action-menu__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.action-menu__item .el-icon {
+  margin-right: 0 !important;
+  font-size: 15px !important;
+}
+
+.action-menu__item--danger {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.action-menu__item--danger,
+.action-menu__item--danger .el-icon {
+  color: #ef4444 !important;
+}
+
+.action-menu__item--danger:hover:not(:disabled) {
+  background: #fff1f2 !important;
+  color: #dc2626 !important;
 }
 
 .history-table__footer {
@@ -956,10 +1018,9 @@ onUnmounted(() => {
     flex-wrap: wrap;
   }
 
-  .history-table-card {
-    --history-table-columns: minmax(260px, 2fr) minmax(106px, 0.82fr) minmax(132px, 0.94fr) minmax(300px, 1.55fr) minmax(96px, 0.66fr) minmax(88px, 0.55fr);
-    --history-table-gap: 14px;
-    --history-table-x: 20px;
+  .history-table__head,
+  .history-row {
+    grid-template-columns: 2fr 0.9fr 1fr 1.6fr 0.7fr 0.8fr;
   }
 }
 
@@ -1015,55 +1076,6 @@ onUnmounted(() => {
 
   .pager {
     justify-content: space-between;
-  }
-}
-
-:global(.history-action-dropdown) {
-  min-width: 132px !important;
-  border: 1px solid #e5e7eb !important;
-  border-radius: 6px !important;
-  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.13) !important;
-}
-
-:global(.history-action-dropdown .el-dropdown-menu) {
-  padding: 8px !important;
-}
-
-:global(.history-action-dropdown .el-dropdown-menu__item) {
-  display: flex !important;
-  align-items: center !important;
-  gap: 8px !important;
-  min-height: 38px !important;
-  border-radius: 5px !important;
-  padding: 0 10px !important;
-  color: #111827 !important;
-  font-size: 13px !important;
-  font-weight: 800 !important;
-}
-
-:global(.history-action-dropdown .el-dropdown-menu__item:hover) {
-  background: #f8fafc !important;
-  color: #165dff !important;
-}
-
-:global(.history-action-dropdown .el-dropdown-menu__item .el-icon) {
-  margin-right: 0 !important;
-  font-size: 15px !important;
-}
-
-:global(.history-action-dropdown__danger),
-:global(.history-action-dropdown__danger .el-icon) {
-  color: #ef4444 !important;
-}
-
-:global(.history-action-dropdown__danger:hover) {
-  background: #fff1f2 !important;
-  color: #dc2626 !important;
-}
-
-@keyframes action-spin {
-  to {
-    transform: rotate(360deg);
   }
 }
 </style>

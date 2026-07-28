@@ -191,12 +191,14 @@
         </header>
 
         <!-- Full-screen video background -->
-        <div class="imm-video-layer">
+        <div class="imm-video-layer" @click="!nodeActive && playTrainingVideo()">
           <video
             ref="videoRef"
             class="imm-video-layer__video"
             :src="playbackVideoUrl"
             preload="auto"
+            @play="playbackPaused = false"
+            @pause="playbackPaused = true"
             @timeupdate="onTimeUpdate"
             @ended="onVideoEnded"
             @seeking="onSeeking"
@@ -206,13 +208,14 @@
 
         <!-- Overlays on top of video -->
         <div class="imm-overlays">
-          <!-- Video top center toolbar -->
-          <div class="imm-toolbar">
-            <button class="imm-toolbar__btn" title="截图">📷</button>
-            <button class="imm-toolbar__btn" title="录屏">⏺</button>
-            <button class="imm-toolbar__btn" title="静音">🔇</button>
-          </div>
-
+          <button
+            v-if="playbackPaused && !nodeActive && !showBriefing"
+            type="button"
+            class="imm-play-retry"
+            @click.stop="playTrainingVideo"
+          >
+            ▶ 播放视频并进入训练
+          </button>
           <!-- Camera PIP (draggable, auto-snap) -->
           <div
             class="imm-pip"
@@ -322,7 +325,7 @@
                   </p>
                   <div class="imm-interaction__speech-status">
                     <span class="imm-speech-dot" :class="'imm-speech-dot--' + speechStatus"></span>
-                    <span>{{ speechStatus === 'listening' ? '正在识别中...' : speechStatus === 'processing' ? '处理中' : '准备中...' }}</span>
+                    <span>{{ resolvedSpeechStatusLabel }}</span>
                   </div>
                   <div v-if="interimText || finalText" class="imm-interaction__transcript">
                     <span v-if="finalText" class="imm-transcript-final">{{ finalText }}</span>
@@ -463,7 +466,7 @@
               <div v-else class="imm-interaction__voice">
                 <div class="imm-interaction__speech-status">
                   <span class="imm-speech-dot" :class="'imm-speech-dot--' + speechStatus"></span>
-                  <span>{{ speechStatus === 'listening' ? '正在识别中...' : speechStatus === 'processing' ? '处理中' : '准备中...' }}</span>
+                  <span>{{ resolvedSpeechStatusLabel }}</span>
                 </div>
                 <div v-if="interimText || finalText" class="imm-interaction__transcript">
                   <span v-if="finalText" class="imm-transcript-final">{{ finalText }}</span>
@@ -737,6 +740,8 @@
                 class="stage-video"
                 :src="playbackVideoUrl"
                 preload="auto"
+                @play="playbackPaused = false"
+                @pause="playbackPaused = true"
                 @timeupdate="onTimeUpdate"
                 @ended="onVideoEnded"
                 @seeking="onSeeking"
@@ -760,7 +765,7 @@
 
             <div class="stage-controls glass-panel">
               <div class="stage-controls__left">
-                <button class="stage-icon-btn" type="button">{{ videoRef?.paused ? '▶' : 'Ⅱ' }}</button>
+                <button class="stage-icon-btn" type="button" @click="toggleTrainingPlayback">{{ playbackPaused ? '▶' : 'Ⅱ' }}</button>
                 <button class="stage-icon-btn" type="button">🔊</button>
               </div>
               <div class="stage-controls__progress">
@@ -1462,6 +1467,7 @@ function toggleFullscreen() {
 }
 const showBriefing = ref(false)
 const briefingStep = ref(1)
+const briefingIdentityPassed = ref(false)
 const finishingTraining = ref(false)
 
 // 鈹€鈹€ 鑺傜偣鐘舵€?鈹€鈹€
@@ -1529,17 +1535,12 @@ const briefingCameraRef = ref<HTMLVideoElement | null>(null)
 const faceCanvasRef = ref<HTMLCanvasElement | null>(null)
 const videoWrapRef = ref<HTMLElement | null>(null)
 const playbackCurrentTime = ref(0)
+const playbackPaused = ref(true)
 const cameraOn = ref(false)
 const camPos = ref({ x: 16, y: 80 })
 const deviceReady = ref(false)
 const deviceWarningText = ref('')
 let cameraStream: MediaStream | null = null
-let mediaRecorder: MediaRecorder | null = null
-let recordingChunks: Blob[] = []
-let recordingStartedAt = 0
-let recordingMimeType = 'video/webm'
-let recordingUploadAttempted = false
-let recordingUploadUnsupported = false
 
 const {
   status: presenceStatus,
@@ -1550,6 +1551,7 @@ const {
   liveReady,
   verified: presenceVerified,
   lastMotion,
+  preload: preloadPresenceMonitor,
   attachVideo: attachPresenceVideo,
   stop: stopPresenceMonitor,
 } = usePresenceMonitor()
@@ -1687,7 +1689,7 @@ const deviceStatusText = computed(() => {
   return deviceWarningText.value || '正在检查设备权限'
 })
 const precheckHintText = computed(() => [presenceMessage.value, deviceWarningText.value].filter(Boolean).join('；'))
-const canStartTraining = computed(() => deviceReady.value && identityReady.value)
+const canStartTraining = computed(() => deviceReady.value && (identityReady.value || briefingIdentityPassed.value))
 const resolvedIdentityStatusText = computed(() => {
   if (!faceProfileRegistered.value) return '请先注册人脸档案'
   if (!presenceSupported.value) {
@@ -1813,7 +1815,9 @@ const displayInstruction = computed(() =>
   displayNode.value?.prompt_content?.police_question
   || displayNode.value?.prompt_content?.instruction
   || displayNode.value?.node_config?.question
-  || '等待视频播放至触发点后开始交互。',
+  || (nodeActive.value
+    ? '当前训练节点缺少任务说明，请联系管理员重新分析或编辑该视频节点。'
+    : `视频播放至 ${formatTime(Number(displayNode.value?.trigger_time || 0))} 后将自动进入本节点。`),
 )
 const displaySceneSummary = computed(() => String(displayNode.value?.prompt_content?.scene_summary || '').trim())
 const displayStandardPoints = computed(() => {
@@ -1996,6 +2000,7 @@ onMounted(async () => {
   await fetchProfileStatus()
   if (video.value) {
     showBriefing.value = true
+    void preloadPresenceMonitor()
     await nextTick()
     await startCamera()
     setupVisibilityDetection()
@@ -2035,6 +2040,12 @@ watch([singleFaceReady, liveReady, faceCount, presenceSupported, showBriefing, b
 
   if (!presenceOk && faceIdentityVerified.value) {
     resetFaceIdentityVerification()
+  }
+})
+
+watch(identityReady, (ready) => {
+  if (showBriefing.value && briefingStep.value === 1 && ready) {
+    briefingIdentityPassed.value = true
   }
 })
 
@@ -2078,13 +2089,11 @@ async function confirmBriefing() {
   if (trainingMode.value === 'exam') {
     startExamTimer()
   }
-  await startTrainingRecording()
   await playTrainingVideo()
 }
 
 // 路由离开时立即释放摄像头和麦克风（不等过渡动画结束）
 onBeforeRouteLeave((_to, _from, next) => {
-  void stopTrainingRecording(false)
   stopCamera()
   stopPresenceMonitor()
   stopFaceIdentityVerify()
@@ -2095,7 +2104,6 @@ onBeforeRouteLeave((_to, _from, next) => {
 })
 
 onUnmounted(() => {
-  void stopTrainingRecording(false)
   stopCamera()
   stopPresenceMonitor()
   stopFaceIdentityVerify()
@@ -2281,6 +2289,7 @@ let lastAllowedTime = 0
 
 function onTimeUpdate() {
   if (!videoRef.value) return
+  playbackPaused.value = false
   playbackCurrentTime.value = Math.floor(videoRef.value.currentTime)
   if (!video.value?.nodes || nodeActive.value) return
   // 鏇存柊鍚堟硶鏃堕棿鐐?
@@ -2375,124 +2384,25 @@ async function bindTrainingCameraIfNeeded(retryCount = 0) {
   await attachGestureVideo(videoEl)
 }
 
-function getSupportedRecordingMimeType(): string {
-  if (typeof MediaRecorder === 'undefined') return ''
-  const candidates = [
-    'video/webm;codecs=vp9,opus',
-    'video/webm;codecs=vp8,opus',
-    'video/webm',
-    'video/mp4',
-  ]
-  return candidates.find((item) => MediaRecorder.isTypeSupported(item)) || ''
-}
-
-async function startTrainingRecording() {
-  if (!sessionId.value || !cameraStream || typeof MediaRecorder === 'undefined') return
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') return
-
-  try {
-    const supportedMimeType = getSupportedRecordingMimeType()
-    mediaRecorder = supportedMimeType
-      ? new MediaRecorder(cameraStream, { mimeType: supportedMimeType })
-      : new MediaRecorder(cameraStream)
-    recordingMimeType = mediaRecorder.mimeType || supportedMimeType || 'video/webm'
-    recordingChunks = []
-    recordingStartedAt = Date.now()
-    recordingUploadAttempted = false
-    mediaRecorder.ondataavailable = (event: BlobEvent) => {
-      if (event.data && event.data.size > 0) {
-        recordingChunks.push(event.data)
-      }
-    }
-    mediaRecorder.onerror = () => {
-      ElMessage.warning('训练录制中断，系统将继续保留当前训练进度')
-    }
-    mediaRecorder.start(1000)
-  } catch (error) {
-    console.warn('MediaRecorder init failed', error)
-  }
-}
-
-async function uploadTrainingRecording() {
-  if (!sessionId.value || !recordingChunks.length || recordingUploadAttempted || recordingUploadUnsupported) return
-
-  const blob = new Blob(recordingChunks, { type: recordingMimeType || 'video/webm' })
-  if (!blob.size) return
-
-  const formData = new FormData()
-  const extension = blob.type.includes('mp4') ? 'mp4' : 'webm'
-  const durationSeconds = recordingStartedAt ? Math.max(1, Math.round((Date.now() - recordingStartedAt) / 1000)) : undefined
-  formData.append('artifact_file', blob, `session-recording.${extension}`)
-  formData.append('artifact_type', 'camera_recording')
-  if (durationSeconds) {
-    formData.append('duration_seconds', String(durationSeconds))
-  }
-
-  try {
-    await request.post(
-      `/video-training/session/${sessionId.value}/artifacts/upload`,
-      formData,
-      {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        _skipErrorToast: true,
-      } as any,
-    )
-    recordingUploadAttempted = true
-    recordingChunks = []
-  } catch (error) {
-    const status = (error as any)?.response?.status
-    if (status === 404 || status === 405) {
-      recordingUploadUnsupported = true
-      recordingUploadAttempted = true
-      recordingChunks = []
-      console.info('Training recording upload is not supported by current backend service')
-      return
-    }
-    console.warn('Training recording upload failed', error)
-  }
-}
-
-async function stopTrainingRecording(uploadAfterStop = true) {
-  if (!mediaRecorder) {
-    if (uploadAfterStop) {
-      await uploadTrainingRecording()
-    }
-    return
-  }
-
-  const recorder = mediaRecorder
-  if (recorder.state === 'inactive') {
-    mediaRecorder = null
-    if (uploadAfterStop) {
-      await uploadTrainingRecording()
-    }
-    return
-  }
-
-  await new Promise<void>((resolve) => {
-    recorder.addEventListener(
-      'stop',
-      () => {
-        mediaRecorder = null
-        resolve()
-      },
-      { once: true },
-    )
-    recorder.stop()
-  })
-
-  if (uploadAfterStop) {
-    await uploadTrainingRecording()
-  }
-}
-
 async function playTrainingVideo() {
   if (!videoRef.value) return
   try {
     await videoRef.value.play()
+    playbackPaused.value = false
   } catch (error) {
+    playbackPaused.value = true
     console.warn('Training video play failed', error)
-    ElMessage.warning('视频未自动开始播放，请检查浏览器自动播放权限')
+    ElMessage.warning('视频未自动开始播放，请点击播放按钮继续训练')
+  }
+}
+
+async function toggleTrainingPlayback() {
+  if (!videoRef.value || nodeActive.value) return
+  if (videoRef.value.paused) {
+    await playTrainingVideo()
+  } else {
+    videoRef.value.pause()
+    playbackPaused.value = true
   }
 }
 
@@ -2924,9 +2834,11 @@ function resolveChoiceCorrectIndex(): number | null {
   const node = currentNode.value
   if (!node) return null
   if (typeof node.node_config?.correct_index === 'number') return node.node_config.correct_index
-  const label = String(node.correct_answer || '').trim()
-  if (!label) return null
-  const idx = resolvedChoiceOptions.value.findIndex((o: any) => o.label === label)
+  const answer = String(node.correct_answer || '').trim()
+  if (!answer) return null
+  const idx = resolvedChoiceOptions.value.findIndex((o: any) =>
+    o.label === answer || String(o.text || '').trim() === answer,
+  )
   return idx >= 0 ? idx : null
 }
 
@@ -3288,7 +3200,6 @@ async function finishTraining() {
   videoRef.value?.pause()
   const targetReportUrl = `/student/evaluation?session_id=${sessionId.value}&type=video`
   try {
-    await stopTrainingRecording(true)
     const res: any = await request.post(`/video-training/session/${sessionId.value}/finish`)
     if (!isVideoReportReady(res)) {
       await waitForVideoReportReady(sessionId.value)
@@ -3320,7 +3231,6 @@ async function confirmExit() {
     await ElMessageBox.confirm('退出后本次训练进度将保留，下次可继续。确认退出？', '退出实训', {
       confirmButtonText: '确认退出', cancelButtonText: '继续训练', type: 'warning',
     })
-    await stopTrainingRecording(true)
     router.back()
   } catch {}
 }
@@ -3438,7 +3348,7 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 
 .training-topbar {
   display: grid;
-  grid-template-columns: minmax(240px, 1.4fr) minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(0, 1.35fr) minmax(180px, 0.9fr) minmax(0, auto);
   align-items: center;
   gap: 18px;
   padding: 10px 16px;
@@ -3446,6 +3356,8 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   background: linear-gradient(180deg, rgba(8, 18, 36, 0.98), rgba(6, 14, 28, 0.94));
   border: 1px solid rgba(83, 120, 181, 0.22);
   box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .training-topbar__left,
@@ -3453,6 +3365,7 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 .training-topbar__center {
   display: flex;
   align-items: center;
+  min-width: 0;
 }
 
 .training-topbar__left {
@@ -3464,12 +3377,15 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   flex-direction: column;
   justify-content: center;
   gap: 8px;
+  overflow: hidden;
 }
 
 .training-topbar__right {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 12px;
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 
 .training-back,
@@ -3492,7 +3408,9 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 }
 
 .training-title-wrap {
+  flex: 1 1 auto;
   min-width: 0;
+  max-width: 100%;
 }
 
 .training-title {
@@ -3512,15 +3430,20 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
 }
 
 .training-step__summary {
+  width: 100%;
   color: #e2e8f0;
   font-size: 14px;
   font-weight: 700;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .training-stepper {
   display: flex;
   align-items: center;
   gap: 10px;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .training-stepper__dot {
@@ -3552,11 +3475,14 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   padding: 10px 14px;
   border-radius: 10px;
   background: rgba(8, 22, 43, 0.94);
   border: 1px solid rgba(87, 120, 173, 0.26);
   color: #e2e8f0;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .training-chip__label {
@@ -6088,6 +6014,27 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   }
 }
 
+.imm-play-retry {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 30;
+  transform: translate(-50%, -50%);
+  padding: 13px 22px;
+  border: 1px solid rgba(96, 165, 250, 0.65);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.9);
+  color: #dbeafe;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.imm-play-retry:hover {
+  background: rgba(30, 64, 175, 0.92);
+}
+
 .imm-header__left {
   display: flex;
   align-items: center;
@@ -6131,6 +6078,11 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .imm-header__timer {
@@ -6771,41 +6723,6 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   margin-top: 4px !important;
 }
 
-/* Video top toolbar */
-.imm-toolbar {
-  position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 9;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  background: rgba(15, 23, 42, 0.7);
-  backdrop-filter: blur(8px);
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.imm-toolbar__btn {
-  width: 32px;
-  height: 32px;
-  border: none;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.2s;
-
-  &:hover {
-    background: rgba(255, 255, 255, 0.14);
-  }
-}
-
 /* Prop toast feedback */
 .imm-prop-toast {
   position: absolute;
@@ -6989,9 +6906,8 @@ function withCacheBust(url?: string, token = videoCacheBustToken) {
   align-items: center;
   flex: 1;
   overflow-x: auto;
-  scrollbar-width: none;
   scroll-behavior: smooth;
-  &::-webkit-scrollbar { display: none; }
+  overscroll-behavior: contain;
 }
 
 .imm-progress__step {

@@ -110,6 +110,110 @@ class TestCasesParse:
 
 
 class TestCasesRoles:
+    def test_read_case_materializes_persons_from_persisted_roles(self, client, admin_headers, db_session):
+        db_case = models.Case(
+            title="legacy-role-case",
+            case_type="test",
+            background="legacy data",
+            structured_data=json.dumps({"persons": []}),
+        )
+        db_session.add(db_case)
+        db_session.flush()
+
+        db_role = models.Role(
+            case_id=db_case.id,
+            name="Legacy Witness",
+            role_type="witness",
+            status="normal",
+            init_emotion=44,
+            init_trust=55,
+            persona_meta=json.dumps({"role_memories": [{"statement": "saw event"}]}),
+        )
+        db_session.add(db_role)
+        db_session.commit()
+
+        response = client.get(f"/cases/{db_case.id}", headers=admin_headers)
+        assert response.status_code == 200
+
+        persons = json.loads(response.json()["structured_data"])["persons"]
+        assert [person["name"] for person in persons] == ["Legacy Witness"]
+        assert persons[0]["role_memories"] == [{"statement": "saw event"}]
+
+    def test_delete_case_removes_training_dependencies_before_case(self, client, admin_headers, db_session):
+        db_case = models.Case(title="delete-case-with-links", case_type="test", background="delete")
+        db_session.add(db_case)
+        db_session.flush()
+
+        db_scene = models.Scene(case_id=db_case.id, name="delete-scene", difficulty="normal", stages="[]")
+        db_session.add(db_scene)
+        db_session.flush()
+
+        db_role = models.Role(case_id=db_case.id, scene_id=db_scene.id, name="Delete Role", role_type="witness")
+        db_session.add(db_role)
+        db_session.flush()
+        db_session.add(models.SceneRole(scene_id=db_scene.id, role_id=db_role.id, is_primary=True))
+
+        student = db_session.query(models.User).filter(models.User.username == "student001").first()
+        db_class = models.TrainingClass(name="delete-case-class", invite_code=f"delcase{db_case.id}")
+        db_session.add(db_class)
+        db_session.flush()
+
+        assignment = models.TrainingAssignment(class_id=db_class.id, title="delete-case-assignment")
+        db_session.add(assignment)
+        db_session.flush()
+        db_session.add(models.TrainingAssignmentCase(assignment_id=assignment.id, case_id=db_case.id))
+        db_session.add(
+            models.TrainingAssignmentScene(
+                assignment_id=assignment.id,
+                case_id=db_case.id,
+                scene_id=db_scene.id,
+            )
+        )
+
+        session = models.TrainingSession(user_id=student.id, scene_id=db_scene.id, current_emotion=50, current_trust=50)
+        db_session.add(session)
+        db_session.flush()
+        db_session.add(models.Message(session_id=session.id, role="assistant", content="hello", speaker_role_id=db_role.id))
+        db_session.add(
+            models.TrainingSessionArtifact(
+                session_id=session.id,
+                artifact_type="screenshot",
+                file_path="static/test.png",
+            )
+        )
+        db_session.add(
+            models.AssignmentSubmission(
+                assignment_id=assignment.id,
+                user_id=student.id,
+                case_id=db_case.id,
+                scene_id=db_scene.id,
+                training_session_id=session.id,
+            )
+        )
+        db_video = models.TrainingVideo(
+            title="linked-video",
+            video_type="teaching",
+            file_path="linked-video.mp4",
+            case_id=db_case.id,
+        )
+        db_session.add(db_video)
+        db_session.flush()
+        case_id = db_case.id
+        session_id = session.id
+        video_id = db_video.id
+        db_session.commit()
+
+        response = client.delete(f"/cases/{case_id}", headers=admin_headers)
+        assert response.status_code == 200
+
+        db_session.expire_all()
+        assert db_session.query(models.Case).filter(models.Case.id == case_id).first() is None
+        assert db_session.query(models.TrainingSession).filter(models.TrainingSession.id == session_id).first() is None
+        assert db_session.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.case_id == case_id).count() == 0
+        assert db_session.query(models.TrainingAssignmentCase).filter(models.TrainingAssignmentCase.case_id == case_id).count() == 0
+        assert db_session.query(models.TrainingAssignmentScene).filter(models.TrainingAssignmentScene.case_id == case_id).count() == 0
+        assert db_session.query(models.TrainingVideo).filter(models.TrainingVideo.id == video_id).first().case_id is None
+
     def test_read_all_roles_returns_scene_links_and_case_meta(self, client, admin_headers):
         response = client.get("/cases/all/roles", headers=admin_headers)
         assert response.status_code == 200
@@ -464,7 +568,7 @@ class TestCasesSceneGeneration:
 
         data = response.json()
         assert len(data["scenes"]) >= 2
-        assert data["scene_generation_mode"] in {"ai", "fallback"}
+        assert data["scene_generation_mode"].startswith(("ai", "fallback"))
         assert any("XX路东段废弃仓库" in scene["dispatch_brief"] for scene in data["scenes"])
         assert all(scene["roles"] for scene in data["scenes"])
         assert all(scene["stages"] for scene in data["scenes"])

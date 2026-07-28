@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -259,12 +259,14 @@ class PromptTemplate(PromptTemplateBase):
 class UserBase(BaseModel):
     username: str
     role: str = "student"
+    avatar_url: Optional[str] = None
     display_name: Optional[str] = None
     real_name: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     unit: Optional[str] = None
     department: Optional[str] = None
+    account_group: Optional[str] = None
     bio: Optional[str] = None
 
 
@@ -305,6 +307,7 @@ class AdminStudentOverview(User):
     finished_sessions: int = 0
     avg_score: Optional[float] = None
     top_gap_missing: List[str] = []
+    classes: List[Dict[str, Any]] = []
 
 
 class StudentProfileSummary(BaseModel):
@@ -363,6 +366,7 @@ class BatchStudentCreateRequest(BaseModel):
     start_no: int
     end_no: int
     password: str
+    account_group: Optional[str] = None
 
 
 class BatchStudentCreateResponse(BaseModel):
@@ -400,6 +404,7 @@ class OpsAccountCreate(BaseModel):
     email: Optional[str] = None
     unit: Optional[str] = None
     department: Optional[str] = None
+    account_group: Optional[str] = None
     bio: Optional[str] = None
 
 
@@ -412,6 +417,7 @@ class OpsAccountUpdate(BaseModel):
     email: Optional[str] = None
     unit: Optional[str] = None
     department: Optional[str] = None
+    account_group: Optional[str] = None
     bio: Optional[str] = None
 
 
@@ -434,6 +440,7 @@ class OpsAccountImportItem(BaseModel):
     email: Optional[str] = None
     unit: Optional[str] = None
     department: Optional[str] = None
+    account_group: Optional[str] = None
     bio: Optional[str] = None
 
 
@@ -461,3 +468,41 @@ class OpsAccountImportCommitResponse(BaseModel):
     created_usernames: List[str] = []
     skipped_usernames: List[str] = []
     failed_items: List[OpsAccountImportPreviewItem] = []
+
+
+class OpsAccountBatchDeleteRequest(BaseModel):
+    account_ids: List[int]
+
+
+class OpsAccountBatchDeleteResponse(BaseModel):
+    deleted_count: int
+    skipped_count: int
+    deleted_usernames: List[str] = []
+    skipped_usernames: List[str] = []
+
+
+class AccountGroupCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class AccountGroupOverview(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    count: int = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AccountGroupDeleteRequest(BaseModel):
+    name: str
+    delete_accounts: bool = False
+
+
+class AccountGroupDeleteResponse(BaseModel):
+    deleted_group: str
+    deleted_accounts_count: int = 0
+    skipped_accounts_count: int = 0
+    skipped_usernames: List[str] = []

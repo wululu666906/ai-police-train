@@ -13,16 +13,28 @@ class User(Base):
     username = Column(String(50), unique=True, index=True)
     hashed_password = Column(String(255))
     role = Column(String(20), default="student")
+    avatar_url = Column(String(300), nullable=True)
     display_name = Column(String(80), nullable=True)
     real_name = Column(String(80), nullable=True)
     phone = Column(String(30), nullable=True)
     email = Column(String(120), nullable=True)
     unit = Column(String(120), nullable=True)
     department = Column(String(120), nullable=True)
+    account_group = Column(String(80), nullable=True, index=True)
     bio = Column(Text, nullable=True)
     last_login_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AccountGroup(Base):
+    __tablename__ = "account_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(80), unique=True, nullable=False, index=True)
+    description = Column(String(200), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class OpsAuditLog(Base):
@@ -54,6 +66,57 @@ class SpeechUsageLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")
+
+
+class AIWorkflowRun(Base):
+    """One auditable AI workflow step; no raw case text or credentials are stored."""
+    __tablename__ = "ai_workflow_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    correlation_id = Column(String(64), nullable=False, index=True)
+    case_id = Column(Integer, ForeignKey("cases.id"), nullable=True, index=True)
+    stage = Column(String(48), nullable=False, index=True)
+    status = Column(String(24), nullable=False, default="success", index=True)
+    primary_provider = Column(String(32), nullable=True)
+    final_provider = Column(String(32), nullable=True)
+    model = Column(String(120), nullable=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    switched_provider = Column(Boolean, nullable=False, default=False)
+    used_rule_fallback = Column(Boolean, nullable=False, default=False)
+    error_code = Column(String(80), nullable=True, index=True)
+    error_summary = Column(Text, nullable=True)
+    trace_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class CaseStoryVersion(Base):
+    """Versioned evidence-grounded case worldview created before scene generation."""
+    __tablename__ = "case_story_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    correlation_id = Column(String(64), nullable=False, index=True)
+    case_id = Column(Integer, ForeignKey("cases.id"), nullable=True, index=True)
+    source_mode = Column(String(32), nullable=True)
+    story_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class OpsIssueRecord(Base):
+    """Maintainer-visible problem queue for AI and platform failures."""
+    __tablename__ = "ops_issue_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    category = Column(String(40), nullable=False, index=True)
+    severity = Column(String(16), nullable=False, default="warning", index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    source = Column(String(80), nullable=True, index=True)
+    case_id = Column(Integer, ForeignKey("cases.id"), nullable=True, index=True)
+    workflow_run_id = Column(Integer, ForeignKey("ai_workflow_runs.id"), nullable=True, index=True)
+    title = Column(String(240), nullable=False)
+    detail = Column(Text, nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class Case(Base):
@@ -485,13 +548,6 @@ class VideoTrainingSession(Base):
         cascade="all, delete-orphan",
         order_by="VideoNodeResult.node_index",
     )
-    artifacts = relationship(
-        "VideoTrainingArtifact",
-        back_populates="session",
-        cascade="all, delete-orphan",
-        order_by="VideoTrainingArtifact.created_at",
-    )
-
 
 class VideoNodeResult(Base):
     """单个节点的判定结果"""
@@ -517,19 +573,3 @@ class VideoNodeResult(Base):
 
     session = relationship("VideoTrainingSession", back_populates="node_results")
     node = relationship("VideoNode")
-
-
-class VideoTrainingArtifact(Base):
-    """训练过程媒体留存：当前用于摄像头/麦克风录制回放"""
-    __tablename__ = "video_training_artifacts"
-
-    id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(Integer, ForeignKey("video_training_sessions.id"), nullable=False)
-    artifact_type = Column(String(30), nullable=False, default="camera_recording")
-    file_path = Column(String(500), nullable=False)
-    mime_type = Column(String(120), nullable=True)
-    file_size = Column(Integer, nullable=True)
-    duration_seconds = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    session = relationship("VideoTrainingSession", back_populates="artifacts")

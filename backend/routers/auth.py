@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta, timezone
 import os
 import json
+import uuid
 from collections import Counter
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -24,6 +25,8 @@ SECRET_KEY = (
 )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "720"))
+PROFILE_AVATAR_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "profile_avatars")
+ALLOWED_PROFILE_AVATAR_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
 
 def write_account_audit(
@@ -530,7 +533,8 @@ def get_my_settings(
             models.ClassMembership.user_id == current_user.id,
             models.ClassMembership.status == "active",
         )
-        .order_by(models.TrainingClass.created_at.desc())
+        .order_by(models.ClassMembership.joined_at.desc())
+        .limit(1)
         .all()
     )
     return schemas.MySettingsResponse(
@@ -557,6 +561,36 @@ def update_my_settings(
     db.commit()
     db.refresh(current_user)
     return get_my_settings(db=db, current_user=current_user)
+
+
+@router.post("/me/avatar", response_model=schemas.User)
+async def upload_my_avatar(
+    file: UploadFile = File(...),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    suffix = ALLOWED_PROFILE_AVATAR_TYPES.get(file.content_type or "")
+    if not suffix:
+        raise HTTPException(status_code=400, detail="头像仅支持 JPG、PNG 或 WebP 图片")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="请选择头像图片")
+    if len(content) > 3 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="头像图片不能超过 3MB")
+
+    os.makedirs(PROFILE_AVATAR_DIR, exist_ok=True)
+    filename = f"user-{current_user.id}-{uuid.uuid4().hex}{suffix}"
+    file_path = os.path.join(PROFILE_AVATAR_DIR, filename)
+    with open(file_path, "wb") as avatar_file:
+        avatar_file.write(content)
+
+    current_user.avatar_url = f"/static/profile-avatars/{filename}"
+    current_user.updated_at = datetime.utcnow()
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return current_user
 
 
 @router.post("/me/password")
@@ -622,6 +656,23 @@ def list_students(
         return []
 
     user_ids = [student.id for student in students]
+    memberships = (
+        db.query(
+            models.ClassMembership.user_id,
+            models.TrainingClass.id,
+            models.TrainingClass.name,
+            models.ClassMembership.status,
+            models.ClassMembership.joined_at,
+        )
+        .join(models.TrainingClass, models.TrainingClass.id == models.ClassMembership.class_id)
+        .filter(
+            models.ClassMembership.user_id.in_(user_ids),
+            models.ClassMembership.role == "student",
+            models.ClassMembership.status == "active",
+        )
+        .order_by(models.ClassMembership.joined_at.desc())
+        .all()
+    )
     sessions = (
         db.query(
             models.TrainingSession.user_id,
@@ -656,6 +707,19 @@ def list_students(
             if clean:
                 current["gap_counter"][clean] += 1
 
+    classes_by_user: dict[int, list[dict]] = {user_id: [] for user_id in user_ids}
+    for user_id, class_id, class_name, status, joined_at in memberships:
+        if classes_by_user.get(user_id):
+            continue
+        classes_by_user.setdefault(user_id, []).append(
+            {
+                "id": class_id,
+                "name": class_name,
+                "status": status,
+                "joined_at": joined_at,
+            }
+        )
+
     results = []
     for student in students:
         stats = stats_by_user.get(student.id, {})
@@ -671,6 +735,7 @@ def list_students(
                 finished_sessions=int(stats.get("finished_sessions") or 0),
                 avg_score=round(sum(scores) / len(scores), 1) if scores else None,
                 top_gap_missing=[label for label, _ in gap_counter.most_common(3)],
+                classes=classes_by_user.get(student.id, []),
             )
         )
     return results
@@ -882,10 +947,40 @@ def batch_delete_students(
             db.query(models.Message).filter(models.Message.session_id.in_(session_ids)).delete(
                 synchronize_session=False
             )
+            db.query(models.TrainingSessionArtifact).filter(models.TrainingSessionArtifact.session_id.in_(session_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.training_session_id.in_(session_ids)).update(
+                {models.AssignmentSubmission.training_session_id: None},
+                synchronize_session=False,
+            )
             db.query(models.TrainingSession).filter(models.TrainingSession.id.in_(session_ids)).delete(
                 synchronize_session=False
             )
 
+        video_session_ids = [
+            item[0]
+            for item in db.query(models.VideoTrainingSession.id)
+            .filter(models.VideoTrainingSession.user_id.in_(user_ids))
+            .all()
+        ]
+        if video_session_ids:
+            db.query(models.VideoNodeResult).filter(models.VideoNodeResult.session_id.in_(video_session_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(models.VideoTrainingSession).filter(models.VideoTrainingSession.id.in_(video_session_ids)).delete(
+                synchronize_session=False
+            )
+
+        db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(models.AssignmentStudentOverride).filter(models.AssignmentStudentOverride.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(models.ClassMembership).filter(models.ClassMembership.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.student_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(models.FaceProfile).filter(models.FaceProfile.student_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(models.SpeechUsageLog).filter(models.SpeechUsageLog.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(models.OpsAuditLog).filter(
+            (models.OpsAuditLog.actor_id.in_(user_ids)) | (models.OpsAuditLog.target_user_id.in_(user_ids))
+        ).delete(synchronize_session=False)
         db.query(models.User).filter(models.User.id.in_(user_ids)).delete(synchronize_session=False)
         db.commit()
 

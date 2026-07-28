@@ -1,4 +1,4 @@
-import json
+﻿import json
 from datetime import datetime, timedelta
 
 import models
@@ -409,7 +409,179 @@ class TestOpsAccounts:
         assert client.post("/auth/token", data={"username": "ops_import_student", "password": "student123"}).status_code == 200
         assert client.post("/auth/token", data={"username": "ops_import_admin", "password": "admin123"}).status_code == 200
 
-    def test_ops_import_preview_marks_duplicates_and_invalid_roles(self, client, maintainer_headers):
+    def test_ops_import_preview_can_force_target_role(self, client, maintainer_headers):
+        csv_content = (
+            "账号,初始密码,角色\n"
+            "ops_force_role,student123,student\n"
+        ).encode("utf-8")
+        response = client.post(
+            "/ops/accounts/import/preview",
+            data={"target_role": "admin"},
+            files={"file": ("accounts.csv", csv_content, "text/csv")},
+            headers=maintainer_headers,
+        )
+        assert response.status_code == 200
+        item = response.json()["items"][0]
+        assert item["role"] == "admin"
+
+    def test_ops_batch_delete_accounts(self, client, maintainer_headers, db_session):
+        admin_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_batch_delete_admin", "password": "admin123", "role": "admin"},
+            headers=maintainer_headers,
+        )
+        student_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_batch_delete_student", "password": "student123", "role": "student"},
+            headers=maintainer_headers,
+        )
+        payload = {"account_ids": [admin_response.json()["id"], student_response.json()["id"]]}
+        response = client.post("/ops/accounts/batch-delete", json=payload, headers=maintainer_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["deleted_count"] == 2
+        assert db_session.query(models.User).filter(models.User.username == "ops_batch_delete_admin").first() is None
+        assert db_session.query(models.User).filter(models.User.username == "ops_batch_delete_student").first() is None
+
+    def test_ops_batch_delete_student_with_face_session_event(self, client, maintainer_headers, db_session):
+        student_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_batch_delete_face_event", "password": "student123", "role": "student"},
+            headers=maintainer_headers,
+        )
+        student_id = student_response.json()["id"]
+        scene = db_session.query(models.Scene).first()
+        session = models.TrainingSession(
+            user_id=student_id,
+            scene_id=scene.id,
+            current_emotion=60,
+            current_trust=60,
+            status="active",
+        )
+        db_session.add(session)
+        db_session.flush()
+        db_session.add(
+            models.FaceVerificationEvent(
+                student_id=student_id,
+                session_id=session.id,
+                event_type="verify",
+                status="success",
+                similarity=92,
+            )
+        )
+        db_session.commit()
+
+        response = client.post(
+            "/ops/accounts/batch-delete",
+            json={"account_ids": [student_id]},
+            headers=maintainer_headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["deleted_count"] == 1
+        assert db_session.query(models.User).filter(models.User.id == student_id).first() is None
+        assert db_session.query(models.TrainingSession).filter(models.TrainingSession.user_id == student_id).count() == 0
+        assert db_session.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.student_id == student_id).count() == 0
+
+    def test_ops_delete_admin_clears_owned_management_content(self, client, maintainer_headers, db_session):
+        admin_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_delete_owned_admin", "password": "admin123", "role": "admin"},
+            headers=maintainer_headers,
+        )
+        admin_id = admin_response.json()["id"]
+        student = db_session.query(models.User).filter(models.User.username == "student001").first()
+        case = db_session.query(models.Case).first()
+        scene = db_session.query(models.Scene).first()
+
+        classroom = models.TrainingClass(
+            name="注销清理班级",
+            description="注销账号时应清理",
+            invite_code="opsdel01",
+            created_by=admin_id,
+        )
+        db_session.add(classroom)
+        db_session.flush()
+        db_session.add(models.ClassMembership(class_id=classroom.id, user_id=student.id))
+        db_session.add(models.ClassAnnouncement(class_id=classroom.id, title="注销公告", content="应删除", created_by=admin_id))
+        assignment = models.TrainingAssignment(
+            class_id=classroom.id,
+            title="注销作业",
+            instructions="应删除",
+            created_by=admin_id,
+        )
+        db_session.add(assignment)
+        db_session.flush()
+        db_session.add(models.TrainingAssignmentCase(assignment_id=assignment.id, case_id=case.id))
+        db_session.add(models.TrainingAssignmentScene(assignment_id=assignment.id, scene_id=scene.id, case_id=case.id))
+        db_session.add(
+            models.AssignmentSubmission(
+                assignment_id=assignment.id,
+                user_id=student.id,
+                case_id=case.id,
+                scene_id=scene.id,
+                status="submitted",
+            )
+        )
+        db_session.add(models.AssignmentStudentOverride(assignment_id=assignment.id, user_id=student.id, note="应删除"))
+
+        video = models.TrainingVideo(
+            title="注销视频",
+            description="应删除",
+            video_type="interactive",
+            file_path="videos/delete-owned.mp4",
+            uploaded_by=admin_id,
+            status="published",
+        )
+        db_session.add(video)
+        db_session.flush()
+        node = models.VideoNode(video_id=video.id, node_index=0, title="节点", trigger_time=1)
+        db_session.add(node)
+        db_session.flush()
+        video_session = models.VideoTrainingSession(user_id=student.id, video_id=video.id, status="active")
+        db_session.add(video_session)
+        db_session.flush()
+        db_session.add(models.VideoNodeResult(session_id=video_session.id, node_id=node.id, node_index=0))
+        admin_training = models.TrainingSession(
+            user_id=admin_id,
+            scene_id=scene.id,
+            current_emotion=60,
+            current_trust=60,
+            status="active",
+        )
+        db_session.add(admin_training)
+        db_session.flush()
+        db_session.add(
+            models.FaceVerificationEvent(
+                student_id=admin_id,
+                session_id=admin_training.id,
+                event_type="verify",
+                status="success",
+            )
+        )
+        db_session.add(models.SpeechUsageLog(user_id=admin_id, mode="transcribe", status="success"))
+        classroom_id = classroom.id
+        assignment_id = assignment.id
+        video_id = video.id
+        video_session_id = video_session.id
+        admin_training_id = admin_training.id
+        student_id = student.id
+        db_session.commit()
+
+        response = client.post("/ops/accounts/batch-delete", json={"account_ids": [admin_id]}, headers=maintainer_headers)
+        assert response.status_code == 200
+        assert response.json()["deleted_count"] == 1
+        assert db_session.query(models.User).filter(models.User.id == admin_id).first() is None
+        assert db_session.query(models.TrainingClass).filter(models.TrainingClass.id == classroom_id).first() is None
+        assert db_session.query(models.TrainingAssignment).filter(models.TrainingAssignment.id == assignment_id).first() is None
+        assert db_session.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.assignment_id == assignment_id).count() == 0
+        assert db_session.query(models.TrainingVideo).filter(models.TrainingVideo.id == video_id).first() is None
+        assert db_session.query(models.VideoTrainingSession).filter(models.VideoTrainingSession.id == video_session_id).first() is None
+        assert db_session.query(models.TrainingSession).filter(models.TrainingSession.id == admin_training_id).first() is None
+        assert db_session.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.student_id == admin_id).count() == 0
+        assert db_session.query(models.SpeechUsageLog).filter(models.SpeechUsageLog.user_id == admin_id).count() == 0
+        assert db_session.query(models.User).filter(models.User.id == student_id).first() is not None
+
+    def test_ops_import_preview_marks_duplicates_and_overrides_file_roles(self, client, maintainer_headers):
         csv_content = (
             "账号,初始密码,角色\n"
             "admin,123456,admin\n"
@@ -424,10 +596,80 @@ class TestOpsAccounts:
         )
         assert response.status_code == 200
         items = response.json()["items"]
-        assert response.json()["ready_count"] == 1
+        assert response.json()["ready_count"] == 2
         assert "账号已存在" in items[0]["errors"]
-        assert "角色只能是管理端账号或学员端账号" in items[1]["errors"]
+        assert items[1]["status"] == "ready"
+        assert items[1]["role"] == "student"
         assert "文件内账号重复" in items[3]["errors"]
+
+    def test_ops_import_preview_rejects_invalid_target_role(self, client, maintainer_headers):
+        csv_content = (
+            "账号,初始密码\n"
+            "ops_invalid_target_role,123456\n"
+        ).encode("utf-8")
+        response = client.post(
+            "/ops/accounts/import/preview",
+            data={"target_role": "maintainer"},
+            files={"file": ("accounts.csv", csv_content, "text/csv")},
+            headers=maintainer_headers,
+        )
+        assert response.status_code == 400
+
+    def test_ops_create_account_group_and_move_account(self, client, maintainer_headers):
+        group_response = client.post(
+            "/ops/account-groups",
+            json={"name": "group_smoke", "description": "smoke"},
+            headers=maintainer_headers,
+        )
+        assert group_response.status_code == 200
+
+        account_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_group_move_smoke", "password": "123456", "role": "student", "account_group": "group_smoke"},
+            headers=maintainer_headers,
+        )
+        assert account_response.status_code == 200
+
+        groups_response = client.get("/ops/account-groups", headers=maintainer_headers)
+        assert groups_response.status_code == 200
+        groups = groups_response.json()["groups"]
+        assert any(item["name"] == "group_smoke" for item in groups)
+
+        accounts_response = client.get("/ops/accounts?group=group_smoke", headers=maintainer_headers)
+        assert accounts_response.status_code == 200
+        assert any(item["username"] == "ops_group_move_smoke" for item in accounts_response.json())
+
+    def test_ops_delete_account_group_modes(self, client, maintainer_headers, db_session):
+        client.post("/ops/account-groups", json={"name": "group_clear"}, headers=maintainer_headers)
+        keep_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_group_keep_student", "password": "123456", "role": "student", "account_group": "group_clear"},
+            headers=maintainer_headers,
+        )
+        clear_response = client.post(
+            "/ops/account-groups/delete",
+            json={"name": "group_clear", "delete_accounts": False},
+            headers=maintainer_headers,
+        )
+        assert clear_response.status_code == 200
+        kept = db_session.query(models.User).filter(models.User.id == keep_response.json()["id"]).first()
+        assert kept is not None
+        assert kept.account_group is None
+
+        client.post("/ops/account-groups", json={"name": "group_delete"}, headers=maintainer_headers)
+        delete_response = client.post(
+            "/ops/accounts",
+            json={"username": "ops_group_delete_student", "password": "123456", "role": "student", "account_group": "group_delete"},
+            headers=maintainer_headers,
+        )
+        group_delete_response = client.post(
+            "/ops/account-groups/delete",
+            json={"name": "group_delete", "delete_accounts": True},
+            headers=maintainer_headers,
+        )
+        assert group_delete_response.status_code == 200
+        assert group_delete_response.json()["deleted_accounts_count"] == 1
+        assert db_session.query(models.User).filter(models.User.id == delete_response.json()["id"]).first() is None
 
     def test_ops_import_forbidden_for_admin(self, client, admin_headers):
         response = client.post(

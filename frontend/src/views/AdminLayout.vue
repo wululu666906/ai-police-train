@@ -149,7 +149,12 @@
         </div>
       </header>
 
-      <div class="admin-content flex-1 overflow-y-auto p-4 lg:p-6">
+      <div
+        :class="[
+          'admin-content flex-1 p-4 lg:p-6',
+          isFixedContentPage ? 'admin-content--fixed overflow-hidden' : 'overflow-y-auto',
+        ]"
+      >
         <router-view :key="route.path" v-slot="{ Component }">
           <transition name="fade-slide" mode="out-in">
             <component :is="Component" />
@@ -191,6 +196,7 @@ const username = computed(() => localStorage.getItem('username') || '管理员')
 const roleLabel = computed(() => (localStorage.getItem('role') === 'admin' ? '管理员账号' : '学员账号'))
 const avatarText = computed(() => username.value.slice(0, 1).toUpperCase())
 const currentItem = computed(() => navItems.find((item) => item.name === active.value))
+const isFixedContentPage = computed(() => route.path === '/admin/students')
 
 watch(
   () => route.path,
@@ -230,6 +236,9 @@ const toggleSidebar = () => {
 <style scoped>
 .admin-shell {
   --sidebar-width: 160px;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
 }
 
 .admin-shell.sidebar-collapsed {
@@ -238,6 +247,8 @@ const toggleSidebar = () => {
 
 .admin-sidebar {
   width: 160px;
+  height: 100dvh;
+  max-height: 100dvh;
   background: var(--police-sidebar-bg);
   will-change: width, transform;
 }
@@ -262,6 +273,8 @@ const toggleSidebar = () => {
 }
 
 .admin-main {
+  height: 100dvh;
+  max-height: 100dvh;
   background: var(--police-bg, #f2f5fa);
   transition: margin-left 0.38s cubic-bezier(0.22, 1, 0.36, 1);
   will-change: margin-left;
@@ -271,6 +284,13 @@ const toggleSidebar = () => {
   background:
     radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 34rem),
     var(--police-bg, #f2f5fa);
+}
+
+.admin-content--fixed {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 .fade-slide-enter-active,
@@ -289,6 +309,13 @@ const toggleSidebar = () => {
 }
 
 @media (min-width: 1024px) {
+  .admin-shell,
+  .admin-sidebar,
+  .admin-main {
+    height: calc(100dvh / var(--platform-display-scale, 1));
+    max-height: calc(100dvh / var(--platform-display-scale, 1));
+  }
+
   .admin-sidebar {
     width: var(--sidebar-width);
     transition:

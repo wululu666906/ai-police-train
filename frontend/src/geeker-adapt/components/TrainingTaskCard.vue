@@ -16,9 +16,12 @@
           v-for="scene in displayScenes"
           :key="scene.id"
           class="scene-row"
-          :class="`scene-row--${scene.training_status || 'not_started'}`"
+          :class="`scene-row--${sceneStatus(scene)}`"
         >
           <span class="scene-name">{{ scene.name }}</span>
+          <span class="scene-difficulty" :class="`scene-difficulty--${difficultyLevel(scene.difficulty)}`">
+            {{ difficultyLabel(scene.difficulty) }}
+          </span>
           <span class="scene-status">{{ sceneStatusLabel(scene) }}</span>
           <div class="scene-actions">
             <template v-if="scene.training_status === 'completed'">
@@ -55,6 +58,15 @@
             </el-button>
           </div>
         </div>
+        <button
+          v-if="hasMoreScenes"
+          type="button"
+          class="scene-expand-btn"
+          @click="emit('view-detail')"
+        >
+          <span>展开全部场景</span>
+          <span class="scene-expand-btn__count">+{{ hiddenSceneCount }}</span>
+        </button>
     </div>
   </article>
 </template>
@@ -102,6 +114,29 @@ const emit = defineEmits<{
 }>()
 
 const displayScenes = computed(() => (props.caseItem.scenes || []).slice(0, 3))
+const totalScenes = computed(() => (props.caseItem.scenes || []).length)
+const hiddenSceneCount = computed(() => Math.max(0, totalScenes.value - displayScenes.value.length))
+const hasMoreScenes = computed(() => hiddenSceneCount.value > 0)
+
+const sceneStatus = (scene: TaskSceneItem) => {
+  if (scene.training_status) return scene.training_status
+  if (scene.has_active_session) return 'in_progress'
+  return 'not_started'
+}
+
+const difficultyLabel = (value?: string) => {
+  const text = String(value || '').trim()
+  if (text.includes('低') || text.includes('简')) return '低'
+  if (text.includes('高') || text.includes('困')) return '高'
+  return '中'
+}
+
+const difficultyLevel = (value?: string) => {
+  const label = difficultyLabel(value)
+  if (label === '低') return 'low'
+  if (label === '高') return 'high'
+  return 'medium'
+}
 
 const formattedDate = computed(() => {
   const raw = props.caseItem.created_at
@@ -261,11 +296,71 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
   border: 1px solid #f1f5f9;
 }
 
+.scene-expand-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px dashed #bfdbfe;
+  border-radius: 6px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.scene-expand-btn__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .scene-status {
   font-size: 11px;
   color: #9ca3af;
   flex-shrink: 0;
   white-space: nowrap;
+}
+
+.scene-difficulty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 28px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+
+  &--low {
+    color: #047857;
+    background: #ecfdf5;
+  }
+
+  &--medium {
+    color: #b45309;
+    background: #fffbeb;
+  }
+
+  &--high {
+    color: #b91c1c;
+    background: #fef2f2;
+  }
 }
 
 .scene-actions {

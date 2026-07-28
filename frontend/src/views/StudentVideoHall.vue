@@ -391,7 +391,7 @@ const tabs = [
 ]
 
 onMounted(() => {
-  setMainScrollable?.(true)
+  setMainScrollable?.(false)
   fetchVideos()
   fetchHistorySummary()
 })

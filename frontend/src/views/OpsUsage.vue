@@ -75,9 +75,13 @@
           </section>
 
           <section class="ops-face-card">
-            <div class="ops-face-photo">
-              <img v-if="faceImageUrl" :src="faceImageUrl" alt="人脸档案照片" />
-              <span v-else>暂无照片</span>
+            <div class="ops-face-photo-list">
+              <div v-for="(url, index) in faceImageUrls" :key="url" class="ops-face-photo">
+                <img :src="url" :alt="`人脸档案照片 ${index + 1}`" loading="lazy" />
+              </div>
+              <div v-if="!faceImageUrls.length" class="ops-face-photo ops-face-photo--empty">
+                <span>暂无照片</span>
+              </div>
             </div>
             <div>
               <span>人脸档案</span>
@@ -122,6 +126,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import request from '../utils/request'
 import { resolveMediaUrl } from '../utils/media'
 import OpsIcon from '../components/OpsIcon.vue'
@@ -188,8 +193,11 @@ type UsageAccount = {
   }
 }
 
+const route = useRoute()
+const initialRole = route.query.role === 'student' || route.query.role === 'admin' ? route.query.role : ''
+const initialAccountId = Number(route.query.account || 0) || null
 const loading = ref(false)
-const roleFilter = ref<'admin' | 'student' | ''>('admin')
+const roleFilter = ref<'admin' | 'student' | ''>(initialRole as 'admin' | 'student' | '')
 const keyword = ref('')
 const usageAccounts = ref<UsageAccount[]>([])
 const selectedId = ref<number | null>(null)
@@ -197,9 +205,14 @@ const detail = ref<UsageAccount | null>(null)
 const activeCategory = ref('admin')
 const globalVersion = ref('')
 const usageVersions = ref<Record<number, string>>({})
+const usageListCache = new Map<string, UsageAccount[]>()
 let refreshTimer: number | undefined
 let versionTimer: number | undefined
 let versionPolling = false
+let usageRequestId = 0
+let detailRequestId = 0
+let initialAccountHandled = false
+const VERSION_POLL_INTERVAL_MS = 10000
 
 const categoryTabs = [
   { key: 'admin', label: '管理端' },
@@ -224,9 +237,13 @@ const withCacheBuster = (url: string, version?: string) => {
   return `${url}${separator}v=${encodeURIComponent(version || String(Date.now()))}`
 }
 
-const faceImageUrl = computed(() => {
+const faceImageUrls = computed(() => {
   const face = detail.value?.profile?.face
-  return withCacheBuster(resolveMediaUrl(face?.image_url), face?.updated_at || detail.value?.usage_version)
+  const version = face?.updated_at || detail.value?.usage_version
+  const urls = [face?.image_url, ...(face?.sample_images || [])]
+    .map((url) => withCacheBuster(resolveMediaUrl(url), version))
+    .filter(Boolean)
+  return Array.from(new Set(urls))
 })
 
 const roleLabel = (role: string) => {
@@ -377,6 +394,14 @@ const computeVersionMap = (items: Array<{ id: number; usage_version?: string; ve
   }, {})
 }
 
+const usageCacheKey = (role = roleFilter.value, search = keyword.value) => `${role || 'all'}::${search.trim()}`
+
+const applyUsageList = (items: UsageAccount[]) => {
+  usageAccounts.value = items
+  usageVersions.value = computeVersionMap(items)
+  globalVersion.value = computeGlobalVersion(items)
+}
+
 const hasVersionChanged = (next: Record<number, string>) => {
   const current = usageVersions.value
   const currentIds = Object.keys(current)
@@ -386,17 +411,25 @@ const hasVersionChanged = (next: Record<number, string>) => {
 }
 
 const fetchUsage = async (silent = false) => {
+  const requestId = ++usageRequestId
   if (!silent) loading.value = true
   try {
     const params: any = {}
     if (roleFilter.value) params.role = roleFilter.value
     if (keyword.value) params.keyword = keyword.value
+    const cacheKey = usageCacheKey()
     const res: any = await request.get('/ops/accounts/usage', { params })
-    usageAccounts.value = Array.isArray(res) ? res : []
-    usageVersions.value = computeVersionMap(usageAccounts.value)
-    globalVersion.value = computeGlobalVersion(usageAccounts.value)
-    if (!selectedId.value && usageAccounts.value.length) {
-      await selectAccount(usageAccounts.value[0])
+    if (requestId !== usageRequestId) return
+    const items = Array.isArray(res) ? res : []
+    usageListCache.set(cacheKey, items)
+    applyUsageList(items)
+    if (!selectedId.value && !initialAccountHandled && initialAccountId && usageAccounts.value.some((item) => item.id === initialAccountId)) {
+      initialAccountHandled = true
+      selectedId.value = initialAccountId
+      await fetchDetail(initialAccountId)
+    } else if (!selectedId.value && usageAccounts.value.length) {
+      selectedId.value = usageAccounts.value[0].id
+      await fetchDetail(usageAccounts.value[0].id)
     } else if (selectedId.value) {
       const stillVisible = usageAccounts.value.some((item) => item.id === selectedId.value)
       if (stillVisible) await fetchDetail(selectedId.value)
@@ -411,7 +444,7 @@ const fetchUsage = async (silent = false) => {
 }
 
 const pollUsageVersions = async () => {
-  if (versionPolling) return
+  if (versionPolling || loading.value || document.visibilityState === 'hidden') return
   versionPolling = true
   try {
     const params: any = {}
@@ -429,7 +462,9 @@ const pollUsageVersions = async () => {
 }
 
 const fetchDetail = async (id: number) => {
+  const requestId = ++detailRequestId
   const res: any = await request.get(`/ops/accounts/${id}/usage`)
+  if (requestId !== detailRequestId || selectedId.value !== id) return
   detail.value = res
   if (!categoryCount(activeCategory.value)) {
     const first = categoryTabs.find((item) => categoryCount(item.key) > 0)
@@ -446,13 +481,25 @@ const setRole = async (role: 'admin' | 'student' | '') => {
   roleFilter.value = role
   selectedId.value = null
   detail.value = null
+  activeCategory.value = 'admin'
+  const cached = usageListCache.get(usageCacheKey())
+  if (cached) {
+    applyUsageList(cached)
+    if (cached.length) {
+      selectedId.value = cached[0].id
+      void fetchDetail(cached[0].id)
+    }
+    void fetchUsage(true)
+    return
+  }
+  usageAccounts.value = []
   await fetchUsage()
 }
 
 onMounted(async () => {
   await fetchUsage()
   refreshTimer = window.setInterval(() => fetchUsage(true), 30000)
-  versionTimer = window.setInterval(pollUsageVersions, 2000)
+  versionTimer = window.setInterval(pollUsageVersions, VERSION_POLL_INTERVAL_MS)
 })
 
 onUnmounted(() => {
@@ -726,7 +773,7 @@ onUnmounted(() => {
 
 .ops-face-card {
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
+  grid-template-columns: minmax(160px, 240px) minmax(0, 1fr);
   gap: 14px;
   padding: 0 16px 14px;
   border-bottom: 1px solid #eef2f7;
@@ -768,12 +815,19 @@ onUnmounted(() => {
   margin: 5px 0 0;
 }
 
+.ops-face-photo-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  align-content: start;
+  gap: 8px;
+}
+
 .ops-face-photo {
-  width: 132px;
-  aspect-ratio: 1;
+  width: 100%;
+  min-height: 132px;
+  aspect-ratio: 4 / 5;
   display: grid;
   place-items: center;
-  overflow: hidden;
   border: 1px solid #dbe3ee;
   border-radius: 6px;
   background: #f8fafc;
@@ -785,7 +839,12 @@ onUnmounted(() => {
 .ops-face-photo img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  background: #fff;
+}
+
+.ops-face-photo--empty {
+  aspect-ratio: 1;
 }
 
 .ops-category-tabs {

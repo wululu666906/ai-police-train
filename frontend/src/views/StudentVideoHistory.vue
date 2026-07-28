@@ -62,6 +62,7 @@
       </div>
     </section>
 
+<<<<<<< HEAD
     <section class="stats-grid">
       <article v-for="card in statCards" :key="card.label" class="stat-card">
         <div class="stat-card__main">
@@ -107,6 +108,8 @@
       </article>
     </section>
 
+=======
+>>>>>>> c75d28e11697d318d584360255fb4e860ec8271e
     <section class="table-panel">
       <div v-if="loading" class="state-panel">
         <el-skeleton :rows="8" animated />
@@ -139,7 +142,7 @@
               v-for="(item, index) in pagedSessions"
               :key="item.id"
               class="history-row"
-              :class="{ 'history-row--clickable': canViewReport(item) }"
+              :class="{ 'history-row--clickable': canViewReport(item), 'history-row--menu-open': openActionMenuId === item.id }"
               @click="handleRowClick(item)"
             >
               <div class="cell-center">{{ (currentPage - 1) * pageSize + index + 1 }}</div>
@@ -202,19 +205,28 @@
                   <el-button type="warning" plain size="small" @click="handleAction('redo', item)">去重修</el-button>
                 </template>
 
-                <el-dropdown trigger="click" @command="handleDropdownCommand($event, item)">
-                  <button type="button" class="more-btn">
+                <div class="more-menu">
+                  <button
+                    type="button"
+                    class="more-btn"
+                    :aria-expanded="openActionMenuId === item.id"
+                    aria-haspopup="menu"
+                    @click.stop="toggleActionMenu(item.id, $event)"
+                  >
                     <el-icon><MoreFilled /></el-icon>
                   </button>
-                  <template #dropdown>
-                    <el-dropdown-menu>
-                      <el-dropdown-item v-if="canViewReport(item)" command="report">查看报告</el-dropdown-item>
-                      <el-dropdown-item v-if="canViewReport(item) && latestReplayArtifact(item)" command="replay">查看回放</el-dropdown-item>
-                      <el-dropdown-item v-if="item.status === 'active'" command="continue">继续训练</el-dropdown-item>
-                      <el-dropdown-item v-if="item.video_id" command="redo">重新训练</el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
+                  <div
+                    v-if="openActionMenuId === item.id"
+                    class="more-menu__panel"
+                    :class="`more-menu__panel--${actionMenuPlacement}`"
+                    role="menu"
+                    @click.stop
+                  >
+                    <button v-if="canViewReport(item)" type="button" class="more-menu__item" role="menuitem" @click="handleMenuAction('report', item)">查看报告</button>
+                    <button v-if="item.status === 'active'" type="button" class="more-menu__item" role="menuitem" @click="handleMenuAction('continue', item)">继续训练</button>
+                    <button v-if="item.video_id" type="button" class="more-menu__item" role="menuitem" @click="handleMenuAction('redo', item)">重新训练</button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -222,57 +234,55 @@
 
         <div class="table-footer">
           <span class="table-footer__count">共 {{ totalCount }} 条</span>
-          <el-pagination
-            v-model:current-page="currentPage"
-            v-model:page-size="pageSize"
-            background
-            layout="prev, pager, next, sizes"
-            :page-sizes="[8, 10, 20]"
-            :total="totalCount"
-            @current-change="fetchHistory"
-            @size-change="fetchHistory"
-          />
+          <div class="pager-controls">
+            <el-pagination
+              v-model:current-page="currentPage"
+              background
+              layout="prev, pager, next"
+              :page-size="pageSize"
+              :total="totalCount"
+              @current-change="fetchHistory"
+            />
+            <div class="page-size-menu" @click.stop>
+              <button
+                type="button"
+                class="page-size-menu__trigger"
+                :aria-expanded="showPageSizeMenu"
+                aria-haspopup="listbox"
+                @click="togglePageSizeMenu"
+              >
+                <span>{{ pageSize }}条/页</span>
+                <el-icon><ArrowUp /></el-icon>
+              </button>
+              <div v-if="showPageSizeMenu" class="page-size-menu__panel" role="listbox">
+                <button
+                  v-for="size in pageSizeOptions"
+                  :key="size"
+                  type="button"
+                  class="page-size-menu__item"
+                  :class="{ 'page-size-menu__item--active': pageSize === size }"
+                  role="option"
+                  :aria-selected="pageSize === size"
+                  @click="selectPageSize(size)"
+                >
+                  {{ size }}条/页
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </template>
     </section>
 
-    <el-dialog
-      v-model="showReplayDialog"
-      title="训练录制回放"
-      width="720px"
-      destroy-on-close
-      class="replay-dialog"
-    >
-      <template v-if="replayArtifactUrl">
-        <video class="replay-video" :src="replayArtifactUrl" controls preload="metadata" />
-      </template>
-      <el-empty v-else description="未找到可回放的训练录制" />
-    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { CircleCheck, MoreFilled, Opportunity, Refresh, Star, Search, Warning } from '@element-plus/icons-vue'
-import * as echarts from 'echarts'
+import { ArrowUp, MoreFilled, Refresh, Search } from '@element-plus/icons-vue'
 import request from '../utils/request'
-
-interface ArtifactItem {
-  id: number
-  artifact_type: string
-  file_url?: string
-  mime_type?: string
-  duration_seconds?: number | null
-  created_at?: string
-}
-
-interface IssueItem {
-  key: string
-  label: string
-  count: number
-}
 
 interface SessionItem {
   id: number
@@ -293,7 +303,6 @@ interface SessionItem {
   report_ready?: boolean
   evaluation_status?: string
   failure_reasons?: Record<string, number>
-  artifacts?: ArtifactItem[]
   created_at: string
   finished_at?: string
 }
@@ -304,7 +313,6 @@ interface HistoryResponse {
   page: number
   page_size: number
   has_more: boolean
-  issue_top: IssueItem[]
   available_categories: string[]
 }
 
@@ -314,11 +322,12 @@ const setMainScrollable = inject<(value: boolean) => void>('setMainScrollable')
 
 const sessions = ref<SessionItem[]>([])
 const totalCount = ref(0)
-const issueTopFromServer = ref<IssueItem[]>([])
 const availableCategories = ref<string[]>([])
 const loading = ref(true)
-const showReplayDialog = ref(false)
-const replayArtifactUrl = ref('')
+const openActionMenuId = ref<number | null>(null)
+const showPageSizeMenu = ref(false)
+const pageSizeOptions = [8, 10, 20]
+const actionMenuPlacement = ref<'up' | 'down'>('down')
 
 // 从 URL query 恢复筛选状态
 const typeFilter = ref(String(route.query.category || 'all'))
@@ -333,11 +342,6 @@ const dateRange = ref<[string, string] | []>(
 const currentPage = ref(Number(route.query.page) || 1)
 const pageSize = ref(Number(route.query.page_size) || 10)
 
-const radarChartRef = ref<HTMLElement | null>(null)
-const trendChartRef = ref<HTMLElement | null>(null)
-let radarChart: echarts.ECharts | null = null
-let trendChart: echarts.ECharts | null = null
-
 // debounce 工具
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 function debounce(fn: () => void, ms = 300) {
@@ -346,16 +350,16 @@ function debounce(fn: () => void, ms = 300) {
 }
 
 onMounted(() => {
-  setMainScrollable?.(true)
+  setMainScrollable?.(false)
   void fetchHistory()
-  window.addEventListener('resize', handleResize)
+  document.addEventListener('click', closeFloatingMenus)
+  window.addEventListener('resize', closeFloatingMenus)
 })
 
 onUnmounted(() => {
   setMainScrollable?.(false)
-  radarChart?.dispose()
-  trendChart?.dispose()
-  window.removeEventListener('resize', handleResize)
+  document.removeEventListener('click', closeFloatingMenus)
+  window.removeEventListener('resize', closeFloatingMenus)
   if (debounceTimer) clearTimeout(debounceTimer)
 })
 
@@ -411,6 +415,7 @@ const filteredSessions = computed(() => {
 // 服务端分页，pagedSessions 就是当前页数据
 const pagedSessions = computed(() => filteredSessions.value)
 
+<<<<<<< HEAD
 const finishedSessions = computed(() => sessions.value.filter((item) => item.status === 'finished'))
 const activeSessions = computed(() => sessions.value.filter((item) => item.status === 'active'))
 const retrySessions = computed(() => sessions.value.filter((item) => item.needs_retry === true))
@@ -533,6 +538,8 @@ const trendSeries = computed(() => {
     .slice(-7)
 })
 
+=======
+>>>>>>> c75d28e11697d318d584360255fb4e860ec8271e
 async function fetchHistory() {
   loading.value = true
   try {
@@ -549,25 +556,26 @@ async function fetchHistory() {
     if (typeFilter.value !== 'all') {
       params.category = typeFilter.value
     }
+    if (keyword.value.trim()) {
+      params.keyword = keyword.value.trim()
+    }
+    if (dateRange.value.length === 2) {
+      params.date_start = dateRange.value[0]
+      params.date_end = dateRange.value[1]
+    }
 
     const res = await request.get('/video-training/history', { params }) as any
     // 兼容旧格式（数组）和新格式（对象）
     if (Array.isArray(res)) {
       sessions.value = res
       totalCount.value = res.length
-      issueTopFromServer.value = []
     } else {
       sessions.value = Array.isArray(res.items) ? res.items : []
       totalCount.value = res.total || 0
-      issueTopFromServer.value = Array.isArray(res.issue_top) ? res.issue_top : []
       if (res.available_categories?.length) {
         availableCategories.value = res.available_categories
       }
     }
-
-    await nextTick()
-    renderRadarChart()
-    renderTrendChart()
   } catch {
     ElMessage.error('加载视频实训历史失败')
   } finally {
@@ -585,37 +593,58 @@ function handleRowClick(session: SessionItem) {
 }
 
 async function handleAction(command: string, session: SessionItem) {
+  closeFloatingMenus()
   if (command === 'report') {
     router.push(`/student/evaluation?session_id=${session.id}&type=video`)
-    return
-  }
-
-  if (command === 'replay') {
-    const artifact = latestReplayArtifact(session)
-    if (!artifact?.file_url) {
-      ElMessage.warning('当前记录暂无可回放的训练录制')
-      return
-    }
-    replayArtifactUrl.value = resolveMediaUrl(artifact.file_url)
-    showReplayDialog.value = true
     return
   }
 
   router.push(`/student/video-training/${session.video_id}`)
 }
 
-function latestReplayArtifact(session: SessionItem): ArtifactItem | null {
-  const items = Array.isArray(session.artifacts) ? session.artifacts : []
-  const sorted = [...items].sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
-  return sorted.find((item) => item.artifact_type === 'camera_recording' && item.file_url) || null
+function toggleActionMenu(sessionId: number, event: MouseEvent) {
+  showPageSizeMenu.value = false
+  if (openActionMenuId.value === sessionId) {
+    openActionMenuId.value = null
+    return
+  }
+  positionActionMenu(event.currentTarget as HTMLElement)
+  openActionMenuId.value = sessionId
 }
 
-function resolveMediaUrl(url?: string): string {
-  if (!url) return ''
-  if (/^https?:\/\//i.test(url)) return url
-  const baseUrl = String(request.defaults.baseURL || '').replace(/\/$/, '')
-  if (!baseUrl) return url
-  return `${baseUrl}${url.startsWith('/') ? url : `/${url}`}`
+function handleMenuAction(command: string, session: SessionItem) {
+  void handleAction(command, session)
+}
+
+function togglePageSizeMenu() {
+  openActionMenuId.value = null
+  showPageSizeMenu.value = !showPageSizeMenu.value
+}
+
+function selectPageSize(size: number) {
+  if (pageSize.value !== size) {
+    pageSize.value = size
+    currentPage.value = 1
+    syncQueryParams()
+    void fetchHistory()
+  }
+  showPageSizeMenu.value = false
+}
+
+function closeFloatingMenus() {
+  openActionMenuId.value = null
+  showPageSizeMenu.value = false
+}
+
+function positionActionMenu(trigger: HTMLElement) {
+  const rect = trigger.getBoundingClientRect()
+  const panelWidth = 118
+  const panelHeight = 128
+  const margin = 8
+  const containerBottom = document.querySelector('.student-main')?.getBoundingClientRect().bottom || window.innerHeight
+  const opensUp = containerBottom - rect.bottom < panelHeight + margin * 2
+
+  actionMenuPlacement.value = opensUp ? 'up' : 'down'
 }
 
 function calcProgress(session: SessionItem): number {
@@ -673,14 +702,6 @@ function formatDateTime(iso?: string): string {
   return `${date} ${time}`
 }
 
-function relativeTime(iso?: string): string {
-  if (!iso) return '--'
-  const diff = Date.now() - new Date(iso).getTime()
-  const hours = Math.max(1, Math.round(diff / 3600000))
-  if (hours < 24) return `${hours} 小时前`
-  return `${Math.round(hours / 24)} 天前`
-}
-
 function resetPagination() {
   currentPage.value = 1
   syncQueryParams()
@@ -698,6 +719,7 @@ function resetFilters() {
   // watch 会触发 fetchHistory，这里不重复调用
 }
 
+<<<<<<< HEAD
 function handleResize() {
   radarChart?.resize()
   trendChart?.resize()
@@ -803,6 +825,8 @@ function renderTrendChart() {
     ],
   })
 }
+=======
+>>>>>>> c75d28e11697d318d584360255fb4e860ec8271e
 </script>
 
 <style scoped lang="scss">
@@ -816,9 +840,7 @@ function renderTrendChart() {
 }
 
 .filter-panel,
-.table-panel,
-.chart-card,
-.stat-card {
+.table-panel {
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(214, 223, 237, 0.95);
   box-shadow: 0 18px 44px rgba(15, 23, 42, 0.06);
@@ -857,6 +879,7 @@ function renderTrendChart() {
   border-radius: 10px;
 }
 
+<<<<<<< HEAD
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1018,8 +1041,11 @@ function renderTrendChart() {
   color: #64748b;
 }
 
+=======
+>>>>>>> c75d28e11697d318d584360255fb4e860ec8271e
 .table-panel {
   overflow-x: auto;
+  overflow-y: visible;
 }
 
 .history-table {
@@ -1032,8 +1058,10 @@ function renderTrendChart() {
   grid-template-columns: 52px minmax(180px, 1.4fr) minmax(120px, 1fr) 96px 88px 72px 96px 110px 80px 130px 132px;
   gap: 12px;
   align-items: center;
+  justify-items: center;
   padding: 16px 18px;
   min-width: 1180px;
+  overflow: visible;
 }
 
 .history-table__head {
@@ -1042,12 +1070,15 @@ function renderTrendChart() {
   color: #334155;
   border-bottom: 1px solid #e8eef7;
   background: #f8fafc;
+  text-align: center;
 }
 
 .history-row {
+  position: relative;
   font-size: 14px;
   color: #334155;
   border-bottom: 1px solid #edf2f7;
+  text-align: center;
 }
 
 .history-row--clickable {
@@ -1056,6 +1087,10 @@ function renderTrendChart() {
 
 .history-row--clickable:hover {
   background: #f8fbff;
+}
+
+.history-row--menu-open {
+  z-index: 20;
 }
 
 .history-row:last-child {
@@ -1070,6 +1105,7 @@ function renderTrendChart() {
   font-size: 15px;
   font-weight: 700;
   color: #0f172a;
+  text-align: center;
 }
 
 .history-row__sub,
@@ -1081,12 +1117,14 @@ function renderTrendChart() {
 
 .history-row__sub {
   margin-top: 4px;
+  text-align: center;
 }
 
 .history-row__scene,
 .time-cell {
   font-size: 13px;
   color: #475569;
+  text-align: center;
 }
 
 .mode-badge,
@@ -1189,6 +1227,7 @@ function renderTrendChart() {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  overflow: visible;
 }
 
 .action-cell--sticky {
@@ -1197,6 +1236,10 @@ function renderTrendChart() {
   z-index: 2;
   background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, #fff 18%);
   padding-left: 12px;
+}
+
+.history-row--menu-open .action-cell--sticky {
+  z-index: 30;
 }
 
 .history-table__head .action-cell--sticky {
@@ -1248,6 +1291,80 @@ function renderTrendChart() {
   border-color: #93c5fd;
 }
 
+.more-menu {
+  position: relative;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.more-menu__panel {
+  position: absolute;
+  right: 0;
+  z-index: 80;
+  box-sizing: border-box;
+  width: 118px;
+  padding: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+}
+
+.more-menu__panel--down {
+  top: calc(100% + 8px);
+}
+
+.more-menu__panel--up {
+  bottom: calc(100% + 8px);
+}
+
+.more-menu__panel--down::before,
+.more-menu__panel--up::after {
+  content: '';
+  position: absolute;
+  right: 17px;
+  width: 9px;
+  height: 9px;
+  background: #fff;
+}
+
+.more-menu__panel--down::before {
+  top: -5px;
+  border-top: 1px solid #e5e7eb;
+  border-left: 1px solid #e5e7eb;
+  transform: rotate(45deg);
+}
+
+.more-menu__panel--up::after {
+  bottom: -5px;
+  border-right: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  transform: rotate(45deg);
+}
+
+.more-menu__item {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.more-menu__item:hover {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
 .table-footer {
   display: flex;
   align-items: center;
@@ -1262,26 +1379,85 @@ function renderTrendChart() {
   color: #64748b;
 }
 
-.replay-video {
-  display: block;
-  width: 100%;
-  max-height: 70vh;
-  border-radius: 8px;
-  background: #020617;
+.pager-controls {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-width: 0;
 }
 
-@media (max-width: 1480px) {
-  .stats-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
+.page-size-menu {
+  position: relative;
+  display: inline-flex;
+  justify-content: center;
+}
 
-  .analytics-grid {
-    grid-template-columns: 1fr 1fr;
-  }
+.page-size-menu__trigger {
+  display: inline-flex;
+  width: 128px;
+  height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 14px;
+  border: 1px solid #1d4ed8;
+  border-radius: 6px;
+  background: #fff;
+  color: #64748b;
+  font-size: 15px;
+  cursor: pointer;
+}
 
-  .chart-card--trend {
-    grid-column: 1 / -1;
-  }
+.page-size-menu__trigger[aria-expanded='true'] {
+  color: #1d4ed8;
+  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.08);
+}
+
+.page-size-menu__panel {
+  position: absolute;
+  z-index: 60;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  width: 118px;
+  padding: 8px 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+  transform: translateX(-50%);
+}
+
+.page-size-menu__panel::after {
+  content: '';
+  position: absolute;
+  bottom: -5px;
+  left: calc(50% - 5px);
+  width: 10px;
+  height: 10px;
+  border-right: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+  transform: rotate(45deg);
+}
+
+.page-size-menu__item {
+  display: flex;
+  width: 100%;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: #64748b;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.page-size-menu__item:hover,
+.page-size-menu__item--active {
+  background: #eff6ff;
+  color: #2563eb;
 }
 
 @media (max-width: 1280px) {
@@ -1304,15 +1480,17 @@ function renderTrendChart() {
     padding: 14px;
   }
 
-  .stats-grid,
-  .analytics-grid,
   .filter-grid {
     grid-template-columns: 1fr;
   }
 
   .table-footer {
     flex-direction: column;
-    align-items: stretch;
+    align-items: center;
+  }
+
+  .pager-controls {
+    flex-wrap: wrap;
   }
 }
 </style>

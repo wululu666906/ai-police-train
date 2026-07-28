@@ -7,9 +7,9 @@ os.environ.setdefault("GLOG_minloglevel", "2")
 import json
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
@@ -27,7 +27,23 @@ load_backend_env()
 app = FastAPI(title="AI虚拟警情模拟训练平台 - API", version="1.0.0")
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_to_chinese_response(_: Request, error: Exception):
+    """Prevent framework/dependency errors from being displayed in English."""
+    print(f"Unhandled server error: {error}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "服务器处理请求时发生异常，请稍后重试。"},
+    )
+
+
 def ensure_default_users():
+    # Demo accounts with known passwords must never be created implicitly in a
+    # deployed environment.  Existing accounts are left untouched; this flag
+    # is only for an explicitly requested local demo setup.
+    if os.getenv("SEED_DEMO_ACCOUNTS", "0").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+
     db = database.SessionLocal()
     try:
         users = db.query(models.User).all()
@@ -67,10 +83,11 @@ def ensure_default_users():
 def ensure_message_schema_compatibility():
     engine = database.engine
     try:
+        # Older project databases predate this table.  Returning early here
+        # leaves every student-case request failing when it aggregates message
+        # activity, so create the table first and only then add newer columns.
+        models.Message.__table__.create(bind=engine, checkfirst=True)
         inspector = inspect(engine)
-        if "messages" not in inspector.get_table_names():
-            return
-
         message_columns = {column["name"] for column in inspector.get_columns("messages")}
         statements = []
         if "speaker_role_id" not in message_columns:
@@ -91,10 +108,12 @@ def ensure_message_schema_compatibility():
 def ensure_role_schema_compatibility():
     engine = database.engine
     try:
+        # The scene-to-role mapping was absent from early databases.  Create
+        # both tables before inspecting columns so old installations can load
+        # scene role data instead of failing at query time.
+        models.Role.__table__.create(bind=engine, checkfirst=True)
+        models.SceneRole.__table__.create(bind=engine, checkfirst=True)
         inspector = inspect(engine)
-        if "roles" not in inspector.get_table_names():
-            return
-
         role_columns = {column["name"] for column in inspector.get_columns("roles")}
         statements = []
         if "person_id" not in role_columns:
@@ -123,12 +142,14 @@ def ensure_user_schema_compatibility():
 
         user_columns = {column["name"] for column in inspector.get_columns("users")}
         column_defs = {
+            "avatar_url": "VARCHAR(300)",
             "display_name": "VARCHAR(80)",
             "real_name": "VARCHAR(80)",
             "phone": "VARCHAR(30)",
             "email": "VARCHAR(120)",
             "unit": "VARCHAR(120)",
             "department": "VARCHAR(120)",
+            "account_group": "VARCHAR(80)",
             "bio": "TEXT",
             "last_login_at": "DATETIME",
             "updated_at": "DATETIME",
@@ -145,6 +166,13 @@ def ensure_user_schema_compatibility():
                     connection.execute(text(statement))
     except Exception as error:
         print(f"User schema compatibility check failed: {error}")
+
+
+def ensure_account_group_schema_compatibility():
+    try:
+        models.AccountGroup.__table__.create(bind=database.engine, checkfirst=True)
+    except Exception as error:
+        print(f"Account group schema compatibility check failed: {error}")
 
 
 def ensure_classroom_schema_compatibility():
@@ -171,7 +199,6 @@ def ensure_video_schema_compatibility():
             models.VideoNode.__table__,
             models.VideoTrainingSession.__table__,
             models.VideoNodeResult.__table__,
-            models.VideoTrainingArtifact.__table__,
         ):
             table.create(bind=database.engine, checkfirst=True)
         # 为已存在的 training_videos 表补充 briefing 列
@@ -179,9 +206,18 @@ def ensure_video_schema_compatibility():
         inspector = inspect(database.engine)
         if "training_videos" in inspector.get_table_names():
             cols = {c["name"] for c in inspector.get_columns("training_videos")}
+            statements = []
             with database.engine.begin() as conn:
                 if "briefing" not in cols:
-                    conn.execute(text("ALTER TABLE training_videos ADD COLUMN briefing TEXT"))
+                    statements.append("ALTER TABLE training_videos ADD COLUMN briefing TEXT")
+                # Video hall serializes these fields for every video.  They
+                # were introduced after existing local databases were created.
+                if "scenario_type" not in cols:
+                    statements.append("ALTER TABLE training_videos ADD COLUMN scenario_type VARCHAR(50)")
+                if "difficulty" not in cols:
+                    statements.append("ALTER TABLE training_videos ADD COLUMN difficulty VARCHAR(20) DEFAULT 'normal'")
+                for statement in statements:
+                    conn.execute(text(statement))
         if "video_training_sessions" in inspector.get_table_names():
             cols = {c["name"] for c in inspector.get_columns("video_training_sessions")}
             statements = []
@@ -494,6 +530,9 @@ def ensure_ops_audit_schema_compatibility():
     try:
         models.OpsAuditLog.__table__.create(bind=database.engine, checkfirst=True)
         models.SpeechUsageLog.__table__.create(bind=database.engine, checkfirst=True)
+        models.AIWorkflowRun.__table__.create(bind=database.engine, checkfirst=True)
+        models.CaseStoryVersion.__table__.create(bind=database.engine, checkfirst=True)
+        models.OpsIssueRecord.__table__.create(bind=database.engine, checkfirst=True)
     except Exception as error:
         print(f"Ops audit/speech usage schema compatibility check failed: {error}")
 
@@ -515,6 +554,10 @@ app.mount("/static/thumbnails", StaticFiles(directory=_thumbnails_dir), name="th
 _face_profiles_dir = os.path.join(os.path.dirname(__file__), "static", "face_profiles")
 os.makedirs(_face_profiles_dir, exist_ok=True)
 app.mount("/static/face-profiles", StaticFiles(directory=_face_profiles_dir), name="face_profiles_static")
+
+_profile_avatars_dir = os.path.join(os.path.dirname(__file__), "static", "profile_avatars")
+os.makedirs(_profile_avatars_dir, exist_ok=True)
+app.mount("/static/profile-avatars", StaticFiles(directory=_profile_avatars_dir), name="profile_avatars_static")
 
 _session_media_dir = os.path.join(os.path.dirname(__file__), "static", "session_media")
 os.makedirs(_session_media_dir, exist_ok=True)
@@ -579,6 +622,10 @@ if os.path.exists(os.path.join(frontend_dist, "assets")):
 
 @app.on_event("startup")
 def on_startup():
+    # The project has no standalone migration module.  Create tables from the
+    # current metadata, then run the compatibility helpers below for columns
+    # added to existing SQLite installations.
+    models.Base.metadata.create_all(bind=database.engine)
     ensure_user_schema_compatibility()
     ensure_message_schema_compatibility()
     ensure_role_schema_compatibility()
@@ -586,6 +633,7 @@ def on_startup():
     ensure_classroom_schema_compatibility()
     ensure_video_schema_compatibility()
     ensure_face_schema_compatibility()
+    ensure_account_group_schema_compatibility()
     ensure_ops_audit_schema_compatibility()
     ensure_default_users()
     if os.getenv("FACE_ENGINE_WARMUP", "0").strip().lower() in {"1", "true", "yes", "on"}:

@@ -1,72 +1,20 @@
 <template>
   <div class="student-page class-task-page">
     <header class="task-header">
-      <div>
-        <h1>班级作业</h1>
-        <p>加入班级后，训练作业会统一下发到这里，支持开始训练、继续训练和查看报告。</p>
+      <div class="task-header__main">
+        <div class="task-header__icon">
+          <el-icon><Tickets /></el-icon>
+        </div>
+        <div>
+          <h1>{{ pageTitle }}</h1>
+          <p>查看班级作业任务，按要求完成训练并提交评估报告。</p>
+        </div>
       </div>
       <div class="join-box">
         <input v-model.trim="inviteCode" type="text" placeholder="输入班级邀请码" />
         <el-button type="primary" :loading="joining" @click="joinClass">加入班级</el-button>
       </div>
     </header>
-
-    <section class="class-strip">
-      <button
-        type="button"
-        class="class-filter"
-        :class="{ 'class-filter--active': selectedClassId === 0 }"
-        @click="selectClass(0)"
-      >
-        全部班级
-      </button>
-      <button
-        v-for="item in classes"
-        :key="item.id"
-        type="button"
-        class="class-filter"
-        :class="{ 'class-filter--active': selectedClassId === item.id }"
-        @click="selectClass(item.id)"
-      >
-        {{ item.name }}
-      </button>
-    </section>
-
-    <section v-if="announcements.length" class="notice-band">
-      <article v-for="item in announcements.slice(0, 3)" :key="item.id">
-        <div>
-          <strong>{{ item.title }}</strong>
-          <span>{{ formatDateTime(item.created_at) }}</span>
-        </div>
-        <p>{{ item.content || '无正文' }}</p>
-      </article>
-    </section>
-
-    <section class="summary-grid">
-      <div class="summary-card">
-        <span>待完成</span>
-        <strong>{{ statusCount.pending + statusCount.in_progress }}</strong>
-      </div>
-      <div class="summary-card">
-        <span>已完成</span>
-        <strong>{{ statusCount.completed }}</strong>
-      </div>
-      <div class="summary-card summary-card--warn">
-        <span>逾期未交</span>
-        <strong>{{ statusCount.unsubmitted }}</strong>
-      </div>
-    </section>
-
-    <section v-if="priorityAssignment" class="priority-task">
-      <div>
-        <span>当前优先任务</span>
-        <strong>{{ priorityAssignment.title }}</strong>
-        <p>{{ assignmentActionHint(priorityAssignment) }}</p>
-      </div>
-      <el-button type="primary" :disabled="!canStartAssignment(priorityAssignment)" @click="startFirstScene(priorityAssignment)">
-        {{ primaryActionLabel(priorityAssignment) }}
-      </el-button>
-    </section>
 
     <section class="task-panel">
       <div class="task-toolbar">
@@ -77,37 +25,47 @@
           <el-tab-pane label="已完成" name="completed" />
           <el-tab-pane label="未提交" name="unsubmitted" />
         </el-tabs>
-        <el-button plain :loading="loading" @click="fetchAll">刷新</el-button>
+        <el-button plain :loading="loading" @click="fetchAll">
+          <el-icon><Refresh /></el-icon>
+          刷新
+        </el-button>
       </div>
 
-      <div v-if="loading" class="state-panel">
-        <el-skeleton :rows="8" animated />
-      </div>
-      <div v-else-if="visibleAssignments.length" class="assignment-list">
-        <article v-for="assignment in visibleAssignments" :key="assignment.id" class="assignment-card">
+      <div ref="taskBodyRef" class="task-panel__body">
+        <div v-if="loading" class="state-panel">
+          <el-skeleton :rows="8" animated />
+        </div>
+        <div v-else-if="visibleAssignments.length" class="assignment-list">
+          <article v-for="assignment in visibleAssignments" :key="assignment.id" class="assignment-card">
           <header>
-            <div>
+            <div class="assignment-main">
               <div class="assignment-meta">
-                <van-tag :type="statusType(assignment.status)" plain>{{ statusLabel(assignment.status) }}</van-tag>
+                <span class="status-pill" :class="`status-pill--${normalizeStatus(assignment.status)}`">
+                  {{ statusLabel(assignment.status) }}
+                </span>
                 <span>{{ assignment.class_name }}</span>
               </div>
               <h2>{{ assignment.title }}</h2>
               <p>{{ assignment.instructions || '暂无训练要求说明。' }}</p>
             </div>
             <div class="assignment-progress">
-              <strong>{{ assignment.completed_count }}/{{ assignment.required_count }}</strong>
+              <strong>{{ progressText(assignment) }}</strong>
               <span>场景完成</span>
+              <button type="button" @click="toggleAssignment(assignment)">
+                <el-icon><ArrowRight /></el-icon>
+              </button>
             </div>
           </header>
 
           <div class="assignment-info">
-            <span>发布时间：{{ formatDateTime(assignment.published_at) }}</span>
-            <span>截止时间：{{ formatDateTime(assignment.effective_due_at || assignment.due_at) }}</span>
-            <span>{{ duePressureText(assignment) }}</span>
+            <span><el-icon><Calendar /></el-icon>发布时间：{{ formatDateTime(assignment.published_at) }}</span>
+            <span><el-icon><Clock /></el-icon>截止时间：{{ formatDateTime(assignment.effective_due_at || assignment.due_at) }}</span>
+            <span class="assignment-info__danger"><el-icon><Warning /></el-icon>{{ duePressureText(assignment) }}</span>
             <span>{{ assignment.allow_late ? '允许补交' : '按时截止' }}</span>
           </div>
 
           <div class="completion-standard">
+            <el-icon><InfoFilled /></el-icon>
             <strong>完成标准</strong>
             <span>{{ completionStandardText(assignment) }}</span>
           </div>
@@ -175,16 +133,26 @@
               {{ primaryActionLabel(assignment) }}
             </el-button>
           </footer>
-        </article>
+          </article>
+        </div>
+        <el-empty v-else :description="emptyDescription" />
       </div>
-      <el-empty v-else :description="emptyDescription" />
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import {
+  ArrowRight,
+  Calendar,
+  Clock,
+  InfoFilled,
+  Refresh,
+  Tickets,
+  Warning,
+} from '@element-plus/icons-vue'
 import { showToast } from 'vant'
 import request from '../utils/request'
 
@@ -203,6 +171,14 @@ const loading = ref(false)
 const joining = ref(false)
 const startingSceneId = ref<number | null>(null)
 const startingAssignmentId = ref<number | null>(null)
+const taskBodyRef = ref<HTMLElement | null>(null)
+
+const pageTitle = computed(() => {
+  const selectedClass = classes.value.find((item) => Number(item.id) === Number(selectedClassId.value))
+  if (selectedClass?.name) return selectedClass.name
+  if (classes.value.length === 1 && classes.value[0]?.name) return classes.value[0].name
+  return '班级作业'
+})
 
 const visibleAssignments = computed(() => {
   let result = assignments.value
@@ -216,19 +192,6 @@ const visibleAssignments = computed(() => {
     const rightDue = new Date(right.effective_due_at || right.due_at || 8640000000000000).getTime()
     return leftDue - rightDue
   })
-})
-
-const priorityAssignment = computed(() =>
-  visibleAssignments.value.find((assignment: any) => normalizeStatus(assignment.status) !== 'completed') || null,
-)
-
-const statusCount = computed(() => {
-  const initial = { pending: 0, in_progress: 0, completed: 0, unsubmitted: 0 }
-  for (const assignment of assignments.value) {
-    const status = normalizeStatus(assignment.status)
-    initial[status] += 1
-  }
-  return initial
 })
 
 const emptyDescription = computed(() => {
@@ -286,6 +249,12 @@ const completionStandardText = (assignment: any) => {
   return `需完成 ${required} 个训练场景并生成评估报告，当前已完成 ${completed} 个；${lateText}。`
 }
 
+const progressText = (assignment: any) => {
+  const completed = Number(assignment?.completed_count || 0)
+  const required = Number(assignment?.required_count || assignment?.cases?.length || 0)
+  return `${completed}/${required || 0}`
+}
+
 const compactRuleText = (value: any) =>
   String(value || '')
     .split(/\n+/)
@@ -314,6 +283,7 @@ const fetchAll = async () => {
     classes.value = Array.isArray(classRes) ? classRes : []
     assignments.value = Array.isArray(assignmentRes) ? assignmentRes : []
     announcements.value = Array.isArray(announcementRes) ? announcementRes : []
+    if (!selectedClassId.value && classes.value.length === 1) selectedClassId.value = Number(classes.value[0].id)
   } finally {
     loading.value = false
   }
@@ -464,29 +434,41 @@ const formatDateTime = (value: any) => {
 }
 
 onMounted(async () => {
-  setMainScrollable?.(true)
+  setMainScrollable?.(false)
   await fetchAll()
 })
 
 onUnmounted(() => {
   setMainScrollable?.(false)
 })
+
+watch(activeTab, async () => {
+  expandedAssignmentId.value = null
+  await nextTick()
+  if (taskBodyRef.value) {
+    taskBodyRef.value.scrollTop = 0
+  }
+})
 </script>
 
 <style scoped>
 .class-task-page {
   display: grid;
-  gap: 14px;
-  padding: 20px 28px 32px;
+  grid-template-rows: auto auto;
+  gap: 18px;
+  min-height: 100%;
+  overflow: visible;
+  padding: 16px 28px 18px;
+  background: #f3f6fa;
 }
 
 .task-header,
 .task-toolbar,
 .assignment-card header,
-.assignment-card footer,
 .scene-card,
 .case-row,
-.notice-band article div {
+.notice-card__head,
+.notice-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -494,183 +476,114 @@ onUnmounted(() => {
 }
 
 .task-header {
-  border: 1px solid #e5e7eb;
+  width: min(100%, 1480px);
+  justify-self: center;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fff;
-  padding: 18px 20px;
+  padding: 16px 22px;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+}
+
+.task-header__main {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+}
+
+.task-header__icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #0b4bb3;
+  color: #fff;
+  font-size: 22px;
 }
 
 .task-header h1 {
   margin: 0;
   color: #111827;
-  font-size: 24px;
+  font-size: 23px;
   font-weight: 900;
+  letter-spacing: 0;
 }
 
 .task-header p {
   margin: 5px 0 0;
   color: #64748b;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .join-box {
   display: grid;
-  grid-template-columns: 190px auto;
+  grid-template-columns: 220px auto;
   gap: 8px;
+  flex: 0 0 auto;
 }
 
 .join-box input {
-  height: 32px;
+  height: 38px;
   border: 1px solid #dbe3ee;
   border-radius: 6px;
-  padding: 0 10px;
+  padding: 0 12px;
   color: #0f172a;
   outline: none;
 }
 
-.class-strip {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-}
-
-.class-filter {
-  height: 32px;
-  flex-shrink: 0;
-  border: 1px solid #dbe3ee;
-  border-radius: 999px;
-  background: #fff;
-  padding: 0 14px;
-  color: #475569;
-  font-size: 13px;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.class-filter--active {
-  border-color: #165dff;
-  background: #165dff;
-  color: #fff;
-}
-
-.notice-band {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.notice-band article {
-  border: 1px solid #dbeafe;
-  border-radius: 8px;
-  background: #f8fbff;
-  padding: 12px;
-}
-
-.notice-band strong {
-  color: #0f172a;
-  font-size: 14px;
-}
-
-.notice-band span,
-.notice-band p {
-  margin: 6px 0 0;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.summary-card {
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #fff;
-  padding: 14px 16px;
-}
-
-.summary-card span {
-  color: #64748b;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.summary-card strong {
-  display: block;
-  margin-top: 8px;
-  color: #165dff;
-  font-size: 30px;
-  line-height: 1;
-  font-weight: 900;
-}
-
-.summary-card--warn strong {
+.assignment-info__danger {
   color: #dc2626;
 }
 
-.priority-task {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  border: 1px solid #bfdbfe;
-  border-radius: 8px;
-  background: #eff6ff;
-  padding: 14px 16px;
-}
-
-.priority-task span {
-  color: #1d4ed8;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.priority-task strong {
-  display: block;
-  margin-top: 4px;
-  color: #0f172a;
-  font-size: 16px;
-  font-weight: 900;
-}
-
-.priority-task p {
-  margin: 5px 0 0;
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
 .task-panel {
-  border: 1px solid #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fff;
-  overflow: hidden;
+  overflow: visible;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
 }
 
 .task-toolbar {
+  flex: 0 0 auto;
+  height: 50px;
   padding: 0 14px;
   border-bottom: 1px solid #eef2f7;
+}
+
+.task-panel__body {
+  overflow: visible;
 }
 
 .task-tabs :deep(.el-tabs__header) {
   margin-bottom: 0;
 }
 
+.task-tabs :deep(.el-tabs__item:focus-visible),
+.task-tabs :deep(.el-tabs__item.is-focus) {
+  box-shadow: none !important;
+  outline: none !important;
+}
+
 .assignment-list {
   display: grid;
   gap: 14px;
-  padding: 14px;
+  padding: 14px 14px 80px;
 }
 
 .assignment-card {
   border: 1px solid #e5e7eb;
   border-radius: 10px;
   background: #fff;
-  padding: 16px;
+  padding: 18px 20px;
+}
+
+.assignment-main {
+  min-width: 0;
 }
 
 .assignment-meta {
@@ -693,33 +606,54 @@ onUnmounted(() => {
   color: #64748b;
   font-size: 13px;
   line-height: 1.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .assignment-progress {
-  min-width: 112px;
+  min-width: 118px;
   display: grid;
   justify-items: end;
+  gap: 6px;
 }
 
 .assignment-progress strong {
   color: #165dff;
-  font-size: 28px;
+  font-size: 30px;
   line-height: 1;
 }
 
 .assignment-progress span {
-  margin-top: 6px;
   color: #64748b;
   font-size: 12px;
+}
+
+.assignment-progress button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: #f1f5f9;
+  color: #475569;
+  cursor: pointer;
 }
 
 .assignment-info {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 14px;
   margin-top: 14px;
   color: #475569;
-  font-size: 12px;
+  font-size: 13px;
+}
+
+.assignment-info span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .completion-standard,
@@ -727,7 +661,7 @@ onUnmounted(() => {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin: 0 0 12px;
+  margin: 14px 0 12px;
   border: 1px solid #e0f2fe;
   border-radius: 8px;
   background: #f8fbff;
@@ -796,6 +730,39 @@ onUnmounted(() => {
   flex-wrap: wrap;
 }
 
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  padding: 3px 9px;
+  color: #165dff;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.status-pill--completed {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #16a34a;
+}
+
+.status-pill--in_progress {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.status-pill--unsubmitted {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #dc2626;
+}
+
 .state-panel {
   padding: 18px;
 }
@@ -803,16 +770,13 @@ onUnmounted(() => {
 @media (max-width: 960px) {
   .task-header,
   .assignment-card header,
-  .assignment-card footer,
   .scene-card,
   .case-row {
     display: grid;
     grid-template-columns: 1fr;
   }
 
-  .join-box,
-  .summary-grid,
-  .notice-band {
+  .join-box {
     grid-template-columns: 1fr;
   }
 

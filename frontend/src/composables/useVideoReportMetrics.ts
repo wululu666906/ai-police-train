@@ -50,14 +50,6 @@ export interface VideoReportData {
   violation_count?: number
   violation_summary?: Record<string, number>
   failure_reason_summary?: Record<string, number>
-  artifacts?: {
-    id: number
-    artifact_type: string
-    file_url?: string
-    mime_type?: string
-    duration_seconds?: number | null
-    created_at?: string
-  }[]
   dimension_scores?: {
     key: string
     label: string
@@ -107,6 +99,7 @@ export function formatViolationType(type: string) {
   } as Record<string, string>)[type] || type
 }
 
+<<<<<<< HEAD
 export function artifactLabel(type: string) {
   return ({
     camera_recording: '训练录屏',
@@ -134,6 +127,8 @@ export function resolveMediaUrl(url?: string) {
   return `${window.location.origin}${url}`
 }
 
+=======
+>>>>>>> c75d28e11697d318d584360255fb4e860ec8271e
 export function formatDateTime(value?: string) {
   if (!value) return ''
   const date = new Date(value)
@@ -167,7 +162,6 @@ export function useVideoReportMetrics(report: VideoReportData | null) {
   const reportSummary = String(report?.summary || '').trim()
   const assessmentChecks = report?.assessment_check_results || report?.assessment_point_results || []
   const abilityProfile = report?.ability_profile
-  const reportArtifacts = report?.artifacts || []
 
   const scoreHint = reportPercentage >= 90
     ? '训练表现稳定，动作、话术和流程控制较完整。'
@@ -212,7 +206,6 @@ export function useVideoReportMetrics(report: VideoReportData | null) {
     reportSummary,
     assessmentChecks,
     abilityProfile,
-    reportArtifacts,
     scoreHint,
     failureReasonList,
     violationList,

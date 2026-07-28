@@ -4,14 +4,12 @@ Session 绠＄悊銆佽妭鐐瑰垽瀹氥€佽闊冲叧閿瘝鍖归厤銆
 """
 import json
 import logging
-import os
 import re
-import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 import database
@@ -24,16 +22,6 @@ from services.video_assessment_service import (
 )
 
 router = APIRouter(prefix="/video-training", tags=["VideoTraining"])
-
-SESSION_MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "session_media")
-ALLOWED_RECORDING_TYPES = {
-    "video/webm": ".webm",
-    "video/mp4": ".mp4",
-    "audio/webm": ".webm",
-    "audio/mp4": ".m4a",
-    "audio/mpeg": ".mp3",
-}
-MAX_RECORDING_SIZE = 512 * 1024 * 1024
 
 
 # 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -101,42 +89,11 @@ def _serialize_session(session: models.VideoTrainingSession) -> dict:
         "node_records": node_records,
         "violation_log": violation_log,
         "violation_count": len(violation_log),
-        "artifacts": [_serialize_artifact(item) for item in (session.artifacts or [])],
         "created_at": session.created_at.isoformat() if session.created_at else None,
         "finished_at": session.finished_at.isoformat() if session.finished_at else None,
         "evaluation_started_at": session.evaluation_started_at.isoformat() if session.evaluation_started_at else None,
         "evaluation_completed_at": session.evaluation_completed_at.isoformat() if session.evaluation_completed_at else None,
     }
-
-
-def _artifact_url(file_path: Optional[str]) -> Optional[str]:
-    if not file_path:
-        return None
-    return f"/static/session_media/{file_path.replace(os.sep, '/')}"
-
-
-def _serialize_artifact(artifact: models.VideoTrainingArtifact) -> dict:
-    return {
-        "id": artifact.id,
-        "session_id": artifact.session_id,
-        "artifact_type": artifact.artifact_type,
-        "file_url": _artifact_url(artifact.file_path),
-        "mime_type": artifact.mime_type,
-        "file_size": artifact.file_size,
-        "duration_seconds": artifact.duration_seconds,
-        "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
-    }
-
-
-def _delete_artifact_file(file_path: Optional[str]) -> None:
-    if not file_path:
-        return
-    abs_path = os.path.join(SESSION_MEDIA_DIR, file_path)
-    try:
-        if os.path.exists(abs_path):
-            os.remove(abs_path)
-    except OSError:
-        pass
 
 
 def _serialize_node_result(r: models.VideoNodeResult) -> dict:
@@ -213,6 +170,17 @@ def _normalize_option_label(option: object, index: int) -> str:
     return chr(65 + index)
 
 
+def _normalize_option_text(option: object) -> str:
+    if isinstance(option, str):
+        return option.strip()
+    if isinstance(option, dict):
+        for key in ("text", "content", "description", "label", "value"):
+            value = str(option.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
 def _resolve_judge_boolean_answer(node: models.VideoNode, config: dict) -> bool | None:
     raw = config.get("correct_answer")
     if isinstance(raw, bool):
@@ -247,7 +215,9 @@ def _resolve_correct_choice_index(node: models.VideoNode, config: dict) -> int |
         return ord(label) - ord("A")
     options = _parse_choice_options(node)
     for index, option in enumerate(options):
-        if _normalize_option_label(option, index) == label:
+        option_label = _normalize_option_label(option, index)
+        option_text = _normalize_option_text(option).upper()
+        if option_label == label or option_text == label:
             return index
     return None
 
@@ -390,12 +360,17 @@ def _evaluate_speech_rule(
 
 
 def _evaluate_gesture_rule(node: models.VideoNode, answer_data: dict, mode: str = "practice") -> dict:
-    if not node.required_gesture:
-        return {"required": False, "passed": True, "reason": None}
-
     prompt_content = _load_node_prompt_content(node)
     gesture_rule = prompt_content.get("gesture_config") if isinstance(prompt_content, dict) else {}
     gesture_rule = gesture_rule if isinstance(gesture_rule, dict) else {}
+
+    # Browser-side gesture recognition was removed from the training client.
+    # Existing videos may retain required_gesture, but that legacy field must
+    # not turn a normal submit into a failure unless a future client explicitly
+    # opts in through an enabled gesture_config.
+    if not node.required_gesture or gesture_rule.get("enabled") is not True:
+        return {"required": False, "passed": True, "reason": None}
+
     policy = _mode_policy(mode)
     min_confidence = max(min(float(gesture_rule.get("min_confidence") or 0) * float(policy["gesture_confidence_scale"]), 1), 0)
     hold_frames = max(int(gesture_rule.get("hold_frames") or 1) - int(policy["gesture_hold_relief"]), 1)
@@ -1001,7 +976,6 @@ def _build_evaluation_report(
 ) -> dict:
     report = build_video_evaluation_report(session, node_results, video)
     report["mode_label"] = _mode_policy(session.mode)["label"]
-    report["artifacts"] = [_serialize_artifact(item) for item in (session.artifacts or [])]
     for item in report.get("node_summaries") or []:
         if isinstance(item, dict):
             matched = next((r for r in node_results if r.id == item.get("node_result_id")), None)
@@ -1215,76 +1189,6 @@ def get_session(
     data = _serialize_session(session)
     data["node_results"] = [_serialize_node_result(r) for r in node_results]
     return data
-
-
-@router.get("/session/{session_id}/artifacts")
-def get_session_artifacts(
-    session_id: int,
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    session = _get_accessible_session(db, session_id, current_user, allow_admin=True)
-    return {
-        "session_id": session.id,
-        "items": [_serialize_artifact(item) for item in (session.artifacts or [])],
-    }
-
-
-@router.post("/session/{session_id}/artifacts/upload")
-async def upload_session_artifact(
-    session_id: int,
-    artifact_file: UploadFile = File(...),
-    artifact_type: str = Form("camera_recording"),
-    duration_seconds: Optional[int] = Form(None),
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    session = _get_accessible_session(db, session_id, current_user, allow_admin=False)
-    content_type = str(artifact_file.content_type or "").strip().lower()
-    content_type = content_type.split(";", 1)[0].strip()
-    if content_type not in ALLOWED_RECORDING_TYPES:
-        raise HTTPException(status_code=400, detail="仅支持 webm/mp4/mp3 等训练媒体文件")
-
-    data = await artifact_file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="上传文件为空")
-    if len(data) > MAX_RECORDING_SIZE:
-        raise HTTPException(status_code=400, detail="训练录制文件过大，请缩短录制时长后重试")
-
-    ext = ALLOWED_RECORDING_TYPES[content_type]
-    os.makedirs(SESSION_MEDIA_DIR, exist_ok=True)
-    relative_dir = os.path.join(str(session.user_id), str(session.id))
-    abs_dir = os.path.join(SESSION_MEDIA_DIR, relative_dir)
-    os.makedirs(abs_dir, exist_ok=True)
-    safe_artifact_type = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in artifact_type).strip("_")
-    safe_artifact_type = safe_artifact_type or "recording"
-    filename = f"{safe_artifact_type}_{uuid.uuid4().hex}{ext}"
-    rel_path = os.path.join(relative_dir, filename)
-    abs_path = os.path.join(SESSION_MEDIA_DIR, rel_path)
-
-    with open(abs_path, "wb") as output_file:
-        output_file.write(data)
-
-    existing_items = [
-        item for item in (session.artifacts or [])
-        if item.artifact_type == artifact_type
-    ]
-    for item in existing_items:
-        _delete_artifact_file(item.file_path)
-        db.delete(item)
-
-    artifact = models.VideoTrainingArtifact(
-        session_id=session.id,
-        artifact_type=artifact_type,
-        file_path=rel_path,
-        mime_type=content_type,
-        file_size=len(data),
-        duration_seconds=int(duration_seconds) if duration_seconds else None,
-    )
-    db.add(artifact)
-    db.commit()
-    db.refresh(artifact)
-    return _serialize_artifact(artifact)
 
 
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
@@ -1715,6 +1619,9 @@ def get_student_video_history(
     status: Optional[str] = None,
     mode: Optional[str] = None,
     category: Optional[str] = None,
+    keyword: Optional[str] = None,
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
@@ -1733,10 +1640,36 @@ def get_student_video_history(
         base_query = base_query.filter(models.VideoTrainingSession.status == status)
     if mode and mode in ("practice", "exam"):
         base_query = base_query.filter(models.VideoTrainingSession.mode == mode)
+    has_video_join = False
     if category:
         base_query = base_query.join(models.TrainingVideo).filter(
             models.TrainingVideo.scenario_type == category
         )
+        has_video_join = True
+    if keyword and keyword.strip():
+        # A history page is server-paginated, so keyword filtering must happen
+        # before count/offset rather than only against the loaded page.
+        search = f"%{keyword.strip()}%"
+        if not has_video_join:
+            base_query = base_query.join(models.TrainingVideo)
+        base_query = base_query.filter(models.TrainingVideo.title.ilike(search))
+
+    def parse_history_date(value: Optional[str], field_name: str) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).replace(tzinfo=None)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail=f"{field_name} 必须为 YYYY-MM-DD 格式")
+
+    start_at = parse_history_date(date_start, "date_start")
+    end_at = parse_history_date(date_end, "date_end")
+    if start_at:
+        base_query = base_query.filter(models.VideoTrainingSession.created_at >= start_at)
+    if end_at:
+        # The date picker sends an inclusive date; use the next midnight as
+        # an exclusive upper bound so records from the full final day remain.
+        base_query = base_query.filter(models.VideoTrainingSession.created_at < end_at + timedelta(days=1))
 
     total = base_query.count()
     session_ids_query = (
@@ -1750,7 +1683,6 @@ def get_student_video_history(
         db.query(models.VideoTrainingSession)
         .options(
             joinedload(models.VideoTrainingSession.video).joinedload(models.TrainingVideo.nodes),
-            joinedload(models.VideoTrainingSession.artifacts),
         )
         .filter(models.VideoTrainingSession.id.in_(
             [s.id for s in session_ids_query.all()]
@@ -1798,12 +1730,6 @@ def get_student_video_history(
         duration = None
         if s.finished_at and s.created_at:
             duration = int((s.finished_at - s.created_at).total_seconds())
-        if not duration:
-            # fallback: 从 camera_recording artifact 取
-            for artifact in (s.artifacts or []):
-                if artifact.artifact_type == "camera_recording" and artifact.duration_seconds:
-                    duration = artifact.duration_seconds
-                    break
         data["duration_seconds"] = duration
 
         # 失分原因统计

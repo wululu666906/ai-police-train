@@ -1,7 +1,23 @@
-import io
 import json
 
 import models
+from routers.video_training import _resolve_correct_choice_index
+
+
+def test_choice_answer_text_resolves_to_its_option_index():
+    node = models.VideoNode(
+        node_index=0,
+        title="选择题",
+        trigger_time=1,
+        node_type="choice",
+        choice_options=json.dumps([
+            {"label": "A", "text": "错误做法"},
+            {"label": "B", "text": "正确做法"},
+        ], ensure_ascii=False),
+        correct_answer="正确做法",
+    )
+
+    assert _resolve_correct_choice_index(node, {}) == 1
 
 
 def ensure_interactive_video(db_session, title: str = "视频实训测试用例") -> models.TrainingVideo:
@@ -105,7 +121,10 @@ class TestVideoTraining:
         assert submit_response.status_code == 200
         assert submit_response.json()["result"] == "pass"
 
-        resume_response = client.post(f"/video-training/start/{video.id}", headers=student_headers)
+        # Sessions are intentionally isolated by training mode.  Resume the
+        # exam session with the same explicit mode instead of falling back to
+        # the practice-mode default.
+        resume_response = client.post(f"/video-training/start/{video.id}?mode=exam", headers=student_headers)
         assert resume_response.status_code == 200
         resume_payload = resume_response.json()
         assert resume_payload["resumed"] is True
@@ -125,7 +144,7 @@ class TestVideoTraining:
 
         history_response = client.get("/video-training/history", headers=student_headers)
         assert history_response.status_code == 200
-        history_items = history_response.json()
+        history_items = history_response.json()["items"]
         history_item = next(item for item in history_items if item["video_id"] == video.id)
         assert history_item["node_total"] == 3
 
@@ -345,7 +364,7 @@ class TestVideoTraining:
         assert report_payload["violation_count"] == 1
         assert report_payload["failure_reason_summary"]["keyword_mismatch"] == 1
         assert report_payload["node_summaries"][0]["failure_reasons"] == ["keyword_mismatch"]
-        assert "artifacts" in report_payload
+        assert "artifacts" not in report_payload
 
         analytics_response = client.get(
             f"/video-training/admin/analytics?video_id={video.id}",
@@ -368,57 +387,6 @@ class TestVideoTraining:
         assert report_payload["evaluation_meta"]["assessment_completion"]["total_count"] == len(
             report_payload["assessment_check_results"]
         )
-
-    def test_session_artifact_upload_list_and_replace(self, client, db_session, student_headers):
-        student = db_session.query(models.User).filter(models.User.username == "student001").first()
-        video = ensure_interactive_video(db_session, title="视频实训练音视频留痕")
-        reset_video_training_sessions(db_session, student.id, video.id)
-
-        start_response = client.post(f"/video-training/start/{video.id}?mode=practice", headers=student_headers)
-        assert start_response.status_code == 200
-        session_id = start_response.json()["id"]
-
-        first_upload = client.post(
-            f"/video-training/session/{session_id}/artifacts/upload",
-            headers=student_headers,
-            files={"artifact_file": ("recording.webm", io.BytesIO(b"first-recording"), "video/webm;codecs=vp9")},
-            data={"artifact_type": "camera_recording", "duration_seconds": "12"},
-        )
-        assert first_upload.status_code == 200
-        first_payload = first_upload.json()
-        assert first_payload["artifact_type"] == "camera_recording"
-        assert first_payload["mime_type"] == "video/webm"
-        assert first_payload["file_size"] == len(b"first-recording")
-        assert first_payload["duration_seconds"] == 12
-        assert first_payload["file_url"].startswith("/static/session_media/")
-
-        list_response = client.get(f"/video-training/session/{session_id}/artifacts", headers=student_headers)
-        assert list_response.status_code == 200
-        listed_items = list_response.json()["items"]
-        assert len(listed_items) == 1
-        assert listed_items[0]["id"] == first_payload["id"]
-
-        second_upload = client.post(
-            f"/video-training/session/{session_id}/artifacts/upload",
-            headers=student_headers,
-            files={"artifact_file": ("recording.webm", io.BytesIO(b"second-recording"), "video/webm")},
-            data={"artifact_type": "camera_recording"},
-        )
-        assert second_upload.status_code == 200
-        second_payload = second_upload.json()
-        assert second_payload["id"] != first_payload["id"]
-
-        list_after_replace = client.get(f"/video-training/session/{session_id}/artifacts", headers=student_headers)
-        assert list_after_replace.status_code == 200
-        replaced_items = list_after_replace.json()["items"]
-        assert len(replaced_items) == 1
-        assert replaced_items[0]["id"] == second_payload["id"]
-
-        history_response = client.get("/video-training/history", headers=student_headers)
-        assert history_response.status_code == 200
-        history_item = next(item for item in history_response.json() if item["id"] == session_id)
-        assert len(history_item["artifacts"]) == 1
-        assert history_item["artifacts"][0]["id"] == second_payload["id"]
 
     def test_admin_can_review_and_override_ai_result(self, client, db_session, student_headers, admin_headers):
         student = db_session.query(models.User).filter(models.User.username == "student001").first()

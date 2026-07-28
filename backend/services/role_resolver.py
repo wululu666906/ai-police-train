@@ -191,15 +191,19 @@ def _sort_scene_roles(
 
     speakable = [role for role in roles if is_role_speakable(role)]
     candidates = speakable or list(roles)
+    has_explicit_primary = any(meta.get("primary") for meta in link_meta.values())
 
     def sort_key(role: models.Role):
         meta = link_meta.get(role.id, {})
         person_meta = person_meta_map.get(_text(role.name), {})
         scene_rank, role_rank = _match_rank(scene_name, scene_text, role, person_meta)
         return (
+            # A persisted primary mapping is an editor decision and must win
+            # over heuristic scene-text ranking.  Heuristics are only a
+            # fallback for legacy scenes without explicit links.
+            0 if has_explicit_primary and meta.get("primary") else (1 if has_explicit_primary else 0),
             scene_rank,
             role_rank,
-            0 if meta.get("primary") else 1,
             0 if meta.get("linked") else 1,
             role.id,
         )

@@ -155,9 +155,9 @@ const getTagType = (caseType: string) => {
                     <div class="cd-person-name">{{ person.name || '未命名' }}</div>
                     <div class="cd-person-meta">
                       <span>{{ person.role_type || person.role || '相关人员' }}</span>
-                      <span v-if="person.behavior_archetype" class="cd-person-archetype">{{ person.behavior_archetype }}</span>
+                      <span class="cd-person-archetype">人物线 {{ Array.isArray(person.role_memories) ? person.role_memories.length : 0 }} 条</span>
                     </div>
-                    <p v-if="person.current_goal" class="cd-person-goal">{{ person.current_goal }}</p>
+                    <p v-if="Array.isArray(person.role_memories) && person.role_memories.length" class="cd-person-goal">{{ person.role_memories[0].statement }}</p>
                   </div>
                   <div class="cd-person-status">
                     <span class="cd-status-tag">{{ person.status || '正常' }}</span>

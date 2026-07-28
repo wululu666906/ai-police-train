@@ -1255,7 +1255,7 @@ const printReport = () => {
 }
 
 onMounted(async () => {
-  setMainScrollable?.(true)
+  setMainScrollable?.(false)
   if (isVideoReport.value) {
     await fetchVideoReport()
     return

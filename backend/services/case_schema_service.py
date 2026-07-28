@@ -2,31 +2,13 @@ from __future__ import annotations
 
 import copy
 from typing import Any
+from .case_intelligence_service import normalize_case_intelligence
 
-from .role_compact_service import expand_role_compact_to_person, person_to_role_compact_view
+from .role_compact_service import ROLE_COMPACT_V2_FIELDS, ROLE_TEMPLATE_VERSION, expand_role_compact_to_person, person_to_role_compact_view
 
 SCHEMA_VERSION = "2026.06.compact-v1"
 
-PERSON_COMPACT_V1_FIELDS: tuple[str, ...] = (
-    "person_id",
-    "name",
-    "aliases",
-    "role_type",
-    "status",
-    "behavior_archetype",
-    "opening_preset",
-    "current_goal",
-    "core_concern",
-    "relationship_pressure",
-    "surface_stance",
-    "pressure_response",
-    "trigger_points",
-    "calming_points",
-    "cannot_answer",
-    "boundary_primary",
-    "boundary_secondary",
-    "impairment_state",
-)
+PERSON_COMPACT_V1_FIELDS: tuple[str, ...] = ROLE_COMPACT_V2_FIELDS
 
 PERSON_CANONICAL_FIELDS: tuple[str, ...] = (
     "behavior_archetype",
@@ -153,6 +135,22 @@ def canonicalize_person_payload(
     mode = _as_text(scene_behavior_mode) or _as_text(source.get("scene_behavior_mode")) or "核查取证型"
     expanded = expand_role_compact_to_person(source, scene_behavior_mode=mode)
     canonical = copy.deepcopy(expanded)
+    is_v2 = _as_text(source.get("role_template_version")) == ROLE_TEMPLATE_VERSION or bool(source.get("role_memories"))
+    if is_v2:
+        for key in ("person_id", "aliases", "source_verification", "source_refs", "persona_source", "persona_contract_version", "role_template_version"):
+            if key in source and source.get(key) not in (None, "", []):
+                canonical[key] = copy.deepcopy(source[key])
+        canonical["role_template_version"] = ROLE_TEMPLATE_VERSION
+        canonical["persona_contract_version"] = ROLE_TEMPLATE_VERSION
+        canonical["persona_source"] = _as_text(source.get("persona_source")) or "source_grounded_role_memory"
+        canonical["persona_autofill"] = False
+        canonical["compact_v1"] = False
+        # Source memories are the role's case experience, not optional persona
+        # decoration. Keep them verbatim through every schema migration.
+        for key in ("role_memories", "knowledge_ledger", "unresolved_claims", "response_constraints"):
+            if isinstance(source.get(key), list):
+                canonical[key] = copy.deepcopy(source[key])
+        return canonical, warnings
     if _as_text(source.get("person_id")):
         canonical["person_id"] = _as_text(source.get("person_id"))
     aliases = _as_text_list(source.get("aliases"))
@@ -164,6 +162,24 @@ def canonicalize_person_payload(
         canonical["personality"] = _as_text(source.get("personality"))
     if _as_text(source.get("speaking_style")):
         canonical["speaking_style"] = _as_text(source.get("speaking_style"))
+    # Evidence/verification metadata is intentionally kept separate from the
+    # persona contract so AI-discovered people can be reviewed without being
+    # silently discarded during schema migration.
+    verification = _as_text(source.get("source_verification"))
+    if verification in {"source_matched", "regex_matched", "pending_review"}:
+        canonical["source_verification"] = verification
+    if isinstance(source.get("source_name_match"), bool):
+        canonical["source_name_match"] = source.get("source_name_match")
+    if isinstance(source.get("source_refs"), list):
+        canonical["source_refs"] = copy.deepcopy(source.get("source_refs"))
+    for key in ("knowledge_ledger", "role_memories", "unresolved_claims", "response_constraints"):
+        if isinstance(source.get(key), list):
+            canonical[key] = copy.deepcopy(source.get(key))
+    for key in ("persona_contract_version", "persona_source"):
+        if _as_text(source.get(key)):
+            canonical[key] = _as_text(source.get(key))
+    if isinstance(source.get("persona_autofill"), bool):
+        canonical["persona_autofill"] = source.get("persona_autofill")
     for alias, target in PERSON_ALIAS_TO_CANONICAL.items():
         if target in canonical and canonical.get(target) not in (None, "", []):
             continue
@@ -266,6 +282,20 @@ def migrate_structured_data_payload(structured_data: dict[str, Any] | None) -> t
     payload["canonical_person_fields"] = list(PERSON_CANONICAL_FIELDS)
     payload["compact_person_fields"] = list(PERSON_COMPACT_V1_FIELDS)
     payload["canonical_alias_map"] = dict(PERSON_ALIAS_TO_CANONICAL)
+    # Non-destructive v2 migration: legacy facts remain in place while the
+    # new claim/evidence/event layer is added for all subsequently saved cases.
+    payload["case_intelligence"] = normalize_case_intelligence(payload)
+    narrative = payload.get("narrative_document") if isinstance(payload.get("narrative_document"), dict) else {}
+    if not str(narrative.get("content") or "").strip():
+        payload["narrative_document"] = {
+            "schema_version": 1,
+            "format": "markdown",
+            "content": str(payload.get("complete_story") or payload.get("full_narrative") or payload.get("rawText") or "").strip(),
+            "source_mode": str(payload.get("source_mode") or "legacy"),
+            "role": "primary_readable_case_document",
+            "policy": "human_readable_not_canonical_fact_source",
+            "legacy_migrated": True,
+        }
 
     if warnings:
         payload["consistency_warnings"] = sorted(set(warnings))

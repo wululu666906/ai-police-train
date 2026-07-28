@@ -1,5 +1,5 @@
 <template>
-  <div class="ops-accounts">
+  <div class="ops-accounts" @click="closeGroupContextMenu">
     <section class="ops-toolbar">
       <div class="ops-filters">
         <label>
@@ -17,7 +17,26 @@
         </label>
       </div>
 
+      <div class="ops-bulk-panel">
+        <label class="ops-group-move" title="将已选账号迁移到指定分类">
+          <span>迁移到</span>
+          <input v-model.trim="moveTargetGroup" list="ops-account-groups" placeholder="分类名" />
+        </label>
+        <button type="button" class="ops-action-btn" :disabled="!selectedDeletableAccountCount || movingGroup" @click="moveSelectedAccounts">
+          <OpsIcon name="refresh" />
+          <span>迁移分组</span>
+        </button>
+        <button type="button" class="ops-action-btn ops-action-btn--danger" :disabled="!selectedDeletableAccountCount || deletingBatch" @click="batchDeleteSelected">
+          <OpsIcon name="trash" />
+          <span>批量删除{{ selectedDeletableAccountCount ? `（${selectedDeletableAccountCount}）` : '' }}</span>
+        </button>
+      </div>
+
       <div class="ops-actions">
+        <button type="button" class="ops-action-btn" @click="openGroupDialog">
+          <OpsIcon name="add" />
+          <span>新建分组</span>
+        </button>
         <button type="button" class="ops-action-btn" :disabled="loading" @click="fetchAccounts">
           <OpsIcon name="refresh" />
           <span>刷新</span>
@@ -26,7 +45,7 @@
           <OpsIcon name="batch" />
           <span>批量学员</span>
         </button>
-        <button type="button" class="ops-action-btn" @click="triggerImportFile">
+        <button type="button" class="ops-action-btn" @click="openImportDialog">
           <OpsIcon name="bookmark-plus" />
           <span>文件导入</span>
         </button>
@@ -44,13 +63,57 @@
       </div>
     </section>
 
+    <section class="ops-group-nav">
+      <button type="button" :class="{ active: !groupFilter }" @click="setGroupFilter('')">
+        全部账号
+        <strong>{{ accountsTotalCount }}</strong>
+      </button>
+      <button type="button" :class="{ active: groupFilter === '__ungrouped__' }" @click="setGroupFilter('__ungrouped__')">
+        未分类
+        <strong>{{ ungroupedCount }}</strong>
+      </button>
+      <button
+        v-for="group in accountGroups"
+        :key="group.name"
+        type="button"
+        :class="{ active: groupFilter === group.name }"
+        @click="setGroupFilter(group.name)"
+        @contextmenu.prevent.stop="openGroupContextMenu($event, group)"
+      >
+        {{ group.name }}
+        <strong>{{ group.count }}</strong>
+      </button>
+      <button type="button" class="ops-group-nav__create" @click="openGroupDialog">
+        + 新建分组
+      </button>
+    </section>
+
+    <datalist id="ops-account-groups">
+      <option v-for="group in accountGroups" :key="group.name" :value="group.name" />
+    </datalist>
+
+    <div
+      v-if="groupContextMenu.visible"
+      class="ops-context-menu"
+      :style="{ left: `${groupContextMenu.x}px`, top: `${groupContextMenu.y}px` }"
+      @click.stop
+    >
+      <div class="ops-context-menu__title">{{ groupContextMenu.group?.name }}</div>
+      <button type="button" @click="deleteGroup(false)">删除分组</button>
+      <button type="button" class="danger" @click="deleteGroup(true)">删除分组及账号</button>
+    </div>
+
     <section class="ops-table-wrap">
       <table class="ops-table">
         <thead>
           <tr>
+            <th class="ops-check-col">
+              <input type="checkbox" :checked="allSelectableSelected" :indeterminate="someSelectableSelected && !allSelectableSelected" @change="toggleSelectAll" />
+            </th>
             <th>账号</th>
             <th>角色</th>
             <th>单位/部门</th>
+            <th>分类</th>
             <th>联系方式</th>
             <th>最后登录</th>
             <th>创建时间</th>
@@ -59,12 +122,20 @@
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="7" class="ops-empty">正在加载账号...</td>
+            <td colspan="9" class="ops-empty">正在加载账号...</td>
           </tr>
           <tr v-else-if="!accounts.length">
-            <td colspan="7" class="ops-empty">暂无账号</td>
+            <td colspan="9" class="ops-empty">暂无账号</td>
           </tr>
           <tr v-for="accountItem in accounts" v-else :key="accountItem.id">
+            <td class="ops-check-col">
+              <input
+                type="checkbox"
+                :checked="selectedAccountIds.includes(accountItem.id)"
+                :disabled="accountItem.role === 'maintainer' || accountItem.id === selfAccountId"
+                @change="toggleSelectedAccount(accountItem.id)"
+              />
+            </td>
             <td>
               <button type="button" class="ops-account-name" @click="openEditDialog(accountItem)">
                 {{ accountItem.username }}
@@ -75,6 +146,7 @@
               <span class="ops-role" :class="`ops-role--${accountItem.role}`">{{ roleLabel(accountItem.role) }}</span>
             </td>
             <td>{{ joinText(accountItem.unit, accountItem.department) }}</td>
+            <td><span class="ops-group-chip">{{ accountItem.account_group || '未分类' }}</span></td>
             <td>{{ joinText(accountItem.phone, accountItem.email) }}</td>
             <td>{{ formatTime(accountItem.last_login_at) }}</td>
             <td>{{ formatDate(accountItem.created_at) }}</td>
@@ -89,6 +161,31 @@
         </tbody>
       </table>
     </section>
+
+    <input ref="importFileInput" class="ops-file-input" type="file" accept=".xlsx,.xls,.csv,.tsv,.json,.docx,.ods,.pdf,.txt" @change="handleImportFileChange" />
+
+    <van-popup v-model:show="showGroupDialog" teleport="body" :style="{ width: 'min(460px, 94vw)', borderRadius: '8px', overflow: 'hidden' }">
+      <div class="ops-dialog">
+        <header>
+          <h3>新建账号分组</h3>
+          <van-icon name="cross" @click="showGroupDialog = false" />
+        </header>
+        <div class="ops-dialog__body ops-dialog__body--single">
+          <label>
+            <span>分组名称</span>
+            <input v-model.trim="groupForm.name" placeholder="例如：7月新开通 / 一班 / 管理端测试" @keyup.enter="createAccountGroup" />
+          </label>
+          <label>
+            <span>说明</span>
+            <textarea v-model.trim="groupForm.description" rows="3" placeholder="可选"></textarea>
+          </label>
+        </div>
+        <footer>
+          <van-button plain @click="showGroupDialog = false">取消</van-button>
+          <van-button type="primary" :loading="savingGroup" @click="createAccountGroup">创建分组</van-button>
+        </footer>
+      </div>
+    </van-popup>
 
     <van-popup v-model:show="showAccountDialog" teleport="body" :style="{ width: 'min(620px, 96vw)', borderRadius: '8px', overflow: 'hidden' }">
       <div class="ops-dialog">
@@ -111,6 +208,10 @@
           <label v-if="!editingAccount">
             <span>初始密码</span>
             <input v-model.trim="accountForm.password" type="text" />
+          </label>
+          <label>
+            <span>账号分类</span>
+            <input v-model.trim="accountForm.account_group" list="ops-account-groups" placeholder="例如：七月新开通 / 一班 / 维护测试" />
           </label>
           <label>
             <span>显示名</span>
@@ -171,6 +272,10 @@
             <span>初始密码</span>
             <input v-model.trim="batchForm.password" type="text" />
           </label>
+          <label>
+            <span>账号分类</span>
+            <input v-model.trim="batchForm.account_group" list="ops-account-groups" placeholder="本次批量开通的分类名" />
+          </label>
           <div class="ops-dialog__wide ops-preview">{{ batchPreviewText }}</div>
         </div>
         <footer>
@@ -200,8 +305,6 @@
       </div>
     </van-popup>
 
-    <input ref="importFileInput" class="ops-file-input" type="file" accept=".xlsx,.xls,.csv,.tsv,.json,.docx,.ods,.pdf,.txt" @change="handleImportFileChange" />
-
     <van-popup v-model:show="showImportDialog" teleport="body" :style="{ width: 'min(920px, 96vw)', maxHeight: '92vh', borderRadius: '8px', overflow: 'hidden' }">
       <div class="ops-dialog ops-dialog--import">
         <header>
@@ -209,38 +312,86 @@
           <van-icon name="cross" @click="closeImportDialog" />
         </header>
         <div class="ops-import-panel">
+          <div class="ops-import-controls">
+            <label>
+              <span>导入文件</span>
+              <div class="ops-import-file-row">
+                <input :value="importFileName || '未选择文件'" disabled />
+                <van-button type="primary" plain :loading="importLoading" @click="triggerImportFile">选择文件</van-button>
+              </div>
+            </label>
+            <label>
+              <span>本次导入分类</span>
+              <input v-model.trim="importAccountGroup" list="ops-account-groups" placeholder="填写后会应用到本次导入账号" @change="applyImportGroup" />
+            </label>
+          </div>
           <div class="ops-import-meta">
             <div><span>文件</span><strong>{{ importFileName || '未选择' }}</strong></div>
-            <div><span>总数</span><strong>{{ importPreview?.total_count || 0 }}</strong></div>
-            <div><span>可导入</span><strong>{{ importPreview?.ready_count || 0 }}</strong></div>
-            <div><span>错误</span><strong>{{ importPreview?.error_count || 0 }}</strong></div>
+            <div><span>总数</span><strong>{{ importTotalCount }}</strong></div>
+            <div><span>可导入</span><strong>{{ importReadyCount }}</strong></div>
+            <div><span>已选</span><strong>{{ selectedImportCount }}</strong></div>
+            <div><span>错误</span><strong>{{ importErrorCount }}</strong></div>
           </div>
-          <p class="ops-import-tip">支持 xlsx、csv、tsv、json、docx、ods、pdf、txt；建议优先使用 xlsx 或 csv。PDF 仅支持可复制文本的表格型文件。</p>
+          <p class="ops-import-tip">支持 xlsx、csv、tsv、json、docx、ods、pdf、txt；可在表头统一切换角色，也可逐行调整。选中后可批量移除不需要导入的账号。</p>
+          <div class="ops-import-tip">表头角色按钮会优先作用于已勾选账号；若未勾选，则作用于全部可导入账号。</div>
           <div v-if="importLoading" class="ops-import-state">正在解析文件...</div>
           <div v-else-if="importError" class="ops-import-state ops-import-state--error">{{ importError }}</div>
           <div v-else class="ops-import-table-wrap">
             <table class="ops-import-table">
               <thead>
                 <tr>
+                  <th class="ops-import-check-cell">
+                    <input
+                      type="checkbox"
+                      :checked="allImportRowsSelected"
+                      :indeterminate="someImportRowsSelected && !allImportRowsSelected"
+                      :disabled="!importPreviewItems.length"
+                      @change="toggleSelectAllImportRows"
+                    />
+                  </th>
                   <th>行号</th>
                   <th>账号</th>
-                  <th>角色</th>
+                  <th>
+                    <div class="ops-import-role-head">
+                      <span>角色</span>
+                      <div class="ops-import-role-actions">
+                        <button type="button" :class="['ops-import-role-action', importTargetRole === 'student' ? 'is-active' : '']" :disabled="!importPreviewItems.length || importLoading || importCommitting" @click="applyImportRole('student')">学员端</button>
+                        <button type="button" :class="['ops-import-role-action', importTargetRole === 'admin' ? 'is-active' : '']" :disabled="!importPreviewItems.length || importLoading || importCommitting" @click="applyImportRole('admin')">管理端</button>
+                      </div>
+                    </div>
+                  </th>
                   <th>初始密码</th>
                   <th>显示名</th>
+                  <th>分类</th>
                   <th>状态</th>
                   <th>问题</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="!importPreviewItems.length">
-                  <td colspan="7" class="ops-empty">暂无导入内容</td>
+                  <td colspan="9" class="ops-empty">暂无导入内容</td>
                 </tr>
                 <tr v-for="item in importPreviewItems" :key="`${item.row_number}-${item.username}`">
+                  <td class="ops-import-check-cell">
+                    <input
+                      type="checkbox"
+                      :checked="item.selected"
+                      @change="toggleImportRow(item)"
+                    />
+                  </td>
                   <td>{{ item.row_number }}</td>
                   <td>{{ item.username }}</td>
-                  <td><span class="ops-role" :class="`ops-role--${item.role}`">{{ roleLabel(item.role) }}</span></td>
+                  <td>
+                    <select v-model="item.role" :disabled="item.status !== 'ready'" @change="syncImportTargetRole(item.role)">
+                      <option value="student">学员端账号</option>
+                      <option value="admin">管理端账号</option>
+                    </select>
+                  </td>
                   <td>{{ item.password || '123456' }}</td>
                   <td>{{ item.display_name || item.real_name || '-' }}</td>
+                  <td>
+                    <input class="ops-import-group-input" v-model.trim="item.account_group" list="ops-account-groups" placeholder="未分类" />
+                  </td>
                   <td>
                     <span :class="['ops-import-status', item.status === 'ready' ? 'ops-import-status--ready' : 'ops-import-status--error']">
                       {{ item.status === 'ready' ? '可导入' : '有问题' }}
@@ -258,7 +409,8 @@
         <footer>
           <van-button plain @click="closeImportDialog">取消</van-button>
           <van-button plain :disabled="!importPreviewItems.length" @click="downloadImportTemplate">下载模板</van-button>
-          <van-button type="primary" :loading="importCommitting" :disabled="!importPreview?.ready_count" @click="commitImport">确认导入</van-button>
+          <van-button plain :disabled="!selectedImportCount || importCommitting" @click="removeSelectedImportRows">批量删除（{{ selectedImportCount }}）</van-button>
+          <van-button type="primary" :loading="importCommitting" :disabled="!selectedReadyImportCount" @click="commitImport">确认导入（{{ selectedReadyImportCount }}）</van-button>
         </footer>
       </div>
     </van-popup>
@@ -281,6 +433,7 @@ type Account = {
   email?: string
   unit?: string
   department?: string
+  account_group?: string
   bio?: string
   created_at?: string
   updated_at?: string
@@ -298,9 +451,11 @@ type ImportItem = {
   email?: string
   unit?: string
   department?: string
+  account_group?: string
   bio?: string
   status?: string
   errors?: string[]
+  selected?: boolean
 }
 
 type ImportPreview = {
@@ -315,11 +470,20 @@ const loading = ref(false)
 const savingAccount = ref(false)
 const savingBatch = ref(false)
 const savingPassword = ref(false)
+const savingGroup = ref(false)
+const deletingBatch = ref(false)
+const movingGroup = ref(false)
 const accounts = ref<Account[]>([])
+const accountGroups = ref<Array<{ id?: number | null; name: string; description?: string; count: number }>>([])
+const ungroupedCount = ref(0)
+const selectedAccountIds = ref<number[]>([])
 const keyword = ref('')
 const roleFilter = ref('')
+const groupFilter = ref('')
+const moveTargetGroup = ref('')
 const showAccountDialog = ref(false)
 const showBatchDialog = ref(false)
+const showGroupDialog = ref(false)
 const showResetDialog = ref(false)
 const showImportDialog = ref(false)
 const editingAccount = ref<Account | null>(null)
@@ -327,6 +491,9 @@ const resetTarget = ref<Account | null>(null)
 const newPassword = ref('123456')
 const importFileInput = ref<HTMLInputElement | null>(null)
 const importFileName = ref('')
+const importTargetRole = ref<'student' | 'admin'>('student')
+const importAccountGroup = ref('')
+const importSelectedFile = ref<File | null>(null)
 const importPreview = ref<ImportPreview | null>(null)
 const importLoading = ref(false)
 const importError = ref('')
@@ -342,6 +509,7 @@ const accountForm = reactive({
   email: '',
   unit: '',
   department: '',
+  account_group: '',
   bio: '',
 })
 
@@ -350,9 +518,43 @@ const batchForm = reactive({
   start_no: 1,
   end_no: 10,
   password: '123456',
+  account_group: '',
+})
+
+const groupForm = reactive({
+  name: '',
+  description: '',
+})
+
+const groupContextMenu = reactive<{
+  visible: boolean
+  x: number
+  y: number
+  group: { id?: number | null; name: string; description?: string; count: number } | null
+}>({
+  visible: false,
+  x: 0,
+  y: 0,
+  group: null,
 })
 
 const importPreviewItems = computed(() => importPreview.value?.items || [])
+const importSelectableItems = computed(() => importPreviewItems.value.filter((item) => item.status === 'ready'))
+const selectedImportItems = computed(() => importPreviewItems.value.filter((item) => item.selected))
+const selectedReadyImportItems = computed(() => selectedImportItems.value.filter((item) => item.status === 'ready'))
+const selectedImportCount = computed(() => selectedImportItems.value.length)
+const selectedReadyImportCount = computed(() => selectedReadyImportItems.value.length)
+const importTotalCount = computed(() => importPreviewItems.value.length)
+const importReadyCount = computed(() => importSelectableItems.value.length)
+const importErrorCount = computed(() => importPreviewItems.value.filter((item) => item.status !== 'ready').length)
+const allImportRowsSelected = computed(() => Boolean(importPreviewItems.value.length) && importPreviewItems.value.every((item) => item.selected))
+const someImportRowsSelected = computed(() => importPreviewItems.value.some((item) => item.selected))
+const selfAccountId = computed(() => Number(localStorage.getItem('user_id') || 0))
+const selectableAccounts = computed(() => accounts.value.filter((item) => item.role !== 'maintainer' && item.id !== selfAccountId.value))
+const selectedDeletableAccounts = computed(() => accounts.value.filter((item) => selectedAccountIds.value.includes(item.id) && item.role !== 'maintainer' && item.id !== selfAccountId.value))
+const selectedDeletableAccountCount = computed(() => selectedDeletableAccounts.value.length)
+const allSelectableSelected = computed(() => Boolean(selectableAccounts.value.length) && selectableAccounts.value.every((item) => selectedAccountIds.value.includes(item.id)))
+const someSelectableSelected = computed(() => selectableAccounts.value.some((item) => selectedAccountIds.value.includes(item.id)))
 
 const summaryCards = computed(() => {
   const counts = accounts.value.reduce<Record<string, number>>((acc, item) => {
@@ -365,6 +567,8 @@ const summaryCards = computed(() => {
     { role: 'maintainer', label: '维护账号', count: counts.maintainer || 0 },
   ]
 })
+
+const accountsTotalCount = computed(() => accountGroups.value.reduce((total, item) => total + item.count, ungroupedCount.value))
 
 const batchPreviewText = computed(() => {
   const count = Math.max(0, Number(batchForm.end_no || 0) - Number(batchForm.start_no || 0) + 1)
@@ -379,6 +583,8 @@ const roleLabel = (role: string) => {
   if (role === 'student') return '学员端账号'
   return role || '-'
 }
+
+const normalizeImportRole = (role: string) => (role === 'admin' ? 'admin' : 'student')
 
 const joinText = (...values: Array<string | undefined>) => {
   const clean = values.map((item) => String(item || '').trim()).filter(Boolean)
@@ -404,12 +610,113 @@ const fetchAccounts = async () => {
   try {
     const params: any = {}
     if (roleFilter.value) params.role = roleFilter.value
+    if (groupFilter.value && groupFilter.value !== '__ungrouped__') params.group = groupFilter.value
     if (keyword.value) params.keyword = keyword.value
     const res: any = await request.get('/ops/accounts', { params })
-    accounts.value = Array.isArray(res) ? res : []
+    const rows = Array.isArray(res) ? res : []
+    accounts.value = groupFilter.value === '__ungrouped__'
+      ? rows.filter((item: Account) => !String(item.account_group || '').trim())
+      : rows
+    selectedAccountIds.value = selectedAccountIds.value.filter((id) => accounts.value.some((item) => item.id === id && item.role !== 'maintainer'))
   } finally {
     loading.value = false
   }
+}
+
+const fetchAccountGroups = async () => {
+  const res: any = await request.get('/ops/account-groups')
+  accountGroups.value = Array.isArray(res?.groups) ? res.groups : []
+  ungroupedCount.value = Number(res?.ungrouped_count || 0)
+}
+
+const refreshAccountsAndGroups = async () => {
+  await Promise.all([fetchAccounts(), fetchAccountGroups()])
+}
+
+const setGroupFilter = async (group: string) => {
+  groupFilter.value = group
+  selectedAccountIds.value = []
+  await fetchAccounts()
+}
+
+const closeGroupContextMenu = () => {
+  groupContextMenu.visible = false
+}
+
+const openGroupContextMenu = (event: MouseEvent, group: { id?: number | null; name: string; description?: string; count: number }) => {
+  groupContextMenu.group = group
+  groupContextMenu.x = Math.min(event.clientX, window.innerWidth - 220)
+  groupContextMenu.y = Math.min(event.clientY, window.innerHeight - 130)
+  groupContextMenu.visible = true
+}
+
+const openGroupDialog = () => {
+  groupForm.name = ''
+  groupForm.description = ''
+  showGroupDialog.value = true
+}
+
+const createAccountGroup = async () => {
+  const name = groupForm.name.trim()
+  if (!name) {
+    showToast('请输入分组名称')
+    return
+  }
+  savingGroup.value = true
+  try {
+    await request.post('/ops/account-groups', {
+      name,
+      description: groupForm.description.trim(),
+    })
+    showToast({ type: 'success', message: '分组已创建' })
+    showGroupDialog.value = false
+    moveTargetGroup.value = name
+    groupFilter.value = name
+    await refreshAccountsAndGroups()
+  } finally {
+    savingGroup.value = false
+  }
+}
+
+const deleteGroup = async (deleteAccounts: boolean) => {
+  const group = groupContextMenu.group
+  if (!group) return
+  const groupName = group.name
+  closeGroupContextMenu()
+  try {
+    await showConfirmDialog({
+      title: deleteAccounts ? '删除分组及账号' : '删除分组',
+      message: deleteAccounts
+        ? `将删除分组「${groupName}」以及组内 ${group.count || 0} 个账号；学员训练记录也会同步清理，是否继续？`
+        : `将删除分组「${groupName}」，组内账号会迁移到未分类，是否继续？`,
+      confirmButtonColor: '#dc2626',
+    })
+  } catch {
+    return
+  }
+  const res: any = await request.post('/ops/account-groups/delete', {
+    name: groupName,
+    delete_accounts: deleteAccounts,
+  })
+  showToast({
+    type: 'success',
+    message: deleteAccounts
+      ? `已删除分组和 ${res.deleted_accounts_count || 0} 个账号`
+      : '分组已删除，账号已迁移到未分类',
+  })
+  if (groupFilter.value === groupName) groupFilter.value = ''
+  selectedAccountIds.value = []
+  await refreshAccountsAndGroups()
+}
+
+const openImportDialog = () => {
+  importTargetRole.value = 'student'
+  importAccountGroup.value = groupFilter.value && groupFilter.value !== '__ungrouped__' ? groupFilter.value : ''
+  importSelectedFile.value = null
+  importFileName.value = ''
+  importPreview.value = null
+  importError.value = ''
+  showImportDialog.value = true
 }
 
 const triggerImportFile = () => {
@@ -419,15 +726,19 @@ const triggerImportFile = () => {
 const closeImportDialog = () => {
   showImportDialog.value = false
   importFileName.value = ''
+  importSelectedFile.value = null
   importPreview.value = null
   importError.value = ''
   importLoading.value = false
   importCommitting.value = false
+  importAccountGroup.value = ''
   if (importFileInput.value) importFileInput.value.value = ''
 }
 
 const buildImportTemplate = () => {
-  const csv = '账号,初始密码,角色,显示名,姓名,电话,邮箱,单位,部门,备注\nstudent001,123456,学员端账号,示例学员,张三,13800000000,zs@example.com,示例单位,示例部门,备注'
+  const roleText = importTargetRole.value === 'admin' ? '管理端账号' : '学员端账号'
+  const account = importTargetRole.value === 'admin' ? 'admin001' : 'student001'
+  const csv = `账号,初始密码,角色,显示名,姓名,电话,邮箱,单位,部门,备注\n${account},123456,${roleText},示例账号,张三,13800000000,zs@example.com,示例单位,示例部门,备注`
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
   const link = document.createElement('a')
   link.href = URL.createObjectURL(blob)
@@ -444,8 +755,17 @@ const previewImportFile = async (file: File) => {
   try {
     const formData = new FormData()
     formData.append('file', file)
+    formData.append('target_role', importTargetRole.value)
     const res: any = await request.post('/ops/accounts/import/preview', formData)
-    importPreview.value = res
+    const items = Array.isArray(res?.items)
+      ? res.items.map((item: ImportItem) => ({
+        ...item,
+        role: normalizeImportRole(item.role),
+        account_group: importAccountGroup.value || item.account_group || '',
+        selected: item.status === 'ready',
+      }))
+      : []
+    importPreview.value = { ...res, items }
     importFileName.value = res?.filename || file.name
     showImportDialog.value = true
   } catch (error: any) {
@@ -460,26 +780,87 @@ const handleImportFileChange = async (event: Event) => {
   const target = event.target as HTMLInputElement
   const file = target.files?.[0]
   if (!file) return
+  importSelectedFile.value = file
   await previewImportFile(file)
 }
 
+const repreviewImportFile = async () => {
+  if (!importSelectedFile.value) {
+    importPreview.value = null
+    return
+  }
+  await previewImportFile(importSelectedFile.value)
+}
+
+const syncImportTargetRole = (role: string) => {
+  importTargetRole.value = normalizeImportRole(role) as 'student' | 'admin'
+}
+
+const applyImportRole = (role: 'student' | 'admin') => {
+  importTargetRole.value = role
+  const targets = selectedReadyImportItems.value.length ? selectedReadyImportItems.value : importSelectableItems.value
+  targets.forEach((item) => {
+    item.role = role
+  })
+}
+
+const applyImportGroup = () => {
+  const targets = selectedImportItems.value.length ? selectedImportItems.value : importPreviewItems.value
+  targets.forEach((item) => {
+    item.account_group = importAccountGroup.value
+  })
+}
+
+const toggleImportRow = (item: ImportItem) => {
+  item.selected = !item.selected
+}
+
+const toggleSelectAllImportRows = () => {
+  const nextState = !allImportRowsSelected.value
+  importPreviewItems.value.forEach((item) => {
+    item.selected = nextState
+  })
+}
+
+const removeSelectedImportRows = async () => {
+  if (!importPreview.value) return
+  if (!selectedImportItems.value.length) {
+    showToast('请先勾选要移除的账号')
+    return
+  }
+  try {
+    await showConfirmDialog({
+      title: '确认批量删除',
+      message: `将从本次导入预览中移除 ${selectedImportItems.value.length} 个账号，已选账号不会被导入，是否继续？`,
+      confirmButtonColor: '#dc2626',
+    })
+  } catch {
+    return
+  }
+  const selectedKeys = new Set(selectedImportItems.value.map((item) => `${item.row_number}-${item.username}`))
+  importPreview.value = {
+    ...importPreview.value,
+    items: importPreviewItems.value.filter((item) => !selectedKeys.has(`${item.row_number}-${item.username}`)),
+  }
+}
+
 const commitImport = async () => {
-  const items = importPreview.value?.items || []
-  const readyItems = items.filter((item) => item.status === 'ready').map((item) => ({
+  const readyItems = selectedReadyImportItems.value.map((item) => ({
     row_number: item.row_number,
     username: item.username,
     password: item.password,
-    role: item.role,
+    role: normalizeImportRole(item.role),
     display_name: item.display_name,
     real_name: item.real_name,
     phone: item.phone,
     email: item.email,
     unit: item.unit,
     department: item.department,
+    account_group: item.account_group,
     bio: item.bio,
   }))
   if (!readyItems.length) {
-    showToast('没有可导入的账号')
+    showToast('请先选择可导入的账号')
     return
   }
   importCommitting.value = true
@@ -487,7 +868,7 @@ const commitImport = async () => {
     const res: any = await request.post('/ops/accounts/import/commit', { accounts: readyItems })
     showToast({ type: 'success', message: `已创建 ${res.created_count || 0} 个，跳过 ${res.skipped_count || 0} 个` })
     closeImportDialog()
-    await fetchAccounts()
+    await refreshAccountsAndGroups()
   } finally {
     importCommitting.value = false
   }
@@ -503,7 +884,26 @@ const resetAccountForm = () => {
   accountForm.email = ''
   accountForm.unit = ''
   accountForm.department = ''
+  accountForm.account_group = groupFilter.value && groupFilter.value !== '__ungrouped__' ? groupFilter.value : ''
   accountForm.bio = ''
+}
+
+const toggleSelectedAccount = (id: number) => {
+  const account = accounts.value.find((item) => item.id === id)
+  if (!account || account.role === 'maintainer' || account.id === selfAccountId.value) return
+  if (selectedAccountIds.value.includes(id)) {
+    selectedAccountIds.value = selectedAccountIds.value.filter((item) => item !== id)
+  } else {
+    selectedAccountIds.value = [...selectedAccountIds.value, id]
+  }
+}
+
+const toggleSelectAll = () => {
+  if (allSelectableSelected.value) {
+    selectedAccountIds.value = []
+  } else {
+    selectedAccountIds.value = selectableAccounts.value.map((item) => item.id)
+  }
 }
 
 const openCreateDialog = () => {
@@ -523,6 +923,7 @@ const openEditDialog = (item: Account) => {
   accountForm.email = item.email || ''
   accountForm.unit = item.unit || ''
   accountForm.department = item.department || ''
+  accountForm.account_group = item.account_group || ''
   accountForm.bio = item.bio || ''
   showAccountDialog.value = true
 }
@@ -547,6 +948,7 @@ const saveAccount = async () => {
       email: accountForm.email.trim(),
       unit: accountForm.unit.trim(),
       department: accountForm.department.trim(),
+      account_group: accountForm.account_group.trim(),
       bio: accountForm.bio.trim(),
     }
     if (editingAccount.value) {
@@ -557,7 +959,7 @@ const saveAccount = async () => {
       showToast({ type: 'success', message: '账号已创建' })
     }
     showAccountDialog.value = false
-    await fetchAccounts()
+    await refreshAccountsAndGroups()
   } finally {
     savingAccount.value = false
   }
@@ -575,10 +977,11 @@ const createBatch = async () => {
       start_no: Number(batchForm.start_no),
       end_no: Number(batchForm.end_no),
       password: batchForm.password.trim(),
+      account_group: batchForm.account_group.trim(),
     })
     showToast({ type: 'success', message: `新增 ${res.created_count || 0} 个，跳过 ${res.skipped_count || 0} 个` })
     showBatchDialog.value = false
-    await fetchAccounts()
+    await refreshAccountsAndGroups()
   } finally {
     savingBatch.value = false
   }
@@ -621,10 +1024,56 @@ const deleteAccount = async (item: Account) => {
   }
   await request.delete(`/ops/accounts/${item.id}`)
   showToast({ type: 'success', message: '账号已删除' })
-  await fetchAccounts()
+  await refreshAccountsAndGroups()
 }
 
-onMounted(fetchAccounts)
+const moveSelectedAccounts = async () => {
+  const selected = selectedDeletableAccounts.value
+  if (!selected.length) {
+    showToast('请先选择要迁移的账号')
+    return
+  }
+  const targetGroup = moveTargetGroup.value.trim()
+  movingGroup.value = true
+  try {
+    await Promise.all(selected.map((item) => request.patch(`/ops/accounts/${item.id}`, { account_group: targetGroup })))
+    showToast({ type: 'success', message: targetGroup ? `已迁移到 ${targetGroup}` : '已迁移到未分类' })
+    selectedAccountIds.value = []
+    await refreshAccountsAndGroups()
+  } finally {
+    movingGroup.value = false
+  }
+}
+
+const batchDeleteSelected = async () => {
+  const selected = selectedDeletableAccounts.value
+  if (!selected.length) {
+    showToast('请先选择可删除账号')
+    return
+  }
+  const studentCount = selected.filter((item) => item.role === 'student').length
+  const adminCount = selected.filter((item) => item.role === 'admin').length
+  try {
+    await showConfirmDialog({
+      title: '确认批量删除账号',
+      message: `将删除 ${selected.length} 个账号，其中管理端账号 ${adminCount} 个、学员端账号 ${studentCount} 个；删除学员会同步清理其训练记录，是否继续？`,
+      confirmButtonColor: '#dc2626',
+    })
+  } catch {
+    return
+  }
+  deletingBatch.value = true
+  try {
+    const res: any = await request.post('/ops/accounts/batch-delete', { account_ids: selected.map((item) => item.id) })
+    showToast({ type: 'success', message: `已删除 ${res.deleted_count || 0} 个，跳过 ${res.skipped_count || 0} 个` })
+    selectedAccountIds.value = []
+    await refreshAccountsAndGroups()
+  } finally {
+    deletingBatch.value = false
+  }
+}
+
+onMounted(refreshAccountsAndGroups)
 </script>
 
 <style scoped>
@@ -642,19 +1091,63 @@ onMounted(fetchAccounts)
 }
 
 .ops-toolbar {
-  display: flex;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) minmax(360px, 520px) minmax(420px, 1fr);
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   padding: 14px;
+  min-height: 68px;
+  overflow: hidden;
 }
 
 .ops-filters,
+.ops-bulk-panel,
 .ops-actions {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.ops-filters {
+  justify-content: flex-start;
+}
+
+.ops-bulk-panel {
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 10px;
+  border-right: 1px solid #e2e8f0;
+  border-left: 1px solid #e2e8f0;
+}
+
+.ops-actions {
+  justify-content: flex-end;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.ops-group-move {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.ops-group-move input {
+  width: 156px;
+  min-width: 0;
+  height: 36px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 0 10px;
+  outline: none;
 }
 
 .ops-filters label {
@@ -680,19 +1173,25 @@ onMounted(fetchAccounts)
 }
 
 .ops-search {
+  min-width: 168px;
   padding: 0 10px;
   color: #64748b;
 }
 
 .ops-search input {
+  width: 100%;
+  min-width: 0;
   border: 0;
   outline: none;
 }
 
 .ops-action-btn {
+  flex: none;
+  min-width: 92px;
   height: 36px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
   border: 1px solid #cbd5e1;
   border-radius: 6px;
@@ -728,9 +1227,112 @@ onMounted(fetchAccounts)
   color: #fff;
 }
 
+.ops-action-btn--danger {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fff;
+}
+
+.ops-action-btn--danger:hover:not(:disabled) {
+  border-color: #fca5a5;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
 .ops-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ops-group-nav {
+  position: sticky;
+  top: 74px;
+  z-index: 25;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 10px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.ops-group-nav button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  border: 1px solid #dbe3ee;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #334155;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.ops-group-nav button.active {
+  border-color: #1d4ed8;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.ops-group-nav__create {
+  border-style: dashed;
+  color: #1d4ed8;
+  background: #fff;
+}
+
+.ops-context-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 190px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18);
+  padding: 6px;
+}
+
+.ops-context-menu__title {
+  padding: 8px 10px 6px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 900;
+  border-bottom: 1px solid #eef2f7;
+  margin-bottom: 4px;
+}
+
+.ops-context-menu button {
+  width: 100%;
+  height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #334155;
+  text-align: left;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.ops-context-menu button:hover {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.ops-context-menu button.danger {
+  color: #dc2626;
+}
+
+.ops-context-menu button.danger:hover {
+  background: #fef2f2;
+}
+
+.ops-group-nav strong {
+  color: inherit;
+  font-size: 12px;
 }
 
 .ops-summary div {
@@ -762,7 +1364,7 @@ onMounted(fetchAccounts)
 
 .ops-table {
   width: 100%;
-  min-width: 1020px;
+  min-width: 1120px;
   border-collapse: collapse;
 }
 
@@ -772,6 +1374,11 @@ onMounted(fetchAccounts)
   padding: 12px 14px;
   text-align: left;
   font-size: 13px;
+}
+
+.ops-check-col {
+  width: 44px;
+  text-align: center !important;
 }
 
 .ops-table th {
@@ -815,6 +1422,20 @@ onMounted(fetchAccounts)
 .ops-role--student {
   background: #fff7ed;
   color: #c2410c;
+}
+
+.ops-group-chip {
+  display: inline-flex;
+  max-width: 150px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ops-row-actions {
@@ -933,15 +1554,30 @@ onMounted(fetchAccounts)
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 12px;
   padding: 16px;
   overflow: hidden;
 }
 
+.ops-import-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.ops-import-file-row {
+  display: flex;
+  gap: 8px;
+}
+
+.ops-import-file-row input {
+  flex: 1;
+}
+
 .ops-import-meta {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -996,7 +1632,7 @@ onMounted(fetchAccounts)
 
 .ops-import-table {
   width: 100%;
-  min-width: 860px;
+  min-width: 1100px;
   border-collapse: collapse;
 }
 
@@ -1013,6 +1649,78 @@ onMounted(fetchAccounts)
   background: #f8fafc;
   color: #475569;
   font-weight: 900;
+}
+
+.ops-import-check-cell {
+  width: 44px;
+  text-align: center !important;
+  vertical-align: middle !important;
+}
+
+.ops-import-check-cell input {
+  width: 16px;
+  height: 16px;
+  accent-color: #2563eb;
+}
+
+.ops-import-role-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 190px;
+}
+
+.ops-import-role-actions {
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid #dbe3ee;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.ops-import-role-action {
+  height: 26px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #64748b;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.ops-import-role-action.is-active {
+  background: #0f3f9c;
+  color: #fff;
+}
+
+.ops-import-role-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ops-import-table td select {
+  width: 118px;
+  height: 30px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #0f172a;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ops-import-group-input {
+  width: 130px;
+  height: 30px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .ops-import-status {
@@ -1036,10 +1744,49 @@ onMounted(fetchAccounts)
   color: #b45309;
 }
 
+@media (max-width: 1260px) {
+  .ops-toolbar {
+    grid-template-columns: minmax(320px, 1fr) minmax(420px, 1fr);
+    overflow: visible;
+  }
+
+  .ops-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .ops-bulk-panel {
+    justify-content: flex-end;
+    border-right: 0;
+  }
+}
+
 @media (max-width: 760px) {
   .ops-toolbar,
   .ops-summary {
     display: grid;
+  }
+
+  .ops-toolbar {
+    position: static;
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .ops-filters,
+  .ops-bulk-panel,
+  .ops-actions {
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+
+  .ops-bulk-panel {
+    padding: 0;
+    border: 0;
+  }
+
+  .ops-group-nav {
+    position: static;
   }
 
   .ops-summary {
@@ -1052,6 +1799,10 @@ onMounted(fetchAccounts)
 
   .ops-import-meta {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .ops-group-move input {
+    width: 120px;
   }
 }
 </style>

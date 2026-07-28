@@ -1,14 +1,15 @@
 import csv
 import io
 import json
+import os
 import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from sqlalchemy import func, select
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
+from sqlalchemy import bindparam, func, inspect, select, text
 from sqlalchemy.orm import Session
 
 import database
@@ -20,7 +21,8 @@ router = APIRouter(prefix="/ops", tags=["Ops"])
 
 MANAGED_ROLES = {"admin", "student"}
 VISIBLE_ROLES = {"admin", "student", "maintainer"}
-IMPORT_FIELDS = ("username", "password", "role", "display_name", "real_name", "phone", "email", "unit", "department", "bio")
+FACE_TERMINATION_FAILURE_LIMIT = int(os.getenv("FACE_CONSECUTIVE_MAX_FAILURES", os.getenv("FACE_MAX_FAILURES", "5")))
+IMPORT_FIELDS = ("username", "password", "role", "display_name", "real_name", "phone", "email", "unit", "department", "account_group", "bio")
 IMPORT_HEADER_ALIASES = {
     "username": {"username", "user", "account", "账号", "账户", "用户名", "登录名", "学号", "工号"},
     "password": {"password", "pass", "pwd", "密码", "初始密码"},
@@ -31,6 +33,7 @@ IMPORT_HEADER_ALIASES = {
     "email": {"email", "mail", "邮箱", "电子邮箱"},
     "unit": {"unit", "organization", "org", "单位", "机构", "学校"},
     "department": {"department", "dept", "部门", "班级", "院系"},
+    "account_group": {"account_group", "group", "category", "分类", "分组", "账号分类", "账号分组", "开通批次", "批次"},
     "bio": {"bio", "remark", "remarks", "note", "notes", "备注", "说明"},
 }
 ROLE_ALIASES = {
@@ -51,6 +54,7 @@ PROFILE_FIELD_LIMITS = {
     "email": 120,
     "unit": 120,
     "department": 120,
+    "account_group": 80,
     "bio": 300,
 }
 
@@ -257,6 +261,104 @@ def serialize_account(user: models.User) -> schemas.OpsAccountOverview:
     return schemas.OpsAccountOverview.model_validate(user)
 
 
+def delete_optional_table_rows(db: Session, table_name: str, column_name: str, values: list[int]) -> None:
+    ids = [int(value) for value in values if int(value or 0) > 0]
+    if not ids or not inspect(db.get_bind()).has_table(table_name):
+        return
+    statement = text(f'DELETE FROM "{table_name}" WHERE "{column_name}" IN :ids').bindparams(
+        bindparam("ids", expanding=True)
+    )
+    db.execute(statement, {"ids": ids})
+
+
+def delete_assignment_owned_data(db: Session, assignment_ids: list[int]) -> None:
+    ids = [int(value) for value in assignment_ids if int(value or 0) > 0]
+    if not ids:
+        return
+    db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.assignment_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.AssignmentStudentOverride).filter(models.AssignmentStudentOverride.assignment_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.TrainingAssignmentCase).filter(models.TrainingAssignmentCase.assignment_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.TrainingAssignmentScene).filter(models.TrainingAssignmentScene.assignment_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.TrainingAssignment).filter(models.TrainingAssignment.id.in_(ids)).delete(synchronize_session=False)
+
+
+def delete_video_training_sessions(db: Session, session_ids: list[int]) -> None:
+    ids = [int(value) for value in session_ids if int(value or 0) > 0]
+    if not ids:
+        return
+    db.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.video_session_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.VideoNodeResult).filter(models.VideoNodeResult.session_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.VideoTrainingSession).filter(models.VideoTrainingSession.id.in_(ids)).delete(synchronize_session=False)
+
+
+def delete_video_owned_data(db: Session, video_ids: list[int]) -> None:
+    ids = [int(value) for value in video_ids if int(value or 0) > 0]
+    if not ids:
+        return
+    session_ids = [
+        row[0]
+        for row in db.query(models.VideoTrainingSession.id)
+        .filter(models.VideoTrainingSession.video_id.in_(ids))
+        .all()
+    ]
+    delete_video_training_sessions(db, session_ids)
+    node_ids = [
+        row[0]
+        for row in db.query(models.VideoNode.id)
+        .filter(models.VideoNode.video_id.in_(ids))
+        .all()
+    ]
+    if node_ids:
+        db.query(models.VideoNodeResult).filter(models.VideoNodeResult.node_id.in_(node_ids)).delete(synchronize_session=False)
+        db.query(models.VideoNode).filter(models.VideoNode.id.in_(node_ids)).delete(synchronize_session=False)
+    db.query(models.TrainingVideo).filter(models.TrainingVideo.id.in_(ids)).delete(synchronize_session=False)
+
+
+def delete_admin_owned_data(db: Session, user_id: int) -> None:
+    class_ids = [
+        row[0]
+        for row in db.query(models.TrainingClass.id)
+        .filter(models.TrainingClass.created_by == user_id)
+        .all()
+    ]
+    if class_ids:
+        assignment_ids = [
+            row[0]
+            for row in db.query(models.TrainingAssignment.id)
+            .filter(models.TrainingAssignment.class_id.in_(class_ids))
+            .all()
+        ]
+        delete_assignment_owned_data(db, assignment_ids)
+        db.query(models.ClassAnnouncement).filter(models.ClassAnnouncement.class_id.in_(class_ids)).delete(synchronize_session=False)
+        db.query(models.ClassMembership).filter(models.ClassMembership.class_id.in_(class_ids)).delete(synchronize_session=False)
+        db.query(models.TrainingClass).filter(models.TrainingClass.id.in_(class_ids)).delete(synchronize_session=False)
+
+    assignment_ids = [
+        row[0]
+        for row in db.query(models.TrainingAssignment.id)
+        .filter(models.TrainingAssignment.created_by == user_id)
+        .all()
+    ]
+    delete_assignment_owned_data(db, assignment_ids)
+
+    announcement_ids = [
+        row[0]
+        for row in db.query(models.ClassAnnouncement.id)
+        .filter(models.ClassAnnouncement.created_by == user_id)
+        .all()
+    ]
+    if announcement_ids:
+        db.query(models.ClassAnnouncement).filter(models.ClassAnnouncement.id.in_(announcement_ids)).delete(synchronize_session=False)
+
+    video_ids = [
+        row[0]
+        for row in db.query(models.TrainingVideo.id)
+        .filter(models.TrainingVideo.uploaded_by == user_id)
+        .all()
+    ]
+    delete_video_owned_data(db, video_ids)
+
+
 def write_ops_audit(
     db: Session,
     *,
@@ -284,6 +386,25 @@ def apply_profile_fields(user: models.User, payload) -> None:
     for field, max_length in PROFILE_FIELD_LIMITS.items():
         if field in payload.model_fields_set:
             setattr(user, field, clean_text(getattr(payload, field), max_length))
+
+
+def normalize_account_group_name(value: str | None) -> str:
+    return clean_text(value, 80) or ""
+
+
+def ensure_account_group_registry(db: Session, name: str | None, *, description: str | None = None) -> models.AccountGroup | None:
+    group_name = normalize_account_group_name(name)
+    if not group_name:
+        return None
+    group = db.query(models.AccountGroup).filter(models.AccountGroup.name == group_name).first()
+    if group:
+        if description is not None and clean_text(description, 200) is not None and group.description != clean_text(description, 200):
+            group.description = clean_text(description, 200)
+        return group
+    group = models.AccountGroup(name=group_name, description=clean_text(description, 200))
+    db.add(group)
+    db.flush()
+    return group
 
 
 def normalize_import_role(role: str | None) -> str:
@@ -336,6 +457,7 @@ def validate_import_records(records: list[dict], db: Session) -> list[schemas.Op
             ("email", 120),
             ("unit", 120),
             ("department", 120),
+            ("account_group", 80),
             ("bio", 300),
         ):
             if len(item.get(field) or "") > max_length:
@@ -346,6 +468,7 @@ def validate_import_records(records: list[dict], db: Session) -> list[schemas.Op
                     "email": "邮箱",
                     "unit": "单位",
                     "department": "部门",
+                    "account_group": "分类",
                     "bio": "备注",
                 }
                 errors.append(f"{labels.get(field, field)}不能超过 {max_length} 个字符")
@@ -356,6 +479,26 @@ def validate_import_records(records: list[dict], db: Session) -> list[schemas.Op
             errors=errors,
         ))
     return items
+
+
+def normalize_target_role(value: str | None) -> str:
+    role = str(value or "").strip()
+    if not role:
+        return "student"
+    if role not in MANAGED_ROLES:
+        raise HTTPException(status_code=400, detail="导入目标角色只能是管理端账号或学员端账号")
+    return role
+
+
+def apply_target_role(records: list[dict], target_role: str | None) -> list[dict]:
+    role = normalize_target_role(target_role)
+    cleaned: list[dict] = []
+    for record in records:
+        record = dict(record)
+        if role in MANAGED_ROLES:
+            record["role"] = role
+        cleaned.append(record)
+    return cleaned
 
 
 def build_import_preview(filename: str, records: list[dict], db: Session) -> schemas.OpsAccountImportPreviewResponse:
@@ -402,6 +545,79 @@ def activity_item(category: str, module: str, action: str, title: str, created_a
     }
 
 
+def face_usage_records(db: Session, user: models.User) -> list[dict]:
+    rows: list[dict] = []
+
+    passed_seen: set[int] = set()
+    passed_events = (
+        db.query(models.FaceVerificationEvent, models.TrainingSession, models.Scene, models.Case)
+        .join(models.TrainingSession, models.TrainingSession.id == models.FaceVerificationEvent.session_id)
+        .outerjoin(models.Scene, models.Scene.id == models.TrainingSession.scene_id)
+        .outerjoin(models.Case, models.Case.id == models.Scene.case_id)
+        .filter(
+            models.FaceVerificationEvent.student_id == user.id,
+            models.FaceVerificationEvent.event_type == "verify",
+            models.FaceVerificationEvent.status == "passed",
+        )
+        .order_by(models.FaceVerificationEvent.created_at.asc(), models.FaceVerificationEvent.id.asc())
+        .all()
+    )
+    for event, session, scene, case in passed_events:
+        if event.session_id in passed_seen:
+            continue
+        passed_seen.add(event.session_id)
+        scene_name = scene.name if scene else "未知场景"
+        rows.append({
+            "kind": "verify_passed",
+            "event": event,
+            "session": session,
+            "scene": scene,
+            "case": case,
+            "title": f"人脸核验通过：{scene_name}",
+            "description": "进入该案件场景时首次身份核验通过。",
+            "status": "passed",
+        })
+
+    terminated_seen: set[int] = set()
+    terminated_events = (
+        db.query(models.FaceVerificationEvent, models.TrainingSession, models.Scene, models.Case)
+        .join(models.TrainingSession, models.TrainingSession.id == models.FaceVerificationEvent.session_id)
+        .outerjoin(models.Scene, models.Scene.id == models.TrainingSession.scene_id)
+        .outerjoin(models.Case, models.Case.id == models.Scene.case_id)
+        .filter(
+            models.FaceVerificationEvent.student_id == user.id,
+            models.FaceVerificationEvent.event_type != "verify",
+            models.FaceVerificationEvent.status == "failed",
+            models.FaceVerificationEvent.failure_count >= FACE_TERMINATION_FAILURE_LIMIT,
+        )
+        .order_by(models.FaceVerificationEvent.created_at.asc(), models.FaceVerificationEvent.id.asc())
+        .all()
+    )
+    for event, session, scene, case in terminated_events:
+        if event.session_id in terminated_seen:
+            continue
+        terminated_seen.add(event.session_id)
+        scene_name = scene.name if scene else "未知场景"
+        rows.append({
+            "kind": "auto_terminated",
+            "event": event,
+            "session": session,
+            "scene": scene,
+            "case": case,
+            "title": f"人脸异常自动结束：{scene_name}",
+            "description": "训练中人脸异常累计达到上限，系统已结束本次训练。",
+            "status": "terminated",
+        })
+
+    rows.sort(key=lambda item: item["event"].created_at or datetime.min, reverse=True)
+    return rows
+
+
+def latest_face_usage_record(db: Session, user: models.User) -> dict | None:
+    records = face_usage_records(db, user)
+    return records[0] if records else None
+
+
 def account_usage_changed_at(db: Session, user: models.User) -> datetime | None:
     normal_session_ids = select(models.TrainingSession.id).filter(models.TrainingSession.user_id == user.id)
     video_session_ids = select(models.VideoTrainingSession.id).filter(models.VideoTrainingSession.user_id == user.id)
@@ -433,7 +649,6 @@ def account_usage_changed_at(db: Session, user: models.User) -> datetime | None:
         db.query(func.max(models.VideoTrainingSession.finished_at)).filter(models.VideoTrainingSession.user_id == user.id).scalar(),
         db.query(func.max(models.VideoTrainingSession.evaluation_completed_at)).filter(models.VideoTrainingSession.user_id == user.id).scalar(),
         db.query(func.max(models.VideoNodeResult.created_at)).filter(models.VideoNodeResult.session_id.in_(video_session_ids)).scalar(),
-        db.query(func.max(models.VideoTrainingArtifact.created_at)).filter(models.VideoTrainingArtifact.session_id.in_(video_session_ids)).scalar(),
         db.query(func.max(models.FaceProfile.created_at)).filter(models.FaceProfile.student_id == user.id).scalar(),
         db.query(func.max(models.FaceProfile.updated_at)).filter(models.FaceProfile.student_id == user.id).scalar(),
         db.query(func.max(models.FaceVerificationEvent.created_at)).filter(models.FaceVerificationEvent.student_id == user.id).scalar(),
@@ -475,13 +690,7 @@ def account_usage_stats(db: Session, user: models.User) -> dict:
         .filter(models.TrainingSession.user_id == user.id)
         .count()
     )
-    video_artifact_count = (
-        db.query(models.VideoTrainingArtifact)
-        .join(models.VideoTrainingSession, models.VideoTrainingSession.id == models.VideoTrainingArtifact.session_id)
-        .filter(models.VideoTrainingSession.user_id == user.id)
-        .count()
-    )
-    face_event_count = db.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.student_id == user.id).count()
+    face_event_count = len(face_usage_records(db, user))
     speech_usage_count = db.query(models.SpeechUsageLog).filter(models.SpeechUsageLog.user_id == user.id).count()
     speech_failed_count = db.query(models.SpeechUsageLog).filter(
         models.SpeechUsageLog.user_id == user.id,
@@ -495,7 +704,7 @@ def account_usage_stats(db: Session, user: models.User) -> dict:
         "training_artifact_count": training_artifact_count,
         "video_training_count": video_sessions.count(),
         "video_finished_count": video_sessions.filter(models.VideoTrainingSession.status == "finished").count(),
-        "video_artifact_count": video_artifact_count,
+        "video_artifact_count": 0,
         "assignment_submission_count": submissions.count(),
         "class_join_count": class_memberships.count(),
         "admin_class_count": admin_class_count,
@@ -511,12 +720,8 @@ def account_usage_stats(db: Session, user: models.User) -> dict:
 
 def account_profile(db: Session, user: models.User) -> dict:
     face_profile = db.query(models.FaceProfile).filter(models.FaceProfile.student_id == user.id).first()
-    latest_face_event = (
-        db.query(models.FaceVerificationEvent)
-        .filter(models.FaceVerificationEvent.student_id == user.id)
-        .order_by(models.FaceVerificationEvent.created_at.desc())
-        .first()
-    )
+    latest_face_record = latest_face_usage_record(db, user)
+    latest_face_event = latest_face_record["event"] if latest_face_record else None
     class_rows = (
         db.query(models.ClassMembership, models.TrainingClass)
         .join(models.TrainingClass, models.TrainingClass.id == models.ClassMembership.class_id)
@@ -559,8 +764,8 @@ def account_profile(db: Session, user: models.User) -> dict:
             "image_url": face_profile.face_image_url if face_profile else None,
             "sample_images": samples if isinstance(samples, list) else [],
             "sample_count": len(samples) if isinstance(samples, list) else None,
-            "latest_status": latest_face_event.status if latest_face_event else None,
-            "latest_reason": latest_face_event.reason if latest_face_event else None,
+            "latest_status": latest_face_record["status"] if latest_face_record else None,
+            "latest_reason": latest_face_record["description"] if latest_face_record else None,
             "latest_similarity": latest_face_event.similarity if latest_face_event else None,
             "latest_at": latest_face_event.created_at.isoformat() if latest_face_event and latest_face_event.created_at else None,
         },
@@ -664,14 +869,12 @@ def account_recent_activities(db: Session, user: models.User, limit: int = 30) -
     )
     for session, video in video_rows:
         node_count = db.query(models.VideoNodeResult).filter(models.VideoNodeResult.session_id == session.id).count()
-        artifact_count = db.query(models.VideoTrainingArtifact).filter(models.VideoTrainingArtifact.session_id == session.id).count()
         activities.append(activity_item("video", "视频训练", "video_training_session", f"视频训练：{video.title if video else '未知视频'}", session.created_at, {
             "session_id": session.id,
             "status": session.status,
             "mode": session.mode,
             "score": session.total_score,
             "node_count": node_count,
-            "artifact_count": artifact_count,
             "finished_at": session.finished_at.isoformat() if session.finished_at else None,
         }))
 
@@ -694,15 +897,21 @@ def account_recent_activities(db: Session, user: models.User, limit: int = 30) -
             "submitted_at": submission.submitted_at.isoformat() if submission.submitted_at else None,
         }))
 
-    for item in db.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.student_id == user.id).order_by(models.FaceVerificationEvent.created_at.desc()).limit(20):
-        activities.append(activity_item("face", "人脸", "face_verification", f"人脸核验：{item.status}", item.created_at, {
-            "event_type": item.event_type,
-            "status": item.status,
-            "reason": item.reason,
-            "reason_code": item.reason_code,
-            "similarity": item.similarity,
-            "abnormal_level": item.abnormal_level,
-            "failure_count": item.failure_count,
+    for record in face_usage_records(db, user)[:20]:
+        event = record["event"]
+        session = record["session"]
+        scene = record["scene"]
+        case = record["case"]
+        activities.append(activity_item("face", "人脸", "face_verification", record["title"], event.created_at, {
+            "event_type": record["kind"],
+            "status": record["status"],
+            "reason": record["description"],
+            "session_id": session.id if session else None,
+            "scene_id": scene.id if scene else None,
+            "case_id": case.id if case else None,
+            "case_title": case.title if case else None,
+            "similarity": event.similarity,
+            "failure_count": event.failure_count if record["kind"] == "auto_terminated" else None,
         }))
 
     for item in db.query(models.SpeechUsageLog).filter(models.SpeechUsageLog.user_id == user.id).order_by(models.SpeechUsageLog.created_at.desc()).limit(30):
@@ -776,6 +985,12 @@ def delete_student_owned_data(db: Session, user_id: int) -> None:
         .all()
     ]
     if training_session_ids:
+        delete_optional_table_rows(db, "face_verification_sessions", "session_id", training_session_ids)
+        delete_optional_table_rows(db, "multimodal_events", "session_id", training_session_ids)
+        delete_optional_table_rows(db, "multimodal_session_metrics", "session_id", training_session_ids)
+        db.query(models.FaceVerificationEvent).filter(
+            models.FaceVerificationEvent.session_id.in_(training_session_ids)
+        ).delete(synchronize_session=False)
         db.query(models.Message).filter(models.Message.session_id.in_(training_session_ids)).delete(synchronize_session=False)
         db.query(models.TrainingSessionArtifact).filter(models.TrainingSessionArtifact.session_id.in_(training_session_ids)).delete(synchronize_session=False)
         db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.training_session_id.in_(training_session_ids)).update(
@@ -790,21 +1005,30 @@ def delete_student_owned_data(db: Session, user_id: int) -> None:
         .filter(models.VideoTrainingSession.user_id == user_id)
         .all()
     ]
-    if video_session_ids:
-        db.query(models.VideoNodeResult).filter(models.VideoNodeResult.session_id.in_(video_session_ids)).delete(synchronize_session=False)
-        db.query(models.VideoTrainingArtifact).filter(models.VideoTrainingArtifact.session_id.in_(video_session_ids)).delete(synchronize_session=False)
-        db.query(models.VideoTrainingSession).filter(models.VideoTrainingSession.id.in_(video_session_ids)).delete(synchronize_session=False)
+    delete_video_training_sessions(db, video_session_ids)
 
     db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.user_id == user_id).delete(synchronize_session=False)
     db.query(models.AssignmentStudentOverride).filter(models.AssignmentStudentOverride.user_id == user_id).delete(synchronize_session=False)
     db.query(models.ClassMembership).filter(models.ClassMembership.user_id == user_id).delete(synchronize_session=False)
+    delete_optional_table_rows(db, "face_verification_sessions", "student_id", [user_id])
+    delete_optional_table_rows(db, "multimodal_events", "student_id", [user_id])
+    delete_optional_table_rows(db, "multimodal_session_metrics", "student_id", [user_id])
     db.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.student_id == user_id).delete(synchronize_session=False)
     db.query(models.FaceProfile).filter(models.FaceProfile.student_id == user_id).delete(synchronize_session=False)
+    db.query(models.SpeechUsageLog).filter(models.SpeechUsageLog.user_id == user_id).delete(synchronize_session=False)
+
+
+def delete_user_references(db: Session, user_id: int) -> None:
+    db.query(models.OpsAuditLog).filter(
+        (models.OpsAuditLog.actor_id == user_id) | (models.OpsAuditLog.target_user_id == user_id)
+    ).delete(synchronize_session=False)
+    db.query(models.SpeechUsageLog).filter(models.SpeechUsageLog.user_id == user_id).delete(synchronize_session=False)
 
 
 @router.get("/accounts", response_model=list[schemas.OpsAccountOverview])
 def list_accounts(
     role: str | None = None,
+    group: str | None = None,
     keyword: str | None = None,
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(require_maintainer_user),
@@ -822,13 +1046,88 @@ def list_accounts(
     if search_text:
         query = query.filter(models.User.username.contains(search_text))
 
-    users = query.order_by(models.User.role.asc(), models.User.username.asc()).all()
+    group_text = str(group or "").strip()
+    if group_text:
+        query = query.filter(models.User.account_group == group_text)
+
+    users = query.order_by(models.User.account_group.asc(), models.User.role.asc(), models.User.username.asc()).all()
     return [serialize_account(user) for user in users]
+
+
+@router.get("/account-groups")
+def list_account_groups(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_maintainer_user),
+):
+    registry_rows = db.query(models.AccountGroup).order_by(models.AccountGroup.name.asc()).all()
+    user_rows = (
+        db.query(models.User.account_group, func.count(models.User.id))
+        .filter(models.User.role.in_(VISIBLE_ROLES))
+        .group_by(models.User.account_group)
+        .all()
+    )
+    counts = {str(name or "").strip(): int(count or 0) for name, count in user_rows if str(name or "").strip()}
+    ungrouped_count = sum(int(count or 0) for name, count in user_rows if not str(name or "").strip())
+    groups = []
+    seen: set[str] = set()
+    for row in registry_rows:
+        group_name = normalize_account_group_name(row.name)
+        if not group_name or group_name in seen:
+            continue
+        seen.add(group_name)
+        groups.append({
+            "id": row.id,
+            "name": group_name,
+            "description": row.description,
+            "count": counts.get(group_name, 0),
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        })
+    for group_name, count in sorted(counts.items(), key=lambda item: item[0]):
+        if group_name not in seen:
+            groups.append({
+                "id": None,
+                "name": group_name,
+                "description": None,
+                "count": count,
+                "created_at": None,
+                "updated_at": None,
+            })
+            seen.add(group_name)
+    return {"groups": groups, "ungrouped_count": ungrouped_count}
+
+
+@router.post("/account-groups", response_model=schemas.AccountGroupOverview)
+def create_account_group(
+    payload: schemas.AccountGroupCreate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_maintainer_user),
+):
+    name = normalize_account_group_name(payload.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="请输入分组名称")
+    existing = db.query(models.AccountGroup).filter(models.AccountGroup.name == name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="分组已存在")
+    group = ensure_account_group_registry(db, name, description=payload.description)
+    db.flush()
+    write_ops_audit(db, actor=current_user, action="create_account_group", detail={"name": name, "description": group.description})
+    db.commit()
+    db.refresh(group)
+    return schemas.AccountGroupOverview(
+        id=group.id,
+        name=group.name,
+        description=group.description,
+        count=0,
+        created_at=group.created_at,
+        updated_at=group.updated_at,
+    )
 
 
 @router.get("/accounts/usage")
 def list_account_usage(
     role: str | None = None,
+    group: str | None = None,
     keyword: str | None = None,
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(require_maintainer_user),
@@ -843,14 +1142,18 @@ def list_account_usage(
     search_text = str(keyword or "").strip()
     if search_text:
         query = query.filter(models.User.username.contains(search_text))
+    group_text = str(group or "").strip()
+    if group_text:
+        query = query.filter(models.User.account_group == group_text)
 
-    users = query.order_by(models.User.role.asc(), models.User.username.asc()).all()
+    users = query.order_by(models.User.account_group.asc(), models.User.role.asc(), models.User.username.asc()).all()
     return [serialize_usage_account(db, user) for user in users]
 
 
 @router.get("/accounts/usage-versions")
 def list_account_usage_versions(
     role: str | None = None,
+    group: str | None = None,
     keyword: str | None = None,
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(require_maintainer_user),
@@ -865,8 +1168,11 @@ def list_account_usage_versions(
     search_text = str(keyword or "").strip()
     if search_text:
         query = query.filter(models.User.username.contains(search_text))
+    group_text = str(group or "").strip()
+    if group_text:
+        query = query.filter(models.User.account_group == group_text)
 
-    users = query.order_by(models.User.role.asc(), models.User.username.asc()).all()
+    users = query.order_by(models.User.account_group.asc(), models.User.role.asc(), models.User.username.asc()).all()
     accounts = [serialize_usage_version(db, user) for user in users]
     global_changed_at = max(
         (datetime.fromisoformat(item["changed_at"]) for item in accounts if item.get("changed_at")),
@@ -907,11 +1213,16 @@ def create_account(
     if db.query(models.User).filter(models.User.username == username).first():
         raise HTTPException(status_code=400, detail="账号已存在")
 
-    user = models.User(username=username, hashed_password=hash_password(password), role=role)
+    account_group = ensure_account_group_registry(db, getattr(payload, "account_group", None))
+    user = models.User(username=username, hashed_password=hash_password(password), role=role, account_group=account_group.name if account_group else None)
     apply_profile_fields(user, payload)
     db.add(user)
     db.flush()
-    write_ops_audit(db, actor=current_user, action="create_account", target_user=user, detail={"username": username, "role": role})
+    write_ops_audit(db, actor=current_user, action="create_account", target_user=user, detail={
+        "username": username,
+        "role": role,
+        "account_group": user.account_group,
+    })
     db.commit()
     db.refresh(user)
     return serialize_account(user)
@@ -924,6 +1235,7 @@ def batch_create_student_accounts(
     current_user: models.User = Depends(require_maintainer_user),
 ):
     password = str(payload.password or "").strip()
+    account_group = clean_text(getattr(payload, "account_group", None), 80)
     if not password:
         raise HTTPException(status_code=400, detail="请输入初始密码")
     usernames = build_username_range(payload.template, int(payload.start_no), int(payload.end_no))
@@ -933,7 +1245,8 @@ def batch_create_student_accounts(
         if db.query(models.User).filter(models.User.username == username).first():
             skipped_usernames.append(username)
             continue
-        db.add(models.User(username=username, hashed_password=hash_password(password), role="student"))
+        ensure_account_group_registry(db, account_group)
+        db.add(models.User(username=username, hashed_password=hash_password(password), role="student", account_group=account_group))
         created_usernames.append(username)
     if created_usernames:
         write_ops_audit(db, actor=current_user, action="batch_create_students", detail={
@@ -942,6 +1255,7 @@ def batch_create_student_accounts(
             "end_no": payload.end_no,
             "created_count": len(created_usernames),
             "skipped_count": len(skipped_usernames),
+            "account_group": account_group,
         })
         db.commit()
     return schemas.BatchStudentCreateResponse(
@@ -955,6 +1269,7 @@ def batch_create_student_accounts(
 @router.post("/accounts/import/preview", response_model=schemas.OpsAccountImportPreviewResponse)
 async def preview_import_accounts(
     file: UploadFile = File(...),
+    target_role: str | None = Form(default="student"),
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(require_maintainer_user),
 ):
@@ -964,6 +1279,7 @@ async def preview_import_accounts(
     records = parse_import_file(file.filename or "", content)
     if not records:
         raise HTTPException(status_code=400, detail="未读取到可导入账号")
+    records = apply_target_role(records, target_role)
     return build_import_preview(file.filename or "accounts", records, db)
 
 
@@ -989,14 +1305,17 @@ def commit_import_accounts(
             username=item.username,
             hashed_password=hash_password(item.password or "123456"),
             role=item.role,
+            account_group=item.account_group,
         )
         for field, max_length in PROFILE_FIELD_LIMITS.items():
             setattr(user, field, clean_text(getattr(item, field), max_length))
         db.add(user)
         db.flush()
+        ensure_account_group_registry(db, item.account_group)
         write_ops_audit(db, actor=current_user, action="import_create_account", target_user=user, detail={
             "username": item.username,
             "role": item.role,
+            "account_group": item.account_group,
             "row_number": item.row_number,
         })
         created_usernames.append(item.username)
@@ -1011,6 +1330,55 @@ def commit_import_accounts(
         created_usernames=created_usernames,
         skipped_usernames=skipped_usernames,
         failed_items=failed_items,
+    )
+
+
+@router.post("/accounts/batch-delete/", response_model=schemas.OpsAccountBatchDeleteResponse, include_in_schema=False)
+@router.post("/accounts/batch_delete", response_model=schemas.OpsAccountBatchDeleteResponse, include_in_schema=False)
+@router.post("/accounts/batch-delete", response_model=schemas.OpsAccountBatchDeleteResponse)
+def batch_delete_accounts(
+    payload: schemas.OpsAccountBatchDeleteRequest,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_maintainer_user),
+):
+    account_ids = [int(account_id) for account_id in payload.account_ids if int(account_id or 0) > 0]
+    if not account_ids:
+        raise HTTPException(status_code=400, detail="请至少选择一个账号")
+
+    deleted_usernames: list[str] = []
+    skipped_usernames: list[str] = []
+    for account_id in account_ids:
+        user = db.query(models.User).filter(models.User.id == account_id).first()
+        if not user:
+            continue
+        if user.id == current_user.id:
+            skipped_usernames.append(user.username)
+            continue
+        if user.role == "maintainer":
+            skipped_usernames.append(user.username)
+            continue
+        deleted_usernames.append(user.username)
+        write_ops_audit(db, actor=current_user, action="delete_account", detail={
+            "target_user_id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "batch": True,
+        })
+        if user.role in MANAGED_ROLES:
+            delete_student_owned_data(db, user.id)
+        if user.role == "admin":
+            delete_admin_owned_data(db, user.id)
+        delete_user_references(db, user.id)
+        db.delete(user)
+
+    if deleted_usernames:
+        db.commit()
+
+    return schemas.OpsAccountBatchDeleteResponse(
+        deleted_count=len(deleted_usernames),
+        skipped_count=len(skipped_usernames),
+        deleted_usernames=deleted_usernames,
+        skipped_usernames=skipped_usernames,
     )
 
 
@@ -1043,6 +1411,9 @@ def update_account(
         user.role = role
 
     apply_profile_fields(user, payload)
+    if "account_group" in payload.model_fields_set:
+        account_group = ensure_account_group_registry(db, getattr(payload, "account_group", None))
+        user.account_group = account_group.name if account_group else None
     user.updated_at = datetime.utcnow()
     db.add(user)
     write_ops_audit(db, actor=current_user, action="update_account", target_user=user, detail={
@@ -1053,6 +1424,62 @@ def update_account(
     db.commit()
     db.refresh(user)
     return serialize_account(user)
+
+
+@router.post("/account-groups/delete/", response_model=schemas.AccountGroupDeleteResponse, include_in_schema=False)
+@router.post("/account-groups/delete", response_model=schemas.AccountGroupDeleteResponse)
+def delete_account_group(
+    payload: schemas.AccountGroupDeleteRequest,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_maintainer_user),
+):
+    group_name = normalize_account_group_name(payload.name)
+    if not group_name:
+        raise HTTPException(status_code=400, detail="请输入分组名称")
+    group = db.query(models.AccountGroup).filter(models.AccountGroup.name == group_name).first()
+    affected_users = db.query(models.User).filter(models.User.account_group == group_name).all()
+    if not group and not affected_users:
+        raise HTTPException(status_code=404, detail="分组不存在")
+    deleted_accounts_count = 0
+    skipped_usernames: list[str] = []
+    if payload.delete_accounts:
+        for user in affected_users:
+            if user.role == "maintainer" or user.id == current_user.id:
+                skipped_usernames.append(user.username)
+                continue
+            if user.role in MANAGED_ROLES:
+                delete_student_owned_data(db, user.id)
+            if user.role == "admin":
+                delete_admin_owned_data(db, user.id)
+            delete_user_references(db, user.id)
+            write_ops_audit(db, actor=current_user, action="delete_account", detail={
+                "target_user_id": user.id,
+                "username": user.username,
+                "role": user.role,
+                "group_deleted": group_name,
+            })
+            db.delete(user)
+            deleted_accounts_count += 1
+    else:
+        for user in affected_users:
+            user.account_group = None
+            db.add(user)
+
+    if group:
+        db.delete(group)
+    write_ops_audit(db, actor=current_user, action="delete_account_group", detail={
+        "name": group_name,
+        "delete_accounts": bool(payload.delete_accounts),
+        "deleted_accounts_count": deleted_accounts_count,
+        "skipped_accounts_count": len(skipped_usernames),
+    })
+    db.commit()
+    return schemas.AccountGroupDeleteResponse(
+        deleted_group=group_name,
+        deleted_accounts_count=deleted_accounts_count,
+        skipped_accounts_count=len(skipped_usernames),
+        skipped_usernames=skipped_usernames,
+    )
 
 
 @router.post("/accounts/{account_id}/reset-password")
@@ -1097,9 +1524,101 @@ def delete_account(
         "username": deleted_username,
         "role": deleted_role,
     })
-    if user.role == "student":
+    if user.role in MANAGED_ROLES:
         delete_student_owned_data(db, user.id)
+    if user.role == "admin":
+        delete_admin_owned_data(db, user.id)
+    delete_user_references(db, user.id)
 
     db.delete(user)
     db.commit()
     return {"success": True, "deleted_id": account_id, "deleted_username": deleted_username}
+
+
+def _parse_ops_json(value: str | None) -> dict:
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _serialize_system_issue(item: models.OpsIssueRecord) -> dict:
+    return {
+        "id": item.id,
+        "category": item.category,
+        "severity": item.severity,
+        "status": item.status,
+        "source": item.source,
+        "case_id": item.case_id,
+        "workflow_run_id": item.workflow_run_id,
+        "title": item.title,
+        "detail": item.detail,
+        "metadata": _parse_ops_json(item.metadata_json),
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+    }
+
+
+@router.get("/system-issues")
+def list_system_issues(
+    category: str | None = None,
+    status: str | None = None,
+    provider: str | None = None,
+    limit: int = 100,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_maintainer_user),
+):
+    query = db.query(models.OpsIssueRecord)
+    if category:
+        query = query.filter(models.OpsIssueRecord.category == category)
+    if status:
+        query = query.filter(models.OpsIssueRecord.status == status)
+    if provider:
+        query = query.filter(models.OpsIssueRecord.metadata_json.contains(f'"provider": "{provider}"'))
+    rows = query.order_by(models.OpsIssueRecord.created_at.desc()).limit(max(1, min(limit, 300))).all()
+    return [_serialize_system_issue(item) for item in rows]
+
+
+@router.get("/ai-workflow-runs")
+def list_ai_workflow_runs(
+    stage: str | None = None,
+    provider: str | None = None,
+    limit: int = 100,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_maintainer_user),
+):
+    query = db.query(models.AIWorkflowRun)
+    if stage:
+        query = query.filter(models.AIWorkflowRun.stage == stage)
+    if provider:
+        query = query.filter((models.AIWorkflowRun.primary_provider == provider) | (models.AIWorkflowRun.final_provider == provider))
+    rows = query.order_by(models.AIWorkflowRun.created_at.desc()).limit(max(1, min(limit, 300))).all()
+    return [{
+        "id": row.id, "correlation_id": row.correlation_id, "case_id": row.case_id, "stage": row.stage,
+        "status": row.status, "primary_provider": row.primary_provider, "final_provider": row.final_provider,
+        "model": row.model, "attempt_count": row.attempt_count, "switched_provider": row.switched_provider,
+        "used_rule_fallback": row.used_rule_fallback, "error_code": row.error_code, "error_summary": row.error_summary,
+        "trace": _parse_ops_json(row.trace_json), "created_at": row.created_at.isoformat() if row.created_at else None,
+    } for row in rows]
+
+
+@router.patch("/system-issues/{issue_id}")
+def update_system_issue(
+    issue_id: int,
+    payload: dict = Body(...),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_maintainer_user),
+):
+    issue = db.query(models.OpsIssueRecord).filter(models.OpsIssueRecord.id == issue_id).first()
+    if not issue:
+        raise HTTPException(status_code=404, detail="异常记录不存在")
+    next_status = str(payload.get("status") or "").strip()
+    if next_status not in {"pending", "acknowledged", "resolved", "ignored"}:
+        raise HTTPException(status_code=400, detail="不支持的异常状态")
+    issue.status = next_status
+    db.add(issue)
+    write_ops_audit(db, actor=current_user, action="update_system_issue", detail={"issue_id": issue.id, "status": next_status})
+    db.commit()
+    db.refresh(issue)
+    return _serialize_system_issue(issue)

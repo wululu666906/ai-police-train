@@ -36,6 +36,11 @@ def _resolve_path(value: str | Path) -> Path:
     path = Path(value)
     if path.is_absolute():
         return path
+    # Values from backend/.env are relative to the backend directory.  In
+    # particular, ../data/face_models must resolve to <project>/data, not a
+    # sibling of the project root on a cloud host.
+    if str(path).startswith(".."):
+        return (Path(__file__).resolve().parents[1] / path).resolve()
     candidate = (PROJECT_ROOT / path).resolve()
     if candidate.exists() or not str(path).startswith(".."):
         return candidate
@@ -93,7 +98,7 @@ def localize_face_reason(reason: Any) -> str:
     if "no face detected" in lowered or "no face" in lowered:
         return "未检测到人脸，请正对摄像头。"
     if "multiple faces" in lowered or "multiple" in lowered:
-        return "检测到多人入镜，请保持单人验证。"
+        return "已选取画面中的主脸进行验证。"
     if "embedding extraction" in lowered:
         return "人脸特征提取失败，请调整光线后重试。"
     if "please choose a face photo" in lowered:
@@ -225,11 +230,14 @@ def _client_liveness_verified(quality: dict[str, Any]) -> bool:
 
 def _quality_reason(quality: dict[str, Any]) -> tuple[str, str, str] | None:
     circular = _is_circular_visible_region(quality)
-    center_limit = 0.36 if circular else 0.34
     min_area_ratio = 0.06 if circular else 0.055
     if quality.get("face_area_ratio", 0) < min_area_ratio:
         return ("face_too_small", "人脸距离摄像头过远，请靠近后重试。", "minor")
-    if quality.get("center_offset", 1) > center_limit:
+    # The browser has already verified that the whole face box is inside the
+    # circular guide.  Its transformed capture is not the same coordinate
+    # system as the raw square frame, so applying a second square-centre gate
+    # here falsely rejects correctly framed faces.
+    if not circular and quality.get("center_offset", 1) > 0.34:
         return ("face_off_center", "请将人脸放在圆形区域中央。", "medium")
     if quality.get("brightness", 0) < 42:
         return ("low_light", "当前光线偏暗，请补充光线。", "minor")
@@ -403,14 +411,33 @@ def _build_face_extraction(frame: np.ndarray, face: Any, face_count: int) -> Fac
     )
 
 
+def _select_primary_face(faces: list[Any], frame: np.ndarray) -> Any:
+    """Select the dominant subject when more than one face is detected.
+
+    The primary signal is bounding-box area.  Faces with the same practical
+    size are resolved by horizontal distance to the centre of the camera,
+    which matches the circular self-view guidance without rejecting a user
+    merely because someone appears in the background.
+    """
+    frame_width = max(float(frame.shape[1]), 1.0)
+
+    def rank(face: Any) -> tuple[float, float]:
+        x1, _, x2, _ = [float(value) for value in getattr(face, "bbox", [0, 0, 0, 0])[:4]]
+        bbox = getattr(face, "bbox", [0, 0, 0, 0])
+        y1, y2 = float(bbox[1]), float(bbox[3])
+        area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+        horizontal_offset = abs(((x1 + x2) / 2) - frame_width / 2)
+        return (-area, horizontal_offset)
+
+    return min(faces, key=rank)
+
+
 def extract_face(raw: bytes) -> FaceExtraction:
     frame = _image_to_array(raw)
     faces, used = _faces_from_frame(frame)
     if not faces:
         raise HTTPException(status_code=422, detail="未检测到人脸，请正对摄像头。")
-    if len(faces) > 1:
-        raise HTTPException(status_code=422, detail="检测到多人入镜，请保持单人验证。")
-    return _build_face_extraction(used, faces[0], len(faces))
+    return _build_face_extraction(used, _select_primary_face(faces, used), len(faces))
 
 
 def _matching_frame_variants(frame: np.ndarray) -> list[np.ndarray]:
@@ -424,9 +451,16 @@ def _matching_frame_variants(frame: np.ndarray) -> list[np.ndarray]:
         seen.add(token)
         variants.append(image)
 
-    for base in (frame, np.flip(frame, axis=1).copy()):
-        add(base)
-        add(_enhance_frame_for_face_detection(base))
+    # Current clients submit the source camera orientation.  Keeping the
+    # normal and enhanced versions first lets us make the single-person
+    # decision from the real frame.  The mirrored variants are retained only
+    # as a legacy matching fallback below, never as evidence of multiple
+    # people in frame.
+    add(frame)
+    add(_enhance_frame_for_face_detection(frame))
+    mirrored = np.flip(frame, axis=1).copy()
+    add(mirrored)
+    add(_enhance_frame_for_face_detection(mirrored))
     return variants
 
 
@@ -437,16 +471,28 @@ def match_profile_frame(profile: models.FaceProfile, raw: bytes) -> tuple[float,
     best_similarity = 0.0
     best_extraction: FaceExtraction | None = None
     best_template_index = -1
-    saw_face = False
+    variants = _matching_frame_variants(frame)
+    # Decide whether a face exists from the source frame first; only use
+    # enhancement when source detection fails.  Multiple faces are allowed:
+    # the dominant, horizontally centred face is used for verification.
+    canonical_faces, _ = _faces_from_frame(frame)
+    if not canonical_faces:
+        enhanced_frame = variants[1]
+        enhanced_faces, _ = _faces_from_frame(enhanced_frame)
+        canonical_faces = enhanced_faces
 
-    for variant in _matching_frame_variants(frame):
+    saw_face = bool(canonical_faces)
+    best_extraction: FaceExtraction | None = None
+    best_template_index = -1
+
+    # Evaluate normal orientation first. Mirrored alternatives exist solely
+    # for sessions opened with an older cached frontend.
+    for variant in variants:
         faces, used = _faces_from_frame(variant)
         if not faces:
             continue
-        if len(faces) > 1:
-            raise HTTPException(status_code=422, detail="检测到多人入镜，请保持单人验证。")
         saw_face = True
-        extraction = _build_face_extraction(used, faces[0], 1)
+        extraction = _build_face_extraction(used, _select_primary_face(faces, used), len(faces))
 
         # 策略1：与 centroid 均值模板比对
         centroid_sim = cosine_similarity(centroid, extraction.embedding)

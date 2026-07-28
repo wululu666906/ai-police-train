@@ -90,6 +90,56 @@ def _append_actor_output_to_history(history: list[Any], actor_outputs: list[dict
     return augmented
 
 
+def _role_thread_history(history: list[Any], role: models.Role, limit: int = 12) -> list[Any]:
+    """Project the shared transcript into one role's private conversation thread.
+
+    A role keeps the learner's visible questions/actions and only its own prior
+    statements as personal conversational memory. Other roles' visible lines
+    are supplied separately as read-only scene context, never as this role's
+    remembered experience.
+    """
+    role_id = getattr(role, "id", None)
+    role_name = _role_display_name(role)
+    thread: list[Any] = []
+    for message in history or []:
+        message_role = _text(getattr(message, "role", ""))
+        if message_role in {"user", "action"}:
+            thread.append(message)
+            continue
+        if message_role not in {"assistant", "ai"}:
+            continue
+        speaker_id = getattr(message, "speaker_role_id", None)
+        speaker_name = _text(getattr(message, "speaker_name", ""))
+        if (role_id is not None and str(speaker_id or "") == str(role_id)) or (speaker_name and speaker_name == role_name):
+            thread.append(message)
+    return thread[-limit:]
+
+
+def _public_scene_utterances(history: list[Any], role: models.Role, limit: int = 6) -> list[dict[str, Any]]:
+    """Expose other roles' visible words without importing their private memory."""
+    role_id = getattr(role, "id", None)
+    role_name = _role_display_name(role)
+    rows: list[dict[str, Any]] = []
+    for message in history or []:
+        if _text(getattr(message, "role", "")) not in {"assistant", "ai"}:
+            continue
+        speaker_id = getattr(message, "speaker_role_id", None)
+        speaker_name = _text(getattr(message, "speaker_name", ""))
+        if (role_id is not None and str(speaker_id or "") == str(role_id)) or speaker_name == role_name:
+            continue
+        content = _text(getattr(message, "content", ""))
+        if not content:
+            continue
+        rows.append(
+            {
+                "speaker_name": speaker_name or "其他在场人员",
+                "speaker_role_id": speaker_id,
+                "content": content,
+            }
+        )
+    return rows[-limit:]
+
+
 def _role_display_name(role: models.Role) -> str:
     return _text(role.name) or "相关人员"
 
@@ -252,6 +302,7 @@ def generate_multi_role_turn(
     current_stage_goal: str,
     target_role_name: Optional[str] = None,
     runtime_state: Optional[dict[str, Any]] = None,
+    recognized_actions: Optional[list[Any]] = None,
     use_llm: bool = True,
 ) -> Optional[dict[str, Any]]:
     from .multi_role_actor import _build_role_brain, generate_role_dialogue
@@ -292,6 +343,7 @@ def generate_multi_role_turn(
         return None
 
     actor_outputs: list[dict[str, Any]] = []
+    guidance_outcomes: dict[str, dict[str, Any]] = {}
     for cast_entry in director_plan["cast_plan"]:
         role = cast_entry.get("role")
         if not role:
@@ -304,7 +356,8 @@ def generate_multi_role_turn(
             "clarity": 50,
         }
         prior_brain = role_brains.get(brain_key) or {}
-        actor_history = _append_actor_output_to_history(history, actor_outputs)
+        actor_history = _role_thread_history(history, role, limit=6)
+        public_scene_utterances = _public_scene_utterances(history, role)
         built_brain = _build_role_brain(
             role=role,
             case=case,
@@ -312,6 +365,7 @@ def generate_multi_role_turn(
             history=actor_history,
             previous_brain=prior_brain,
         )
+        built_brain["scene_role_names"] = [_role_display_name(item) for item in roles]
         actor_output = generate_role_dialogue(
             role=role,
             cast_entry=cast_entry,
@@ -324,16 +378,28 @@ def generate_multi_role_turn(
             role_snapshot=snap,
             addressed_targets=director_plan.get("addressed_targets") or [],
             peer_utterances=actor_outputs,
+            public_scene_utterances=public_scene_utterances,
+            recognized_actions=recognized_actions,
             role_brain=built_brain,
             use_llm=use_llm,
         )
         role_brains[brain_key] = actor_output.get("role_brain") or built_brain
+        updated = actor_output.get("updated_snapshot") or {}
+        guidance_outcomes[brain_key] = {
+            "role_name": actor_output.get("speaker_name") or _role_display_name(role),
+            "recognized": bool(actor_output.get("guidance_recognized")),
+            "acknowledged": bool(actor_output.get("guidance_acknowledged")),
+            "reaction": actor_output.get("reaction_type") or "",
+            "cooperation": int(updated.get("cooperation", snap.get("cooperation", 30)) or 30),
+            "risk": int(updated.get("risk", snap.get("risk", 50)) or 50),
+        }
         actor_outputs.append(actor_output)
 
     if not actor_outputs:
         return None
 
     runtime_state["role_brains"] = role_brains
+    runtime_state["last_guidance_outcomes"] = guidance_outcomes
     previous_primary = actor_outputs[0].get("role") or roles[0]
     return consolidate_scene_conversation(
         director_plan=director_plan,

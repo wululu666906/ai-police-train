@@ -60,8 +60,9 @@ function Start-HiddenPowerShell {
     $psi.WorkingDirectory = $WorkingDirectory
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
-    if ($psi.EnvironmentVariables.ContainsKey("Path") -and $psi.EnvironmentVariables.ContainsKey("PATH")) {
-        $psi.EnvironmentVariables.Remove("PATH")
+    $envVars = $psi.EnvironmentVariables
+    if ($null -ne $envVars -and $envVars.ContainsKey("Path") -and $envVars.ContainsKey("PATH")) {
+        $envVars.Remove("PATH")
     }
     [System.Diagnostics.Process]::Start($psi) | Out-Null
 }
@@ -129,11 +130,13 @@ Set-Location '$BackendRoot'
 "@
 
 $FrontendCommand = @"
+`$env:CI = 'true'
 Set-Location '$FrontendRoot'
 & '$BundledNodeExe' node_modules\vite\bin\vite.js --host 0.0.0.0 --port 5556 --strictPort *> '$FrontendLog'
 "@
 
 $OpsFrontendCommand = @"
+`$env:CI = 'true'
 Set-Location '$FrontendRoot'
 & '$BundledNodeExe' node_modules\vite\bin\vite.js --host 0.0.0.0 --port 6670 --strictPort *> '$OpsFrontendLog'
 "@

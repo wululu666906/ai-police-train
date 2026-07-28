@@ -132,31 +132,6 @@
             </ul>
           </section>
 
-          <section v-if="reportArtifacts.length" class="video-report-section">
-            <h3>六、训练留痕</h3>
-            <div class="video-report-artifacts">
-              <article v-for="item in reportArtifacts" :key="item.id" class="video-report-artifact">
-                <div>
-                  <strong>{{ artifactLabel(item.artifact_type) }}</strong>
-                  <div class="video-report-artifact__meta">
-                    <span v-if="item.duration_seconds">时长 {{ item.duration_seconds }}s</span>
-                    <span v-if="item.mime_type">{{ item.mime_type }}</span>
-                    <span v-if="item.created_at">{{ formatDateTime(item.created_at) }}</span>
-                  </div>
-                </div>
-                <a
-                  v-if="item.file_url"
-                  class="video-report-artifact__link"
-                  :href="resolveMediaUrl(item.file_url)"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  查看文件
-                </a>
-              </article>
-            </div>
-          </section>
-
           <section class="video-report-section">
             <h3>六、节点明细</h3>
             <div class="video-report-node-list">
@@ -248,14 +223,6 @@ interface ReportData {
   violation_count?: number
   violation_summary?: Record<string, number>
   failure_reason_summary?: Record<string, number>
-  artifacts?: {
-    id: number
-    artifact_type: string
-    file_url?: string
-    mime_type?: string
-    duration_seconds?: number | null
-    created_at?: string
-  }[]
   dimension_scores?: {
     key: string
     label: string
@@ -318,7 +285,6 @@ const reportNodes = computed(() => props.report?.node_summaries || [])
 const dimensionScores = computed(() => props.report?.dimension_scores || [])
 const weaknessSummary = computed(() => props.report?.weakness_summary || [])
 const abilityProfile = computed(() => props.report?.ability_profile)
-const reportArtifacts = computed(() => props.report?.artifacts || [])
 
 const gradeKey = computed(() => {
   if (reportGrade.value === '优秀') return 'excellent'
@@ -371,25 +337,6 @@ function formatViolationType(type: string) {
     device_lost: '设备中断',
     identity_lost: '身份校验中断',
   } as Record<string, string>)[type] || type
-}
-
-function artifactLabel(type: string) {
-  return ({
-    camera_recording: '训练录屏',
-    microphone_recording: '语音留痕',
-  } as Record<string, string>)[type] || type
-}
-
-function resolveMediaUrl(url?: string) {
-  if (!url) return ''
-  if (/^https?:\/\//i.test(url)) return url
-  if (!url.startsWith('/')) return url
-
-  const apiBase = String(import.meta.env.VITE_API_URL || '').trim()
-  if (apiBase && /^https?:\/\//i.test(apiBase)) {
-    return `${apiBase.replace(/\/$/, '')}${url}`
-  }
-  return `${window.location.origin}${url}`
 }
 
 function formatDateTime(value?: string) {
@@ -761,45 +708,6 @@ function formatDateTime(value?: string) {
   line-height: 1.9;
 }
 
-.video-report-artifacts {
-  display: grid;
-  gap: 12px;
-}
-
-.video-report-artifact {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: #fff;
-  border: 1px solid #e5e6eb;
-}
-
-.video-report-artifact__meta {
-  margin-top: 6px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  font-size: 12px;
-  color: #86909c;
-}
-
-.video-report-artifact__link {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 88px;
-  padding: 8px 14px;
-  border-radius: 999px;
-  background: rgba(22, 93, 255, 0.1);
-  color: #165dff;
-  font-size: 12px;
-  font-weight: 800;
-  text-decoration: none;
-}
-
 .video-report-node-list {
   display: flex;
   flex-direction: column;
@@ -912,7 +820,6 @@ function formatDateTime(value?: string) {
     gap: 8px 12px;
   }
 
-  .video-report-artifact,
   .video-report-node__head {
     flex-direction: column;
     align-items: flex-start;

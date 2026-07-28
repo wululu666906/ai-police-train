@@ -25,6 +25,22 @@ from services.text_repair import repair_text
 router = APIRouter(prefix="/classes", tags=["Classes"])
 
 
+def deactivate_other_student_memberships(db: Session, user_id: int, class_id: int) -> int:
+    memberships = (
+        db.query(models.ClassMembership)
+        .filter(
+            models.ClassMembership.user_id == user_id,
+            models.ClassMembership.class_id != class_id,
+            models.ClassMembership.role == "student",
+            models.ClassMembership.status == "active",
+        )
+        .all()
+    )
+    for item in memberships:
+        item.status = "inactive"
+    return len(memberships)
+
+
 def parse_datetime(value: Any) -> datetime | None:
     if value in (None, ""):
         return None
@@ -114,12 +130,16 @@ def serialize_submission(submission: models.AssignmentSubmission | None, *, incl
 
 
 def serialize_announcement(item: models.ClassAnnouncement) -> dict:
+    source_name = item.classroom.name if item.classroom else ""
     return {
         "id": item.id,
         "class_id": item.class_id,
         "title": item.title,
         "content": item.content or "",
         "category": item.category or "notice",
+        "source_type": "class",
+        "source_name": source_name,
+        "source_label": source_name or "班级通知",
         "created_at": serialize_datetime(item.created_at),
     }
 
@@ -374,6 +394,7 @@ def join_class(
             status="active",
         )
         db.add(membership)
+    deactivate_other_student_memberships(db, current_user.id, classroom.id)
     db.commit()
     return {"message": "Joined class", "classroom": serialize_classroom(db, classroom)}
 
@@ -391,6 +412,7 @@ def list_my_classes(
             models.ClassMembership.status == "active",
         )
         .order_by(models.ClassMembership.joined_at.desc())
+        .limit(1)
         .all()
     )
     return [serialize_classroom(db, item) for item in rows]
@@ -409,6 +431,8 @@ def list_student_announcements(
             models.ClassMembership.user_id == current_user.id,
             models.ClassMembership.status == "active",
         )
+        .order_by(models.ClassMembership.joined_at.desc())
+        .limit(1)
         .all()
     ]
     if class_id:
@@ -440,6 +464,8 @@ def list_student_assignments(
             models.ClassMembership.user_id == current_user.id,
             models.ClassMembership.status == "active",
         )
+        .order_by(models.ClassMembership.joined_at.desc())
+        .limit(1)
         .all()
     ]
     if class_id:
@@ -636,7 +662,9 @@ def add_class_students(
     students = query.filter(filters[0] if len(filters) == 1 else filters[0] | filters[1]).all()
     added = 0
     reactivated = 0
+    moved = 0
     for student in students:
+        moved += deactivate_other_student_memberships(db, student.id, class_id)
         membership = (
             db.query(models.ClassMembership)
             .filter(
@@ -646,6 +674,7 @@ def add_class_students(
             .first()
         )
         if membership:
+            membership.role = membership.role or "student"
             if membership.status != "active":
                 membership.status = "active"
                 reactivated += 1
@@ -653,7 +682,30 @@ def add_class_students(
         db.add(models.ClassMembership(class_id=class_id, user_id=student.id, role="student", status="active"))
         added += 1
     db.commit()
-    return {"added_count": added, "reactivated_count": reactivated, "matched_count": len(students)}
+    return {"added_count": added, "reactivated_count": reactivated, "moved_count": moved, "matched_count": len(students)}
+
+
+@router.delete("/{class_id}/students/{student_id}", dependencies=[Depends(require_admin_user)])
+def remove_class_student(
+    class_id: int,
+    student_id: int,
+    db: Session = Depends(database.get_db),
+):
+    ensure_classroom(db, class_id)
+    membership = (
+        db.query(models.ClassMembership)
+        .filter(
+            models.ClassMembership.class_id == class_id,
+            models.ClassMembership.user_id == student_id,
+            models.ClassMembership.role == "student",
+        )
+        .first()
+    )
+    if not membership:
+        raise HTTPException(status_code=404, detail="Student membership not found")
+    db.delete(membership)
+    db.commit()
+    return {"message": "Student removed from class"}
 
 
 @router.post("/{class_id}/announcements", dependencies=[Depends(require_admin_user)])

@@ -5,6 +5,100 @@ from routers import videos as videos_router
 from services import video_auto_config_service
 
 
+def test_video_analysis_uses_dedicated_provider_settings(monkeypatch):
+    captured = {}
+
+    def fake_binding(*, provider, model):
+        captured.update(provider=provider, model=model)
+        return object(), model, provider, "test-key"
+
+    monkeypatch.setenv("VIDEO_ANALYSIS_PROVIDER", "qwen")
+    monkeypatch.setenv("VIDEO_ANALYSIS_MODEL", "qwen-plus")
+    monkeypatch.setattr(
+        "services.llm_provider.get_chat_completion_binding",
+        fake_binding,
+    )
+
+    _, model, provider, api_key = video_auto_config_service._get_video_analysis_llm()
+
+    assert captured == {"provider": "qwen", "model": "qwen-plus"}
+    assert provider == "qwen"
+    assert model == "qwen-plus"
+    assert api_key == "test-key"
+
+
+def test_video_analysis_reports_missing_ffmpeg_before_external_calls(monkeypatch):
+    monkeypatch.setattr(video_auto_config_service, "_ffmpeg_available", lambda: False)
+    monkeypatch.setattr(
+        video_auto_config_service,
+        "_get_video_analysis_llm",
+        lambda: (object(), "qwen-plus", "qwen", "test-key"),
+    )
+
+    payload = video_auto_config_service.analyze_video_file("sample.mp4", title_hint="测试视频")
+
+    assert payload["analysis_mode"] == "error"
+    assert "ffmpeg" in payload["analysis_error"]
+
+
+def test_video_analysis_warns_when_asr_provider_fails(monkeypatch):
+    monkeypatch.setattr(video_auto_config_service, "_ffmpeg_available", lambda: True)
+    monkeypatch.setattr(video_auto_config_service, "_sample_video_frames", lambda *args, **kwargs: [])
+    monkeypatch.setattr(video_auto_config_service, "_detect_scene_changes", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        video_auto_config_service,
+        "_get_video_analysis_llm",
+        lambda: (object(), "qwen-plus", "qwen", "test-key"),
+    )
+
+    def fake_transcribe(*args, **kwargs):
+        video_auto_config_service._LAST_ASR_ERRORS.clear()
+        video_auto_config_service._record_asr_error("Arrearage")
+        return []
+
+    monkeypatch.setattr(video_auto_config_service, "_transcribe_video_audio", fake_transcribe)
+
+    payload = video_auto_config_service.analyze_video_file(
+        "sample.mp4",
+        title_hint="测试视频",
+        preferred_type="interactive",
+    )
+
+    assert payload["video_type"] == "interactive"
+    assert payload["nodes"]
+    assert "Arrearage" in payload["analysis_warning"]
+
+
+def test_stage_two_uses_resilient_json_completion(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        choices = [type("Choice", (), {"message": type("Message", (), {"content": "{\"nodes\": []}"})()})()]
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        video_auto_config_service,
+        "_get_video_analysis_llm",
+        lambda: (object(), "qwen-plus", "qwen", "test-key"),
+    )
+    monkeypatch.setattr(video_auto_config_service, "create_json_chat_completion", fake_completion)
+
+    payload = video_auto_config_service._stage2_training_design(
+        title_hint="测试视频",
+        duration_seconds=60,
+        stage1_result={},
+        transcript=[],
+    )
+
+    assert payload == {"nodes": []}
+    assert captured["model"] == "qwen-plus"
+    assert captured["retries"] == 2
+    assert captured["max_tokens"] == 6000
+
+
 def _fake_analysis(title: str = "AI识别后标题") -> dict:
     return {
         "analysis_mode": "llm_vision",
@@ -105,6 +199,38 @@ def test_upload_video_respects_manual_interactive_type(client, admin_headers, mo
         },
         files={"file": ("sample.mp4", io.BytesIO(b"fake video bytes"), "video/mp4")},
     )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["video_type"] == "interactive"
+    assert payload["node_count"] >= 1
+
+
+def test_upload_video_defaults_to_interactive_when_ai_marks_teaching(client, admin_headers, monkeypatch, tmp_path):
+    videos_root = tmp_path / "videos-default-interactive"
+    thumbs_root = tmp_path / "thumbs-default-interactive"
+    videos_root.mkdir(parents=True, exist_ok=True)
+    thumbs_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(videos_router, "VIDEOS_DIR", str(videos_root))
+    monkeypatch.setattr(videos_router, "THUMBNAILS_DIR", str(thumbs_root))
+    monkeypatch.setattr(videos_router, "_ensure_video_thumbnail", lambda video, db: None)
+    monkeypatch.setattr(
+        videos_router.video_auto_config_service,
+        "analyze_video_file",
+        lambda *args, **kwargs: {
+            **_fake_analysis(title="AI误判教学素材"),
+            "video_type": "teaching",
+            "nodes": [],
+        },
+    )
+
+    response = client.post(
+        "/videos/upload",
+        headers=admin_headers,
+        data={"title": "默认上传交互实训", "auto_configure": "true"},
+        files={"file": ("sample.mp4", io.BytesIO(b"fake video bytes"), "video/mp4")},
+    )
+
     assert response.status_code == 200
     payload = response.json()
     assert payload["video_type"] == "interactive"

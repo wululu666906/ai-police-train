@@ -3,16 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import RoleCompactForm from '../components/RoleCompactForm.vue'
-import {
-  buildRoleCompactSummary,
-  expandRoleCompactToPerson,
-  personToRoleCompact,
-} from '../utils/roleCompact'
-import {
-  buildLegacyInfoBoundary,
-  buildSceneBoundaryGroups,
-  normalizeBehaviorTemplate,
-} from '../utils/personaTemplate'
+import { expandRoleCompactToPerson } from '../utils/roleCompact'
 import request from '../utils/request'
 
 const route  = useRoute()
@@ -70,52 +61,17 @@ const roleSceneBehaviorMode = computed(() => {
   return String(roleProfile.value?.scene_behavior_mode || '核查取证型')
 })
 
-const previewList = (value: any) => (Array.isArray(value) ? value : []).slice(0, 4)
-
 const roleDraftProfile = computed(() => {
   const normalized = expandRoleCompactToPerson(roleProfile.value, roleSceneBehaviorMode.value)
-  const relationshipPressure = previewList(normalized.relationship_pressure)
-  const triggerPoints = normalized.trigger_points.slice(0, 4)
-  const calmingPoints = normalized.calming_points.slice(0, 4)
-  const legacyBoundary = buildLegacyInfoBoundary(normalized)
-  const hiddenTruths = legacyBoundary.hidden_truths.slice(0, 4)
-  const knownFacts = legacyBoundary.knows_facts.slice(0, 4)
-  const boundaryGroups = buildSceneBoundaryGroups(normalized).map((field) => ({
-    ...field,
-    items: field.items.slice(0, 4),
-  }))
-
-  const contradictions: string[] = []
-  if (normalized.current_goal.trim() && normalized.core_concern.trim()) {
-    contradictions.push(`一旦${normalized.core_concern.trim()}被碰到，角色会更本能地围绕"${normalized.current_goal.trim()}"防守或求助。`)
-  }
-  if (normalized.core_concern.trim() && triggerPoints.length) {
-    contradictions.push('一旦碰到最担心的后果或敏感点，回答质量会明显波动。')
-  }
-  if (relationshipPressure.length && normalized.pressure_response.trim()) {
-    contradictions.push('既受关系压力牵引，又有固定防御动作，容易先护人或先切责任。')
-  }
-
-  const summaryParts = buildRoleCompactSummary(personToRoleCompact(normalized, roleSceneBehaviorMode.value))
-  const summaryText = [
-    summaryParts.join('；'),
-    normalized.police_attitude ? `面对警方时更像"${normalized.police_attitude}"` : '',
-    relationshipPressure.length ? `现实和关系压力主要来自${relationshipPressure.join('、')}` : '',
-    normalized.pressure_response.trim() ? `承压后常见反应是${normalized.pressure_response.trim()}` : '',
-    triggerPoints.length ? `提到${triggerPoints.join('、')}时更容易情绪起伏或改口` : '',
-    calmingPoints.length ? `更容易被${calmingPoints.join('、')}稳住` : '',
-  ].filter(Boolean).join('；')
-
+  const memories = Array.isArray(normalized.role_memories) ? normalized.role_memories : []
   return {
     normalized,
-    relationshipPressure,
-    triggerPoints,
-    calmingPoints,
-    hiddenTruths,
-    knownFacts,
-    boundaryGroups,
-    contradictions,
-    summaryText: summaryText || '当前还缺少足够信息，建议先补行为原型、诉求、顾虑和触发点。',
+    memories,
+    boundaryGroups: [
+      { key: 'unresolved', label: '待核实 / 无法确认', items: Array.isArray(normalized.unresolved_claims) ? normalized.unresolved_claims.slice(0, 4) : [] },
+      { key: 'constraints', label: '回答边界', items: Array.isArray(normalized.response_constraints) ? normalized.response_constraints.slice(0, 4) : [] },
+    ],
+    summaryText: memories.length ? `已整理 ${memories.length} 条来源人物线，运行时只依据这些证言与公开信息作答。` : '当前还没有可回溯的人物线。',
   }
 })
 
@@ -129,23 +85,7 @@ const previewStateLabel = computed(() => {
 })
 
 const previewBreakthroughs = computed(() => {
-  const result: string[] = []
-  if (roleDraftProfile.value.normalized.core_concern.trim()) {
-    result.push(`先围绕"${roleDraftProfile.value.normalized.core_concern.trim()}"追问最现实的后果压力`)
-  }
-  if (roleDraftProfile.value.relationshipPressure.length) {
-    result.push(`从"${roleDraftProfile.value.relationshipPressure[0]}"切入其关系负担和顾虑`)
-  }
-  if (roleDraftProfile.value.triggerPoints.length) {
-    result.push(`提到"${roleDraftProfile.value.triggerPoints[0]}"时更可能出现情绪波动或改口`)
-  }
-  if (roleDraftProfile.value.calmingPoints.length) {
-    result.push(`优先使用"${roleDraftProfile.value.calmingPoints[0]}"这一类安抚动作，更容易让其继续交流`)
-  }
-  if (roleDraftProfile.value.hiddenTruths.length) {
-    result.push(`可核对其刻意没主动提的"${roleDraftProfile.value.hiddenTruths[0]}"`)
-  }
-  return result.slice(0, 4)
+  return roleDraftProfile.value.memories.slice(0, 4).map((item: any) => item.statement).filter(Boolean)
 })
 
 // ── actions ────────────────────────────────────────────────
@@ -174,8 +114,7 @@ const loadRole = async () => {
     form.case_id = res.case_id ?? null
     form.scene_ids = Array.isArray(res.scene_ids) ? [...res.scene_ids] : []
     form.primary_scene_id = res.primary_scene_id ?? null
-    const mode = normalizeBehaviorTemplate(res).scene_behavior_mode || '核查取证型'
-    roleProfile.value = { ...expandRoleCompactToPerson(res, mode) }
+    roleProfile.value = { ...expandRoleCompactToPerson(res, '') }
     syncingCaseSelection.value = false
   } catch {
     loadError.value = '角色加载失败，请重试'
@@ -395,7 +334,7 @@ onMounted(async () => {
             <div>
               <div class="re-card__title">轻量角色模板</div>
               <div class="re-card__sub">
-                {{ form.scope === 'case' && roleSceneBehaviorMode ? `场景行为模式：${roleSceneBehaviorMode}` : '填写角色核心人设' }}
+                {{ form.scope === 'case' && roleSceneBehaviorMode ? `场景模式：${roleSceneBehaviorMode}` : '填写来源人物线与回答边界' }}
               </div>
             </div>
           </div>
@@ -424,10 +363,8 @@ onMounted(async () => {
                 <div class="re-preview-name">{{ roleProfile.name || '未命名角色' }}</div>
                 <div class="re-preview-tags">
                   <span class="re-ptag">{{ roleDraftProfile.normalized.role_type || '相关人员' }}</span>
-                  <span class="re-ptag re-ptag--blue">{{ roleDraftProfile.normalized.behavior_archetype || '求助配合型' }}</span>
+                  <span class="re-ptag re-ptag--blue">人物线 {{ roleDraftProfile.memories.length }} 条</span>
                   <span class="re-ptag">{{ previewStateLabel }}</span>
-                  <span class="re-ptag">情绪 {{ roleDraftProfile.normalized.emotion_level }}</span>
-                  <span class="re-ptag">配合 {{ roleDraftProfile.normalized.cooperation_level }}</span>
                 </div>
               </div>
 
@@ -437,17 +374,15 @@ onMounted(async () => {
               </div>
 
               <div class="re-preview-block">
-                <div class="re-preview-block__label">诉求 / 顾虑 / 开场</div>
-                <p class="re-preview-quote">{{ roleDraftProfile.normalized.current_goal || '（诉求待填）' }}</p>
-                <p class="re-preview-quote re-preview-quote--muted">{{ roleDraftProfile.normalized.core_concern || '（顾虑待填）' }}</p>
-                <p class="re-preview-quote re-preview-quote--muted">{{ roleDraftProfile.normalized.surface_stance || '（开场口径待填）' }}</p>
+                <div class="re-preview-block__label">人物线首条证言</div>
+                <p class="re-preview-quote">{{ roleDraftProfile.memories[0]?.statement || '（暂无证言）' }}</p>
               </div>
 
               <div class="re-preview-block">
                 <div class="re-preview-block__label">预计突破口</div>
                 <ul class="re-preview-list">
                   <li v-for="item in previewBreakthroughs" :key="item">{{ item }}</li>
-                  <li v-if="!previewBreakthroughs.length">补充顾虑、安抚点或触发点后自动生成。</li>
+                  <li v-if="!previewBreakthroughs.length">补充角色证言后自动生成可追问线索。</li>
                 </ul>
               </div>
 

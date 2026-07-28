@@ -284,6 +284,10 @@ function onBatchDrop(event: DragEvent) {
 
 function uploadFiles(files: File[]) {
   for (const file of files) {
+    if (file.size > 512 * 1024 * 1024) {
+      ElMessage.warning(`${file.name} 超过 512MB 上传上限`)
+      continue
+    }
     const queueItem: UploadQueueItem = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       filename: file.name,
@@ -304,6 +308,7 @@ async function uploadSingleFile(file: File, queueItem: UploadQueueItem) {
       const xhr = new XMLHttpRequest()
       const baseURL = String(request.defaults.baseURL || '').replace(/\/$/, '')
       xhr.open('POST', `${baseURL}/videos/upload`)
+      xhr.timeout = 10 * 60 * 1000
       const token = localStorage.getItem('token')
       if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
       xhr.upload.onprogress = (event) => {
@@ -319,7 +324,9 @@ async function uploadSingleFile(file: File, queueItem: UploadQueueItem) {
           catch { reject(new Error('上传失败')) }
         }
       }
-      xhr.onerror = () => reject(new Error('网络错误'))
+      xhr.onerror = () => reject(new Error('网络错误，请检查服务器连接后重试'))
+      xhr.onabort = () => reject(new Error('上传已取消'))
+      xhr.ontimeout = () => reject(new Error('上传超时，请检查网络或缩短视频后重试'))
       xhr.send(formData)
     })
     queueItem.status = 'analyzing'

@@ -268,7 +268,7 @@ const resetIncidents = () => {
 }
 
 onMounted(() => {
-  setMainScrollable?.(true)
+  setMainScrollable?.(false)
 })
 
 onUnmounted(() => {

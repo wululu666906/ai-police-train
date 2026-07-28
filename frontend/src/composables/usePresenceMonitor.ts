@@ -23,15 +23,13 @@ interface FaceDetectorLike {
   close?: () => void
 }
 
-const REMOTE_FACE_MODEL_URL =
-  'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite'
+const FACE_MODEL_URL =
+  import.meta.env.VITE_MEDIAPIPE_FACE_MODEL_URL || '/mediapipe/models/blaze_face_short_range.tflite'
 
 const CHECK_INTERVAL_MS = 700
 const REQUIRED_SINGLE_FACE_STREAK = 3
 const REQUIRED_LIVE_MOTION = 0.008
 const MIN_FACE_AREA_RATIO = 0.025
-const CIRCLE_CENTER_RADIUS = 0.42
-const SECONDARY_FACE_AREA_RATIO = 0.35
 
 function normalizeBox(box: BoundingBoxLike, videoWidth: number, videoHeight: number) {
   const width = Math.max(videoWidth, 1)
@@ -88,30 +86,25 @@ function resolvePrimaryFace(detections: DetectionLike[], videoWidth: number, vid
 
   const valid = normalized.filter((detection) => {
     const box = detection.boundingBox!
-    if (faceAreaRatio(box) < MIN_FACE_AREA_RATIO) return false
-    if (faceCenterOffset(box) > CIRCLE_CENTER_RADIUS) return false
-    return true
+    return faceAreaRatio(box) >= MIN_FACE_AREA_RATIO
   })
 
-  const pool = valid.length ? valid : normalized
-
-  if (!pool.length) {
+  if (!valid.length) {
     return { count: 0, primary: null as DetectionLike | null }
   }
 
-  const sorted = [...pool].sort(
-    (left, right) => faceAreaRatio(right.boundingBox!) - faceAreaRatio(left.boundingBox!),
+  const sorted = [...valid].sort(
+    (left, right) => {
+      const areaDifference = faceAreaRatio(right.boundingBox!) - faceAreaRatio(left.boundingBox!)
+      if (areaDifference) return areaDifference
+      return faceCenterOffset(left.boundingBox!) - faceCenterOffset(right.boundingBox!)
+    },
   )
-  const largestArea = faceAreaRatio(sorted[0].boundingBox!)
-  const significant = sorted.filter(
-    (detection) => faceAreaRatio(detection.boundingBox!) >= largestArea * SECONDARY_FACE_AREA_RATIO,
-  )
-
-  if (significant.length === 1) {
-    return { count: 1, primary: significant[0] }
-  }
-
-  return { count: significant.length, primary: sorted[0] }
+  // The displayed camera is already clipped to a circle.  Detection operates
+  // on the untransformed source video, so using source-frame coordinates to
+  // enforce the circle would incorrectly require the face to be centred.
+  // Always verify the largest visible face instead.
+  return { count: 1, primary: sorted[0] }
 }
 
 export function usePresenceMonitor() {
@@ -173,7 +166,7 @@ export function usePresenceMonitor() {
         status.value = 'unsupported'
         message.value = '本地模型加载超时，已切换后端识别'
       }
-    }, 15000)
+    }, 60000)
 
     try {
       const loaded = await loadVisionTasksModule()
@@ -187,7 +180,7 @@ export function usePresenceMonitor() {
       const resolver = await FilesetResolver.forVisionTasks(loaded.wasmUrl)
       faceDetector = await FaceDetector.createFromOptions(resolver, {
         baseOptions: {
-          modelAssetPath: REMOTE_FACE_MODEL_URL,
+          modelAssetPath: FACE_MODEL_URL,
           delegate: 'CPU',
         },
         runningMode: 'VIDEO',
@@ -265,7 +258,7 @@ export function usePresenceMonitor() {
         status.value = 'warn'
         message.value = count === 0
           ? '请将面部保持在圆形区域内'
-          : '检测到多人入镜，请保持单人画面'
+          : '请将面部保持在圆形区域内'
         queueNextCheck()
         return
       }
@@ -358,6 +351,7 @@ export function usePresenceMonitor() {
     verified,
     lastMotion,
     source,
+    preload: ensureFaceDetector,
     attachVideo,
     restart,
     stop,

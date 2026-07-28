@@ -8,11 +8,15 @@
             <h1>维护端</h1>
             <OpsIcon name="bookmark-plus" :size="18" />
           </div>
-          <p>账号运维</p>
+          <p>平台运维</p>
         </div>
       </div>
 
       <nav class="ops-nav">
+        <button type="button" class="ops-nav__item" :class="{ 'ops-nav__item--active': route.path.startsWith('/ops/overview') }" @click="router.push('/ops/overview')">
+          <OpsIcon name="shield" />
+          <span>维护总览</span>
+        </button>
         <button type="button" class="ops-nav__item" :class="{ 'ops-nav__item--active': route.path.startsWith('/ops/accounts') }" @click="router.push('/ops/accounts')">
           <OpsIcon name="users" />
           <span>账号管理</span>
@@ -20,6 +24,10 @@
         <button type="button" class="ops-nav__item" :class="{ 'ops-nav__item--active': route.path.startsWith('/ops/usage') }" @click="router.push('/ops/usage')">
           <OpsIcon name="search" />
           <span>账号监管</span>
+        </button>
+        <button type="button" class="ops-nav__item" :class="{ 'ops-nav__item--active': route.path.startsWith('/ops/system-issues') }" @click="router.push('/ops/system-issues')">
+          <OpsIcon name="shield" />
+          <span>系统运行与异常</span>
         </button>
       </nav>
 
@@ -32,12 +40,18 @@
     <section class="ops-main">
       <header class="ops-topbar">
         <div>
-          <h2>账号生命周期维护</h2>
-          <p>开通管理端账号与学员账号，执行密码重置和账号回收。</p>
+          <h2>{{ pageTitle }}</h2>
+          <p>{{ pageSubtitle }}</p>
         </div>
         <div class="ops-user">
-          <span>{{ username }}</span>
-          <strong>维护人员</strong>
+          <div>
+            <span>{{ username }}</span>
+            <strong>维护人员</strong>
+          </div>
+          <button type="button" class="ops-topbar-logout" @click="logout">
+            <OpsIcon name="logout" :size="16" />
+            <span>退出</span>
+          </button>
         </div>
       </header>
       <main class="ops-content">
@@ -56,10 +70,36 @@ import OpsIcon from '../components/OpsIcon.vue'
 const router = useRouter()
 const route = useRoute()
 const username = computed(() => localStorage.getItem('username') || 'maintainer')
+const pageMeta = computed(() => {
+  if (route.path.startsWith('/ops/accounts')) {
+    return {
+      title: '账号生命周期维护',
+      subtitle: '开通、导入、编辑、重置和回收管理端与学员端账号。',
+    }
+  }
+  if (route.path.startsWith('/ops/usage')) {
+    return {
+      title: '账号使用监管',
+      subtitle: '查看账号行为、训练、人脸、语音和审计记录。',
+    }
+  }
+  if (route.path.startsWith('/ops/system-issues')) {
+    return {
+      title: '系统运行与异常',
+      subtitle: '查看 AI 调用、功能失效、外部服务异常和规则兜底的完整处理轨迹。',
+    }
+  }
+  return {
+    title: '平台维护总览',
+    subtitle: '集中查看账号规模、活跃情况、训练使用和需要跟进的风险项。',
+  }
+})
+const pageTitle = computed(() => pageMeta.value.title)
+const pageSubtitle = computed(() => pageMeta.value.subtitle)
 
 const logout = () => {
   clearAuth()
-  router.push('/ops/login')
+  router.push('/login')
 }
 </script>
 
@@ -166,14 +206,14 @@ const logout = () => {
 }
 
 .ops-topbar {
-  height: 72px;
+  min-height: 72px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   border-bottom: 1px solid #dbe3ee;
   background: #fff;
-  padding: 0 24px;
+  padding: 12px 24px;
 }
 
 .ops-topbar h2 {
@@ -189,15 +229,40 @@ const logout = () => {
 }
 
 .ops-user {
-  display: grid;
-  justify-items: end;
-  gap: 2px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   color: #475569;
   font-size: 13px;
 }
 
+.ops-user > div {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+}
+
 .ops-user strong {
   color: #2563eb;
+}
+
+.ops-topbar-logout {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #334155;
+  padding: 0 10px;
+  font-weight: 900;
+}
+
+.ops-topbar-logout:hover {
+  border-color: #ef4444;
+  color: #dc2626;
+  background: #fef2f2;
 }
 
 .ops-content {

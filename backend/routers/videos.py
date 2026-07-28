@@ -7,6 +7,7 @@
 """
 import json
 import os
+import shutil
 import time
 import subprocess
 import threading
@@ -27,10 +28,25 @@ router = APIRouter(prefix="/videos", tags=["Videos"])
 VIDEOS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "videos")
 THUMBNAILS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "thumbnails")
 AUTO_IMPORT_DIR = os.getenv("VIDEO_AUTO_IMPORT_DIR") or os.path.join(VIDEOS_DIR, "auto_upload")
+_configured_ffmpeg = os.getenv("FFMPEG_BINARY", "").strip()
+if _configured_ffmpeg and not os.path.isabs(_configured_ffmpeg):
+    _configured_ffmpeg = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", _configured_ffmpeg))
+FFMPEG_BINARY = (
+    _configured_ffmpeg
+    if _configured_ffmpeg and (os.path.isfile(_configured_ffmpeg) or shutil.which(_configured_ffmpeg))
+    else shutil.which("ffmpeg") or "ffmpeg"
+)
+FFPROBE_BINARY = os.getenv("FFPROBE_BINARY", "").strip()
+if not FFPROBE_BINARY and os.path.isabs(FFMPEG_BINARY):
+    _ffprobe_candidate = os.path.join(os.path.dirname(FFMPEG_BINARY), "ffprobe.exe" if os.name == "nt" else "ffprobe")
+    FFPROBE_BINARY = _ffprobe_candidate if os.path.exists(_ffprobe_candidate) else "ffprobe"
+FFPROBE_BINARY = FFPROBE_BINARY or shutil.which("ffprobe") or "ffprobe"
 
 ALLOWED_VIDEO_TYPES = {"video/mp4", "video/webm", "video/ogg", "video/quicktime"}
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
-MAX_VIDEO_SIZE = 2 * 1024 * 1024 * 1024   # 2 GB
+# Keep the application limit aligned with the reverse proxy and avoid loading
+# an entire media file into the Uvicorn worker's memory.
+MAX_VIDEO_SIZE = 512 * 1024 * 1024         # 512 MB
 MAX_THUMBNAIL_SIZE = 10 * 1024 * 1024      # 10 MB
 ALLOWED_VIDEO_EXTS = {".mp4", ".webm", ".ogg", ".mov", ".m4v", ".avi"}
 AUTO_IMPORT_SCAN_INTERVAL_SECONDS = 10
@@ -394,7 +410,7 @@ def _probe_video_duration(video_path: str) -> Optional[float]:
     try:
         result = subprocess.run(
             [
-                "ffprobe",
+                FFPROBE_BINARY,
                 "-v",
                 "error",
                 "-show_entries",
@@ -410,14 +426,30 @@ def _probe_video_duration(video_path: str) -> Optional[float]:
         value = (result.stdout or "").strip()
         return float(value) if value else None
     except Exception:
-        return None
+        # User-space ffmpeg bundles such as imageio-ffmpeg do not always ship
+        # a separate ffprobe binary. Keep duration detection available for
+        # uploads by reading ffmpeg's standard Duration line as a fallback.
+        try:
+            result = subprocess.run(
+                [FFMPEG_BINARY, "-i", video_path],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            match = re.search(r"Duration:\s*(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)", result.stderr or "")
+            if not match:
+                return None
+            hours, minutes, seconds = match.groups()
+            return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+        except Exception:
+            return None
 
 
 def _ffmpeg_capture_frame(video_path: str, output_path: str, timestamp: float) -> bool:
     try:
         subprocess.run(
             [
-                "ffmpeg",
+                FFMPEG_BINARY,
                 "-y",
                 "-ss",
                 str(max(0, timestamp)),
@@ -459,7 +491,7 @@ def _generate_thumbnail_from_video(video_path: str, output_path: str, duration_h
     try:
         subprocess.run(
             [
-                "ffmpeg",
+                FFMPEG_BINARY,
                 "-y",
                 "-i",
                 video_path,
@@ -867,6 +899,8 @@ async def upload_video(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
     duration: Optional[int] = Form(None),
+    video_type: Optional[str] = Form(None),
+    auto_configure: Optional[bool] = Form(None),
     thumbnail: Optional[UploadFile] = File(None),
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(_require_admin),
@@ -876,6 +910,7 @@ async def upload_video(
     只需传入视频文件，标题可选（不填则从文件名自动推断）。
     上传后 AI 自动分析视频内容，生成：类型、简报、标签、难度、训练节点。
     """
+    upload_started_at = time.monotonic()
     content_type = file.content_type or ""
     file_ext = os.path.splitext(file.filename or "")[1].lower()
     if content_type not in ALLOWED_VIDEO_TYPES and file_ext not in ALLOWED_VIDEO_EXTS:
@@ -886,16 +921,36 @@ async def upload_video(
 
     # 标题：优先用户提供，否则从文件名推断
     resolved_title = (title or "").strip() or _guess_title_from_filename(file.filename or "video")
-
-    video_data = await file.read()
-    if len(video_data) > MAX_VIDEO_SIZE:
-        raise HTTPException(status_code=413, detail="视频文件不能超过 2GB")
+    locked_video_type = str(video_type or "").strip()
+    if locked_video_type and locked_video_type not in {"teaching", "interactive"}:
+        raise HTTPException(status_code=400, detail="video_type must be teaching or interactive")
+    analysis_video_type = locked_video_type or "interactive"
 
     ext = os.path.splitext(file.filename or "video.mp4")[1] or ".mp4"
     filename = f"{uuid.uuid4().hex}{ext}"
     os.makedirs(VIDEOS_DIR, exist_ok=True)
-    with open(os.path.join(VIDEOS_DIR, filename), "wb") as f:
-        f.write(video_data)
+    video_path = os.path.join(VIDEOS_DIR, filename)
+    file_size = 0
+    write_started_at = time.monotonic()
+    try:
+        with open(video_path, "wb") as output_file:
+            while chunk := await file.read(1024 * 1024):
+                file_size += len(chunk)
+                if file_size > MAX_VIDEO_SIZE:
+                    raise HTTPException(status_code=413, detail="视频文件不能超过 512MB")
+                output_file.write(chunk)
+    except Exception:
+        if os.path.exists(video_path):
+            os.remove(video_path)
+        raise
+    write_elapsed = time.monotonic() - write_started_at
+    upload_mib = file_size / 1024 / 1024
+    upload_rate = upload_mib / write_elapsed if write_elapsed > 0 else 0
+    print(
+        "[video-upload-timing] "
+        f"phase=receive file={file.filename!r} size_mib={upload_mib:.2f} "
+        f"elapsed_s={write_elapsed:.2f} rate_mib_s={upload_rate:.2f}"
+    )
 
     # 封面图：用户可选上传，否则后续自动截取
     thumbnail_filename = None
@@ -915,22 +970,28 @@ async def upload_video(
 
     # 探测视频时长（如前端未传）
     resolved_duration = duration
+    probe_started_at = time.monotonic()
     if not resolved_duration:
         probed = _probe_video_duration(os.path.join(VIDEOS_DIR, filename))
         resolved_duration = int(round(probed)) if probed else None
+    print(
+        "[video-upload-timing] "
+        f"phase=probe file={filename!r} elapsed_s={time.monotonic() - probe_started_at:.2f} "
+        f"duration_s={resolved_duration or 0}"
+    )
 
     # 创建视频记录（状态: analyzing，AI分析在后台执行）
     video_obj = models.TrainingVideo(
         title=resolved_title,
         description=None,
-        video_type="interactive",
+        video_type=analysis_video_type,
         file_path=filename,
         thumbnail_path=thumbnail_filename,
-        file_size=len(video_data),
+        file_size=file_size,
         duration=resolved_duration,
         case_id=None,
         tags=json.dumps([], ensure_ascii=False),
-        status="analyzing",
+        status="analyzing" if auto_configure is not False else "draft",
         uploaded_by=current_user.id,
     )
     db.add(video_obj)
@@ -939,10 +1000,47 @@ async def upload_video(
 
     # 自动截取封面（同步，很快）
     if not thumbnail_filename:
+        thumbnail_started_at = time.monotonic()
         _ensure_video_thumbnail(video_obj, db)
+        print(
+            "[video-upload-timing] "
+            f"phase=thumbnail video_id={video_obj.id} elapsed_s={time.monotonic() - thumbnail_started_at:.2f}"
+        )
 
     video_id = video_obj.id
-    video_path = os.path.join(VIDEOS_DIR, filename)
+    locked_type = analysis_video_type
+
+    if auto_configure is True:
+        analysis = video_auto_config_service.analyze_video_file(
+            video_path,
+            title_hint=resolved_title,
+            duration_seconds=resolved_duration,
+            preferred_type=locked_type,
+            scenario_hint=None,
+            training_variant=None,
+            difficulty_level=None,
+        )
+        analysis_error = analysis.get("analysis_error")
+        if analysis.get("analysis_mode") == "error" or analysis_error:
+            video_obj.status = "draft"
+            video_obj.description = f"AI分析失败：{analysis_error or '未知错误'}。可点击重新分析。"
+            db.commit()
+        else:
+            _apply_ai_analysis_to_video(
+                db,
+                video_obj,
+                analysis,
+                overwrite_meta=True,
+                overwrite_nodes=True,
+                locked_video_type=locked_type,
+            )
+            video_obj.status = "published"
+            db.commit()
+        db.refresh(video_obj)
+        return _serialize_video(video_obj, include_nodes=True)
+
+    if auto_configure is False:
+        return _serialize_video(video_obj, include_nodes=False)
 
     # 后台线程执行 AI 分析
     def _background_analyze():
@@ -957,7 +1055,7 @@ async def upload_video(
                 video_path,
                 title_hint=resolved_title,
                 duration_seconds=resolved_duration,
-                preferred_type=None,
+                preferred_type=locked_type,
                 scenario_hint=None,
                 training_variant=None,
                 difficulty_level=None,
@@ -976,7 +1074,7 @@ async def upload_video(
                 analysis,
                 overwrite_meta=True,
                 overwrite_nodes=True,
-                locked_video_type=None,
+                locked_video_type=locked_type,
             )
             vid.status = "published"
             bg_db.commit()
@@ -996,6 +1094,10 @@ async def upload_video(
 
     result = _serialize_video(video_obj, include_nodes=False)
     result["analysis_status"] = "analyzing"
+    print(
+        "[video-upload-timing] "
+        f"phase=response video_id={video_obj.id} total_elapsed_s={time.monotonic() - upload_started_at:.2f}"
+    )
     return result
 
 
@@ -1060,7 +1162,7 @@ def retry_analysis(
                 video_path,
                 title_hint=title_hint,
                 duration_seconds=duration_seconds,
-                preferred_type=None,
+                preferred_type="interactive",
                 scenario_hint=None,
                 training_variant=None,
                 difficulty_level=None,
@@ -1077,7 +1179,7 @@ def retry_analysis(
                 analysis,
                 overwrite_meta=True,
                 overwrite_nodes=True,
-                locked_video_type=None,
+                locked_video_type="interactive",
             )
             vid.status = "published"
             bg_db.commit()
@@ -1237,7 +1339,7 @@ def auto_configure_video(
     vid_id = video.id
     title_hint = video.title
     duration_seconds = video.duration
-    locked_type = None if preferred_type in {None, "", "auto"} else str(preferred_type)
+    locked_type = "interactive" if preferred_type in {None, "", "auto"} else str(preferred_type)
 
     def _background_auto_configure():
         from database import SessionLocal
@@ -1283,7 +1385,10 @@ def auto_configure_video(
         finally:
             bg_db.close()
 
-    threading.Thread(target=_background_auto_configure, daemon=True).start()
+    _background_auto_configure()
+    db.expire_all()
+    refreshed = _load_video_or_404(db, video_id)
+    return _serialize_video(refreshed, include_nodes=True)
     return {"id": video_id, "status": "analyzing", "message": "AI 分析已在后台启动，请稍后刷新查看结果"}
 
 

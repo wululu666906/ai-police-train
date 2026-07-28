@@ -1,0 +1,27 @@
+services:
+  app:
+    image: ${APP_IMAGE:-ghcr.io/wululu666906/ai-police-train:codex-github-deploy-bundle}
+    container_name: ai_police_app
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: sqlite:///data/ai_police.db
+      CHROMA_DB_PATH: data/chroma_db
+      FFMPEG_BINARY: ffmpeg
+      VIDEO_ANALYSIS_PROVIDER: ${VIDEO_ANALYSIS_PROVIDER:-qwen}
+      VIDEO_ANALYSIS_MODEL: ${VIDEO_ANALYSIS_MODEL:-qwen-plus}
+      VIDEO_ASR_CHUNK_SECONDS: ${VIDEO_ASR_CHUNK_SECONDS:-30}
+      INSIGHTFACE_MODEL_DIR: /app/data/face_models
+      FACE_ENGINE_WARMUP: "1"
+      PORT: "8000"
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-5555}:8000"
+    volumes:
+      - ./data:/app/backend/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s

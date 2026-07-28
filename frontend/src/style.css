@@ -3,6 +3,13 @@
 @tailwind utilities;
 
 :root {
+  /*
+   * The platform's desktop baseline intentionally matches viewing the site at
+   * 110% in a Chromium browser.  `zoom` scales layout as well as painted
+   * content, so controls, dialogs and canvas/video areas stay aligned instead
+   * of only making text larger.
+   */
+  --platform-display-scale: 1.1;
   --primary-color: #003087;
   --primary-hover: #00409a;
   --secondary-color: #e6eeff;
@@ -46,13 +53,30 @@
 
 html,
 body {
+  height: 100%;
   width: 100%;
-  overflow-x: hidden;
+  overflow: hidden;
+}
+
+/* Keep compact touch layouts at their original density. */
+@media (min-width: 768px) {
+  html {
+    zoom: var(--platform-display-scale);
+  }
+
+  /* CSS zoom does not reduce vh units like a browser's native zoom does.
+     Keep the application root at the real visible height to prevent a
+     110%-scaled fixed-height workspace from creating a page scrollbar. */
+  html,
+  body {
+    height: calc(100dvh / var(--platform-display-scale)) !important;
+  }
 }
 
 #app {
+  height: 100%;
   width: 100%;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 body {
@@ -64,22 +88,57 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+html.student-classes-scroll-lock,
+body.student-classes-scroll-lock {
+  overflow: hidden !important;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--police-border-light);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--police-border);
-  border-radius: 3px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.58);
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--police-text-muted);
+  background: rgba(100, 116, 139, 0.72);
+  background-clip: padding-box;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.58) transparent;
+}
+
+:where(
+  .admin-content,
+  .ops-content,
+  .student-main,
+  .student-list-scroll,
+  .cases-compact,
+  .van-popup,
+  .el-scrollbar__wrap
+) {
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+}
+
+.student-page,
+.student-settings,
+.student-profile-page,
+.face-demo-page,
+.evaluation-page {
+  min-height: 100%;
+  overflow: visible;
 }
 
 button,

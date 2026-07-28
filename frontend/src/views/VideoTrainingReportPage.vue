@@ -88,7 +88,7 @@ const reviewTargetLabel = computed(() => {
 })
 
 onMounted(() => {
-  setMainScrollable?.(true)
+  setMainScrollable?.(false)
   void fetchReport()
 })
 

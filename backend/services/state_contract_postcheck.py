@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
-from .state_influence_engine import contract_strictness, max_chars_for_disclosure
+from .state_influence_engine import max_chars_for_disclosure
 
 _AFFECT_LABELS = {
     "angry": "愤怒对抗",
@@ -181,8 +181,10 @@ def apply_contract_postcheck(
             "validation": validation,
         }
 
-    strict = contract_strictness(contract) == "strict"
-    should_llm = use_llm or strict
+    # The actor already generated the role's words. A contract postcheck may
+    # validate/trim them, but must not silently create a second persona unless
+    # the caller explicitly permits a rewrite.
+    should_llm = bool(use_llm)
     revised = original
     adjusted = False
     if should_llm:

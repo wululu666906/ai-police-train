@@ -6,7 +6,8 @@ ARG VITE_API_URL=/api
 ENV VITE_API_URL=$VITE_API_URL
 
 COPY frontend/package*.json ./
-RUN npm ci
+RUN npm config set registry https://registry.npmjs.org/ \
+    && npm ci --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000
 
 COPY frontend/ ./
 RUN npm run build
@@ -19,24 +20,46 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i \
+            -e 's|http://deb.debian.org/debian-security|https://mirrors.aliyun.com/debian-security|g' \
+            -e 's|http://deb.debian.org/debian|https://mirrors.aliyun.com/debian|g' \
+            /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update; \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y --no-install-recommends \
         build-essential \
+        ca-certificates \
+        curl \
         sqlite3 \
+        ffmpeg \
+        fonts-noto-cjk \
         libglib2.0-0 \
         libgl1 \
         libgomp1 \
+        libsm6 \
+        libxext6 \
         libjpeg62-turbo \
-        zlib1g \
-    && rm -rf /var/lib/apt/lists/*
+        zlib1g; \
+    rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
 COPY backend/ ./
+RUN mkdir -p /app/backend/data
+COPY data/face_models /app/data/face_models
 COPY frontend /app/frontend
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
+
+# Download and cache PaddleOCR's Chinese models while building the image.
+# Runtime document parsing must not depend on the server having outbound access.
+RUN python -c "from services.document_extract_service import document_extract_service; document_extract_service._load_paddle_ocr()"
+
+# Fail the image build if core local runtimes or bundled face models are broken.
+RUN python -c "import cv2, onnxruntime, pypdfium2, shutil; assert shutil.which('ffmpeg'); from services.face_service import engine_status, _load_engine; status = engine_status(); assert status['model_files_ready'], status; _load_engine()"
 
 RUN printf '%s\n' \
     '#!/bin/bash' \

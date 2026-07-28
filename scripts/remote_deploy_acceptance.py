@@ -33,9 +33,12 @@ NGINX_CONF = """server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
-    client_max_body_size 50m;
+    client_max_body_size 512m;
 
     location /api/ {
+        proxy_request_buffering off;
+        proxy_buffering off;
+        client_body_timeout 600s;
         rewrite ^/api/(.*)$ /$1 break;
         proxy_pass http://127.0.0.1:8001;
         proxy_http_version 1.1;
@@ -228,7 +231,7 @@ def main() -> int:
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update -y
-sudo apt-get install -y python3 python3-venv python3-pip nginx unzip curl
+sudo apt-get install -y python3 python3-venv python3-pip nginx unzip curl ffmpeg
 
 sudo mkdir -p {REMOTE_DIR}
 sudo rm -rf {REMOTE_DIR}/*

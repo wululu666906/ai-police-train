@@ -203,16 +203,6 @@
                 >
                   查看报告
                 </van-button>
-                <van-button
-                  v-if="latestReplayArtifact(s)"
-                  size="small"
-                  plain
-                  type="primary"
-                  class="!rounded-[6px]"
-                  @click="playSessionReplay(s)"
-                >
-                  查看录制
-                </van-button>
               </div>
               <span v-else class="text-slate-400 text-xs">训练中</span>
             </td>
@@ -269,16 +259,6 @@
         <el-button type="primary" :loading="reviewSaving" @click="submitReview">提交复核</el-button>
       </template>
     </el-dialog>
-
-    <el-dialog
-      v-model="showReplayDialog"
-      title="学员训练录制"
-      width="760px"
-      destroy-on-close
-    >
-      <video v-if="replayUrl" class="session-replay-video" :src="replayUrl" controls preload="metadata" />
-      <el-empty v-else description="当前场次暂无可查看的训练录制" />
-    </el-dialog>
   </div>
 </template>
 <script setup lang="ts">
@@ -301,19 +281,9 @@ interface SessionItem {
   full_score: number | null
   violation_count: number
   violation_log?: { type?: string; detail?: string; ts?: string }[]
-  artifacts?: ArtifactItem[]
   grade?: string
   created_at: string
   finished_at?: string
-}
-
-interface ArtifactItem {
-  id: number
-  artifact_type: string
-  file_url?: string
-  mime_type?: string
-  duration_seconds?: number | null
-  created_at?: string
 }
 
 interface ReportData {
@@ -332,7 +302,6 @@ interface ReportData {
   violation_count?: number
   violation_summary?: Record<string, number>
   failure_reason_summary?: Record<string, number>
-  artifacts?: ArtifactItem[]
   finished_at?: string
   node_summaries: {
     node_result_id?: number
@@ -409,8 +378,6 @@ const reviewItems = ref<ReviewItem[]>([])
 const activeReportSessionId = ref<number | null>(null)
 const showReviewDialog = ref(false)
 const reviewSaving = ref(false)
-const showReplayDialog = ref(false)
-const replayUrl = ref('')
 const reviewTarget = ref<ReportData['node_summaries'][number] | null>(null)
 const reviewForm = reactive({
   result: 'pass',
@@ -510,34 +477,6 @@ function onFilterChange() {
 
 async function viewReport(s: SessionItem) {
   router.push(`/admin/video-sessions/${s.id}/report`)
-}
-
-function latestReplayArtifact(session: SessionItem): ArtifactItem | null {
-  const items = Array.isArray(session.artifacts) ? session.artifacts : []
-  const sorted = [...items].sort((a, b) => {
-    const aTime = new Date(a.created_at || 0).getTime()
-    const bTime = new Date(b.created_at || 0).getTime()
-    return bTime - aTime
-  })
-  return sorted.find((item) => item.artifact_type === 'camera_recording' && item.file_url) || null
-}
-
-function resolveMediaUrl(url?: string): string {
-  if (!url) return ''
-  if (/^https?:\/\//i.test(url)) return url
-  const baseUrl = String(request.defaults.baseURL || '').replace(/\/$/, '')
-  if (!baseUrl) return url
-  return `${baseUrl}${url.startsWith('/') ? url : `/${url}`}`
-}
-
-function playSessionReplay(session: SessionItem) {
-  const artifact = latestReplayArtifact(session)
-  if (!artifact?.file_url) {
-    ElMessage.warning('当前场次暂无可查看的训练录制')
-    return
-  }
-  replayUrl.value = resolveMediaUrl(artifact.file_url)
-  showReplayDialog.value = true
 }
 
 function openReviewDialog(item: ReportData['node_summaries'][number]) {
@@ -786,14 +725,6 @@ function formatDate(iso?: string): string {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-}
-
-.session-replay-video {
-  display: block;
-  width: 100%;
-  max-height: 72vh;
-  border-radius: 8px;
-  background: #020617;
 }
 
 .analytics-list__row--review:last-child {

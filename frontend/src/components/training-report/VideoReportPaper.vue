@@ -89,6 +89,7 @@
         <div><span>未完成</span><strong>{{ assessmentStats.missed }}</strong><em>项</em></div>
         <div><span>完成度</span><strong>{{ assessmentCompletionRate }}%</strong></div>
       </div>
+<<<<<<< HEAD
       <div v-if="assessmentIssueGroups.length" class="assessment-compact-list">
         <article v-for="item in assessmentIssueGroups" :key="item.label" class="assessment-compact-item">
           <div>
@@ -134,6 +135,29 @@
       <div class="section-title"><i></i><span>反馈建议</span></div>
       <ol class="report-list advice-list">
         <li v-for="item in feedbackAdviceItems" :key="item">{{ item }}</li>
+=======
+      <p v-if="abilityProfile.next_training?.length" class="report-text">{{ abilityProfile.next_training.join('；') }}</p>
+    </section>
+
+    <section v-if="failureReasonList.length || violationList.length" class="report-section">
+      <div class="section-title"><i></i><span>训练审计</span></div>
+      <div v-if="failureReasonList.length" class="chip-list" style="margin-bottom: 12px;">
+        <span v-for="item in failureReasonList" :key="item.key" class="report-chip report-chip--danger">
+          {{ item.label }} x{{ item.count }}
+        </span>
+      </div>
+      <div v-if="violationList.length" class="chip-list">
+        <span v-for="item in violationList" :key="item.key" class="report-chip report-chip--warn">
+          {{ item.label }} x{{ item.count }}
+        </span>
+      </div>
+    </section>
+
+    <section v-if="weaknessSummary.length" class="report-section">
+      <div class="section-title"><i></i><span>复盘建议</span></div>
+      <ol class="report-list">
+        <li v-for="item in weaknessSummary" :key="item">{{ item }}</li>
+>>>>>>> c75d28e11697d318d584360255fb4e860ec8271e
       </ol>
     </section>
 
@@ -238,7 +262,11 @@ const reportTotalNodes = computed(() => metrics.value.reportTotalNodes)
 const reportNodes = computed(() => metrics.value.reportNodes)
 const dimensionScores = computed(() => metrics.value.dimensionScores)
 const weaknessSummary = computed(() => metrics.value.weaknessSummary)
+<<<<<<< HEAD
 const assessmentChecks = computed(() => metrics.value.assessmentChecks)
+=======
+const abilityProfile = computed(() => metrics.value.abilityProfile)
+>>>>>>> c75d28e11697d318d584360255fb4e860ec8271e
 const scoreHint = computed(() => metrics.value.scoreHint)
 const failureReasonList = computed(() => metrics.value.failureReasonList)
 const violationList = computed(() => metrics.value.violationList)

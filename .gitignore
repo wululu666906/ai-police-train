@@ -8,6 +8,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.pytest-run-tmp/
 
 # Database & runtime data
 *.db
@@ -15,14 +16,20 @@ __pycache__/
 chroma_db/
 data/
 backend/chroma_db/
+!data/
+data/*
+!data/face_models/
+!data/face_models/**
 
 # 视频实训上传文件（体积大，不入库，部署时独立管理）
 backend/static/videos/*
 backend/static/thumbnails/*
 backend/static/face_profiles/*
+backend/static/profile_avatars/*
 !backend/static/videos/.gitkeep
 !backend/static/thumbnails/.gitkeep
 !backend/static/face_profiles/.gitkeep
+!backend/static/profile_avatars/.gitkeep
 
 # 实训录制的摄像头视频（学员实训录像，不入库）
 backend/static/session_media/**/
@@ -79,6 +86,7 @@ frontend_dist_sync.tar.gz
 .collect.txt
 backups/
 duiyou/
+tools/ffmpeg/
 scripts/_*
 scripts/native_deploy_remote.py
 temp_*
