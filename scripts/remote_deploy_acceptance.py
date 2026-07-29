@@ -198,11 +198,15 @@ def acceptance_tests() -> list[tuple[str, bool, str]]:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         token = json.loads(body)["access_token"]
+        req = urllib.request.Request(f"{base}/api/auth/me/settings")
         req.add_header("Authorization", f"Bearer {token}")
         try:
             with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
                 sb = resp.read().decode()
         except Exception as exc:
+            results.append(("GET /api/auth/me/settings", False, str(exc)[:120]))
+        else:
+            results.append(("GET /api/auth/me/settings", resp.status == 200 and "user" in sb, sb[:120]))
 
     code, body = http_check(f"{base}/assets/")
     results.append(("GET /assets/ 静态资源目录", code in (200, 403), f"http={code}"))
