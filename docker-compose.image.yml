@@ -10,14 +10,28 @@ services:
       FFMPEG_BINARY: ffmpeg
       VIDEO_ANALYSIS_PROVIDER: ${VIDEO_ANALYSIS_PROVIDER:-qwen}
       VIDEO_ANALYSIS_MODEL: ${VIDEO_ANALYSIS_MODEL:-qwen-plus}
-      VIDEO_ASR_CHUNK_SECONDS: ${VIDEO_ASR_CHUNK_SECONDS:-30}
-      INSIGHTFACE_MODEL_DIR: /app/data/face_models
+      VIDEO_ASR_CHUNK_SECONDS: ${VIDEO_ASR_CHUNK_SECONDS:-60}
+      VIDEO_ASR_PARALLELISM: ${VIDEO_ASR_PARALLELISM:-2}
+      VIDEO_ANALYSIS_PIPELINE: ${VIDEO_ANALYSIS_PIPELINE:-single_step_v2}
+      INSIGHTFACE_MODEL_DIR: /app/backend/data/face_models
       FACE_ENGINE_WARMUP: "1"
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-minio}
+      LOCAL_OBJECT_STORAGE_DIR: /app/backend/data/object_storage
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-https://82.156.126.212:5175}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-ai-police}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-change-this-minio-secret}
+      MINIO_BUCKET_MEDIA: ${MINIO_BUCKET_MEDIA:-ai-police-media}
+      MINIO_BUCKET_PRIVATE: ${MINIO_BUCKET_PRIVATE:-ai-police-private}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      OBJECT_SIGNED_URL_EXPIRE_SECONDS: ${OBJECT_SIGNED_URL_EXPIRE_SECONDS:-7200}
       PORT: "8000"
     ports:
       - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-5555}:8000"
     volumes:
       - ./data:/app/backend/data
+    depends_on:
+      - minio
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
@@ -25,3 +39,17 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+
+  minio:
+    image: minio/minio:latest
+    container_name: ai_police_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-ai-police}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-change-this-minio-secret}
+    ports:
+      - "${MINIO_BIND:-127.0.0.1}:${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_BIND:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - ./data/minio:/data
+    restart: unless-stopped

@@ -14,6 +14,10 @@ interface DetectionLike {
   boundingBox?: BoundingBoxLike
 }
 
+interface NormalizedDetection extends DetectionLike {
+  boundingBox: BoundingBoxLike
+}
+
 interface FaceDetectorResult {
   detections?: DetectionLike[]
 }
@@ -30,6 +34,50 @@ const CHECK_INTERVAL_MS = 700
 const REQUIRED_SINGLE_FACE_STREAK = 3
 const REQUIRED_LIVE_MOTION = 0.008
 const MIN_FACE_AREA_RATIO = 0.025
+
+let sharedFaceDetector: FaceDetectorLike | null = null
+let sharedDetectorSource: string | null = null
+let sharedDetectorInitPromise: Promise<FaceDetectorLike> | null = null
+
+async function ensureSharedFaceDetector(): Promise<FaceDetectorLike> {
+  if (sharedFaceDetector) return sharedFaceDetector
+  if (!sharedDetectorInitPromise) {
+    sharedDetectorInitPromise = (async () => {
+      const loaded = await loadVisionTasksModule()
+      const { FilesetResolver, FaceDetector } = loaded.visionModule
+      if (!FilesetResolver || !FaceDetector) {
+        throw new Error('人脸检测资源不可用')
+      }
+      const resolver = await FilesetResolver.forVisionTasks(loaded.wasmUrl)
+      const detector = await FaceDetector.createFromOptions(resolver, {
+        baseOptions: {
+          modelAssetPath: FACE_MODEL_URL,
+          delegate: 'CPU',
+        },
+        runningMode: 'VIDEO',
+        minDetectionConfidence: 0.4,
+        minSuppressionThreshold: 0.3,
+      }) as FaceDetectorLike
+      sharedFaceDetector = detector
+      sharedDetectorSource = loaded.sourceLabel
+      return detector
+    })().finally(() => {
+      sharedDetectorInitPromise = null
+    })
+  }
+  return sharedDetectorInitPromise
+}
+
+/** Warm MediaPipe, WASM and the face detector without blocking student navigation. */
+export async function preloadPresenceDetector(): Promise<boolean> {
+  try {
+    await ensureSharedFaceDetector()
+    return true
+  } catch (error) {
+    console.warn('Presence detector preload failed', error)
+    return false
+  }
+}
 
 function normalizeBox(box: BoundingBoxLike, videoWidth: number, videoHeight: number) {
   const width = Math.max(videoWidth, 1)
@@ -80,9 +128,9 @@ function resolvePrimaryFace(detections: DetectionLike[], videoWidth: number, vid
       return {
         ...detection,
         boundingBox: normalizeBox(detection.boundingBox, videoWidth, videoHeight),
-      }
+      } as NormalizedDetection
     })
-    .filter((detection): detection is DetectionLike => Boolean(detection?.boundingBox))
+    .filter((detection): detection is NormalizedDetection => detection !== null)
 
   const valid = normalized.filter((detection) => {
     const box = detection.boundingBox!
@@ -169,26 +217,8 @@ export function usePresenceMonitor() {
     }, 60000)
 
     try {
-      const loaded = await loadVisionTasksModule()
-      const { FilesetResolver, FaceDetector } = loaded.visionModule
-      if (!FilesetResolver || !FaceDetector) {
-        status.value = 'unsupported'
-        message.value = '人脸检测资源不可用'
-        return false
-      }
-
-      const resolver = await FilesetResolver.forVisionTasks(loaded.wasmUrl)
-      faceDetector = await FaceDetector.createFromOptions(resolver, {
-        baseOptions: {
-          modelAssetPath: FACE_MODEL_URL,
-          delegate: 'CPU',
-        },
-        runningMode: 'VIDEO',
-        minDetectionConfidence: 0.4,
-        minSuppressionThreshold: 0.3,
-      })
-
-      source.value = loaded.sourceLabel
+      faceDetector = await ensureSharedFaceDetector()
+      source.value = sharedDetectorSource
       status.value = 'checking'
       message.value = '人脸检测已就绪，请保持面部在圆形区域内'
       if (loadingTimeoutId) {
@@ -324,7 +354,7 @@ export function usePresenceMonitor() {
       loadingTimeoutId = null
     }
     boundVideo = null
-    if (faceDetector?.close) faceDetector.close()
+    // Keep the shared detector warm for the next training page in this login session.
     faceDetector = null
     detectorInitPromise = null
     source.value = null

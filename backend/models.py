@@ -119,6 +119,27 @@ class OpsIssueRecord(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class MediaAsset(Base):
+    __tablename__ = "media_assets"
+    __table_args__ = (
+        UniqueConstraint("owner_type", "owner_key", "asset_kind", name="uq_media_asset_owner_kind"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_type = Column(String(40), nullable=False, index=True)
+    owner_key = Column(String(120), nullable=False, index=True)
+    asset_kind = Column(String(40), nullable=False, index=True)
+    storage_provider = Column(String(20), nullable=False, default="local")
+    bucket = Column(String(120), nullable=True)
+    object_key = Column(String(500), nullable=False)
+    original_filename = Column(String(255), nullable=True)
+    content_type = Column(String(120), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    extra_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Case(Base):
     __tablename__ = "cases"
 
@@ -542,6 +563,12 @@ class VideoTrainingSession(Base):
 
     user = relationship("User")
     video = relationship("TrainingVideo")
+    artifacts = relationship(
+        "VideoTrainingArtifact",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="VideoTrainingArtifact.created_at",
+    )
     node_results = relationship(
         "VideoNodeResult",
         back_populates="session",
@@ -573,3 +600,19 @@ class VideoNodeResult(Base):
 
     session = relationship("VideoTrainingSession", back_populates="node_results")
     node = relationship("VideoNode")
+
+
+class VideoTrainingArtifact(Base):
+    """训练过程媒体留存：当前用于摄像头/麦克风录制回放"""
+    __tablename__ = "video_training_artifacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("video_training_sessions.id"), nullable=False)
+    artifact_type = Column(String(30), nullable=False, default="camera_recording")
+    file_path = Column(String(500), nullable=False)
+    mime_type = Column(String(120), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    duration_seconds = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("VideoTrainingSession", back_populates="artifacts")

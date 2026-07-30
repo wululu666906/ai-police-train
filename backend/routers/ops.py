@@ -16,6 +16,7 @@ import database
 import models
 import schemas
 from routers.auth import build_username_range, hash_password, require_maintainer_user
+from services.object_storage_service import delete_media_assets
 
 router = APIRouter(prefix="/ops", tags=["Ops"])
 
@@ -286,6 +287,8 @@ def delete_video_training_sessions(db: Session, session_ids: list[int]) -> None:
     ids = [int(value) for value in session_ids if int(value or 0) > 0]
     if not ids:
         return
+    for session_id in ids:
+        delete_media_assets(db, owner_type="training_session", owner_key=session_id)
     db.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.video_session_id.in_(ids)).delete(synchronize_session=False)
     db.query(models.VideoNodeResult).filter(models.VideoNodeResult.session_id.in_(ids)).delete(synchronize_session=False)
     db.query(models.VideoTrainingSession).filter(models.VideoTrainingSession.id.in_(ids)).delete(synchronize_session=False)
@@ -295,6 +298,8 @@ def delete_video_owned_data(db: Session, video_ids: list[int]) -> None:
     ids = [int(value) for value in video_ids if int(value or 0) > 0]
     if not ids:
         return
+    for video_id in ids:
+        delete_media_assets(db, owner_type="video", owner_key=video_id)
     session_ids = [
         row[0]
         for row in db.query(models.VideoTrainingSession.id)
@@ -978,6 +983,8 @@ def serialize_usage_account(db: Session, user: models.User, *, include_activitie
 
 
 def delete_student_owned_data(db: Session, user_id: int) -> None:
+    delete_media_assets(db, owner_type="user", owner_key=user_id, asset_kind="avatar")
+    delete_media_assets(db, owner_type="face_profile", owner_key=user_id)
     training_session_ids = [
         row[0]
         for row in db.query(models.TrainingSession.id)
@@ -985,6 +992,14 @@ def delete_student_owned_data(db: Session, user_id: int) -> None:
         .all()
     ]
     if training_session_ids:
+        artifact_ids = [
+            row[0]
+            for row in db.query(models.TrainingSessionArtifact.id)
+            .filter(models.TrainingSessionArtifact.session_id.in_(training_session_ids))
+            .all()
+        ]
+        for artifact_id in artifact_ids:
+            delete_media_assets(db, owner_type="training_session_artifact", owner_key=artifact_id)
         delete_optional_table_rows(db, "face_verification_sessions", "session_id", training_session_ids)
         delete_optional_table_rows(db, "multimodal_events", "session_id", training_session_ids)
         delete_optional_table_rows(db, "multimodal_session_metrics", "session_id", training_session_ids)

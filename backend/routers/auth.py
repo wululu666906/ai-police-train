@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 import database
 import models
 import schemas
+from services.object_storage_service import MEDIA_BUCKET, build_object_key, guess_content_type, object_storage, upsert_media_asset, delete_media_assets
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -584,8 +585,26 @@ async def upload_my_avatar(
     file_path = os.path.join(PROFILE_AVATAR_DIR, filename)
     with open(file_path, "wb") as avatar_file:
         avatar_file.write(content)
-
-    current_user.avatar_url = f"/static/profile-avatars/{filename}"
+    stored = object_storage.put_file(
+        bucket=MEDIA_BUCKET,
+        object_key=build_object_key(f"avatars/{current_user.id}", filename),
+        source_path=file_path,
+        content_type=guess_content_type(filename, file.content_type),
+    )
+    upsert_media_asset(
+        db,
+        owner_type="user",
+        owner_key=current_user.id,
+        asset_kind="avatar",
+        stored=stored,
+        original_filename=file.filename or filename,
+        content_type=guess_content_type(filename, file.content_type),
+    )
+    try:
+        os.remove(file_path)
+    except FileNotFoundError:
+        pass
+    current_user.avatar_url = object_storage.url_for(stored)
     current_user.updated_at = datetime.utcnow()
     db.add(current_user)
     db.commit()
@@ -947,6 +966,14 @@ def batch_delete_students(
             db.query(models.Message).filter(models.Message.session_id.in_(session_ids)).delete(
                 synchronize_session=False
             )
+            artifact_ids = [
+                item[0]
+                for item in db.query(models.TrainingSessionArtifact.id)
+                .filter(models.TrainingSessionArtifact.session_id.in_(session_ids))
+                .all()
+            ]
+            for artifact_id in artifact_ids:
+                delete_media_assets(db, owner_type="training_session_artifact", owner_key=artifact_id)
             db.query(models.TrainingSessionArtifact).filter(models.TrainingSessionArtifact.session_id.in_(session_ids)).delete(
                 synchronize_session=False
             )
@@ -976,6 +1003,9 @@ def batch_delete_students(
         db.query(models.AssignmentStudentOverride).filter(models.AssignmentStudentOverride.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(models.ClassMembership).filter(models.ClassMembership.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(models.FaceVerificationEvent).filter(models.FaceVerificationEvent.student_id.in_(user_ids)).delete(synchronize_session=False)
+        for user_id in user_ids:
+            delete_media_assets(db, owner_type="user", owner_key=user_id, asset_kind="avatar")
+            delete_media_assets(db, owner_type="face_profile", owner_key=user_id)
         db.query(models.FaceProfile).filter(models.FaceProfile.student_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(models.SpeechUsageLog).filter(models.SpeechUsageLog.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(models.OpsAuditLog).filter(

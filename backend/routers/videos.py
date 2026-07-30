@@ -21,6 +21,15 @@ import database
 import models
 from routers.auth import get_current_user
 from services import video_auto_config_service
+from services.object_storage_service import (
+    MEDIA_BUCKET,
+    object_storage,
+    build_object_key,
+    delete_media_assets,
+    get_media_asset,
+    guess_content_type,
+    upsert_media_asset,
+)
 
 router = APIRouter(prefix="/videos", tags=["Videos"])
 
@@ -70,16 +79,30 @@ def _require_admin(current_user: models.User = Depends(get_current_user)) -> mod
     return current_user
 
 
-def _video_url(file_path: Optional[str]) -> Optional[str]:
-    if not file_path:
+def _video_url(db: Session, video: models.TrainingVideo) -> Optional[str]:
+    asset = get_media_asset(db, "video", video.id, "source")
+    if asset:
+        return object_storage.url_for(asset)
+    if not video.file_path:
         return None
-    return f"/static/videos/{file_path}"
+    if video.file_path.startswith("http://") or video.file_path.startswith("https://"):
+        return video.file_path
+    return f"/static/videos/{video.file_path}"
 
 
-def _thumbnail_url(thumbnail_path: Optional[str]) -> Optional[str]:
-    if not thumbnail_path:
+def _thumbnail_url(db: Session, video: models.TrainingVideo) -> Optional[str]:
+    asset = get_media_asset(db, "video", video.id, "thumbnail")
+    if asset:
+        return object_storage.url_for(asset)
+    if not video.thumbnail_path:
         return None
-    return f"/static/thumbnails/{thumbnail_path}"
+    if video.thumbnail_path.startswith("http://") or video.thumbnail_path.startswith("https://"):
+        return video.thumbnail_path
+    return f"/static/thumbnails/{video.thumbnail_path}"
+
+
+def _get_video_source_asset(db: Session, video: models.TrainingVideo) -> models.MediaAsset | None:
+    return get_media_asset(db, "video", video.id, "source")
 
 
 def _normalize_rel_path(path: str) -> str:
@@ -255,14 +278,39 @@ def _auto_node_trigger_times(duration_seconds: Optional[int], node_count: int) -
     ]
 
 
-def _build_default_auto_nodes(video: models.TrainingVideo, title: str, duration_seconds: Optional[int]) -> list[models.VideoNode]:
+def _build_default_auto_nodes(
+    video: models.TrainingVideo,
+    title: str,
+    duration_seconds: Optional[int],
+    db: Optional[Session] = None,
+) -> list[models.VideoNode]:
     if video.video_type != "interactive":
         return []
 
     profile = _infer_scene_profile(title)
     node_specs = profile.get("nodes") or []
-    video_path = os.path.join(VIDEOS_DIR, video.file_path) if video.file_path else None
-    trigger_times = video_auto_config_service.suggest_training_timestamps(video_path, duration_seconds, len(node_specs))
+    trigger_times: list[int] = []
+    source_asset = _get_video_source_asset(db, video) if db is not None else None
+    if source_asset:
+        try:
+            with object_storage.local_file(
+                bucket=source_asset.bucket,
+                object_key=source_asset.object_key,
+                provider=source_asset.storage_provider,
+                suffix=os.path.splitext(video.file_path or "")[1] or ".mp4",
+            ) as video_path:
+                trigger_times = video_auto_config_service.suggest_training_timestamps(
+                    video_path,
+                    duration_seconds,
+                    len(node_specs),
+                )
+        except Exception:
+            trigger_times = []
+    if not trigger_times:
+        video_path = os.path.join(VIDEOS_DIR, video.file_path) if video.file_path else None
+        if video_path and not os.path.exists(video_path):
+            video_path = None
+        trigger_times = video_auto_config_service.suggest_training_timestamps(video_path, duration_seconds, len(node_specs))
     if not trigger_times:
         trigger_times = _auto_node_trigger_times(duration_seconds, len(node_specs))
     nodes: list[models.VideoNode] = []
@@ -513,33 +561,72 @@ def _ensure_video_thumbnail(video: models.TrainingVideo, db: Session) -> None:
     if not video.file_path:
         return
 
-    video_path = os.path.join(VIDEOS_DIR, video.file_path)
-    if not os.path.exists(video_path):
-        return
-
-    current_thumbnail_path = os.path.join(THUMBNAILS_DIR, video.thumbnail_path) if video.thumbnail_path else None
-    has_valid_thumbnail = (
-        video.thumbnail_path
-        and current_thumbnail_path
-        and os.path.exists(current_thumbnail_path)
-        and os.path.getsize(current_thumbnail_path) > 0
-    )
-    if has_valid_thumbnail:
+    existing_asset = get_media_asset(db, "video", video.id, "thumbnail")
+    if existing_asset:
         return
 
     thumbnail_name = f"{uuid.uuid4().hex}.jpg"
     thumbnail_path = os.path.join(THUMBNAILS_DIR, thumbnail_name)
-    if _generate_thumbnail_from_video(video_path, thumbnail_path, video.duration):
-        video.thumbnail_path = thumbnail_name
-        db.add(video)
-        db.commit()
-        db.refresh(video)
+
+    source_asset = get_media_asset(db, "video", video.id, "source")
+    if source_asset:
+        try:
+            with object_storage.local_file(
+                bucket=source_asset.bucket,
+                object_key=source_asset.object_key,
+                provider=source_asset.storage_provider,
+                suffix=os.path.splitext(video.file_path or "")[1] or ".mp4",
+            ) as video_path:
+                if not _generate_thumbnail_from_video(video_path, thumbnail_path, video.duration):
+                    return
+        except Exception:
+            return
+    else:
+        video_path = os.path.join(VIDEOS_DIR, video.file_path)
+        if not os.path.exists(video_path):
+            return
+        current_thumbnail_path = os.path.join(THUMBNAILS_DIR, video.thumbnail_path) if video.thumbnail_path else None
+        has_valid_thumbnail = (
+            video.thumbnail_path
+            and current_thumbnail_path
+            and os.path.exists(current_thumbnail_path)
+            and os.path.getsize(current_thumbnail_path) > 0
+        )
+        if has_valid_thumbnail:
+            return
+        if not _generate_thumbnail_from_video(video_path, thumbnail_path, video.duration):
+            return
+
+    stored = object_storage.put_file(
+        bucket=MEDIA_BUCKET,
+        object_key=build_object_key(f"videos/{video.id}/thumbnails", thumbnail_name),
+        source_path=thumbnail_path,
+        content_type="image/jpeg",
+    )
+    upsert_media_asset(
+        db,
+        owner_type="video",
+        owner_key=video.id,
+        asset_kind="thumbnail",
+        stored=stored,
+        original_filename=thumbnail_name,
+        content_type="image/jpeg",
+    )
+    video.thumbnail_path = stored.object_key
+    db.add(video)
+    db.commit()
+    db.refresh(video)
+    try:
+        os.remove(thumbnail_path)
+    except FileNotFoundError:
+        pass
 
 
 def _serialize_video(
     video: models.TrainingVideo,
     include_nodes: bool = False,
     *,
+    db: Optional[Session] = None,
     include_video_url: bool = True,
     teaching_unlocked: Optional[bool] = None,
     lock_reason: Optional[str] = None,
@@ -558,8 +645,8 @@ def _serialize_video(
         "video_type": video.video_type,
         "scenario_type": video.scenario_type,
         "difficulty": video.difficulty or "normal",
-        "video_url": _video_url(video.file_path) if include_video_url else None,
-        "thumbnail_url": _thumbnail_url(video.thumbnail_path),
+        "video_url": (_video_url(db, video) if db is not None else (f"/static/videos/{video.file_path}" if video.file_path else None)) if include_video_url else None,
+        "thumbnail_url": _thumbnail_url(db, video) if db is not None else (f"/static/thumbnails/{video.thumbnail_path}" if video.thumbnail_path else None),
         "duration": video.duration,
         "file_size": video.file_size,
         "case_id": video.case_id,
@@ -743,6 +830,7 @@ def _apply_ai_analysis_to_video(
                 video,
                 str(analysis.get("title") or video.title or ""),
                 video.duration,
+                db,
             )
             if fallback_nodes:
                 db.add_all(fallback_nodes)
@@ -825,6 +913,7 @@ def _get_teaching_unlock_state(
 
 
 def _serialize_video_for_student(
+    db: Session,
     video: models.TrainingVideo,
     current_user: models.User,
     completed_case_ids: set[int],
@@ -841,6 +930,7 @@ def _serialize_video_for_student(
     return _serialize_video(
         video,
         include_nodes=include_nodes,
+        db=db,
         include_video_url=(video.video_type != "teaching" or unlocked),
         teaching_unlocked=unlocked,
         lock_reason=lock_reason,
@@ -929,19 +1019,19 @@ async def upload_video(
     ext = os.path.splitext(file.filename or "video.mp4")[1] or ".mp4"
     filename = f"{uuid.uuid4().hex}{ext}"
     os.makedirs(VIDEOS_DIR, exist_ok=True)
-    video_path = os.path.join(VIDEOS_DIR, filename)
+    temp_video_path = os.path.join(VIDEOS_DIR, f".tmp-{filename}")
     file_size = 0
     write_started_at = time.monotonic()
     try:
-        with open(video_path, "wb") as output_file:
+        with open(temp_video_path, "wb") as output_file:
             while chunk := await file.read(1024 * 1024):
                 file_size += len(chunk)
                 if file_size > MAX_VIDEO_SIZE:
                     raise HTTPException(status_code=413, detail="视频文件不能超过 512MB")
                 output_file.write(chunk)
     except Exception:
-        if os.path.exists(video_path):
-            os.remove(video_path)
+        if os.path.exists(temp_video_path):
+            os.remove(temp_video_path)
         raise
     write_elapsed = time.monotonic() - write_started_at
     upload_mib = file_size / 1024 / 1024
@@ -954,6 +1044,8 @@ async def upload_video(
 
     # 封面图：用户可选上传，否则后续自动截取
     thumbnail_filename = None
+    thumbnail_temp_path = None
+    thumbnail_content_type = None
     if thumbnail and thumbnail.filename:
         thumb_ct = thumbnail.content_type or ""
         thumb_ext_raw = os.path.splitext(thumbnail.filename)[1].lower()
@@ -964,15 +1056,17 @@ async def upload_video(
             if len(thumb_data) <= MAX_THUMBNAIL_SIZE:
                 thumb_ext = thumb_ext_raw or ".jpg"
                 thumbnail_filename = f"{uuid.uuid4().hex}{thumb_ext}"
+                thumbnail_content_type = guess_content_type(thumbnail.filename, thumb_ct)
                 os.makedirs(THUMBNAILS_DIR, exist_ok=True)
-                with open(os.path.join(THUMBNAILS_DIR, thumbnail_filename), "wb") as f:
+                thumbnail_temp_path = os.path.join(THUMBNAILS_DIR, thumbnail_filename)
+                with open(thumbnail_temp_path, "wb") as f:
                     f.write(thumb_data)
 
     # 探测视频时长（如前端未传）
     resolved_duration = duration
     probe_started_at = time.monotonic()
     if not resolved_duration:
-        probed = _probe_video_duration(os.path.join(VIDEOS_DIR, filename))
+        probed = _probe_video_duration(temp_video_path)
         resolved_duration = int(round(probed)) if probed else None
     print(
         "[video-upload-timing] "
@@ -981,11 +1075,18 @@ async def upload_video(
     )
 
     # 创建视频记录（状态: analyzing，AI分析在后台执行）
+    stored_video = object_storage.put_file(
+        bucket=MEDIA_BUCKET,
+        object_key=build_object_key(f"videos/{uuid.uuid4().hex}", filename),
+        source_path=temp_video_path,
+        content_type=guess_content_type(file.filename, content_type),
+    )
+
     video_obj = models.TrainingVideo(
         title=resolved_title,
         description=None,
         video_type=analysis_video_type,
-        file_path=filename,
+        file_path=stored_video.object_key,
         thumbnail_path=thumbnail_filename,
         file_size=file_size,
         duration=resolved_duration,
@@ -997,6 +1098,43 @@ async def upload_video(
     db.add(video_obj)
     db.commit()
     db.refresh(video_obj)
+    upsert_media_asset(
+        db,
+        owner_type="video",
+        owner_key=video_obj.id,
+        asset_kind="source",
+        stored=stored_video,
+        original_filename=file.filename or filename,
+        content_type=guess_content_type(file.filename, content_type),
+    )
+    db.commit()
+    try:
+        os.remove(temp_video_path)
+    except FileNotFoundError:
+        pass
+
+    if thumbnail_temp_path:
+        stored_thumbnail = object_storage.put_file(
+            bucket=MEDIA_BUCKET,
+            object_key=build_object_key(f"videos/{video_obj.id}/thumbnails", thumbnail_filename),
+            source_path=thumbnail_temp_path,
+            content_type=thumbnail_content_type or "image/jpeg",
+        )
+        upsert_media_asset(
+            db,
+            owner_type="video",
+            owner_key=video_obj.id,
+            asset_kind="thumbnail",
+            stored=stored_thumbnail,
+            original_filename=thumbnail.filename or thumbnail_filename,
+            content_type=thumbnail_content_type or "image/jpeg",
+        )
+        video_obj.thumbnail_path = stored_thumbnail.object_key
+        db.commit()
+        try:
+            os.remove(thumbnail_temp_path)
+        except FileNotFoundError:
+            pass
 
     # 自动截取封面（同步，很快）
     if not thumbnail_filename:
@@ -1010,9 +1148,27 @@ async def upload_video(
     video_id = video_obj.id
     locked_type = analysis_video_type
 
-    if auto_configure is True:
-        analysis = video_auto_config_service.analyze_video_file(
-            video_path,
+    def _analyze_uploaded_video(target_db: Session, target_video: models.TrainingVideo) -> dict:
+        source_asset = get_media_asset(target_db, "video", target_video.id, "source")
+        if source_asset:
+            with object_storage.local_file(
+                bucket=source_asset.bucket,
+                object_key=source_asset.object_key,
+                provider=source_asset.storage_provider,
+                suffix=ext,
+            ) as analysis_path:
+                return video_auto_config_service.analyze_video_file(
+                    analysis_path,
+                    title_hint=resolved_title,
+                    duration_seconds=resolved_duration,
+                    preferred_type=locked_type,
+                    scenario_hint=None,
+                    training_variant=None,
+                    difficulty_level=None,
+                )
+        legacy_path = os.path.join(VIDEOS_DIR, target_video.file_path or "")
+        return video_auto_config_service.analyze_video_file(
+            legacy_path,
             title_hint=resolved_title,
             duration_seconds=resolved_duration,
             preferred_type=locked_type,
@@ -1020,6 +1176,9 @@ async def upload_video(
             training_variant=None,
             difficulty_level=None,
         )
+
+    if auto_configure is True:
+        analysis = _analyze_uploaded_video(db, video_obj)
         analysis_error = analysis.get("analysis_error")
         if analysis.get("analysis_mode") == "error" or analysis_error:
             video_obj.status = "draft"
@@ -1037,10 +1196,10 @@ async def upload_video(
             video_obj.status = "published"
             db.commit()
         db.refresh(video_obj)
-        return _serialize_video(video_obj, include_nodes=True)
+        return _serialize_video(video_obj, include_nodes=True, db=db)
 
     if auto_configure is False:
-        return _serialize_video(video_obj, include_nodes=False)
+        return _serialize_video(video_obj, include_nodes=False, db=db)
 
     # 后台线程执行 AI 分析
     def _background_analyze():
@@ -1051,15 +1210,7 @@ async def upload_video(
             if not vid:
                 return
 
-            analysis = video_auto_config_service.analyze_video_file(
-                video_path,
-                title_hint=resolved_title,
-                duration_seconds=resolved_duration,
-                preferred_type=locked_type,
-                scenario_hint=None,
-                training_variant=None,
-                difficulty_level=None,
-            )
+            analysis = _analyze_uploaded_video(bg_db, vid)
 
             analysis_error = analysis.get("analysis_error")
             if analysis.get("analysis_mode") == "error" or analysis_error:
@@ -1092,7 +1243,7 @@ async def upload_video(
 
     threading.Thread(target=_background_analyze, daemon=True).start()
 
-    result = _serialize_video(video_obj, include_nodes=False)
+    result = _serialize_video(video_obj, include_nodes=False, db=db)
     result["analysis_status"] = "analyzing"
     print(
         "[video-upload-timing] "
@@ -1146,7 +1297,7 @@ def retry_analysis(
     video.description = None
     db.commit()
 
-    video_path = os.path.join(VIDEOS_DIR, video.file_path)
+    source_asset = _get_video_source_asset(db, video)
     title_hint = video.title or ""
     duration_seconds = video.duration
     vid_id = video.id
@@ -1158,15 +1309,33 @@ def retry_analysis(
             vid = bg_db.query(models.TrainingVideo).filter(models.TrainingVideo.id == vid_id).first()
             if not vid:
                 return
-            analysis = video_auto_config_service.analyze_video_file(
-                video_path,
-                title_hint=title_hint,
-                duration_seconds=duration_seconds,
-                preferred_type="interactive",
-                scenario_hint=None,
-                training_variant=None,
-                difficulty_level=None,
-            )
+            if source_asset:
+                with object_storage.local_file(
+                    bucket=source_asset.bucket,
+                    object_key=source_asset.object_key,
+                    provider=source_asset.storage_provider,
+                    suffix=os.path.splitext(video.file_path or "")[1] or ".mp4",
+                ) as analysis_path:
+                    analysis = video_auto_config_service.analyze_video_file(
+                        analysis_path,
+                        title_hint=title_hint,
+                        duration_seconds=duration_seconds,
+                        preferred_type="interactive",
+                        scenario_hint=None,
+                        training_variant=None,
+                        difficulty_level=None,
+                    )
+            else:
+                legacy_path = os.path.join(VIDEOS_DIR, video.file_path)
+                analysis = video_auto_config_service.analyze_video_file(
+                    legacy_path,
+                    title_hint=title_hint,
+                    duration_seconds=duration_seconds,
+                    preferred_type="interactive",
+                    scenario_hint=None,
+                    training_variant=None,
+                    difficulty_level=None,
+                )
             analysis_error = analysis.get("analysis_error")
             if analysis.get("analysis_mode") == "error" or analysis_error:
                 vid.status = "draft"
@@ -1256,7 +1425,7 @@ def admin_list_videos(
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": [_serialize_video(v) for v in videos],
+        "items": [_serialize_video(v, db=db) for v in videos],
         "auto_import": auto_import_summary,
     }
 
@@ -1291,6 +1460,7 @@ def student_video_hall(
         _ensure_video_thumbnail(video, db)
     return [
         _serialize_video_for_student(
+            db,
             video,
             current_user,
             completed_case_ids,
@@ -1312,8 +1482,9 @@ def auto_configure_video(
     current_user: models.User = Depends(_require_admin),
 ):
     video = _load_video_or_404(db, video_id)
-    video_path = os.path.join(VIDEOS_DIR, video.file_path or "")
-    if not os.path.exists(video_path):
+    source_asset = _get_video_source_asset(db, video)
+    legacy_path = os.path.join(VIDEOS_DIR, video.file_path or "")
+    if not source_asset and not os.path.exists(legacy_path):
         raise HTTPException(status_code=404, detail="视频文件不存在")
     if video.status == "analyzing":
         raise HTTPException(status_code=400, detail="该视频正在分析中，请稍候")
@@ -1348,15 +1519,32 @@ def auto_configure_video(
             vid = bg_db.query(models.TrainingVideo).filter(models.TrainingVideo.id == vid_id).first()
             if not vid:
                 return
-            analysis = video_auto_config_service.analyze_video_file(
-                video_path,
-                title_hint=title_hint,
-                duration_seconds=duration_seconds,
-                preferred_type=locked_type,
-                scenario_hint=scenario_hint,
-                training_variant=training_variant,
-                difficulty_level=difficulty_level,
-            )
+            if source_asset:
+                with object_storage.local_file(
+                    bucket=source_asset.bucket,
+                    object_key=source_asset.object_key,
+                    provider=source_asset.storage_provider,
+                    suffix=os.path.splitext(video.file_path or "")[1] or ".mp4",
+                ) as analysis_path:
+                    analysis = video_auto_config_service.analyze_video_file(
+                        analysis_path,
+                        title_hint=title_hint,
+                        duration_seconds=duration_seconds,
+                        preferred_type=locked_type,
+                        scenario_hint=scenario_hint,
+                        training_variant=training_variant,
+                        difficulty_level=difficulty_level,
+                    )
+            else:
+                analysis = video_auto_config_service.analyze_video_file(
+                    legacy_path,
+                    title_hint=title_hint,
+                    duration_seconds=duration_seconds,
+                    preferred_type=locked_type,
+                    scenario_hint=scenario_hint,
+                    training_variant=training_variant,
+                    difficulty_level=difficulty_level,
+                )
             analysis_error = analysis.get("analysis_error")
             if analysis.get("analysis_mode") == "error" or analysis_error:
                 vid.status = prev_status if prev_status != "analyzing" else "draft"
@@ -1388,8 +1576,7 @@ def auto_configure_video(
     _background_auto_configure()
     db.expire_all()
     refreshed = _load_video_or_404(db, video_id)
-    return _serialize_video(refreshed, include_nodes=True)
-    return {"id": video_id, "status": "analyzing", "message": "AI 分析已在后台启动，请稍后刷新查看结果"}
+    return _serialize_video(refreshed, include_nodes=True, db=db)
 
 
 @router.get("/{video_id}")
@@ -1412,8 +1599,9 @@ def get_video_detail(
             raise HTTPException(status_code=403, detail="完成对应交互实训后解锁完整教学视频")
     _ensure_video_thumbnail(video, db)
     if current_user.role == "admin":
-        return _serialize_video(video, include_nodes=True)
+        return _serialize_video(video, include_nodes=True, db=db)
     return _serialize_video_for_student(
+        db,
         video,
         current_user,
         completed_case_ids,
@@ -1449,7 +1637,7 @@ def update_video_meta(
     db.commit()
     db.refresh(video)
     _ensure_video_thumbnail(video, db)
-    return _serialize_video(video, include_nodes=True)
+    return _serialize_video(video, include_nodes=True, db=db)
 
 
 @router.delete("/{video_id}")
@@ -1463,6 +1651,7 @@ def delete_video(
     if not video:
         raise HTTPException(status_code=404, detail="视频不存在")
 
+    delete_media_assets(db, owner_type="video", owner_key=video.id)
     if video.file_path:
         fp = os.path.join(VIDEOS_DIR, video.file_path)
         if os.path.exists(fp):

@@ -27,6 +27,7 @@ from services.case_knowledge_service import delete_case_from_knowledge, try_sync
 from services.case_intelligence_service import assess_source_quality, build_role_knowledge_view, normalize_case_intelligence
 from services.training_compiler_service import build_observable_scoring_rules, build_training_tasks, compile_state_machine
 from services.workflow_service import workflow_service
+from services.object_storage_service import MEDIA_BUCKET, build_object_key, delete_media_assets, guess_content_type, object_storage, upsert_media_asset
 from services.assessment_point_policy import (
     ASSESSMENT_POINTS_MAX_PER_SCENE,
     finalize_assessment_points,
@@ -525,6 +526,14 @@ def _delete_case_dependencies(db: Session, case: models.Case) -> None:
             .all()
         ]
         if session_ids:
+            artifact_ids = [
+                row[0]
+                for row in db.query(models.TrainingSessionArtifact.id)
+                .filter(models.TrainingSessionArtifact.session_id.in_(session_ids))
+                .all()
+            ]
+            for artifact_id in artifact_ids:
+                delete_media_assets(db, owner_type="training_session_artifact", owner_key=artifact_id)
             _delete_optional_table_rows(db, "face_verification_sessions", "session_id", session_ids)
             _delete_optional_table_rows(db, "multimodal_events", "session_id", session_ids)
             _delete_optional_table_rows(db, "multimodal_session_metrics", "session_id", session_ids)
@@ -957,6 +966,7 @@ def parse_case(payload: dict = Body(...)):
 async def parse_case_file(
     file: UploadFile = File(...),
     source_mode: str = Form("transcript_file"),
+    db: Session = Depends(database.get_db),
 ):
     filename = file.filename or ""
     extension = os.path.splitext(filename)[1].lower()
@@ -983,12 +993,30 @@ async def parse_case_file(
             source_mode=source_mode or "transcript_file",
             source_meta=extraction.as_source_meta(name=filename, extension=extension, size=len(file_bytes)),
         )
+        stored = object_storage.put_bytes(
+            bucket=MEDIA_BUCKET,
+            object_key=build_object_key("case-source-files", filename),
+            data=file_bytes,
+            content_type=guess_content_type(filename, file.content_type),
+        )
+        asset = upsert_media_asset(
+            db,
+            owner_type="case_upload",
+            owner_key=stored.object_key,
+            asset_kind="source_file",
+            stored=stored,
+            original_filename=filename,
+            content_type=guess_content_type(filename, file.content_type),
+        )
+        db.commit()
         result["ocr_method"] = extraction.method
         result["ocr_engine"] = extraction.engine
         result["ocr_warnings"] = extraction.warnings
         result["ocr_metadata"] = extraction.metadata
         result["extracted_text_full"] = extracted_text
         result["extracted_text_preview"] = extraction.preview
+        result["source_asset_id"] = asset.id
+        result["source_asset_key"] = asset.object_key
         return result
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI file parsing failed: {exc}") from exc
@@ -1041,6 +1069,7 @@ async def parse_assessment_points_file(
     scene_name: str = Form(""),
     scene_index: int = Form(0),
     scene_count: int = Form(1),
+    db: Session = Depends(database.get_db),
 ):
     filename = file.filename or ""
     extension = os.path.splitext(filename)[1].lower()
@@ -1077,12 +1106,30 @@ async def parse_assessment_points_file(
     else:
         raw = parse_text_to_assessment_points(extracted_text)
         points, warnings = finalize_assessment_points(raw, case_type=clean_case_type, scene_name=clean_scene_name)
+    stored = object_storage.put_bytes(
+        bucket=MEDIA_BUCKET,
+        object_key=build_object_key("case-source-files", filename),
+        data=file_bytes,
+        content_type=guess_content_type(filename, file.content_type),
+    )
+    asset = upsert_media_asset(
+        db,
+        owner_type="case_upload",
+        owner_key=stored.object_key,
+        asset_kind="source_file",
+        stored=stored,
+        original_filename=filename,
+        content_type=guess_content_type(filename, file.content_type),
+    )
+    db.commit()
     return {
         "points": points,
         "count": len(points),
         "extracted_chars": len(extracted_text),
         "extracted_text": extracted_text[:8000],
         "filename": filename,
+        "source_asset_id": asset.id,
+        "source_asset_key": asset.object_key,
         "mode": "replace",
         "max_per_scene": ASSESSMENT_POINTS_MAX_PER_SCENE,
         "warnings": warnings,
@@ -1489,6 +1536,28 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
         )
         db.add(db_case)
         db.flush()
+        source_asset_id = case_data.get("source_asset_id")
+        source_asset_key = str(case_data.get("source_asset_key") or "").strip()
+        source_asset = None
+        if source_asset_id:
+            try:
+                source_asset = db.query(models.MediaAsset).filter(models.MediaAsset.id == int(source_asset_id)).first()
+            except Exception:
+                source_asset = None
+        if source_asset is None and source_asset_key:
+            source_asset = (
+                db.query(models.MediaAsset)
+                .filter(
+                    models.MediaAsset.owner_type == "case_upload",
+                    models.MediaAsset.object_key == source_asset_key,
+                )
+                .first()
+            )
+        if source_asset:
+            source_asset.owner_type = "case"
+            source_asset.owner_key = str(db_case.id)
+            source_asset.asset_kind = "source_file"
+            db.add(source_asset)
 
         # Parse/scene AI runs are created before an administrator publishes the
         # case. Attach their correlation IDs now so the maintainer can trace a
@@ -1802,6 +1871,7 @@ def delete_case(case_id: int, db: Session = Depends(database.get_db)):
         print(f"Case knowledge delete failed for case {case_id}: {exc}")
     try:
         _delete_case_dependencies(db, case)
+        delete_media_assets(db, owner_type="case", owner_key=case.id)
         db.delete(case)
         db.commit()
         return {"message": "Case deleted"}

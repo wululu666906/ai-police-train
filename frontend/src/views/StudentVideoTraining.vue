@@ -62,18 +62,18 @@
                   <span>{{ deviceWarningText || '正在启动摄像头...' }}</span>
                 </div>
               </div>
-              <div class="face-preview__hint">请将面部保持在圆形区域内，做轻微转头或眨眼即可完成校验。</div>
+              <div class="face-preview__hint">请将面部保持在圆形区域内，正对摄像头并保持画面清晰。</div>
             </div>
             <div v-if="cameraOn" class="face-metrics">
-              <div class="face-metric" :class="singleFaceReady ? 'face-metric--pass' : ''">
+              <div class="face-metric" :class="(identityReady || singleFaceReady) ? 'face-metric--pass' : ''">
                 <span class="face-metric__label">入镜人数</span>
                 <span class="face-metric__value">{{ resolvedFaceCountText }}</span>
               </div>
-              <div class="face-metric" :class="liveReady ? 'face-metric--pass' : ''">
+              <div class="face-metric" :class="(identityReady || liveReady) ? 'face-metric--pass' : ''">
                 <span class="face-metric__label">活体动作</span>
                 <span class="face-metric__value">{{ resolvedLiveMotionText }}</span>
               </div>
-              <div class="face-metric" :class="(presenceSupported ? identityReady : faceIdentityVerified) ? 'face-metric--pass' : ''">
+              <div class="face-metric" :class="identityReady ? 'face-metric--pass' : ''">
                 <span class="face-metric__label">本人匹配</span>
                 <span class="face-metric__value">{{ resolvedFaceMatchText }}</span>
               </div>
@@ -83,7 +83,7 @@
                 {{ identityReady ? '✓ 身份校验通过' : resolvedIdentityStatusText }}
               </span>
               <p v-if="!faceProfileRegistered" class="face-status__fallback">当前账号尚未注册人脸档案，请先在个人设置中上传本人正脸照片。</p>
-              <p v-else-if="!presenceSupported" class="face-status__fallback">本地检测不可用，已切换为后端人脸识别校验。</p>
+              <p v-else-if="!presenceSupported && !identityReady" class="face-status__fallback">本地检测不可用，已切换为后端人脸识别校验。</p>
               <p v-else-if="faceIdentityVerifying" class="face-status__hint">{{ faceIdentityStatusText }}</p>
             </div>
             <canvas ref="faceCanvasRef" class="face-capture-canvas" />
@@ -196,6 +196,7 @@
             ref="videoRef"
             class="imm-video-layer__video"
             :src="playbackVideoUrl"
+            :poster="video?.thumbnail_url || undefined"
             preload="auto"
             @play="playbackPaused = false"
             @pause="playbackPaused = true"
@@ -692,7 +693,7 @@
                 </div>
                 <div class="side-status-item">
                   <span>环境光线</span>
-                  <strong :class="presenceSupported ? 'text-pass' : 'text-warn'">{{ presenceSupported ? (singleFaceReady ? '良好' : '待优化') : '不可用' }}</strong>
+                  <strong :class="(identityReady || presenceSupported) ? 'text-pass' : 'text-warn'">{{ identityReady ? '正常' : presenceSupported ? (singleFaceReady ? '良好' : '待优化') : '检测中' }}</strong>
                 </div>
                 <div class="side-status-item">
                   <span>环境噪音</span>
@@ -717,6 +718,7 @@
                 ref="videoRef"
                 class="stage-video"
                 :src="playbackVideoUrl"
+                :poster="video?.thumbnail_url || undefined"
                 preload="auto"
                 @play="playbackPaused = false"
                 @pause="playbackPaused = true"
@@ -1201,6 +1203,7 @@ interface VideoDetail {
   id: number
   title: string
   video_url?: string
+  thumbnail_url?: string
   video_type: string
   briefing?: string
   nodes: VideoNode[]
@@ -1251,7 +1254,6 @@ interface Report {
 const route = useRoute()
 const router = useRouter()
 const videoId = Number(route.params.id)
-const videoCacheBustToken = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 // 鈹€鈹€ 瑙嗛 & Session 鈹€鈹€
 const video = ref<VideoDetail | null>(null)
@@ -1445,6 +1447,8 @@ const showBriefing = ref(false)
 const briefingStep = ref(1)
 const briefingIdentityPassed = ref(false)
 const finishingTraining = ref(false)
+let playbackWarningShown = false
+let playAttempt: Promise<void> | null = null
 
 // 鈹€鈹€ 鑺傜偣鐘舵€?鈹€鈹€
 const currentNodeIndex = ref(-1)
@@ -1525,7 +1529,6 @@ const {
   supported: presenceSupported,
   singleFaceReady,
   liveReady,
-  verified: presenceVerified,
   lastMotion,
   preload: preloadPresenceMonitor,
   attachVideo: attachPresenceVideo,
@@ -1543,7 +1546,6 @@ const {
   startHeartbeat: startFaceIdentityHeartbeat,
   beginVideoSessionMonitoring,
   fetchProfileStatus,
-  resetVerification: resetFaceIdentityVerification,
   stop: stopFaceIdentityVerify,
 } = useFaceIdentityVerify()
 
@@ -1571,13 +1573,12 @@ const currentNode = computed<VideoNode | null>(() =>
     ? video.value.nodes[currentNodeIndex.value] ?? null
     : null
 )
-const playbackVideoUrl = computed(() => withCacheBust(video.value?.video_url, videoCacheBustToken))
+const playbackVideoUrl = computed(() => video.value?.video_url || '')
 const speechSupported = computed(() => Boolean(speechProvider.value?.isSupported()))
 const identityReady = computed(() =>
   Boolean(
     faceProfileRegistered.value
-    && faceIdentityVerified.value
-    && (!presenceSupported.value || (singleFaceReady.value && liveReady.value && faceCount.value === 1)),
+    && faceIdentityVerified.value,
   ),
 )
 const normalizedTranscript = computed(() => {
@@ -1633,74 +1634,40 @@ const identityRuleConfig = computed(() => {
     backend_cv: Boolean(raw?.backend_cv),
   }
 })
-const identityStatusText = computed(() => {
-  if (!faceProfileRegistered.value) return '请先在个人设置中注册人脸档案'
-  if (!presenceSupported.value) return '人脸检测模型暂不可用'
-  if (!presenceVerified.value) return presenceMessage.value || '正在进行入镜与活体校验'
-  if (!faceIdentityVerified.value) return faceIdentityStatusText.value || '正在比对本人身份'
-  return '本人身份核验通过'
-})
 const resolvedFaceMatchText = computed(() => {
   if (!faceProfileRegistered.value) return '未注册档案'
-  if (!presenceSupported.value) {
-    if (identityReady.value) return faceIdentitySimilarityText.value || '本人匹配'
-    if (faceIdentityVerifying.value) return faceIdentitySimilarityText.value || '比对中'
-    return '等待比对'
-  }
-  if (!singleFaceReady.value) return faceCount.value > 1 ? '多人入镜' : '等待入镜'
-  if (!liveReady.value) return '待活体确认'
   if (identityReady.value) return faceIdentitySimilarityText.value || '本人匹配'
   if (faceIdentityVerifying.value) {
     return faceIdentitySimilarityText.value || faceIdentityStatusText.value || '比对中'
   }
   return '待匹配'
 })
-const presenceStateClass = computed(() => {
-  if (presenceStatus.value === 'error') return 'is-error'
-  if (presenceStatus.value === 'warn') return 'is-warn'
-  return 'is-checking'
-})
 const deviceStatusText = computed(() => {
   if (deviceReady.value) return '摄像头、麦克风已就绪'
   return deviceWarningText.value || '正在检查设备权限'
 })
-const precheckHintText = computed(() => [presenceMessage.value, deviceWarningText.value].filter(Boolean).join('；'))
 const canStartTraining = computed(() => deviceReady.value && (identityReady.value || briefingIdentityPassed.value))
 const resolvedIdentityStatusText = computed(() => {
   if (!faceProfileRegistered.value) return '请先注册人脸档案'
-  if (!presenceSupported.value) {
-    if (identityReady.value) return '本人身份核验通过'
-    if (faceIdentityVerifying.value) return faceIdentityStatusText.value || '正在通过后端比对人脸'
-    return '正在启动后端人脸识别'
-  }
-  if (!singleFaceReady.value) return presenceMessage.value || '请将面部保持在圆形区域内'
-  if (!liveReady.value) return '请轻微转头或眨眼完成活体确认'
-  if (!faceIdentityVerified.value) return faceIdentityStatusText.value || '正在比对本人身份'
-  if (!identityReady.value) return '身份确认中，请保持姿势'
+  if (faceIdentityVerifying.value) return faceIdentityStatusText.value || '正在通过后端比对人脸'
+  if (!faceIdentityVerified.value) return faceIdentityStatusText.value || '正在启动后端人脸识别'
   return '本人身份核验通过'
 })
-const resolvedPresenceStateClass = computed(() => {
-  if (presenceStatus.value === 'ready') return 'is-pass'
-  if (presenceStatus.value === 'unsupported') return 'is-warn'
-  if (presenceStatus.value === 'error') return 'is-error'
-  if (presenceStatus.value === 'warn') return 'is-warn'
-  return 'is-checking'
-})
 const identityBannerClass = computed(() => {
-  if (!faceProfileRegistered.value || !presenceSupported.value) return 'is-warn'
-  return identityReady.value ? 'is-pass' : resolvedPresenceStateClass.value
+  if (!faceProfileRegistered.value) return 'is-warn'
+  return identityReady.value ? 'is-pass' : 'is-checking'
 })
 const identityBannerText = computed(() => {
   if (!faceProfileRegistered.value) return '身份校验：待注册人脸档案'
-  if (!presenceSupported.value) return '身份校验：检测模型不可用'
   if (identityReady.value) return '人脸校验：已通过'
   return '人脸校验：校验中'
 })
 const identityBannerIcon = computed(() => {
-  if (!faceProfileRegistered.value || !presenceSupported.value) return '!'
+  if (!faceProfileRegistered.value) return '!'
   return identityReady.value ? '✓' : '…'
 })
 const resolvedFaceCountText = computed(() => {
+  if (identityReady.value) return '已通过'
   if (!presenceSupported.value && faceIdentityVerifying.value) return '后端识别中'
   if (presenceStatus.value === 'loading') return '模型加载中'
   if (!presenceSupported.value) return '后端校验'
@@ -1709,6 +1676,7 @@ const resolvedFaceCountText = computed(() => {
   return `${faceCount.value} 人入镜`
 })
 const resolvedLiveMotionText = computed(() => {
+  if (identityReady.value) return '已通过'
   if (!presenceSupported.value && faceIdentityVerifying.value) return '比对中'
   if (presenceStatus.value === 'loading') return '等待模型就绪'
   if (!presenceSupported.value) return '已跳过'
@@ -1721,8 +1689,6 @@ const resolvedPrecheckHintText = computed(() => {
   const hints = [deviceWarningText.value]
   if (!faceProfileRegistered.value) {
     hints.unshift('请先在个人设置中上传本人正脸照片以完成身份核验')
-  } else if (!presenceSupported.value) {
-    hints.unshift('人脸检测模型暂不可用，请检查网络后刷新页面')
   } else if (!identityReady.value) {
     hints.unshift(resolvedIdentityStatusText.value)
   }
@@ -1738,24 +1704,11 @@ const interruptionRecoverHint = computed(() => {
   if (interruptionReason.value === 'device') {
     return deviceWarningText.value || '请恢复摄像头和麦克风后继续。'
   }
-  return faceIdentityStatusText.value || presenceMessage.value || '请重新保持单人入镜并完成本人身份核验。'
+  return faceIdentityStatusText.value || '请正对摄像头并重新完成本人身份核验。'
 })
 const canResumeInterruptedNode = computed(() =>
   Boolean(trainingInterrupted.value && deviceReady.value && identityReady.value),
 )
-const faceCountText = computed(() => {
-  if (!presenceSupported.value) return '检测不可用'
-  if (!faceCount.value) return '未检测到人脸'
-  if (faceCount.value === 1) return '单人入镜'
-  return `${faceCount.value} 人入镜`
-})
-const liveMotionText = computed(() => {
-  if (!presenceSupported.value) return '检测不可用'
-  if (liveReady.value) return '自然动作已达标'
-  if (singleFaceReady.value) return '请轻微转头或眨眼'
-  const motionLevel = Number(lastMotion.value || 0)
-  return motionLevel > 0 ? `动作幅度 ${motionLevel.toFixed(3)}` : '等待活体动作'
-})
 const completedCount = computed(() => Object.keys(nodeStatuses.value).length)
 const displayNodeIndex = computed(() => {
   if (nodeActive.value && currentNodeIndex.value >= 0) return currentNodeIndex.value
@@ -1990,10 +1943,9 @@ watch([showBriefing, briefingStep, cameraOn], async ([briefing, step, cameraRead
 })
 
 watch(
-  [showBriefing, briefingStep, cameraOn, faceIdentityVerified, faceProfileRegistered, presenceVerified, presenceSupported],
-  async ([briefing, step, cameraReady, identityOk, profileReady, presenceOk, presenceEnabled]) => {
+  [showBriefing, briefingStep, cameraOn, faceIdentityVerified, faceProfileRegistered],
+  async ([briefing, step, cameraReady, identityOk, profileReady]) => {
     if (!briefing || step !== 1 || !cameraReady || !profileReady || identityOk) return
-    if (presenceEnabled && !presenceOk) return
     await nextTick()
     const videoEl = briefingCameraRef.value
     const canvasEl = faceCanvasRef.value
@@ -2003,21 +1955,9 @@ watch(
       canvas: canvasEl,
       mode: 'me',
       requireRegistered: true,
-      canVerifyFrame: () => !presenceEnabled || presenceVerified.value,
     })
   },
 )
-
-watch([singleFaceReady, liveReady, faceCount, presenceSupported, showBriefing, briefingStep, cameraOn, faceProfileRegistered], () => {
-  if (!showBriefing.value || briefingStep.value !== 1 || !cameraOn.value || !faceProfileRegistered.value) return
-
-  const presenceOk = !presenceSupported.value
-    || (singleFaceReady.value && liveReady.value && faceCount.value === 1)
-
-  if (!presenceOk && faceIdentityVerified.value) {
-    resetFaceIdentityVerification()
-  }
-})
 
 watch(identityReady, (ready) => {
   if (showBriefing.value && briefingStep.value === 1 && ready) {
@@ -2031,15 +1971,15 @@ watch(faceIdentityTerminated, (terminated) => {
 })
 
 watch(
-  [nodeActive, showBriefing, deviceReady, identityReady, presenceMessage, deviceWarningText],
-  ([active, briefing, deviceOk, identityOk, presenceText, deviceText]) => {
+  [nodeActive, showBriefing, deviceReady, identityReady, faceIdentityStatusText, deviceWarningText],
+  ([active, briefing, deviceOk, identityOk, identityText, deviceText]) => {
     if (!active || briefing || nodeSubmitting.value) return
     if (!deviceOk) {
       pauseNodeForInterruption('device', String(deviceText || '训练过程中检测到摄像头或麦克风异常'))
       return
     }
     if (!identityOk) {
-      pauseNodeForInterruption('identity', String(presenceText || '训练过程中身份校验未通过'))
+      pauseNodeForInterruption('identity', String(identityText || '训练过程中身份校验未通过'))
     }
   },
 )
@@ -2053,7 +1993,7 @@ async function confirmBriefing() {
   await nextTick()
   if (cameraStream && cameraRef.value) {
     await bindCameraStream(cameraRef.value)
-    await attachPresenceVideo(cameraRef.value)
+    void attachPresenceVideo(cameraRef.value)
     await attachGestureVideo(cameraRef.value)
   } else {
     await bindTrainingCameraIfNeeded()
@@ -2166,7 +2106,7 @@ async function startCamera() {
     if (cameraRef.value) {
       await bindCameraStream(cameraRef.value)
       if (!showBriefing.value) {
-        await attachPresenceVideo(cameraRef.value)
+        void attachPresenceVideo(cameraRef.value)
         await attachGestureVideo(cameraRef.value)
       }
     }
@@ -2236,7 +2176,7 @@ async function retryCamera() {
   await bindBriefingCameraIfNeeded()
   if (cameraOn.value && cameraRef.value) {
     await bindCameraStream(cameraRef.value)
-    await attachPresenceVideo(cameraRef.value)
+    void attachPresenceVideo(cameraRef.value)
     await attachGestureVideo(cameraRef.value)
   }
 }
@@ -2343,7 +2283,7 @@ async function bindBriefingCameraIfNeeded(retryCount = 0) {
     return
   }
   await bindCameraStream(videoEl)
-  await attachPresenceVideo(videoEl)
+  void attachPresenceVideo(videoEl)
 }
 
 async function onBriefingOpened() {
@@ -2363,20 +2303,31 @@ async function bindTrainingCameraIfNeeded(retryCount = 0) {
     return
   }
   await bindCameraStream(videoEl)
-  await attachPresenceVideo(videoEl)
+  void attachPresenceVideo(videoEl)
   await attachGestureVideo(videoEl)
 }
 
 async function playTrainingVideo() {
   if (!videoRef.value) return
-  try {
-    await videoRef.value.play()
-    playbackPaused.value = false
-  } catch (error) {
-    playbackPaused.value = true
-    console.warn('Training video play failed', error)
-    ElMessage.warning('视频未自动开始播放，请点击播放按钮继续训练')
-  }
+  if (playAttempt) return playAttempt
+  const videoEl = videoRef.value
+  playAttempt = (async () => {
+    try {
+      await videoEl.play()
+      playbackPaused.value = false
+      playbackWarningShown = false
+    } catch (error) {
+      playbackPaused.value = true
+      console.warn('Training video play failed', error)
+      if (!playbackWarningShown) {
+        playbackWarningShown = true
+        ElMessage.warning('视频未能开始播放，请检查网络后点击播放按钮重试')
+      }
+    } finally {
+      playAttempt = null
+    }
+  })()
+  return playAttempt
 }
 
 async function toggleTrainingPlayback() {
@@ -3219,11 +3170,6 @@ function resultLabel(r: string) {
   return ({ pass: '通过', skip: '跳过', timeout: '超时', fail: '未完成' } as any)[r] || r
 }
 
-function withCacheBust(url?: string, token = videoCacheBustToken) {
-  if (!url) return ''
-  const separator = url.includes('?') ? '&' : '?'
-  return `${url}${separator}codex_no_cache=${encodeURIComponent(token)}`
-}
 </script>
 
 <style scoped lang="scss">

@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Body, File, Form, UploadFile
 from typing import List, Optional
 
+from sqlalchemy.orm import Session
+
 import database
 import models
 from routers.auth import require_admin_user
@@ -13,6 +15,7 @@ from services.case_knowledge_service import (
     try_sync_case_to_knowledge,
 )
 from services.stage_config_service import normalize_stages
+from services.object_storage_service import MEDIA_BUCKET, build_object_key, delete_media_assets, guess_content_type, object_storage, upsert_media_asset
 import pydantic
 import schemas
 
@@ -106,9 +109,11 @@ def get_knowledge_source(source_id: str):
 
 
 @router.delete("/sources/{source_id:path}")
-def delete_knowledge_source(source_id: str):
+def delete_knowledge_source(source_id: str, db: Session = Depends(database.get_db)):
     """按文档源删除其下所有知识片段。"""
     try:
+        delete_media_assets(db, owner_type="knowledge_source", owner_key=source_id, asset_kind="source_file")
+        db.commit()
         result = rag_service.delete_by_source_id(source_id)
         if not result.get("deleted_ids"):
             raise HTTPException(status_code=404, detail="Knowledge source not found")
@@ -158,6 +163,7 @@ async def upload_knowledge_file(
     tags: str = Form(""),
     chunk_size: int = Form(DEFAULT_CHUNK_SIZE),
     overlap: int = Form(DEFAULT_CHUNK_OVERLAP),
+    db: Session = Depends(database.get_db),
 ):
     """上传 PDF/DOCX/TXT/Markdown 文档，解析、切片并写入向量库。"""
     filename = file.filename or ""
@@ -173,6 +179,12 @@ async def upload_knowledge_file(
 
     try:
         extraction = document_extract_service.recognize_file(filename, file_bytes)
+        stored = object_storage.put_bytes(
+            bucket=MEDIA_BUCKET,
+            object_key=build_object_key("knowledge-source-files", filename),
+            data=file_bytes,
+            content_type=guess_content_type(filename, file.content_type),
+        )
         result = rag_service.ingest_text(
             extraction.text,
             title=title.strip() or filename,
@@ -189,10 +201,22 @@ async def upload_knowledge_file(
             chunk_size=chunk_size,
             overlap=overlap,
         )
+        asset = upsert_media_asset(
+            db=db,
+            owner_type="knowledge_source",
+            owner_key=result["source_id"],
+            asset_kind="source_file",
+            stored=stored,
+            original_filename=filename,
+            content_type=guess_content_type(filename, file.content_type),
+        )
+        db.commit()
         return {
             "message": "Knowledge file indexed successfully",
             **result,
             "filename": filename,
+            "source_asset_id": asset.id,
+            "source_asset_key": asset.object_key,
             "extracted_chars": len(extraction.text),
             "warnings": extraction.warnings,
         }

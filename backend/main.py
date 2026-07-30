@@ -18,6 +18,7 @@ import models
 from env_loader import load_backend_env
 from routers import auth, cases, classes, dashboard, face, knowledge, ops, speech, student, training, videos, video_training
 from services.face_service import warmup_face_engine_async
+from services.object_storage_service import LOCAL_OBJECT_ROOT
 
 load_backend_env()
 
@@ -199,6 +200,7 @@ def ensure_video_schema_compatibility():
             models.VideoNode.__table__,
             models.VideoTrainingSession.__table__,
             models.VideoNodeResult.__table__,
+            models.VideoTrainingArtifact.__table__,
         ):
             table.create(bind=database.engine, checkfirst=True)
         # 为已存在的 training_videos 表补充 briefing 列
@@ -562,6 +564,9 @@ app.mount("/static/profile-avatars", StaticFiles(directory=_profile_avatars_dir)
 _session_media_dir = os.path.join(os.path.dirname(__file__), "static", "session_media")
 os.makedirs(_session_media_dir, exist_ok=True)
 app.mount("/static/session_media", StaticFiles(directory=_session_media_dir), name="session_media_static")
+
+os.makedirs(LOCAL_OBJECT_ROOT, exist_ok=True)
+app.mount("/object-storage", StaticFiles(directory=str(LOCAL_OBJECT_ROOT)), name="object_storage_static")
 
 frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 

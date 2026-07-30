@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import math
 import os
@@ -1100,9 +1101,32 @@ def _resolve_node_interaction_type(
     return "voice_qa"
 
 
+def _parse_timestamp_seconds(value: Any, fallback: int) -> int:
+    if isinstance(value, (int, float)):
+        return int(round(value))
+    text = str(value or "").strip().lower().removesuffix("s").removesuffix("秒").strip()
+    if not text:
+        return fallback
+    if ":" in text:
+        try:
+            parts = [float(item.strip()) for item in text.split(":")]
+            if len(parts) == 2:
+                return int(round(parts[0] * 60 + parts[1]))
+            if len(parts) == 3:
+                return int(round(parts[0] * 3600 + parts[1] * 60 + parts[2]))
+        except ValueError:
+            return fallback
+    try:
+        return int(round(float(text)))
+    except ValueError:
+        return fallback
+
+
 def _normalize_node(raw: dict[str, Any], index: int, duration_seconds: Optional[int]) -> dict[str, Any]:
     duration = max(1, int(duration_seconds or 0) or 120)
-    trigger_time = int(raw.get("trigger_time") or max(1, min(duration - 2, 12 + index * 18)))
+    fallback_trigger = max(1, min(duration - 2, 12 + index * 18))
+    trigger_time = _parse_timestamp_seconds(raw.get("trigger_time"), fallback_trigger)
+    trigger_time = max(1, min(max(duration - 2, 1), trigger_time))
     node_type = str(raw.get("node_type") or "action").strip() or "action"
     required_keywords = raw.get("required_keywords") if isinstance(raw.get("required_keywords"), list) else []
     prompt_content = raw.get("prompt_content") if isinstance(raw.get("prompt_content"), dict) else {}
@@ -1518,17 +1542,23 @@ def _transcribe_video_audio(video_path: str) -> list[dict[str, Any]]:
 
     try:
         try:
-            chunk_seconds = int(os.getenv("VIDEO_ASR_CHUNK_SECONDS", "30"))
+            chunk_seconds = int(os.getenv("VIDEO_ASR_CHUNK_SECONDS", "60"))
         except ValueError:
-            chunk_seconds = 30
+            chunk_seconds = 60
         chunk_seconds = max(10, min(chunk_seconds, 60))
         chunks = _split_audio_to_chunks(audio_path, chunk_seconds=chunk_seconds)
+        try:
+            configured_workers = int(os.getenv("VIDEO_ASR_PARALLELISM", "2"))
+        except ValueError:
+            configured_workers = 2
+        worker_count = max(1, min(configured_workers, 4, len(chunks)))
         print(
             "[video-analysis-timing] "
-            f"phase=asr_chunks chunks={len(chunks)} chunk_seconds={chunk_seconds}"
+            f"pipeline=single_step_v2 phase=asr_chunks chunks={len(chunks)} "
+            f"chunk_seconds={chunk_seconds} workers={worker_count}"
         )
-        transcript: list[dict[str, Any]] = []
-        for chunk in chunks:
+
+        def _transcribe_chunk(chunk: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], float]:
             chunk_started_at = time.monotonic()
             chunk_duration_actual = max(float(chunk.get("end_time") or 0) - float(chunk.get("start_time") or 0), 1.0)
             segments = _transcribe_audio_chunk(
@@ -1536,13 +1566,22 @@ def _transcribe_video_audio(video_path: str) -> list[dict[str, Any]]:
                 chunk["start_time"],
                 chunk_duration=chunk_duration_actual,
             )
-            print(
-                "[video-analysis-timing] "
-                f"phase=asr_chunk start_s={float(chunk.get('start_time') or 0):.1f} "
-                f"end_s={float(chunk.get('end_time') or 0):.1f} "
-                f"segments={len(segments)} elapsed_s={time.monotonic() - chunk_started_at:.2f}"
-            )
-            transcript.extend(segments)
+            return chunk, segments, time.monotonic() - chunk_started_at
+
+        transcript: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="video-asr") as executor:
+            futures = [executor.submit(_transcribe_chunk, chunk) for chunk in chunks]
+            for future in as_completed(futures):
+                chunk, segments, elapsed = future.result()
+                transcript.extend(segments)
+                print(
+                    "[video-analysis-timing] "
+                    f"pipeline=single_step_v2 phase=asr_chunk start_s={float(chunk.get('start_time') or 0):.1f} "
+                    f"end_s={float(chunk.get('end_time') or 0):.1f} "
+                    f"segments={len(segments)} elapsed_s={elapsed:.2f}"
+                )
+        transcript.sort(key=lambda item: (float(item.get("time") or 0), float(item.get("end_time") or 0)))
+        for chunk in chunks:
             if chunk["path"] != audio_path:
                 try:
                     os.remove(chunk["path"])
@@ -1967,8 +2006,12 @@ def _single_step_analysis(
     duration_seconds: Optional[int],
     transcript: list[dict[str, Any]],
     ocr_hints: list[str],
+    preferred_type: Optional[str] = None,
+    scenario_hint: Optional[str] = None,
+    training_variant: Optional[str] = None,
+    difficulty_level: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """单步分析回退（当两阶段分析第一步失败时使用）"""
+    """Generate scene understanding and training nodes in one model call."""
     client, model, _, _ = _get_video_analysis_llm()
 
     transcript_text = ""
@@ -1979,31 +2022,39 @@ def _single_step_analysis(
             lines.append(f"[{t//60}:{t%60:02d}] {seg.get('text', '')}")
         transcript_text = "\n".join(lines)
 
-    prompt = f"""你是公安实战训练课程编排专家。根据以下视频语音转写，生成训练节点。
+    prompt = f"""你是公安实战视频训练课程编排专家。请一次完成场景理解和训练节点设计。
 
-视频标题：{title_hint or '未提供'}，时长：{int(duration_seconds or 0)}秒
-OCR：{' / '.join(ocr_hints[:6]) if ocr_hints else '无'}
+视频标题：{title_hint or '未提供'}
+视频时长：{int(duration_seconds or 0)}秒
+指定视频类型：{preferred_type or '自动判断'}
+场景提示：{scenario_hint or '无'}
+训练变体：{training_variant or '标准训练'}
+难度：{difficulty_level or '自动判断'}
+OCR提示：{' / '.join(ocr_hints[:6]) if ocr_hints else '无'}
 
-语音转写：
+带时间戳的语音转写：
 {transcript_text}
 
-输出JSON，包含title, description, video_type, scenario_type, difficulty, briefing, tags, nodes(4-6个)。
-每个node含：title, trigger_time, node_interaction_type(judgment/voice_qa/choice), ai_instructor_hint, choice_options, correct_answer, required_keywords, timeout_seconds, score_weight, prompt_content(instruction/scene_summary/speech_hint)。
-交互类型必须多样化。trigger_time必须基于语音时间戳。"""
+只输出一个JSON对象，包含title、description、video_type、scenario_type、difficulty、briefing、tags、status和nodes。
+nodes包含4至6个训练节点，按trigger_time升序排列，时间必须来自转写内容并位于视频时长内。
+每个节点包含title、trigger_time、pause_mode、node_type、node_interaction_type、ai_instructor_hint、choice_options、correct_answer、required_keywords、timeout_seconds、score_weight和prompt_content。
+prompt_content至少包含instruction、scene_summary和speech_hint。互动类型按内容合理使用judgment、voice_qa、choice，避免重复和空泛问题。
+视频类型已指定时必须保持指定值。"""
 
     try:
-        response = client.chat.completions.create(
+        response = create_json_chat_completion(
+            llm_client=client,
             model=model,
             messages=[
-                {"role": "system", "content": "只输出合法JSON。"},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.3,
+            temperature=0.2,
             max_tokens=5000,
+            retries=1,
         )
         return extract_json_payload(extract_message_text(response))
     except Exception as exc:
-        print(f"Single-step analysis error: {exc}")
+        print(f"Single-step analysis error: {exc.__class__.__name__}: {exc}")
         return None
 
 
@@ -2062,37 +2113,33 @@ def analyze_video_file(
             "transcript": [],
         }
 
-    # Step 1: 提取视频帧用于 OCR
-    frames_started_at = time.monotonic()
-    frames = _sample_video_frames(video_path)
-    print(
-        "[video-analysis-timing] "
-        f"phase=sample_frames frames={len(frames)} elapsed_s={time.monotonic() - frames_started_at:.2f}"
-    )
-    ocr_started_at = time.monotonic()
-    ocr_hints = _extract_ocr_hints(frames) if frames else []
-    print(
-        "[video-analysis-timing] "
-        f"phase=ocr hints={len(ocr_hints)} elapsed_s={time.monotonic() - ocr_started_at:.2f}"
-    )
+    print("[video-analysis-timing] pipeline=single_step_v2 phase=start")
 
-    # Step 2: 检测场景切换点
-    print(f"[视频分析] 检测场景切换...")
-    scene_started_at = time.monotonic()
-    scene_changes = _detect_scene_changes(video_path)
-    print(
-        "[video-analysis-timing] "
-        f"phase=scene_changes changes={len(scene_changes)} elapsed_s={time.monotonic() - scene_started_at:.2f}"
-    )
-
-    # Step 3: 提取音频并 ASR 转写（句子级精度，10秒切片）
+    # Speech is the primary source for the speed-first pipeline. OCR is only a
+    # fallback for silent videos, avoiding a PaddleOCR startup and full-video
+    # scene scan on the normal path.
     print(f"[视频分析] 开始提取音频并转写: {video_path}")
     asr_started_at = time.monotonic()
     transcript = _transcribe_video_audio(video_path)
     print(
         "[video-analysis-timing] "
-        f"phase=asr_total segments={len(transcript)} elapsed_s={time.monotonic() - asr_started_at:.2f}"
+        f"pipeline=single_step_v2 phase=asr_total segments={len(transcript)} "
+        f"elapsed_s={time.monotonic() - asr_started_at:.2f}"
     )
+
+    frames: list[dict[str, Any]] = []
+    ocr_hints: list[str] = []
+    if not transcript:
+        frames_started_at = time.monotonic()
+        frames = _sample_video_frames(video_path)
+        ocr_hints = _extract_ocr_hints(frames) if frames else []
+        print(
+            "[video-analysis-timing] "
+            f"pipeline=single_step_v2 phase=ocr_fallback frames={len(frames)} "
+            f"hints={len(ocr_hints)} elapsed_s={time.monotonic() - frames_started_at:.2f}"
+        )
+    else:
+        print("[video-analysis-timing] pipeline=single_step_v2 phase=visual_scan skipped=transcript_available")
 
     # 如果既没有转写也没有 OCR，报错
     if not transcript and not ocr_hints:
@@ -2120,32 +2167,15 @@ def analyze_video_file(
             f"nodes={len(fallback.get('nodes') or [])} elapsed_s={time.monotonic() - analysis_started_at:.2f}"
         )
         return fallback
-        return {
-            "analysis_mode": "error",
-            "analysis_error": "无法从视频中提取语音或文字内容。请确认：1) 视频有声音 2) ffmpeg 已安装 3) DASHSCOPE_API_KEY 已配置。",
-            "title": title_hint or "未命名视频",
-            "description": "",
-            "video_type": "interactive",
-            "briefing": None,
-            "tags": [],
-            "status": "draft",
-            "nodes": [],
-            "suggested_timestamps": [],
-            "frame_count": len(frames),
-            "ocr_hints": ocr_hints,
-            "transcript": [],
-        }
 
-    # Step 4: 两阶段 AI 分析（场景理解 → 训练编排）
+    # One LLM call generates both scene understanding and training nodes.
     try:
         llm_started_at = time.monotonic()
-        payload = _request_llm_analysis(
+        payload = _single_step_analysis(
             title_hint=title_hint,
             duration_seconds=duration_seconds,
-            frames=frames,
             ocr_hints=ocr_hints,
             transcript=transcript,
-            scene_changes=scene_changes,
             preferred_type=preferred_type,
             scenario_hint=scenario_hint,
             training_variant=training_variant,
@@ -2153,7 +2183,8 @@ def analyze_video_file(
         )
         print(
             "[video-analysis-timing] "
-            f"phase=llm_total ok={bool(payload)} elapsed_s={time.monotonic() - llm_started_at:.2f}"
+            f"pipeline=single_step_v2 phase=llm_single ok={bool(payload)} "
+            f"elapsed_s={time.monotonic() - llm_started_at:.2f}"
         )
         if not payload:
             return {
@@ -2177,9 +2208,10 @@ def analyze_video_file(
         normalized["frame_count"] = len(frames)
         normalized["ocr_hints"] = ocr_hints
         normalized["transcript"] = transcript
+        normalized["analysis_pipeline"] = "single_step_v2"
         print(
             "[video-analysis-timing] "
-            f"phase=analysis_total mode={normalized.get('analysis_mode')} "
+            f"pipeline=single_step_v2 phase=analysis_total mode={normalized.get('analysis_mode')} "
             f"nodes={len(normalized.get('nodes') or [])} elapsed_s={time.monotonic() - analysis_started_at:.2f}"
         )
         return normalized
