@@ -454,10 +454,11 @@ watch(activeTab, async () => {
 <style scoped>
 .class-task-page {
   display: grid;
-  grid-template-rows: auto auto;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 18px;
-  min-height: 100%;
-  overflow: visible;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   padding: 16px 28px 18px;
   background: #f3f6fa;
 }
@@ -541,10 +542,11 @@ watch(activeTab, async () => {
 .task-panel {
   display: flex;
   flex-direction: column;
+  min-height: 0;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fff;
-  overflow: visible;
+  overflow: hidden;
   box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
 }
 
@@ -556,7 +558,11 @@ watch(activeTab, async () => {
 }
 
 .task-panel__body {
-  overflow: visible;
+  flex: 1;
+  min-height: 0;
+  overflow-y: scroll;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
 }
 
 .task-tabs :deep(.el-tabs__header) {
