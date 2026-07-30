@@ -52,6 +52,7 @@ from services.opening_turn_service import (
     resolve_dialogue_mode,
 )
 from services.training_runtime_service import dump_runtime_state, load_runtime_state
+from services.object_storage_service import MEDIA_BUCKET, build_object_key, delete_media_assets, get_media_asset, guess_content_type, object_storage, upsert_media_asset
 
 router = APIRouter(prefix="/training", tags=["Training"])
 
@@ -90,18 +91,22 @@ def _redact_internal_role_fields(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _artifact_url(file_path: str | None) -> str | None:
+def _artifact_url(db: Session, artifact: models.TrainingSessionArtifact) -> str | None:
+    asset = get_media_asset(db, "training_session_artifact", artifact.id, "file")
+    if asset:
+        return object_storage.url_for(asset)
+    file_path = artifact.file_path
     if not file_path:
         return None
     return f"/static/session_media/{file_path.replace(os.sep, '/')}"
 
 
-def _serialize_artifact(artifact: models.TrainingSessionArtifact) -> dict[str, Any]:
+def _serialize_artifact(db: Session, artifact: models.TrainingSessionArtifact) -> dict[str, Any]:
     return {
         "id": artifact.id,
         "session_id": artifact.session_id,
         "artifact_type": artifact.artifact_type,
-        "file_url": _artifact_url(artifact.file_path),
+        "file_url": _artifact_url(db, artifact),
         "mime_type": artifact.mime_type,
         "file_size": artifact.file_size,
         "duration_seconds": artifact.duration_seconds,
@@ -840,7 +845,7 @@ def get_session(
         auto_finish_ready=guidance_payload["auto_finish_ready"],
         closure_summary=guidance_payload["closure_summary"],
         assignment_context=get_session_assignment_context(db, session.id, current_user.id),
-        artifacts=[_serialize_artifact(item) for item in (session.artifacts or [])],
+        artifacts=[_serialize_artifact(db, item) for item in (session.artifacts or [])],
         messages=repaired_messages,
     )
 
@@ -853,7 +858,7 @@ def get_session_artifacts(
 ):
     session = _get_accessible_training_session(db, session_id, current_user)
     return {
-        "items": [_serialize_artifact(item) for item in (session.artifacts or [])],
+        "items": [_serialize_artifact(db, item) for item in (session.artifacts or [])],
     }
 
 
@@ -875,22 +880,20 @@ async def upload_session_artifact(
     if not data:
         raise HTTPException(status_code=400, detail="附件为空")
 
-    os.makedirs(SESSION_MEDIA_DIR, exist_ok=True)
     safe_type = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in artifact_type).strip("_") or "screenshot"
-    relative_dir = os.path.join(str(session.user_id), str(session.id))
-    abs_dir = os.path.join(SESSION_MEDIA_DIR, relative_dir)
-    os.makedirs(abs_dir, exist_ok=True)
     ext = ALLOWED_ARTIFACT_TYPES[content_type]
     filename = f"{safe_type}_{uuid.uuid4().hex}{ext}"
-    rel_path = os.path.join(relative_dir, filename)
-    abs_path = os.path.join(SESSION_MEDIA_DIR, rel_path)
-    with open(abs_path, "wb") as file_handle:
-        file_handle.write(data)
+    stored = object_storage.put_bytes(
+        bucket=MEDIA_BUCKET,
+        object_key=build_object_key(f"training-sessions/{session.user_id}/{session.id}", filename),
+        data=data,
+        content_type=guess_content_type(filename, content_type),
+    )
 
     artifact = models.TrainingSessionArtifact(
         session_id=session.id,
         artifact_type=safe_type,
-        file_path=rel_path,
+        file_path=stored.object_key,
         mime_type=content_type,
         file_size=len(data),
         duration_seconds=duration_seconds if duration_seconds and duration_seconds > 0 else None,
@@ -898,7 +901,17 @@ async def upload_session_artifact(
     db.add(artifact)
     db.commit()
     db.refresh(artifact)
-    return _serialize_artifact(artifact)
+    upsert_media_asset(
+        db,
+        owner_type="training_session_artifact",
+        owner_key=artifact.id,
+        asset_kind="file",
+        stored=stored,
+        original_filename=artifact_file.filename or filename,
+        content_type=content_type,
+    )
+    db.commit()
+    return _serialize_artifact(db, artifact)
 
 
 @router.post("/finish/{session_id}")
@@ -995,6 +1008,17 @@ def delete_training_session(
         raise HTTPException(status_code=400, detail="班级作业训练记录请在班级作业中查看，不能从普通训练历史删除")
 
     db.query(models.Message).filter(models.Message.session_id == session.id).delete(synchronize_session=False)
+    artifact_ids = [
+        item[0]
+        for item in db.query(models.TrainingSessionArtifact.id)
+        .filter(models.TrainingSessionArtifact.session_id == session.id)
+        .all()
+    ]
+    for artifact_id in artifact_ids:
+        delete_media_assets(db, owner_type="training_session_artifact", owner_key=artifact_id)
+    db.query(models.TrainingSessionArtifact).filter(models.TrainingSessionArtifact.session_id == session.id).delete(
+        synchronize_session=False
+    )
     db.delete(session)
     db.commit()
 
@@ -1022,6 +1046,17 @@ def delete_active_training_sessions(
 
     if session_ids:
         db.query(models.Message).filter(models.Message.session_id.in_(session_ids)).delete(synchronize_session=False)
+        artifact_ids = [
+            item[0]
+            for item in db.query(models.TrainingSessionArtifact.id)
+            .filter(models.TrainingSessionArtifact.session_id.in_(session_ids))
+            .all()
+        ]
+        for artifact_id in artifact_ids:
+            delete_media_assets(db, owner_type="training_session_artifact", owner_key=artifact_id)
+        db.query(models.TrainingSessionArtifact).filter(models.TrainingSessionArtifact.session_id.in_(session_ids)).delete(
+            synchronize_session=False
+        )
         db.query(models.TrainingSession).filter(models.TrainingSession.id.in_(session_ids)).delete(synchronize_session=False)
         db.commit()
 

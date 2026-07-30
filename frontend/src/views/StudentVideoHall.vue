@@ -361,7 +361,6 @@ type DifficultyValue = 'easy' | 'medium' | 'hard'
 
 const router = useRouter()
 const setMainScrollable = inject<(v: boolean) => void>('setMainScrollable')
-const videoCacheBustToken = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 const allVideos = ref<VideoItem[]>([])
 const loading = ref(false)
@@ -381,7 +380,7 @@ const entryMode = ref<'practice' | 'exam'>('practice')
 const playerVideo = ref<VideoItem | null>(null)
 const recentSessionMap = ref<Record<number, SessionBrief>>({})
 const { ensureVideoCover, ensureVideoCovers, getVideoCover } = useVideoCover()
-const playerVideoUrl = computed(() => withCacheBust(playerVideo.value?.video_url, videoCacheBustToken))
+const playerVideoUrl = computed(() => playerVideo.value?.video_url || '')
 
 const tabs = [
   { label: '全部视频', value: 'all' },
@@ -620,11 +619,6 @@ function formatDuration(seconds?: number) {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 }
 
-function withCacheBust(url?: string, token = videoCacheBustToken) {
-  if (!url) return ''
-  const separator = url.includes('?') ? '&' : '?'
-  return `${url}${separator}codex_no_cache=${encodeURIComponent(token)}`
-}
 </script>
 
 <style scoped lang="scss">

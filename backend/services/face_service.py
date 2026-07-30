@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ import models
 from services.classroom_service import sync_assignment_submission_for_session
 from services.evaluation_service import enforce_final_score_policy, evaluate_session
 from services.import_isolation import isolated_sys_path
+from services.object_storage_service import MEDIA_BUCKET, build_object_key, guess_content_type, object_storage, upsert_media_asset
 
 
 def _find_project_root() -> Path:
@@ -68,6 +70,7 @@ EMBEDDING_MODEL = os.getenv("INSIGHTFACE_MODEL_NAME", "buffalo_l")
 
 _face_app = None
 _face_engine_error = ""
+_face_engine_lock = threading.Lock()
 
 
 def _face_service_unavailable_detail(error: Exception | str) -> str:
@@ -128,6 +131,13 @@ class FaceExtraction:
 
 
 def _load_engine():
+    if _face_app is not None:
+        return _face_app
+    with _face_engine_lock:
+        return _load_engine_locked()
+
+
+def _load_engine_locked():
     global _face_app, _face_engine_error
     if _face_app is not None:
         return _face_app
@@ -188,8 +198,6 @@ def _face_dependency_status() -> dict[str, Any]:
 
 
 def warmup_face_engine_async() -> None:
-    import threading
-
     def _warmup() -> None:
         try:
             _load_engine()
@@ -536,14 +544,24 @@ async def read_upload(file: UploadFile) -> bytes:
     return raw
 
 
-def save_profile_image(raw: bytes, student_id: int) -> str:
-    FACE_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+def save_profile_image(raw: bytes, student_id: int) -> tuple[str, object]:
     filename = f"student_{student_id}_{uuid4().hex}.jpg"
-    target = FACE_IMAGE_DIR / filename
     image = Image.open(__import__("io").BytesIO(raw)).convert("RGB")
     image.thumbnail((900, 900))
+    FACE_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    target = FACE_IMAGE_DIR / filename
     image.save(target, format="JPEG", quality=88)
-    return f"/static/face-profiles/{filename}"
+    stored = object_storage.put_file(
+        bucket=MEDIA_BUCKET,
+        object_key=build_object_key(f"face-profiles/{student_id}", filename),
+        source_path=target,
+        content_type=guess_content_type(filename, "image/jpeg"),
+    )
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        pass
+    return object_storage.url_for(stored), stored
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
@@ -561,30 +579,29 @@ def register_profile(db: Session, student: models.User, raw: bytes) -> models.Fa
     quality_reason = _quality_reason(quality_payload)
     if quality_reason:
         raise HTTPException(status_code=422, detail=quality_reason[1])
-    image_url = save_profile_image(raw, student.id)
+    image_url, stored = save_profile_image(raw, student.id)
     profile = db.query(models.FaceProfile).filter(models.FaceProfile.student_id == student.id).first()
     if not profile:
         profile = models.FaceProfile(student_id=student.id)
-    existing_embeddings = _profile_embeddings(profile) if profile.id else []
-    existing_images = _safe_json_loads(getattr(profile, "sample_images_json", None), [])
-    existing_quality = _safe_json_loads(getattr(profile, "quality_json", None), [])
-    if not isinstance(existing_images, list):
-        existing_images = []
-    if not isinstance(existing_quality, list):
-        existing_quality = []
-    embeddings = (existing_embeddings + [extraction.embedding])[-5:]
-    sample_images = (existing_images + [image_url])[-5:]
-    quality_samples = (existing_quality + [extraction.quality])[-5:]
-    profile.face_embedding = json.dumps(embeddings[-1])
+    profile.face_embedding = json.dumps(extraction.embedding)
     profile.face_image_url = image_url
-    profile.embeddings_json = json.dumps(embeddings, ensure_ascii=False)
-    profile.sample_images_json = json.dumps(sample_images, ensure_ascii=False)
-    profile.quality_json = json.dumps(quality_samples, ensure_ascii=False)
+    profile.embeddings_json = json.dumps([extraction.embedding], ensure_ascii=False)
+    profile.sample_images_json = json.dumps([image_url], ensure_ascii=False)
+    profile.quality_json = json.dumps([extraction.quality], ensure_ascii=False)
     profile.embedding_model = f"insightface:{EMBEDDING_MODEL}"
     profile.updated_at = datetime.utcnow()
     db.add(profile)
     db.commit()
     db.refresh(profile)
+    upsert_media_asset(
+        db,
+        owner_type="face_profile",
+        owner_key=student.id,
+        asset_kind="primary",
+        stored=stored,
+        original_filename=f"student_{student.id}.jpg",
+        content_type="image/jpeg",
+    )
     return profile
 
 

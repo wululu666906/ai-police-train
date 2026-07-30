@@ -16,6 +16,7 @@ __pycache__/
 chroma_db/
 data/
 backend/chroma_db/
+backend/data/object_storage/
 !data/
 data/*
 !data/face_models/

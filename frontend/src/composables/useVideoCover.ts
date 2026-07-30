@@ -19,7 +19,7 @@ export function useVideoCover() {
     loadingIds.add(video.id)
 
     try {
-      const coverUrl = await captureVideoFrame(withCacheBust(video.video_url, `cover-${video.id}`))
+      const coverUrl = await captureVideoFrame(video.video_url)
       if (coverUrl) {
         generatedCovers.value = {
           ...generatedCovers.value,
@@ -60,11 +60,6 @@ export function useVideoCover() {
     getVideoCover,
     clearGeneratedCovers,
   }
-}
-
-function withCacheBust(url: string, token: string) {
-  const separator = url.includes('?') ? '&' : '?'
-  return `${url}${separator}codex_no_cache=${encodeURIComponent(token)}`
 }
 
 async function captureVideoFrame(videoUrl: string): Promise<string> {
