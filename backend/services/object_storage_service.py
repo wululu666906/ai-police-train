@@ -112,6 +112,7 @@ class ObjectStorage:
         object_key: str,
         data: bytes,
         content_type: str | None = None,
+        cache_control: str | None = None,
     ) -> StoredObject:
         if self.is_minio:
             self._ensure_bucket(bucket)
@@ -122,6 +123,7 @@ class ObjectStorage:
                 io.BytesIO(data),
                 length=len(data),
                 content_type=content_type or "application/octet-stream",
+                metadata={"Cache-Control": cache_control} if cache_control else None,
             )
         else:
             target = LOCAL_OBJECT_ROOT / bucket / object_key
@@ -136,12 +138,19 @@ class ObjectStorage:
         object_key: str,
         source_path: str | os.PathLike[str],
         content_type: str | None = None,
+        cache_control: str | None = None,
     ) -> StoredObject:
         path = Path(source_path)
         size = path.stat().st_size
         if self.is_minio:
             self._ensure_bucket(bucket)
-            self._minio_client().fput_object(bucket, object_key, str(path), content_type=content_type)
+            self._minio_client().fput_object(
+                bucket,
+                object_key,
+                str(path),
+                content_type=content_type,
+                metadata={"Cache-Control": cache_control} if cache_control else None,
+            )
         else:
             target = LOCAL_OBJECT_ROOT / bucket / object_key
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -163,6 +172,52 @@ class ObjectStorage:
                 path.unlink()
             except FileNotFoundError:
                 pass
+
+    def delete_prefix(self, bucket: str | None, prefix: str, provider: str | None = None) -> int:
+        active_bucket = bucket or MEDIA_BUCKET
+        active_provider = provider or self.provider
+        normalized_prefix = prefix.strip("/") + "/"
+        deleted = 0
+        if active_provider == "minio":
+            client = self._minio_client()
+            for item in client.list_objects(active_bucket, prefix=normalized_prefix, recursive=True):
+                client.remove_object(active_bucket, item.object_name)
+                deleted += 1
+            return deleted
+
+        root = LOCAL_OBJECT_ROOT / active_bucket / normalized_prefix
+        if root.exists():
+            deleted = sum(1 for path in root.rglob("*") if path.is_file())
+            shutil.rmtree(root, ignore_errors=True)
+        return deleted
+
+    def read_bytes(self, *, bucket: str | None, object_key: str, provider: str | None = None) -> bytes:
+        active_bucket = bucket or MEDIA_BUCKET
+        active_provider = provider or self.provider
+        if active_provider == "local":
+            return (LOCAL_OBJECT_ROOT / active_bucket / object_key).read_bytes()
+
+        response = self._minio_client().get_object(active_bucket, object_key)
+        try:
+            return response.read()
+        finally:
+            response.close()
+            response.release_conn()
+
+    def url_for_object(
+        self,
+        *,
+        bucket: str | None,
+        object_key: str,
+        provider: str | None = None,
+    ) -> str:
+        return self.url_for(
+            StoredObject(
+                provider=provider or self.provider,
+                bucket=bucket or MEDIA_BUCKET,
+                object_key=object_key,
+            )
+        ) or ""
 
     def url_for(self, asset: models.MediaAsset | StoredObject | None) -> str | None:
         if not asset:

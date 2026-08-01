@@ -30,6 +30,12 @@ from services.object_storage_service import (
     guess_content_type,
     upsert_media_asset,
 )
+from services.video_playback_service import (
+    build_signed_manifest,
+    delete_playback_assets,
+    enqueue_playback,
+    get_playback_status,
+)
 
 router = APIRouter(prefix="/videos", tags=["Videos"])
 
@@ -659,6 +665,7 @@ def _serialize_video(
         "node_count": len(video.nodes) if video.nodes else 0,
         "teaching_unlocked": True if teaching_unlocked is None else teaching_unlocked,
         "lock_reason": lock_reason,
+        "playback": get_playback_status(db, video) if db is not None else {"status": "missing"},
     }
     data["ai_analysis_mode"] = _infer_analysis_mode_from_video(data["tags"])
     data["material_metadata"] = _extract_material_metadata(video, data["tags"])
@@ -950,6 +957,20 @@ def _get_accessible_video(
     return video
 
 
+def _get_playback_accessible_video(
+    db: Session,
+    video_id: int,
+    current_user: models.User,
+) -> models.TrainingVideo:
+    video = _get_accessible_video(db, video_id, current_user)
+    if current_user.role != "admin" and video.video_type == "teaching":
+        completed_case_ids, completed_video_ids = _load_finished_interactive_unlock_scope(db, current_user.id)
+        unlocked, _ = _get_teaching_unlock_state(video, current_user, completed_case_ids, completed_video_ids)
+        if not unlocked:
+            raise HTTPException(status_code=403, detail="完成对应交互实训后解锁完整教学视频")
+    return video
+
+
 def _load_video_for_access(
     db: Session,
     video_id: int,
@@ -1196,9 +1217,11 @@ async def upload_video(
             video_obj.status = "published"
             db.commit()
         db.refresh(video_obj)
+        enqueue_playback(video_id)
         return _serialize_video(video_obj, include_nodes=True, db=db)
 
     if auto_configure is False:
+        enqueue_playback(video_id)
         return _serialize_video(video_obj, include_nodes=False, db=db)
 
     # 后台线程执行 AI 分析
@@ -1240,6 +1263,7 @@ async def upload_video(
                 pass
         finally:
             bg_db.close()
+            enqueue_playback(video_id)
 
     threading.Thread(target=_background_analyze, daemon=True).start()
 
@@ -1383,6 +1407,42 @@ def toggle_publish(
     video.status = "published" if video.status != "published" else "draft"
     db.commit()
     return {"id": video_id, "status": video.status}
+
+
+@router.get("/{video_id}/playback-status")
+def playback_status(
+    video_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    video = _get_playback_accessible_video(db, video_id, current_user)
+    return get_playback_status(db, video)
+
+
+@router.post("/{video_id}/prepare-playback")
+def prepare_playback(
+    video_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    video = _get_playback_accessible_video(db, video_id, current_user)
+    status = get_playback_status(db, video)
+    queued = enqueue_playback(video.id) if status["status"] != "ready" else False
+    return {**status, "queued": queued}
+
+
+@router.get("/{video_id}/playback-manifest")
+def playback_manifest(
+    video_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    video = _get_playback_accessible_video(db, video_id, current_user)
+    result = build_signed_manifest(db, video)
+    if result["status"] in {"missing", "failed"}:
+        result["queued"] = enqueue_playback(video.id)
+    result["fallback_url"] = _video_url(db, video)
+    return result
 
 
 # ─────────────────────────────────────────────
@@ -1651,6 +1711,7 @@ def delete_video(
     if not video:
         raise HTTPException(status_code=404, detail="视频不存在")
 
+    delete_playback_assets(db, video.id)
     delete_media_assets(db, owner_type="video", owner_key=video.id)
     if video.file_path:
         fp = os.path.join(VIDEOS_DIR, video.file_path)

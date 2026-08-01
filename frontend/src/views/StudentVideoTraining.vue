@@ -195,11 +195,11 @@
           <video
             ref="videoRef"
             class="imm-video-layer__video"
-            :src="playbackVideoUrl"
             :poster="video?.thumbnail_url || undefined"
             preload="auto"
-            @play="playbackPaused = false"
+            @play="playbackPaused = false; markPlaybackPlaying()"
             @pause="playbackPaused = true"
+            @waiting="markPlaybackWaiting()"
             @timeupdate="onTimeUpdate"
             @ended="onVideoEnded"
             @seeking="onSeeking"
@@ -215,7 +215,7 @@
             class="imm-play-retry"
             @click.stop="playTrainingVideo"
           >
-            ▶ 播放视频并进入训练
+            {{ playbackState === 'preparing' ? '视频准备中...' : '▶ 播放视频并进入训练' }}
           </button>
           <!-- Camera PIP (draggable, auto-snap) -->
           <div
@@ -717,11 +717,11 @@
               <video
                 ref="videoRef"
                 class="stage-video"
-                :src="playbackVideoUrl"
                 :poster="video?.thumbnail_url || undefined"
                 preload="auto"
-                @play="playbackPaused = false"
+                @play="playbackPaused = false; markPlaybackPlaying()"
                 @pause="playbackPaused = true"
+                @waiting="markPlaybackWaiting()"
                 @timeupdate="onTimeUpdate"
                 @ended="onVideoEnded"
                 @seeking="onSeeking"
@@ -1178,6 +1178,7 @@ import request from '../utils/request'
 import { usePresenceMonitor } from '../composables/usePresenceMonitor'
 import { useFaceIdentityVerify } from '../composables/useFaceIdentityVerify'
 import { useGestureDetector } from '../composables/useGestureDetector'
+import { useSegmentedVideoPlayback } from '../composables/useSegmentedVideoPlayback'
 import { createSpeechProvider } from '../services/speech/index'
 import type { SpeechRecognitionProvider } from '../services/speech/types'
 
@@ -1521,6 +1522,13 @@ const camPos = ref({ x: 16, y: 80 })
 const deviceReady = ref(false)
 const deviceWarningText = ref('')
 let cameraStream: MediaStream | null = null
+const {
+  state: playbackState,
+  attach: attachPlayback,
+  markPlaying: markPlaybackPlaying,
+  markWaiting: markPlaybackWaiting,
+} = useSegmentedVideoPlayback(videoRef)
+let playbackPreparePromise: Promise<void> | null = null
 
 const {
   status: presenceStatus,
@@ -1573,7 +1581,6 @@ const currentNode = computed<VideoNode | null>(() =>
     ? video.value.nodes[currentNodeIndex.value] ?? null
     : null
 )
-const playbackVideoUrl = computed(() => video.value?.video_url || '')
 const speechSupported = computed(() => Boolean(speechProvider.value?.isSupported()))
 const identityReady = computed(() =>
   Boolean(
@@ -2038,6 +2045,8 @@ async function fetchVideo() {
   try {
     const res: any = await request.get(`/videos/${videoId}`)
     video.value = res
+    await nextTick()
+    playbackPreparePromise = attachPlayback(videoId, String(res.video_url || ''))
   } catch (error: any) {
     ElMessage.error('加载视频失败')
     video.value = null
@@ -2313,6 +2322,7 @@ async function playTrainingVideo() {
   const videoEl = videoRef.value
   playAttempt = (async () => {
     try {
+      if (playbackPreparePromise) await playbackPreparePromise
       await videoEl.play()
       playbackPaused.value = false
       playbackWarningShown = false
