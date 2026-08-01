@@ -19,6 +19,7 @@ from env_loader import load_backend_env
 from routers import auth, cases, classes, dashboard, face, knowledge, ops, speech, student, training, videos, video_training
 from services.face_service import warmup_face_engine_async
 from services.object_storage_service import LOCAL_OBJECT_ROOT
+from services.video_playback_service import schedule_existing_videos
 
 load_backend_env()
 
@@ -641,6 +642,7 @@ def on_startup():
     ensure_account_group_schema_compatibility()
     ensure_ops_audit_schema_compatibility()
     ensure_default_users()
+    schedule_existing_videos()
     if os.getenv("FACE_ENGINE_WARMUP", "0").strip().lower() in {"1", "true", "yes", "on"}:
         warmup_face_engine_async()
 

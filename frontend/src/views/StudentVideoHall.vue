@@ -149,9 +149,9 @@
         </div>
         <div class="teaching-dialog__player">
           <video
+            ref="teachingVideoRef"
             controls
             class="video-player"
-            :src="playerVideoUrl"
             preload="metadata"
             controlslist="nodownload"
           >
@@ -323,12 +323,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Document, MagicStick, Search, SetUp, Timer, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
 import request from '../utils/request'
 import { useVideoCover } from '../composables/useVideoCover'
+import { useSegmentedVideoPlayback } from '../composables/useSegmentedVideoPlayback'
+import { clearPlaybackPrefetchQueue, prefetchPlayback } from '../services/videoPlayback'
 
 interface VideoItem {
   id: number
@@ -380,7 +382,8 @@ const entryMode = ref<'practice' | 'exam'>('practice')
 const playerVideo = ref<VideoItem | null>(null)
 const recentSessionMap = ref<Record<number, SessionBrief>>({})
 const { ensureVideoCover, ensureVideoCovers, getVideoCover } = useVideoCover()
-const playerVideoUrl = computed(() => playerVideo.value?.video_url || '')
+const teachingVideoRef = ref<HTMLVideoElement | null>(null)
+const { attach: attachTeachingPlayback, release: releaseTeachingPlayback } = useSegmentedVideoPlayback(teachingVideoRef)
 
 const tabs = [
   { label: '全部视频', value: 'all' },
@@ -397,6 +400,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   setMainScrollable?.(false)
+  clearPlaybackPrefetchQueue()
 })
 
 watch([activeTab, difficultyFilter, sceneFilter, modeFilter, sortBy, keyword], () => {
@@ -454,6 +458,14 @@ const filteredVideos = computed(() => {
 const pagedVideos = computed(() => {
   const start = (currentPage.value - 1) * pageSize.value
   return filteredVideos.value.slice(start, start + pageSize.value)
+})
+
+watch(pagedVideos, (videos) => {
+  videos.slice(0, 2).forEach(video => prefetchPlayback(video.id, 1))
+}, { immediate: true })
+
+watch(showTeachingPlayer, (shown) => {
+  if (!shown) releaseTeachingPlayback(true)
 })
 
 const statCards = computed(() => [
@@ -544,9 +556,11 @@ function openVideo(video: VideoItem) {
 
   playerVideo.value = { ...video }
   void ensureVideoCover(playerVideo.value)
+  prefetchPlayback(video.id, 10)
 
   if (video.video_type === 'teaching') {
     showTeachingPlayer.value = true
+    void nextTick().then(() => attachTeachingPlayback(video.id, String(video.video_url || '')))
   } else {
     entryStep.value = 1
     entryMode.value = 'practice'
