@@ -97,7 +97,6 @@ import StudentSidebar from '../geeker-adapt/components/StudentSidebar.vue'
 import StudentTopbar from '../geeker-adapt/components/StudentTopbar.vue'
 import { studentElementLocale } from '../geeker-adapt/setupElementPlus'
 import { clearAuth } from '../utils/auth'
-import { preloadPresenceDetector } from '../composables/usePresenceMonitor'
 import request from '../utils/request'
 import { showToast } from 'vant'
 import '../geeker-adapt/styles/common.scss'
@@ -216,7 +215,6 @@ const formatDateTime = (value: any) => {
 onMounted(() => {
   sidebarCollapsed.value = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
   fetchStudentAnnouncements()
-  void preloadPresenceDetector()
 })
 
 watch(sidebarCollapsed, (value) => {

@@ -2,6 +2,8 @@ from datetime import datetime, timedelta
 import os
 from collections import Counter
 import json
+from threading import Lock
+from time import monotonic
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -14,6 +16,30 @@ from services.state_influence_metrics import build_calibration_report
 from services.training_runtime_service import load_runtime_state
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"], dependencies=[Depends(require_admin_user)])
+
+
+class _TimedCache:
+    def __init__(self, ttl_seconds: float):
+        self.ttl_seconds = ttl_seconds
+        self._lock = Lock()
+        self._values: dict[tuple, tuple[float, object]] = {}
+
+    def get(self, key: tuple):
+        now = monotonic()
+        with self._lock:
+            cached = self._values.get(key)
+            if cached and now - cached[0] < self.ttl_seconds:
+                return cached[1]
+            if cached:
+                self._values.pop(key, None)
+        return None
+
+    def set(self, key: tuple, value):
+        with self._lock:
+            self._values[key] = (monotonic(), value)
+
+
+_dashboard_cache = _TimedCache(ttl_seconds=30)
 
 
 def _get_rag_count() -> int:
@@ -49,6 +75,10 @@ def _safe_json_loads(value, default):
 
 @router.get("/stats")
 def get_stats(db: Session = Depends(database.get_db)):
+    cached = _dashboard_cache.get(("stats",))
+    if cached is not None:
+        return cached
+
     now = datetime.utcnow()
     today_start = datetime(now.year, now.month, now.day)
     seven_days_ago = today_start - timedelta(days=6)
@@ -128,7 +158,7 @@ def get_stats(db: Session = Depends(database.get_db)):
         for scene_type, count in scene_gap_counter.most_common(4)
     ]
 
-    return {
+    result = {
         "cases": case_count,
         "roles": role_count,
         "sessions": session_count,
@@ -147,6 +177,8 @@ def get_stats(db: Session = Depends(database.get_db)):
         "trend": trend,
         "updated_at": now.isoformat(),
     }
+    _dashboard_cache.set(("stats",), result)
+    return result
 
 
 @router.get("/state-calibration")
@@ -156,11 +188,16 @@ def get_state_calibration(
     db: Session = Depends(database.get_db),
 ):
     limit = max(1, min(500, int(limit or 100)))
+    cache_key = ("state-calibration", scene_id, limit)
+    cached = _dashboard_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     query = db.query(models.TrainingSession).order_by(models.TrainingSession.created_at.desc())
     if scene_id is not None:
         query = query.filter(models.TrainingSession.scene_id == scene_id)
     sessions = query.limit(limit).all()
-    return build_calibration_report(
+    result = build_calibration_report(
         [
             {
                 "session_id": session.id,
@@ -170,3 +207,5 @@ def get_state_calibration(
             for session in sessions
         ]
     )
+    _dashboard_cache.set(cache_key, result)
+    return result

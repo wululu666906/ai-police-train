@@ -1,6 +1,6 @@
 ﻿from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -227,6 +227,11 @@ class PromptTemplate(Base):
 
 class TrainingSession(Base):
     __tablename__ = "training_sessions"
+    __table_args__ = (
+        Index("ix_perf_training_sessions_user_scene_id", "user_id", "scene_id", "id"),
+        Index("ix_perf_training_sessions_status_created", "status", "created_at"),
+        Index("ix_perf_training_sessions_created", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
@@ -294,6 +299,9 @@ class FaceVerificationEvent(Base):
 class TrainingSessionArtifact(Base):
     """普通训练会话留痕：截图、语音、录屏等附件"""
     __tablename__ = "training_session_artifacts"
+    __table_args__ = (
+        Index("ix_perf_training_artifacts_session_created", "session_id", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("training_sessions.id"), nullable=False)
@@ -309,6 +317,9 @@ class TrainingSessionArtifact(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        Index("ix_perf_messages_session_role", "session_id", "role"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("training_sessions.id"))
@@ -535,6 +546,9 @@ class VideoNode(Base):
 class VideoTrainingSession(Base):
     """视频实训 Session：跟踪学员的单次视频实训进度"""
     __tablename__ = "video_training_sessions"
+    __table_args__ = (
+        Index("ix_perf_video_sessions_user_created", "user_id", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
@@ -579,6 +593,9 @@ class VideoTrainingSession(Base):
 class VideoNodeResult(Base):
     """单个节点的判定结果"""
     __tablename__ = "video_node_results"
+    __table_args__ = (
+        Index("ix_perf_video_node_results_session_node", "session_id", "node_index"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("video_training_sessions.id"), nullable=False)

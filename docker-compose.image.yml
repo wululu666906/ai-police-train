@@ -32,7 +32,8 @@ services:
     volumes:
       - ./data:/app/backend/data
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
@@ -54,3 +55,9 @@ services:
     volumes:
       - ./data/minio:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s

@@ -540,6 +540,23 @@ def ensure_ops_audit_schema_compatibility():
         print(f"Ops audit/speech usage schema compatibility check failed: {error}")
 
 
+def ensure_performance_indexes():
+    indexed_models = (
+        models.TrainingSession,
+        models.TrainingSessionArtifact,
+        models.Message,
+        models.VideoTrainingSession,
+        models.VideoNodeResult,
+    )
+    try:
+        for model in indexed_models:
+            for index in model.__table__.indexes:
+                if index.name and index.name.startswith("ix_perf_"):
+                    index.create(bind=database.engine, checkfirst=True)
+    except Exception as error:
+        print(f"Performance index compatibility check failed: {error}")
+
+
 # 像素风头像静态文件
 _avatars_dir = os.path.join(os.path.dirname(__file__), "static", "avatars")
 if os.path.exists(_avatars_dir):
@@ -641,6 +658,7 @@ def on_startup():
     ensure_face_schema_compatibility()
     ensure_account_group_schema_compatibility()
     ensure_ops_audit_schema_compatibility()
+    ensure_performance_indexes()
     ensure_default_users()
     schedule_existing_videos()
     if os.getenv("FACE_ENGINE_WARMUP", "0").strip().lower() in {"1", "true", "yes", "on"}:
