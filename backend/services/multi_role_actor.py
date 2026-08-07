@@ -48,8 +48,11 @@ from .human_reaction_engine import (
     reaction_preface,
 )
 from .multi_role_service import _build_history_block, _role_display_name
+from .role_memory_retrieval_service import build_role_answer_context, format_retrieved_memories
+from .dialogue_policy_service import blend_state_delta
+from .role_dialogue_policy_service import build_dialogue_priority
 
-ROLE_ACTOR_PROMPT = """
+LEGACY_ROLE_ACTOR_PROMPT = """
 你正在扮演警情训练场景中的角色「{role_name}」，根据导演编排意图说出台词。
 
 【导演编排】
@@ -152,16 +155,45 @@ ROLE_ACTOR_PROMPT = """
 }}
 """
 
+ROLE_ACTOR_PROMPT = """你是警情训练现场人物「{role_name}」。只输出该人物此刻会自然说出口的话，不解释系统规则。
+
+当前场景：{scene_name}；阶段：{current_stage}
+学员刚才说：{user_text}
+本轮唯一执行策略：{dialogue_priority}
+当前问题要求：{question_instruction}
+本轮参与方式：{participation}；发言意图：{intent}；触发原因：{trigger_reason}
+你的身份边界：{identity_anchor_block}
+当前行为状态：{state_contract_block}
+本轮自然反应：{human_reaction_block}
+与你当前问题最相关的本人记忆：
+{case_knowledge_block}
+最近本人对话：
+{history_block}
+本轮其他角色已说：{peer_utterances_block}
+当前公开现场信息：{public_scene_block}
+视角要求：{perspective_hint}
+
+执行顺序：
+1. 先回答学员刚才这句话，不评价其提问技巧，不重复后台字段和模板话术。
+2. 事实只能来自本人记忆或本轮公开听到的话；不知道时明确说不知道哪一部分。
+3. 人物性格只影响口吻和披露节奏，不能压过当前问题。普通群众通常会对警方保持基本尊重并逐步配合。
+4. 有效安抚、明确保护或说明下一步后，应自然缓和；除非存在明确危险刺激，不得长期维持同样的激烈反应。
+5. 最多输出 {utterance_count} 条连续台词；能一句说清就只输出一句。
+6. supporting_knowledge_ids 填所用记忆ID；state_delta 仅表示轻微建议，最终状态由系统计算。
+
+只输出 JSON：
+{{"utterances":[{{"content":"自然台词","delivery":"normal","supporting_knowledge_ids":["K1"]}}],"inner_thought":"","state_delta":{{"emotion":0,"cooperation":0,"risk":0,"clarity":0}},"new_fact_revealed":null}}
+"""
+
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
 def _grounding_safe_reply(role: models.Role) -> str:
-    role_type = _text(getattr(role, "role_type", ""))
-    if any(token in role_type for token in ("证人", "目击", "旁观")):
-        return "我只能说我当时亲眼看到、听到的部分，其他情况我不能确认。"
-    return "这件事我只能说明自己清楚的部分，不确定的我不能乱说。"
+    # Missing source memory is a data-quality failure. Do not turn it into a
+    # visible, hard-coded character line that competes with the actor model.
+    return ""
 
 
 def _grounding_memory_reply(role: models.Role, knowledge_view: dict[str, Any], user_text: str) -> str:
@@ -243,9 +275,15 @@ def _repair_grounded_utterance(
     role: models.Role,
     knowledge_view: dict[str, Any],
     user_text: str,
+    *,
+    history: Optional[list[Any]] = None,
+    allow_model: bool = True,
 ) -> tuple[str, list[str]]:
     """One small, source-only repair call when actor JSON has no usable grounding."""
-    candidates = _rank_role_memories(knowledge_view, user_text)[:3]
+    answer_context = build_role_answer_context(knowledge_view, user_text, history=history, limit=10)
+    if answer_context.get("needs_clarification"):
+        return "你具体想问哪一件事？", []
+    candidates = [(1, item) for item in answer_context.get("items") or []]
     if not candidates:
         return _grounding_safe_reply(role), []
     memory_block = "\n".join(
@@ -255,25 +293,29 @@ def _repair_grounded_utterance(
     prompt = (
         f"你是{_role_display_name(role)}。只根据下列本人记忆，回答学员当前问题。\n"
         f"问题：{_text(user_text)}\n本人记忆：\n{memory_block}\n"
-        "只输出一句自然口语，不要标题、编号、证言/陈述字样、系统规则或知识ID；不知道就直接说无法确认。"
+        "自然、连贯地直接回答，不要标题、编号、证言/陈述字样、系统规则或知识ID。"
+        "若问完整经过，要从最早缘由讲到本人所知的最后情况，但不要机械说起因/经过/结果；不知道就明确无法确认。"
     )
     try:
+        if not allow_model:
+            raise RuntimeError("model repair disabled")
+        max_tokens = 420 if answer_context.get("intent") == "full_process" else 200
         response = create_text_chat_completion(
             messages=[{"role": "user", "content": prompt}],
             model=get_roleplay_model(),
             temperature=0.35,
-            max_tokens=160,
+            max_tokens=max_tokens,
             long_output=False,
             extra_kwargs=get_fast_generation_kwargs(),
         )
         repaired = _text(extract_message_text(response))
-        ids = _auto_ground_utterance(repaired, knowledge_view, user_text)
+        ids = [_text(item.get("knowledge_id")) for _, item in candidates if _text(item.get("knowledge_id"))]
         if repaired and ids:
             return repaired, ids
     except Exception:
         pass
     chosen = candidates[0][1]
-    return _grounding_memory_reply(role, knowledge_view, user_text), [_text(chosen.get("knowledge_id"))]
+    return _grounding_memory_reply(role, {**knowledge_view, "ledger": [chosen]}, user_text), [_text(chosen.get("knowledge_id"))]
 
 
 def _format_facts(value: Any) -> str:
@@ -944,26 +986,18 @@ def _in_character_fallback(role: models.Role, user_text: str) -> str:
 
 
 def _sanitize_meta_dialogue(
-    utterances: list[dict[str, str]], *, role: models.Role, user_text: str
+    utterances: list[dict[str, str]], *, role: models.Role, user_text: str, grounded_fallback: str = ""
 ) -> list[dict[str, str]]:
-    """Prevent internal repair language from leaking into the role's visible speech."""
+    """Remove leaked control language without authoring a competing reply."""
     cleaned: list[dict[str, str]] = []
-    replaced = False
     for item in utterances or []:
         content = _text(item.get("content"))
         if _is_meta_dialogue(content):
-            if not replaced:
-                cleaned.append(
-                    {
-                        **item,
-                        "content": _in_character_fallback(role, user_text),
-                        "delivery": item.get("delivery") or "anxious",
-                    }
-                )
-                replaced = True
             continue
         cleaned.append(item)
-    return cleaned or [{"content": _in_character_fallback(role, user_text), "delivery": "anxious"}]
+    if cleaned:
+        return cleaned
+    return [{"content": grounded_fallback, "delivery": "normal"}] if grounded_fallback else []
 
 
 def _recent_dialogue_text(history: list[Any], limit: int = 4) -> str:
@@ -1407,36 +1441,7 @@ def _sanitize_topic_fixation(
     user_text: str,
     role_brain: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, str]]:
-    if not utterances:
-        return utterances
-    user_topics = _topic_labels(user_text)
-    first_content = _text(utterances[0].get("content"))
-    if user_topics and not _response_matches_current_question(first_content, user_text):
-        repaired = list(utterances)
-        repaired[0] = {
-            **repaired[0],
-            "content": _topic_shift_reply(role, user_text),
-            "delivery": repaired[0].get("delivery") or "normal",
-        }
-        return repaired
-    if not _needs_topic_shift(history, role, user_text, role_brain=role_brain):
-        return utterances
-
-    recent_topics = _extract_recent_topics(history, role, role_brain=role_brain)
-    target_topic = _last_user_topic(user_text) or (recent_topics[-1] if recent_topics else "")
-    if not target_topic:
-        return utterances
-
-    if _response_matches_current_question(_text(utterances[0].get("content")), user_text):
-        return utterances
-
-    repaired = list(utterances)
-    repaired[0] = {
-        **repaired[0],
-        "content": _topic_shift_reply(role, user_text),
-        "delivery": repaired[0].get("delivery") or "normal",
-    }
-    return repaired
+    return utterances
 
 
 def _normalize_repeat_key(text: str) -> str:
@@ -1555,11 +1560,9 @@ def _dedupe_and_repair_utterances(
     role_snapshot: dict[str, int],
     state_contract: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, str]]:
-    recent = _recent_role_contents(history, role)
-    recent_keys = {_normalize_repeat_key(item) for item in recent}
     seen: set[str] = set()
     repaired: list[dict[str, str]] = []
-    loss_control = _is_loss_control_snapshot(role_snapshot, state_contract)
+    recent_contents = _recent_role_contents(history, role)
 
     for item in utterances or []:
         content = _text(item.get("content"))
@@ -1568,30 +1571,14 @@ def _dedupe_and_repair_utterances(
         key = _normalize_repeat_key(content)
         # Chinese paraphrases often share only a few bigrams; keep this below
         # exact-match territory while requiring a reasonably long utterance.
-        semantically_repeated = len(key) >= 8 and any(_repeat_similarity(content, previous) >= 0.58 for previous in recent)
-        if key and (key in seen or key in recent_keys or semantically_repeated):
-            if not repaired:
-                repaired.append(
-                    {
-                        "content": _loss_control_reply(role, user_text, recent) if loss_control else _repetition_repair(
-                            user_text,
-                            item.get("delivery") or (state_contract or {}).get("delivery") or "defensive",
-                        ),
-                        "delivery": item.get("delivery") or (state_contract or {}).get("delivery") or "anxious",
-                    }
-                )
+        if key and key in seen:
+            continue
+        if any(_repeat_similarity(content, previous) >= 0.72 for previous in recent_contents):
             continue
         seen.add(key)
         repaired.append(item)
 
-    if not repaired and loss_control:
-        repaired.append(
-            {
-                "content": _loss_control_reply(role, user_text, recent),
-                "delivery": (state_contract or {}).get("delivery") or "anxious",
-            }
-        )
-    return repaired or utterances
+    return repaired
 
 
 def _json_dict(value: Any) -> dict[str, Any]:
@@ -1941,6 +1928,13 @@ def generate_role_dialogue(
         peer_utterances,
     )
     knowledge_bundle = load_case_knowledge_bundle(case, role)
+    role_memory_block = format_retrieved_memories(
+        knowledge_bundle.get("role_knowledge_view") or {},
+        user_text,
+        history=history,
+        limit=12,
+        max_chars=6000,
+    )
     retrieval_bundle = {"context_block": ""}
     if os.getenv("ROLE_AI_USE_RAG", "0").strip().lower() in {"1", "true", "yes"}:
         retrieval_query = rag_service.build_retrieval_query(user_text, getattr(case, "case_type", "") if case else "", getattr(case, "title", "") if case else "", getattr(scene, "name", "") if scene else "", current_stage, history=[getattr(message, "content", "") for message in history[-3:]])
@@ -1978,9 +1972,24 @@ def generate_role_dialogue(
         cast_entry,
         addressed_targets or director_plan.get("addressed_targets"),
     )
+    dialogue_policy = build_dialogue_priority(user_text, history)
+    answer_context = build_role_answer_context(
+        knowledge_bundle.get("role_knowledge_view") or {},
+        user_text,
+        history=history,
+        limit=12,
+    )
 
     output: Optional[dict[str, Any]] = None
-    if use_llm:
+    if dialogue_policy.get("needs_clarification"):
+        output = {
+            "utterances": [{"content": "你具体想问哪一件事？", "delivery": "normal", "grounding": {"requested": [], "valid": True, "invalid": []}}],
+            "inner_thought": "",
+            "state_delta": {"emotion": 0, "cooperation": 0, "risk": 0, "clarity": 0},
+            "new_fact_revealed": None,
+            "grounding": {"requested": [], "valid": True, "invalid": []},
+        }
+    if use_llm and output is None:
         prompt = ROLE_ACTOR_PROMPT.format(
             role_name=_role_display_name(role),
             interaction_mode=_text(director_plan.get("interaction_mode")) or "mixed",
@@ -1991,6 +2000,8 @@ def generate_role_dialogue(
             scene_name=_text(getattr(scene, "name", "")) or "现场",
             current_stage=current_stage or "训练中",
             user_text=user_text or "（学员沉默）",
+            dialogue_priority=dialogue_policy["priority"],
+            question_instruction=dialogue_policy["instruction"],
             persona_block=persona_block,
             role_brain_block=role_brain_block,
             identity_anchor_block=identity_anchor_block,
@@ -2000,7 +2011,7 @@ def generate_role_dialogue(
             # Do not leak the canonical whole-case ledger into the actor
             # prompt. It is reserved for post-generation validation.
             canonical_facts_block="全案基准不会直接提供给角色；只允许使用下方角色专属案件知识和本轮公开信息。",
-            case_knowledge_block=(knowledge_bundle.get("knowledge_block") or "暂无案件知识库内容")[:1200],
+            case_knowledge_block=role_memory_block,
             retrieved_knowledge_block=(retrieval_bundle.get("context_block") or "（本角色未启用外部检索）")[:1200],
             knows_facts=_text(role_brain.get("known_facts")) or "（无）",
             hidden_truths=_text(role_brain.get("hidden_truths")) or "（无）",
@@ -2046,7 +2057,7 @@ def generate_role_dialogue(
                             )
                             grounding["auto_bound"] = True
                         else:
-                            content, repaired_ids = _repair_grounded_utterance(role, view, user_text)
+                            content, repaired_ids = _repair_grounded_utterance(role, view, user_text, history=history)
                             grounding = validate_supporting_knowledge_ids(
                                 view,
                                 repaired_ids,
@@ -2082,6 +2093,31 @@ def generate_role_dialogue(
                     user_text=user_text,
                     role_brain=role_brain,
                 )
+                spoken_text = "".join(_text(item.get("content")) for item in cleaned)
+                if (
+                    dialogue_policy.get("expansion_requested")
+                    and len(answer_context.get("items") or []) >= 2
+                    and len(spoken_text) < 120
+                ):
+                    expanded_content, expanded_ids = _repair_grounded_utterance(
+                        role,
+                        knowledge_bundle.get("role_knowledge_view") or {},
+                        user_text,
+                        history=history,
+                    )
+                    if expanded_content and expanded_ids:
+                        cleaned = [{
+                            "content": expanded_content,
+                            "delivery": _text(cleaned[0].get("delivery")) if cleaned else "normal",
+                            "grounding": {
+                                **validate_supporting_knowledge_ids(
+                                    knowledge_bundle.get("role_knowledge_view") or {},
+                                    expanded_ids,
+                                    require_support=True,
+                                ),
+                                "expanded_for_question": True,
+                            },
+                        }]
                 delta = payload.get("state_delta") if isinstance(payload.get("state_delta"), dict) else {}
                 output = {
                     "utterances": cleaned,
@@ -2103,7 +2139,7 @@ def generate_role_dialogue(
             # reason to discard the role's source memory.  Recover through the
             # small text-only path before falling back to generic rule output.
             view = knowledge_bundle.get("role_knowledge_view") or {}
-            content, repaired_ids = _repair_grounded_utterance(role, view, user_text)
+            content, repaired_ids = _repair_grounded_utterance(role, view, user_text, history=history)
             grounding = validate_supporting_knowledge_ids(
                 view,
                 repaired_ids,
@@ -2125,16 +2161,32 @@ def generate_role_dialogue(
             }
 
     if not output:
-        output = _rule_based_utterances(
-            role,
-            {**cast_entry, "role_snapshot": role_snapshot},
-            user_text,
-            utterance_count,
-            scene,
-            case,
-            reaction=reaction,
-            peer_utterances=peer_utterances or [],
-        )
+        knowledge_view = knowledge_bundle.get("role_knowledge_view") or {}
+        if knowledge_view.get("ledger"):
+            content, repaired_ids = _repair_grounded_utterance(
+                role,
+                knowledge_view,
+                user_text,
+                history=history,
+                allow_model=use_llm,
+            )
+            output = {
+                "utterances": [{"content": content, "delivery": "normal", "supporting_knowledge_ids": repaired_ids}],
+                "inner_thought": "",
+                "state_delta": {"emotion": 0, "cooperation": 0, "risk": 0, "clarity": 0},
+                "new_fact_revealed": None,
+            }
+        else:
+            output = _rule_based_utterances(
+                role,
+                {**cast_entry, "role_snapshot": role_snapshot},
+                user_text,
+                utterance_count,
+                scene=scene,
+                case=case,
+                reaction=reaction,
+                peer_utterances=peer_utterances,
+            )
 
     output["utterances"] = apply_delivery_from_contract(
         sanitize_utterances(_sanitize_utterances_for_last_user(output.get("utterances") or [], user_text)),
@@ -2167,14 +2219,48 @@ def generate_role_dialogue(
         role_snapshot=role_snapshot,
         state_contract=state_contract,
     )
+    needs_grounded_fallback = not output["utterances"] or any(
+        _is_meta_dialogue(_text(item.get("content"))) for item in output["utterances"]
+    )
+    grounded_fallback = ""
+    if needs_grounded_fallback:
+        knowledge_view = knowledge_bundle.get("role_knowledge_view") or {}
+        if knowledge_view.get("ledger"):
+            grounded_fallback, _ = _repair_grounded_utterance(
+                role,
+                knowledge_view,
+                user_text,
+                history=history,
+                allow_model=use_llm,
+            )
+        elif _is_loss_control_snapshot(role_snapshot, state_contract):
+            grounded_fallback = _loss_control_reply(role, user_text, _recent_role_contents(history, role))
+        else:
+            fallback_output = _rule_based_utterances(
+                role,
+                {**cast_entry, "role_snapshot": role_snapshot},
+                user_text,
+                1,
+                scene=scene,
+                case=case,
+                reaction=reaction,
+                peer_utterances=peer_utterances,
+            )
+            grounded_fallback = _text((fallback_output.get("utterances") or [{}])[0].get("content"))
     # Dedupe and loss-control fallbacks run last, so enforce this after every
     # transformation instead of trusting earlier prompt-level instructions.
     output["utterances"] = _sanitize_meta_dialogue(
         output["utterances"],
         role=role,
         user_text=user_text,
+        grounded_fallback=grounded_fallback,
     )
-    output["state_delta"] = _merge_user_influence_delta(output.get("state_delta") or {}, momentum)
+    output["state_delta"] = blend_state_delta(
+        role_snapshot,
+        _merge_user_influence_delta(output.get("state_delta") or {}, momentum),
+        user_text,
+        profile,
+    )
 
     role_brain = _update_role_brain_after_output(role_brain, output["utterances"], user_text)
 

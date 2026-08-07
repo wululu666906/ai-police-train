@@ -20,6 +20,7 @@ from routers import auth, cases, classes, dashboard, face, knowledge, ops, speec
 from services.face_service import warmup_face_engine_async
 from services.object_storage_service import LOCAL_OBJECT_ROOT
 from services.video_playback_service import schedule_existing_videos
+from services.case_pipeline_service import resume_pending_jobs
 
 load_backend_env()
 
@@ -661,6 +662,7 @@ def on_startup():
     ensure_performance_indexes()
     ensure_default_users()
     schedule_existing_videos()
+    resume_pending_jobs()
     if os.getenv("FACE_ENGINE_WARMUP", "0").strip().lower() in {"1", "true", "yes", "on"}:
         warmup_face_engine_async()
 

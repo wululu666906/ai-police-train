@@ -100,24 +100,12 @@ def contains_role_coaching_language(text: str) -> bool:
     return any(token in content for token in _ROLE_COACHING_TOKENS)
 
 
-def _natural_meta_fallback(text: str) -> str:
-    """Keep an accidental template leak from becoming a broken visible sentence."""
-    content = str(text or "")
-    if re.search(r"受伤|伤情|流血|意识|清醒|救护", content):
-        return "我只看到有人受伤了，别的情况我不敢乱说。"
-    if re.search(r"时间|几点|什么时候", content):
-        return "时间我记得不够准，只能说是那阵子吵起来以后。"
-    if re.search(r"地点|哪里|哪儿|位置", content):
-        return "地点就在现场附近，当时人很多。"
-    return "我只能说自己当时看到和听到的那部分，没弄清的我不乱讲。"
-
-
 def sanitize_spoken_line(text: str) -> str:
     content = str(text or "").strip()
     if not content:
         return content
     if contains_role_meta_language(content) or contains_role_coaching_language(content):
-        return _natural_meta_fallback(content)
+        return ""
     for pattern, replacement in _META_PATTERNS:
         content = pattern.sub(replacement, content)
     for token in _FORBIDDEN_SUBSTRINGS:
@@ -180,4 +168,4 @@ def sanitize_utterances(utterances: list[dict[str, Any]]) -> list[dict[str, Any]
             content = sanitize_spoken_line(item)
             if content:
                 cleaned.append({"content": content, "delivery": "normal"})
-    return cleaned or utterances
+    return cleaned

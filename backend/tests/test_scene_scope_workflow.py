@@ -2,7 +2,7 @@ from services.training_compiler_service import build_training_tasks
 from services.workflow_service import workflow_service
 
 
-def test_scene_blueprints_partition_case_facts_and_roles_by_scope():
+def test_scene_blueprints_preserve_dimension_specific_facts_and_roles():
     persons = [
         {"name": "Alpha", "status": "normal", "role_memories": []},
         {"name": "Bravo", "status": "normal", "role_memories": []},
@@ -20,16 +20,20 @@ def test_scene_blueprints_partition_case_facts_and_roles_by_scope():
     blueprints = [
         {
             "scene_name": "Scene response",
+            "portfolio_role": "primary",
+            "training_entry_phase": "post_incident_onsite",
             "training_goal": "Control the scene",
-            "roles": ["Alpha", "Bravo", "Charlie"],
-            "fact_ids": ["F1", "F2", "F3", "F4"],
+            "roles": ["Alpha", "Bravo"],
+            "fact_ids": ["F1", "F2"],
             "stages": [{"stage_name": "Control", "stage_goal": "Control the scene"}],
         },
         {
             "scene_name": "Witness check",
+            "portfolio_role": "investigation",
+            "training_entry_phase": "post_incident_inquiry",
             "training_goal": "Verify testimony",
-            "roles": ["Alpha", "Bravo", "Charlie"],
-            "fact_ids": ["F1", "F2", "F3", "F4"],
+            "roles": ["Bravo", "Charlie"],
+            "fact_ids": ["F3", "F4"],
             "stages": [{"stage_name": "Verify", "stage_goal": "Verify testimony"}],
         },
     ]
@@ -39,7 +43,8 @@ def test_scene_blueprints_partition_case_facts_and_roles_by_scope():
     assert len(scoped) == 2
     assert set(scoped[0]["fact_ids"]).isdisjoint(scoped[1]["fact_ids"])
     assert set(scoped[0]["fact_ids"] + scoped[1]["fact_ids"]) == {"F1", "F2", "F3", "F4"}
-    assert scoped[0]["roles"] != ["Alpha", "Bravo", "Charlie"]
+    assert scoped[0]["roles"] == ["Alpha", "Bravo"]
+    assert scoped[1]["roles"] == ["Bravo", "Charlie"]
 
 
 def test_training_tasks_fall_back_to_own_scene_facts_not_case_facts():

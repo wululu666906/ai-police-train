@@ -116,6 +116,39 @@ class OpsIssueRecord(Base):
     detail = Column(Text, nullable=True)
     metadata_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class CasePipelineJob(Base):
+    """Persistent, resumable case import pipeline state."""
+    __tablename__ = "case_pipeline_jobs"
+
+    id = Column(String(64), primary_key=True)
+    input_hash = Column(String(64), nullable=False, index=True)
+    status = Column(String(24), nullable=False, default="queued", index=True)
+    stage = Column(String(48), nullable=False, default="queued")
+    progress = Column(Integer, nullable=False, default=0)
+    status_message = Column(String(240), nullable=True)
+    request_json = Column(Text, nullable=False, default="{}")
+    result_json = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class CaseKnowledgeNode(Base):
+    __tablename__ = "case_knowledge_nodes"
+    __table_args__ = (UniqueConstraint("namespace", "node_id", name="uq_case_knowledge_namespace_node"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    namespace = Column(String(96), nullable=False, index=True)
+    node_id = Column(String(160), nullable=False)
+    node_type = Column(String(48), nullable=False, index=True)
+    content_hash = Column(String(64), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    metadata_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 

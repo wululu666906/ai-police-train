@@ -148,6 +148,8 @@ const normalizeRoleMemories = (person: any) => {
         certainty: String(item.certainty || 'source_supported'),
         source_refs: Array.isArray(item.source_refs) ? item.source_refs : [],
         event_id: String(item.event_id || ''),
+        is_scoring_fact: item.is_scoring_fact !== false,
+        disclosure_policy: String(item.disclosure_policy || 'answer_when_asked'),
       }))
   }
   return normalizeKnowledgeLedger(person).map((item: any, index: number) => ({
@@ -192,6 +194,7 @@ export const expandRoleCompactToPerson = (compact: any, sceneBehaviorMode = '核
   const withheld = dedupeStringList(contents(['withheld']))
   const unknown = dedupeStringList(contents(['unknown', 'unresolved']))
   return {
+    ...compact,
     name: String(compact?.name || '').trim(),
     role_type: String(compact?.role_type || '相关人员').trim() || '相关人员',
     status: String(compact?.status || '正常').trim() || '正常',
@@ -209,8 +212,13 @@ export const expandRoleCompactToPerson = (compact: any, sceneBehaviorMode = '核
     cannot_answer: unknown,
     scene_behavior_mode: String(compact?.scene_behavior_mode || sceneBehaviorMode || '核查取证型').trim(),
     persona_autofill: false,
-    persona_source: 'source_grounded_role_memory',
-    persona_contract_version: 'role_memory_v2',
+    persona_source: String(compact?.persona_source || 'source_grounded_role_memory'),
+    persona_contract_version: String(compact?.persona_contract_version || 'role_memory_v2'),
+    soul_profile: compact?.soul_profile && typeof compact.soul_profile === 'object' ? compact.soul_profile : undefined,
+    persona_generation: compact?.persona_generation && typeof compact.persona_generation === 'object' ? compact.persona_generation : undefined,
+    current_goal: String(compact?.current_goal || compact?.soul_profile?.primary_need || '').trim(),
+    init_emotion: compact?.init_emotion,
+    init_trust: compact?.init_trust,
   }
 }
 

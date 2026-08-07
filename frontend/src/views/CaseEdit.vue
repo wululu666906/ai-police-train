@@ -4,6 +4,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import RoleCompactForm from '../components/RoleCompactForm.vue'
+import CaseStoryViewer from '../components/CaseStoryViewer.vue'
 import {
   buildRoleCompactSummary,
   expandRoleCompactToPerson,
@@ -967,7 +968,7 @@ const serializePersonsForSave = (persons: any[]) => {
     delete cloned._ai_review_text
     delete cloned._ai_review_loading
     for (const field of [
-      'behavior_archetype', 'opening_preset', 'current_goal', 'current_need', 'core_concern', 'weakness',
+      'behavior_archetype', 'opening_preset', 'current_need', 'core_concern', 'weakness',
       'relationship_pressure', 'surface_stance', 'pressure_response', 'trigger_points', 'calming_points',
       'police_attitude', 'interaction_style', 'personality', 'speaking_style', 'authority_attitude',
       'stress_response', 'public_mask', 'private_drive', 'self_image', 'known_key_points',
@@ -1314,6 +1315,7 @@ const normalizeEditableCase = (caseItem: any) => {
   const cloned = JSON.parse(JSON.stringify(caseItem))
   const normalizedPersons = normalizePersonEditors(structuredData.persons || [], { collapsed: true })
   return {
+    ...structuredData,
     ...cloned,
     original_content: resolveOriginalContent(cloned),
     ai_case_type_raw: structuredData.ai_case_type_raw || '',
@@ -2161,6 +2163,7 @@ const previewFormatDate = (dt: string | null | undefined) => {
                   <textarea v-else v-model="editableCase.original_content" rows="10" class="wp-textarea wp-textarea--mono" placeholder="导入文件提取出的案件原文会保留在这里，支持继续人工整理。"></textarea>
                 </div>
               </div>
+              <CaseStoryViewer :case-data="editableCase" />
             </div>
           </section>
             <section v-show="activeReviewModule === 'roles'" class="wp">

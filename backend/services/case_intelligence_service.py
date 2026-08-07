@@ -158,7 +158,8 @@ def build_role_knowledge_view(
 
     ledger = []
     claims = normalize_case_intelligence(structured)["claims"]
-    explicit_ledger = [item for item in _list(combined.get("knowledge_ledger")) if isinstance(item, dict)]
+    role_event_ledger = [item for item in _list(combined.get("role_event_ledger")) if isinstance(item, dict)]
+    explicit_ledger = role_event_ledger or [item for item in _list(combined.get("knowledge_ledger")) if isinstance(item, dict)]
     for index, item in enumerate(explicit_ledger, start=1):
         content = _text(item.get("content"))
         if not content:
@@ -169,6 +170,12 @@ def build_role_knowledge_view(
             "knowledge_id": _text(item.get("knowledge_id")) or f"K{index}",
             "content": content,
             "knowledge_mode": mode,
+            "sequence": item.get("sequence", index),
+            "event_phase": _text(item.get("event_phase")) or "unknown",
+            "event_phase_label": _text(item.get("event_phase_label")) or "相关情况",
+            "time_hint": _text(item.get("time_hint")) or "未明确",
+            "place_hint": _text(item.get("place_hint")) or "未明确",
+            "actors": _list(item.get("actors")),
             "certainty": _text(item.get("certainty")) or "explicit_role_config",
             "source_refs": _list(item.get("source_refs")),
         })
@@ -202,6 +209,7 @@ def build_role_knowledge_view(
         "withheld": withheld,
         "unknown": unknown,
         "unresolved_questions": normalize_case_intelligence(structured)["unresolved_questions"],
+        "role_information_version": _text(combined.get("role_information_version")),
         "quality_policy": {
             "unsupported_answer": "state_specific_uncertainty",
             "may_invent": False,

@@ -1,4 +1,6 @@
 from services.workflow_service import workflow_service
+from services.case_role_reconciliation_service import reconcile_case_roles
+from services.persona_soul_service import _persona_context
 
 
 def _trace(stage: str):
@@ -7,6 +9,46 @@ def _trace(stage: str):
         "final_provider": "deepseek",
         "switched_provider": False,
         "attempts": [{"provider": "deepseek", "model": "test-long", "mode": "plain_json", "status": "success", "stage": stage}],
+    }
+
+
+def _three_scene_blueprints(*, roles: list[str], fact_id: str = "F1") -> dict:
+    definitions = [
+        ("S1", "报警核实", "接警", "核实报警情况", "intake", "dispatch_intake"),
+        ("S2", "案发后现场核查", "案发后现场处置", "固定现场证据", "post_incident_onsite", "after_canonical_event"),
+        ("S3", "案发后调查询问", "案发后调查询问", "核查人员陈述", "post_incident_inquiry", "after_canonical_event"),
+    ]
+    return {
+        "blueprints": [
+            {
+                "scene_id": scene_id,
+                "scene_name": scene_name,
+                "scene_kind": scene_kind,
+                "training_goal": training_goal,
+                "training_entry_phase": phase,
+                "entry_time_policy": policy,
+                "canonical_outcome_locked": True,
+                "student_role": "民警",
+                "roles": roles,
+                "fact_ids": [fact_id],
+                "stages": [{"stage_name": "任务执行", "stage_goal": training_goal}],
+            }
+            for scene_id, scene_name, scene_kind, training_goal, phase, policy in definitions
+        ]
+    }
+
+
+def _scene_script(*, roles: list[str], fact_id: str = "F1") -> dict:
+    return {
+        "scene_description": "民警依据案件事实完成当前训练任务",
+        "difficulty": "中等",
+        "dispatch_brief": "收到案件相关警情",
+        "first_impression": "案件主要行为已经发生，相关人员等待民警处理",
+        "roles": roles,
+        "fact_ids": [fact_id],
+        "supplement_ids": [],
+        "stages": [{"stage_name": "任务执行", "stage_goal": "完成当前任务", "fact_ids": [fact_id]}],
+        "script_markdown": "# 民警任务\n依据事实开展处置",
     }
 
 
@@ -99,14 +141,29 @@ def test_scene_scripts_must_reference_authorized_facts(monkeypatch):
 
     def fake_call(*, stage, **_kwargs):
         if stage == "scene_blueprint":
-            return {"blueprints": [{"scene_id": "S1", "scene_name": "报警核实", "training_goal": "核实情况", "roles": ["张三"], "fact_ids": ["F1"], "stages": [{"stage_name": "信息初核", "stage_goal": "核实报警"}]}]}, _trace(stage)
-        return {"scene_name": "报警核实", "scene_description": "民警核实报警信息", "difficulty": "低", "dispatch_brief": "收到报警", "first_impression": "报警人在线", "roles": ["张三"], "fact_ids": ["F1"], "supplement_ids": [], "stages": [{"stage_name": "信息初核", "stage_goal": "核实报警", "fact_ids": ["F1"]}], "script_markdown": "# 民警任务\n核实报警"}, _trace(stage)
+            primary = _three_scene_blueprints(roles=["张三"])["blueprints"][1]
+            return {"blueprints": [primary]}, _trace(stage)
+        if stage == "scene_blueprint_completion":
+            raise RuntimeError("completion unavailable")
+        return _scene_script(roles=["张三"]), _trace(stage)
 
     monkeypatch.setattr(workflow_service, "_call_case_ai", fake_call)
     result = workflow_service.generate_scenes(case_info)
     assert result["scene_generation_mode"].startswith("ai_")
+    assert len(result["scenes"]) == 3
     assert result["scenes"][0]["fact_ids"] == ["F1"]
     assert "民警任务" in result["scenes"][0]["script_markdown"]
+    assert result["scenes"][0]["training_entry_phase"] == "intake"
+    assert all(scene["student_role"] == "民警" for scene in result["scenes"])
+    assert all(scene["canonical_outcome_locked"] is True for scene in result["scenes"])
+    assert all(
+        scene["entry_time_policy"] == "after_canonical_event"
+        for scene in result["scenes"][1:]
+    )
+    assert [scene["portfolio_role"] for scene in result["scenes"]] == ["intake", "primary", "investigation"]
+    assert sum(1 for scene in result["scenes"] if scene["is_primary"]) == 1
+    assert all(scene["completion_criteria"] for scene in result["scenes"])
+    assert all(scene["end_prompt"] for scene in result["scenes"])
 
 
 def test_scene_adds_all_speakable_people_grounded_in_its_facts(monkeypatch):
@@ -128,8 +185,8 @@ def test_scene_adds_all_speakable_people_grounded_in_its_facts(monkeypatch):
         if stage == "scene_blueprint":
             # The model accidentally keeps only one protagonist. The service
             # must restore the other fact-grounded, speakable case people.
-            return {"blueprints": [{"scene_id": "S1", "scene_name": "现场核实", "training_goal": "核实争执经过", "roles": ["张三"], "fact_ids": ["F1"], "stages": [{"stage_name": "初核", "stage_goal": "询问在场人员"}]}]}, _trace(stage)
-        return {"scene_name": "现场核实", "roles": ["张三"], "fact_ids": ["F1"], "supplement_ids": [], "stages": [{"stage_name": "初核", "stage_goal": "询问在场人员", "fact_ids": ["F1"]}], "script_markdown": "# 民警任务"}, _trace(stage)
+            return _three_scene_blueprints(roles=["张三"]), _trace(stage)
+        return _scene_script(roles=["张三"]), _trace(stage)
 
     monkeypatch.setattr(workflow_service, "_call_case_ai", fake_call)
     result = workflow_service.generate_scenes(case_info)
@@ -151,13 +208,14 @@ def test_scene_json_failure_uses_ai_text_template_before_rule_fallback(monkeypat
     monkeypatch.setattr(
         workflow_service,
         "_call_scene_text_ai",
-        lambda **_kwargs: ("# 场景 1\n场景名称：报警核实\n场景信息：民警核实报警。\n接警信息：收到张三报警。\n现场第一印象：张三在线等待。\n参与角色：张三、李某甲\n引用事实：F1\n## 训练阶段\n1. 信息初核：核实报警经过。\n## 民警任务与角色回应边界\n围绕 F1 询问。", _trace("scene_text_template")),
+        lambda **_kwargs: ("# 场景 1\n场景名称：报警核实\n场景信息：民警核实报警。\n接警信息：收到张三报警。\n现场第一印象：张三在线等待。\n参与角色：张三、李某甲\n引用事实：F1\n## 训练阶段\n1. 信息初核：核实报警经过。\n## 民警任务与角色回应边界\n围绕 F1 询问。\n\n# 场景 2\n场景名称：案发后现场核查\n场景信息：民警在案件发生后核查现场。\n接警信息：案件主要行为已经发生。\n现场第一印象：相关人员等待处理。\n参与角色：张三、李某甲\n引用事实：F1\n## 训练阶段\n1. 证据固定：核查现场信息。\n## 民警任务与角色回应边界\n围绕 F1 核查。\n\n# 场景 3\n场景名称：案发后调查询问\n场景信息：民警开展后续调查。\n接警信息：进入案发后调查阶段。\n现场第一印象：相关人员等待询问。\n参与角色：张三、李某甲\n引用事实：F1\n## 训练阶段\n1. 陈述核查：核查人员陈述。\n## 民警任务与角色回应边界\n围绕 F1 询问。", _trace("scene_text_template")),
     )
 
     result = workflow_service.generate_scenes(case_info)
 
     assert result["scene_generation_mode"] == "ai_text_template"
     assert result["ai_workflow"]["used_rule_fallback"] is False
+    assert len(result["scenes"]) == 3
     assert result["scenes"][0]["scene_name"] == "报警核实"
     assert result["scenes"][0]["roles"] == ["张三", "李某甲"]
 
@@ -227,6 +285,56 @@ def test_rule_role_memories_keep_anonymous_testimony_and_source_coordinates():
     assert memory["time_hint"] == "2011年7月19日上午9时"
     assert memory["place_hint"] == "山脚"
     assert memory["source_refs"][0]["start"] == text.index("被害人黎某18")
+
+
+def test_action_facts_recover_regional_names_and_personal_experience_memories():
+    text = (
+        "经审理查明，农长望持钢管和农长站、许明向、农盛星一起殴打农仕康。"
+        "许远光报警，蒙增利和蒙增军赶到现场阻拦。"
+    )
+    persons = workflow_service._programmatic_people(text)
+    names = {person["name"] for person in persons}
+
+    assert {"农长望", "农长站", "许明向", "农盛星", "农仕康", "许远光", "蒙增利", "蒙增军"}.issubset(names)
+    reconstruction = workflow_service._build_role_memories_and_case_flow(
+        text, persons, workflow_service._programmatic_claim_cards(text)
+    )
+    assert reconstruction["role_memories"]["农长望"][0]["memory_type"] == "personal_experience"
+    assert reconstruction["role_memories"]["农仕康"][0]["memory_type"] == "personal_experience"
+
+
+def test_story_phase_reconciliation_recovers_people_without_promoting_story_to_fact():
+    text = "农长望持钢管殴打农仕康。许远光随后报警，蒙增利赶到现场阻拦。"
+    story = "农长望握紧钢管，心里仍有怨气，随后殴打农仕康。\n\n许远光报警后等待民警到场。"
+    result = reconcile_case_roles(
+        {"persons": [{"name": "许远光", "role_type": "报警人", "role_memories": []}]},
+        source_text=text,
+        complete_story=story,
+    )
+    people = {person["name"]: person for person in result["persons"]}
+
+    assert {"农长望", "农仕康", "许远光", "蒙增利"}.issubset(people)
+    assert result["role_reconciliation"]["recovered_person_count"] >= 3
+    assert all(person["role_memories"] for person in people.values())
+    narrative = people["农长望"]["narrative_context"][0]
+    assert narrative["is_scoring_fact"] is False
+    assert narrative["usage"] == "persona_context_only"
+    assert all(memory.get("is_scoring_fact") is not False for memory in people["农长望"]["role_memories"])
+
+
+def test_persona_context_includes_source_events_and_marks_narrative_as_non_fact():
+    person = {
+        "name": "农长望",
+        "role_type": "相关人员",
+        "role_memories": [{"statement": "农长望持钢管参与殴打。"}],
+        "role_event_ledger": [{"content": "农长望持钢管参与殴打。"}],
+        "narrative_context": [{"content": "农长望心里仍有怨气。", "is_scoring_fact": False}],
+    }
+    context = _persona_context(person)
+
+    assert "持钢管" in context["source_memories"]
+    assert "持钢管" in context["source_event_summary"]
+    assert "心里仍有怨气" in context["narrative_context_for_persona_only"]
 
 
 def test_ai_document_reading_labels_are_used_as_role_memory_navigation(monkeypatch):

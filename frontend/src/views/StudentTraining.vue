@@ -335,6 +335,14 @@
                 </div>
               </section>
 
+              <section v-if="!isIntakeScene" class="brief-info-section">
+                <h2>当前处置任务</h2>
+                <div class="brief-text-box brief-text-box--plain">
+                  <p>{{ caseInfo.currentStageGoal || '先控制即时风险，再核实人员身份和事件经过。' }}</p>
+                  <p v-if="caseInfo.caseBackground">已知背景：{{ caseInfo.caseBackground }}</p>
+                </div>
+              </section>
+
               <section v-if="showBriefTips" class="brief-info-section">
                 <h2>执法提示</h2>
                 <div class="brief-text-box">

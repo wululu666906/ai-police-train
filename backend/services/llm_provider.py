@@ -297,6 +297,27 @@ def get_fast_generation_kwargs(provider: str | None = None) -> dict[str, Any]:
     return {}
 
 
+def get_story_generation_binding() -> tuple[OpenAI, str, str, str]:
+    """Resolve the dedicated long-form case-story route."""
+    provider = (os.getenv("CASE_STORY_PROVIDER") or "deepseek").strip().lower()
+    model = (os.getenv("CASE_STORY_MODEL") or DEEPSEEK_CASE_MODEL).strip()
+    return get_chat_completion_binding(provider, model)
+
+
+def get_story_generation_kwargs() -> dict[str, Any]:
+    """Enable DeepSeek expert reasoning only for the long-form story task."""
+    mode = (os.getenv("CASE_STORY_REASONING_MODE") or "enabled").strip().lower()
+    if mode in {"disabled", "off", "false", "0"}:
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    effort = (os.getenv("CASE_STORY_REASONING_EFFORT") or "max").strip().lower()
+    if effort not in {"high", "max"}:
+        effort = "max"
+    return {
+        "reasoning_effort": effort,
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
+
+
 def get_provider_max_output_tokens(provider: str | None = None) -> int:
     resolved = provider or ACTIVE_PROVIDER
     if resolved == "qwen":
@@ -669,11 +690,12 @@ def create_text_chat_completion(
     return_trace: bool = False,
     long_output: bool = True,
     extra_kwargs: Optional[dict[str, Any]] = None,
+    allow_provider_fallback: bool = True,
 ):
     """Plain-text path for long scene templates when JSON transport is unusable."""
     provider = _provider_for_client(llm_client)
     requested = max(1, int(max_tokens))
-    providers = [provider, *_provider_fallback_order(provider)]
+    providers = [provider, *(_provider_fallback_order(provider) if allow_provider_fallback else [])]
     trace: list[dict[str, Any]] = []
     last_error = ""
     for ordinal, current_provider in enumerate(providers, start=1):
@@ -699,6 +721,9 @@ def create_text_chat_completion(
             }
             if extra_kwargs and current_provider == provider:
                 request_kwargs.update(extra_kwargs)
+                thinking = (extra_kwargs.get("extra_body") or {}).get("thinking") if isinstance(extra_kwargs.get("extra_body"), dict) else {}
+                if isinstance(thinking, dict) and thinking.get("type") == "enabled":
+                    request_kwargs.pop("temperature", None)
             response = active_client.chat.completions.create(**request_kwargs)
             content = extract_message_text(response)
             entry.update({

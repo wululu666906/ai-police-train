@@ -3,6 +3,7 @@ import json
 import threading
 from typing import Any
 
+import database
 import models
 from .rag_service import rag_service
 from .case_intelligence_service import build_role_knowledge_view, format_role_knowledge_view
@@ -11,6 +12,7 @@ from .case_intelligence_service import build_role_knowledge_view, format_role_kn
 CASE_SOURCE = "case_library"
 CASE_DOC_TYPE = "case_info"
 ROLE_DOC_TYPE = "role_script"
+CANONICAL_DOC_TYPE = "case_knowledge_node"
 _SYNC_LOCK = threading.Lock()
 _SYNC_FINGERPRINTS: dict[int, str] = {}
 
@@ -55,6 +57,64 @@ def case_info_id(case_id: int) -> str:
 
 def role_script_id(case_id: int, role_id: int) -> str:
     return f"case:{case_id}:role:{role_id}:script"
+
+
+def canonical_node_id(case_id: int, node_id: str) -> str:
+    return f"case:{case_id}:node:{node_id}"
+
+
+def _canonical_nodes(case_id: int) -> list[models.CaseKnowledgeNode]:
+    db = database.SessionLocal()
+    try:
+        return list(
+            db.query(models.CaseKnowledgeNode)
+            .filter_by(namespace=f"case:{int(case_id)}")
+            .order_by(models.CaseKnowledgeNode.id.asc())
+            .all()
+        )
+    finally:
+        db.close()
+
+
+def _canonical_documents(case: models.Case) -> list[dict[str, Any]]:
+    docs: list[dict[str, Any]] = []
+    for node in _canonical_nodes(int(case.id)):
+        if node.node_type == "source_appendix" or not str(node.content or "").strip():
+            continue
+        metadata = _safe_json_loads(node.metadata_json, {})
+        role_name = str(metadata.get("role_name") or "").strip()
+        if node.node_type == "role_memory" and not role_name:
+            payload = _safe_json_loads(node.content, {})
+            role_name = str(payload.get("name") or "").strip() if isinstance(payload, dict) else ""
+        title = role_name or {
+            "complete_story": "完整案件剧情",
+            "case_intelligence": "案件事实索引",
+            "role_memory": "角色记忆",
+        }.get(node.node_type, node.node_id)
+        docs.append(
+            {
+                "id": canonical_node_id(int(case.id), node.node_id),
+                "content": node.content,
+                "metadata": {
+                    "source": CASE_SOURCE,
+                    "doc_type": CANONICAL_DOC_TYPE,
+                    "node_type": node.node_type,
+                    "node_id": node.node_id,
+                    "content_hash": node.content_hash,
+                    "case_id": str(case.id),
+                    "role_name": role_name,
+                    "library": rag_service.normalize_library(
+                        CASE_SOURCE,
+                        source=CASE_SOURCE,
+                        doc_type=CANONICAL_DOC_TYPE,
+                    ),
+                    "title": title,
+                    "category": "案件知识节点",
+                    "tags": f"案件库,{node.node_type}",
+                },
+            }
+        )
+    return docs
 
 
 def _case_fact_lines(case: models.Case, structured: dict[str, Any]) -> list[str]:
@@ -139,6 +199,11 @@ def _role_script_lines(role: models.Role, case: models.Case) -> list[str]:
 
 
 def build_case_knowledge_documents(case: models.Case) -> list[dict[str, Any]]:
+    canonical_docs = _canonical_documents(case)
+    if canonical_docs:
+        return canonical_docs
+
+    # Compatibility path for cases created before canonical knowledge nodes existed.
     structured = _safe_json_loads(case.structured_data, {})
     docs = [
         {
@@ -255,33 +320,58 @@ def load_case_knowledge_bundle(case: models.Case | None, role: models.Role | Non
     # Actor models must not receive the full case document.  It contains facts
     # that a witness, suspect or caller may not know.  The full case remains
     # available to validators and admin tools; roleplay receives a scoped view.
-    ids = [] if role else [case_info_id(case.id)]
+    canonical_docs = _canonical_documents(case)
+    ids = [] if role else [
+        item["id"]
+        for item in canonical_docs
+        if (item.get("metadata") or {}).get("node_type") != "role_memory"
+    ]
+    if not role and not ids:
+        ids = [case_info_id(case.id)]
     if role and getattr(role, "id", None):
         ids.append(role_script_id(case.id, role.id))
 
     if role:
         structured = _safe_json_loads(getattr(case, "structured_data", None), {})
         persona_meta = _safe_json_loads(getattr(role, "persona_meta", None), {})
+        canonical_role = next(
+            (
+                node
+                for node in _canonical_nodes(int(case.id))
+                if node.node_id == f"role:{str(getattr(role, 'name', '') or '').strip()}"
+            ),
+            None,
+        )
+        canonical_payload = _safe_json_loads(canonical_role.content, {}) if canonical_role else {}
+        canonical_payload = canonical_payload if isinstance(canonical_payload, dict) else {}
         role_payload = {
             **persona_meta,
-            "knows_facts": _to_list(getattr(role, "knows_facts", None)),
-            "hidden_truths": _to_list(getattr(role, "hidden_truths", None)),
-            "does_not_know": _to_list(getattr(role, "does_not_know", None)),
+            **canonical_payload,
+            "knows_facts": _to_list(getattr(role, "knows_facts", None)) or _to_list(canonical_payload.get("knows_facts")),
+            "hidden_truths": _to_list(getattr(role, "hidden_truths", None)) or _to_list(canonical_payload.get("hidden_truths")),
+            "does_not_know": _to_list(getattr(role, "does_not_know", None)) or _to_list(canonical_payload.get("does_not_know")),
         }
         role_view = build_role_knowledge_view(
             structured,
             role_name=str(getattr(role, "name", "") or "相关人员"),
             role_payload=role_payload,
         )
+        source_docs = canonical_docs or build_case_knowledge_documents(case)
+        role_docs = [
+            item for item in source_docs
+            if (item.get("metadata") or {}).get("role_name") == getattr(role, "name", None)
+            or item.get("id") == role_script_id(case.id, role.id)
+        ]
+        role_block = format_role_knowledge_view(role_view)
         return {
-            "documents": [],
-            "knowledge_block": format_role_knowledge_view(role_view),
+            "documents": role_docs,
+            "knowledge_block": f"案件：{getattr(case, 'title', '') or case.id}\n{role_block}",
             "role_knowledge_view": role_view,
         }
 
     docs = rag_service.get_documents_by_ids(ids)
     if len(docs) < len(ids):
-        fallback_docs = build_case_knowledge_documents(case)
+        fallback_docs = canonical_docs or build_case_knowledge_documents(case)
         fallback_by_id = {doc["id"]: doc for doc in fallback_docs}
         existing_ids = {doc["id"] for doc in docs}
         for item_id in ids:

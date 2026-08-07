@@ -142,9 +142,6 @@ def _build_cast_entries(
 
 
 def _multi_speaker_prompt(user_text: str) -> bool:
-    return any(token in user_text for token in ("你们", "双方", "两个人", "俩人", "两个", "都", "他们"))
-
-def _multi_speaker_prompt(user_text: str) -> bool:
     text = _text(user_text)
     return any(
         token in text

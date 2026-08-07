@@ -6,7 +6,7 @@ from .case_intelligence_service import normalize_case_intelligence
 
 from .role_compact_service import ROLE_COMPACT_V2_FIELDS, ROLE_TEMPLATE_VERSION, expand_role_compact_to_person, person_to_role_compact_view
 
-SCHEMA_VERSION = "2026.06.compact-v1"
+SCHEMA_VERSION = "2026.08.role-information-v3"
 
 PERSON_COMPACT_V1_FIELDS: tuple[str, ...] = ROLE_COMPACT_V2_FIELDS
 
@@ -135,7 +135,11 @@ def canonicalize_person_payload(
     mode = _as_text(scene_behavior_mode) or _as_text(source.get("scene_behavior_mode")) or "核查取证型"
     expanded = expand_role_compact_to_person(source, scene_behavior_mode=mode)
     canonical = copy.deepcopy(expanded)
-    is_v2 = _as_text(source.get("role_template_version")) == ROLE_TEMPLATE_VERSION or bool(source.get("role_memories"))
+    is_v2 = (
+        _as_text(source.get("role_template_version")) == ROLE_TEMPLATE_VERSION
+        or bool(source.get("role_memories"))
+        or bool(source.get("role_event_ledger"))
+    )
     if is_v2:
         for key in ("person_id", "aliases", "source_verification", "source_refs", "persona_source", "persona_contract_version", "role_template_version"):
             if key in source and source.get(key) not in (None, "", []):
@@ -147,9 +151,17 @@ def canonicalize_person_payload(
         canonical["compact_v1"] = False
         # Source memories are the role's case experience, not optional persona
         # decoration. Keep them verbatim through every schema migration.
-        for key in ("role_memories", "knowledge_ledger", "unresolved_claims", "response_constraints"):
+        for key in ("role_memories", "knowledge_ledger", "role_event_ledger", "unresolved_claims", "response_constraints", "narrative_context"):
             if isinstance(source.get(key), list):
                 canonical[key] = copy.deepcopy(source[key])
+        if _as_text(source.get("role_information_version")):
+            canonical["role_information_version"] = _as_text(source.get("role_information_version"))
+        if isinstance(source.get("soul_profile"), dict):
+            canonical["soul_profile"] = copy.deepcopy(source["soul_profile"])
+        if isinstance(source.get("persona_generation"), dict):
+            canonical["persona_generation"] = copy.deepcopy(source["persona_generation"])
+        if _as_text(source.get("current_goal")):
+            canonical["current_goal"] = _as_text(source.get("current_goal"))
         return canonical, warnings
     if _as_text(source.get("person_id")):
         canonical["person_id"] = _as_text(source.get("person_id"))
@@ -172,10 +184,10 @@ def canonicalize_person_payload(
         canonical["source_name_match"] = source.get("source_name_match")
     if isinstance(source.get("source_refs"), list):
         canonical["source_refs"] = copy.deepcopy(source.get("source_refs"))
-    for key in ("knowledge_ledger", "role_memories", "unresolved_claims", "response_constraints"):
+    for key in ("knowledge_ledger", "role_memories", "role_event_ledger", "unresolved_claims", "response_constraints", "narrative_context"):
         if isinstance(source.get(key), list):
             canonical[key] = copy.deepcopy(source.get(key))
-    for key in ("persona_contract_version", "persona_source"):
+    for key in ("persona_contract_version", "persona_source", "role_information_version"):
         if _as_text(source.get(key)):
             canonical[key] = _as_text(source.get(key))
     if isinstance(source.get("persona_autofill"), bool):

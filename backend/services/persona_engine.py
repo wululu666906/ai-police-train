@@ -1011,6 +1011,7 @@ def build_persona_profile(role, case=None, scene=None) -> dict[str, Any]:
     risk_level = _pick_first_non_empty(person_meta.get("risk_level"), compact_fields.get("risk_level"))
     clarity_level = _pick_first_non_empty(person_meta.get("clarity_level"), compact_fields.get("clarity_level"))
     impairment_state = _pick_first_non_empty(person_meta.get("impairment_state"), scene_specific.get("impairment_state"))
+    soul_profile = person_meta.get("soul_profile") if isinstance(person_meta.get("soul_profile"), dict) else {}
 
     collected = {
         "motives": [],
@@ -1206,10 +1207,11 @@ def build_persona_profile(role, case=None, scene=None) -> dict[str, Any]:
         "init_risk": compact_fields.get("init_risk", 50),
         "init_expression_clarity": compact_fields.get("init_expression_clarity", 52),
         "impairment_state": impairment_state,
+        "soul_profile": soul_profile,
         "realism_rules": [
-            "回答可以犹豫、绕开、补充、反复，但不要像说明书一样机械整齐。",
-            "情绪上来时允许打断、反问、讲废话、抓住某一点反复说。",
-            "角色可以复杂矛盾，不必永远保持单一态度。",
+            "人物画像只影响表达倾向，必须优先回答学员当前问题。",
+            "普通群众面对警方通常会谨慎配合；只有来源事实和当前刺激支持时才升级对抗。",
+            "情绪会随有效安抚和明确处置逐步恢复，不得固定在单一状态。",
         ],
     }
 

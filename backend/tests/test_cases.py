@@ -567,7 +567,7 @@ class TestCasesSceneGeneration:
         assert response.status_code == 200
 
         data = response.json()
-        assert len(data["scenes"]) >= 2
+        assert 3 <= len(data["scenes"]) <= 4
         assert data["scene_generation_mode"].startswith(("ai", "fallback"))
         assert any("XX路东段废弃仓库" in scene["dispatch_brief"] for scene in data["scenes"])
         assert all(scene["roles"] for scene in data["scenes"])
@@ -641,7 +641,7 @@ class TestCasesFullCreate:
             .all()
         )
 
-        assert len(db_scenes) >= 2
+        assert 3 <= len(db_scenes) <= 4
         assert len(db_roles) >= 3
         assert len(scene_role_links) >= 2
         assert any(link.is_primary for link in scene_role_links)

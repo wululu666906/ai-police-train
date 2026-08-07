@@ -14,7 +14,19 @@ from .case_schema_service import canonicalize_person_payload, migrate_structured
 from .case_intelligence_service import assess_source_quality, normalize_case_intelligence
 from .training_compiler_service import build_observable_scoring_rules, build_training_tasks, compile_state_machine
 from .stage_config_service import normalize_stages
-from .case_scene_module_service import build_case_frequency_prompt, build_scene_module_prompt, select_scene_modules
+from .case_scene_module_service import build_case_frequency_prompt, build_scene_module_prompt
+from .scene_story_planner_service import (
+    bind_blueprints_to_story,
+    bind_scenes_to_story,
+    build_scene_portfolio_plan,
+    complete_scene_blueprint_portfolio,
+    missing_scene_portfolio_slots,
+)
+from .scene_design_service import compile_scene_lifecycles
+from .role_information_management_service import compile_person_role_information
+
+CASE_SCENE_MIN_COUNT = 3
+CASE_SCENE_MAX_COUNT = 4
 
 CASE_TYPE_GROUPS = {
     "纠纷求助类": ["邻里纠纷", "家庭纠纷", "情感纠纷", "劳资纠纷", "消费纠纷", "噪音扰民", "失踪求助", "自杀干预", "校园警情", "宠物纠纷"],
@@ -262,7 +274,7 @@ persons 字段要求：
 
 SCENE_GEN_PROMPT = """你是公安警情训练场景设计专家。你的结果将直接进入管理员的"场景生成"预览页，管理员会人工复核后发布。
 
-任务：严格基于输入案件 JSON，生成 2 到 4 个适合警务训练的平台场景，最多不超过 4 个。
+任务：严格基于输入案件 JSON，生成 3 到 4 个适合警务训练的平台场景，不得少于 3 个或超过 4 个。
 
 硬性要求：
 1. 只能使用输入案件中的事实、人物、地点、关系和风险点，不得虚构新人物、新地点、新案件类型、新证据。
@@ -279,8 +291,10 @@ SCENE_GEN_PROMPT = """你是公安警情训练场景设计专家。你的结果�
 10. assessment_points 要体现真正能训练能力提升的检查点，不要只复述 stage_goal。每条 assessment_point 包含 label（核心能力）、content（80-200字具体题目+达标标准）、category（procedure/risk/evidence）、required（布尔）、weight（必考12-15/选考8-10）、keywords（2-5个）。
 11. action_catalog 要优先覆盖执法动作、取证动作、收尾动作，不要只写说话动作。
 12. end_conditions 要体现这个场景在真实流程下何时应结束，并给出 closing_script。
-13. 可根据案件复杂度输出 2-4 个场景；简单案件宁可 2 个扎实场景，复杂案件可 4 个递进场景。
-14. 只输出一个包含 scenes 的合法 JSON 对象，不要附加解释。
+13. 必须输出 3-4 个目标不同且相互递进的场景。第一场可为接警；其余场景必须位于案件主要行为发生后，由学员作为民警开展到场处置、调查询问、证据固定、复盘回访或协同流转。
+14. 禁止让学员进入案件正在发生的历史过程，禁止要求学员阻止、参与或改写已经发生的行为。只有原案明确记载民警接警到场时事件仍在持续，才可呈现到场时尚未结束的现实风险；即便如此，也不得改变案件既定结果。
+15. 学员行为只影响处置质量、证据完整度、沟通效果与后续风险控制，不得改变案件事实和最终结果。
+16. 只输出一个包含 scenes 的合法 JSON 对象，不要附加解释。
 
 场景设计偏好：
 - 每个场景都应有明确主任务。
@@ -365,18 +379,44 @@ story_world 必须包含 complete_story、fact_cards、timeline、relationship_g
 每个 fact_card 使用 id、content、status、source_refs；source_refs 是 source_id/start/end/summary。person_card 必须写明 timeline_actions、known_fact_ids、cannot_answer_fact_ids、conflict_fact_ids。
 confirmed 只能是有原文引用的事实；单方说法写 claimed；互相矛盾写 conflicted；无法确认写 unknown。允许 simulation_supplements，但每项必须有 id、content、purpose、applicable_scene_types、is_scoring_fact:false。不得把补写写入 confirmed 或人物已知事实。"""
 
-SCENE_BLUEPRINT_PROMPT = """你是警务训练场景规划师。根据案件世界观生成 2-4 个场景蓝图，只输出 JSON：
-{"blueprints":[{"scene_id":"S1","scene_name":"", "training_goal":"", "roles":["人物名"], "fact_ids":["F1"], "open_question_ids":[], "supplement_ids":[], "stages":[{"stage_name":"","stage_goal":""}]}]}。
-学员固定为民警。每个事实引用必须存在于输入的 fact_cards；补写只能引用 simulation_supplements。每个场景必须列出与该阶段事实、时间线或关系直接相关的案件人员，不能只保留一名主角；不得让失能/死亡人物作为主对话角色。"""
+SCENE_BLUEPRINT_PROMPT = """你是警务训练场景规划师。基于案件完整故事图和 required_scene_slots 生成场景蓝图，只输出 JSON：
+{"blueprints":[{"scene_id":"S1","portfolio_role":"intake|primary|investigation|followup","is_primary":false,"scene_name":"","scene_kind":"接警|案发后现场处置|案发后调查询问|案发后复盘回访|其他","scene_purpose":"为什么训练该场景","training_goal":"学员完成什么","start_state":"训练开始时的状态","completion_criteria":["可观察的完成条件"],"end_prompt":"达标后的结束提示","training_entry_phase":"intake|post_incident_onsite|post_incident_inquiry|post_incident_followup","entry_time_policy":"dispatch_intake|after_canonical_event","canonical_outcome_locked":true,"student_role":"民警","story_node_ids":["N1"],"time":"","place":"","roles":["人物名"],"fact_ids":["F1"],"open_question_ids":[],"supplement_ids":[],"stages":[{"stage_name":"","stage_goal":""}]}]}。
+
+规则：
+1. required_scene_slots 是本案已经规划好的训练组合。必须逐槽位生成，每个槽位恰好一个场景，不得只生成主场景，也不得擅自增加同义场景。学员固定为民警。
+2. 第一个场景可以是接警，也可以是案件发生后的首次到场；第二至第四个场景必须在案件主要行为发生后，训练现场处置、救助与证据固定、调查询问、笔录制作、复盘回访、风险化解或协同流转。
+3. 除接警外，training_entry_phase 必须以 post_incident_ 开头，entry_time_policy 必须为 after_canonical_event，canonical_outcome_locked 必须为 true。禁止让学员穿越到历史冲突、交易、诈骗或侵害正在发生的阶段。
+4. 学员不得阻止、改变或重演案件既定行为和结果；其操作只影响处置质量、证据完整度、沟通效果与风险控制。原案明确记载民警到场时风险仍在持续的，可呈现该到场状态，但仍不得改写结果。
+5. 场景按不同警务目标拆分，不能把同一段历史事实换标题重复生成。相同地点但训练阶段、工作对象或警务目标不同，可以形成独立场景。
+6. 案发后现场交涉场景的 roles 应列出该处置阶段可接触且可交流的相关人物；死亡、昏迷或无法交流者除外。历史节点的在场名单仅作人物相关性参考，不代表这些人正在重复历史动作。
+7. 每个场景引用 1-24 条真正用于该场景的事实，不得把全案所有事实平均分给每个场景。
+8. 天气、光线、地形、人员位置、持有物和伤情等原文明确存在的环境要素可作为历史事实或案发后遗留状态进入对应场景；不得把已经结束的动作写成当前正在发生，也不得把原文没有的环境编造成事实。
+9. 每个场景必须写清 scene_purpose、training_goal、start_state、completion_criteria 和 end_prompt；完成条件必须是学员可执行、系统可观察的行为。
+10. primary 是唯一主场景，负责最完整的案发后现场处置；intake、investigation、followup 从其他警务维度训练，不得复制主场景目标。"""
+
+SCENE_BLUEPRINT_COMPLETION_PROMPT = """你是警务训练场景组合补全器。输入中包含已经生成的场景和 missing_scene_slots。
+只为 missing_scene_slots 逐项生成蓝图，不得重写已有场景，不得增加槽位，不得复制主场景目标。
+每个蓝图必须使用对应 portfolio_role，并完整提供 scene_purpose、training_goal、start_state、completion_criteria、end_prompt、stages、roles 和 fact_ids。
+只能引用输入提供的人物和事实卡；学员固定为民警；除 intake 外均从案件主要行为发生后进入，案件结果不可改变。只输出 {"blueprints": [...]}。"""
 
 SCENE_SCRIPT_PROMPT = """你是警务训练剧本编辑。基于一个场景蓝图、人物卡和可引用事实，输出一个 JSON 对象：
-{"scene_name":"","scene_description":"","difficulty":"低|中等|高","dispatch_brief":"","first_impression":"","roles":[""],"fact_ids":[""],"supplement_ids":[""],"stages":[{"stage_name":"","stage_goal":"","fact_ids":[""]}],"script_markdown":"# 民警任务\\n..."}。
+{"scene_name":"","portfolio_role":"","is_primary":false,"scene_purpose":"","training_goal":"","start_state":"","completion_criteria":[""],"end_prompt":"","scene_description":"","difficulty":"低|中等|高","dispatch_brief":"","first_impression":"","roles":[""],"fact_ids":[""],"supplement_ids":[""],"stages":[{"stage_name":"","stage_goal":"","fact_ids":[""]}],"script_markdown":"# 民警任务\\n..."}。
+first_impression 必须用连续现场观察写清：环境与空间、可见人员及位置、正在发生的动作、伤情或危险物、声音和围观干扰、民警必须立即处置的风险；只写到场可观察内容，不泄露隐藏证据和裁判结论。
+roles 必须保留蓝图中的全部现场可交流人员。主线和支线允许丰富动作、反应和心理变化，但不得改变事实、人物关系和案件结果。
+场景当前时点必须服从蓝图的 training_entry_phase 和 entry_time_policy。除接警外，只能描写案件主要行为发生后的状态；历史冲突和行为只能作为待核实的过去事实，不得写成学员眼前正在发生。
 script_markdown 使用 Markdown，写民警任务、角色已知范围与回应边界、可问询线索、执法/取证动作、阶段推进和结束条件。任何案件事实必须引用 fact_ids；补写必须引用 supplement_ids，并明确标为“模拟补充”，不可作为评分事实。"""
 
-SCENE_TEXT_TEMPLATE_PROMPT = """你是警务训练剧本编辑。JSON 输出不可用时，使用下面的纯文本模板生成 2-4 个民警训练场景；只使用输入事实卡，模拟补充必须明确标为【模拟补充】，不得写成案件事实。
+SCENE_TEXT_TEMPLATE_PROMPT = """你是警务训练剧本编辑。JSON 输出不可用时，使用下面的纯文本模板生成 3-4 个民警训练场景；只使用输入事实卡，模拟补充必须明确标为【模拟补充】，不得写成案件事实。第一个场景可为接警；其余场景必须在案件主要行为发生后，由民警开展处置、调查、取证、复盘或回访。不得让学员进入历史事件正在发生的过程，不得改变案件既定结果。
 
 # 场景 1
 场景名称：
+场景职责：intake|primary|investigation|followup
+是否主场景：是|否
+场景目的：
+训练目标：
+开始状态：
+完成条件：条件一；条件二；条件三
+结束提示：
 场景信息：
 接警信息：
 现场第一印象：
@@ -387,7 +427,7 @@ SCENE_TEXT_TEMPLATE_PROMPT = """你是警务训练剧本编辑。JSON 输出不�
 ## 民警任务与角色回应边界
 用 Markdown 写出民警的问询、处置、取证和结束条件。
 
-每个场景都重复该模板。"""
+现场第一印象必须完整描述环境、人员位置、当前动作、伤情/危险物、声音/围观干扰和即时风险，不得只写“现场混乱”。每个场景都重复该模板。"""
 
 
 class WorkflowService:
@@ -553,20 +593,25 @@ class WorkflowService:
                 "status": "claimed",
                 "source_refs": [{"source_id": "source-1", "start": start, "end": start + len(clean), "summary": clean[:180]}],
             })
-            if len(cards) >= max(80, int(os.getenv("CASE_EVENT_LEDGER_LIMIT", "240"))):
+            if len(cards) >= max(240, int(os.getenv("CASE_EVENT_LEDGER_LIMIT", "1200"))):
                 break
         return cards
 
     def _programmatic_people(self, text: str) -> list[dict[str, Any]]:
         people: dict[str, dict[str, Any]] = {}
 
-        def add(name: str, role_type: str, evidence: str):
+        def add(name: str, role_type: str, evidence: str, *, strong_action_context: bool = False):
             clean = self._normalize_person_name(name)
             for suffix in ("称其", "表示", "反映", "报警", "报案", "搬走", "拿走", "打伤", "推倒", "离开", "进入"):
                 if clean.endswith(suffix) and len(clean) - len(suffix) >= 2:
                     clean = clean[: -len(suffix)]
                     break
-            if not self._is_programmatic_person_name(clean):
+            valid_name = (
+                self._is_contextual_person_name(clean)
+                if strong_action_context
+                else self._is_programmatic_person_name(clean)
+            )
+            if not valid_name:
                 return
             item = people.setdefault(clean, {
                 "name": clean,
@@ -585,7 +630,7 @@ class WorkflowService:
                 item["knows_facts"].append(fact)
                 item["known_key_points"].append(fact)
 
-        role_labels = "报警人|报案人|证人|目击者|嫌疑人|犯罪嫌疑人|被告人|上诉人|原审被告人|被害人|受害人"
+        role_labels = "报警人|报案人|证人|目击者|嫌疑人|犯罪嫌疑人|被告人|上诉人|原审被告人|同案人|被害人|受害人"
         for match in re.finditer(
             rf"(?:^|[，。；：:\s（(及和与、])({role_labels})[）)]?[：:\s]{{0,2}}([\u4e00-\u9fa5]{{2,4}}?(?:\d{{1,2}})?)(?=称|说|表示|反映|陈述|证言|供述|辩解|报警|报案|在|于|与|和|及|均|、|，|。|；|发生|的证言|的陈述|的供述|$)",
             text,
@@ -610,6 +655,49 @@ class WorkflowService:
         for match in re.finditer(r"([\u4e00-\u9fa5]{2,4})和([\u4e00-\u9fa5]{2,4})(?=在|于|发生|争吵|冲突)", text):
             add(match.group(1), "相关人员", match.group(0))
             add(match.group(2), "相关人员", match.group(0))
+        # Facts sections describe many participants through actions rather than
+        # testimony headings. Register those source-grounded actors separately
+        # so role coverage is not coupled to the amount of quoted testimony.
+        action_words = (
+            "持|拿|携带|组织|召集|通知|纠集|带领|参与|实施|殴打|击打|追赶|"
+            "阻拦|劝阻|报警|报案|送医|救助|受伤|损伤|轻伤|重伤|被打|被砍|逃离|离开|到场|赶到|种植|毁坏"
+        )
+        name_atom = r"(?:[\u4e00-\u9fff]某(?:甲|乙|丙|丁|戊|己|庚|辛|壬|癸)?\d{0,2}|[\u4e00-\u9fff]{2,4})"
+        for sentence_match in re.finditer(r"[^。！？；\n]{4,260}[。！？；]?", text):
+            sentence = sentence_match.group(0).strip()
+            if not re.search(action_words, sentence):
+                continue
+            for list_match in re.finditer(
+                rf"(?P<names>{name_atom}(?:[、及和与]{name_atom}){{1,16}})"
+                rf"(?:（[^）]{{0,40}}）)?(?:等(?:人|村民)?)?"
+                rf"(?=共同|一起|伙同|手持|不顾|不听|在|从|前往|赶到|商量|决定|{action_words})",
+                sentence,
+            ):
+                for candidate in re.split(r"[、及和与]", list_match.group("names")):
+                    add(candidate, "相关人员", sentence, strong_action_context=True)
+            for match in re.finditer(rf"(?P<name>{name_atom})(?={action_words})", sentence):
+                add(match.group("name"), "相关人员", sentence, strong_action_context=True)
+            for match in re.finditer(rf"(?:被|向|对|将)(?P<name>{name_atom})(?={action_words})", sentence):
+                add(match.group("name"), "被害人" if re.search(r"被打|被砍|受伤", match.group(0)) else "相关人员", sentence, strong_action_context=True)
+            # Handle compact participant lists such as
+            # “农长望和农长站、许明向、农盛星一起殴打……”.
+            for list_match in re.finditer(
+                rf"(?P<names>{name_atom}(?:[、及和与]{name_atom}){{1,10}})(?:共同|一起)?(?:{action_words})",
+                sentence,
+            ):
+                for candidate in re.split(r"[、及和与]", list_match.group("names")):
+                    add(candidate, "相关人员", sentence, strong_action_context=True)
+            for list_match in re.finditer(
+                rf"(?P<names>{name_atom}(?:、{name_atom}){{1,10}})(?=(?:共同|一起)?(?:{action_words}))",
+                sentence,
+            ):
+                for candidate in list_match.group("names").split("、"):
+                    add(candidate, "相关人员", sentence, strong_action_context=True)
+            for match in re.finditer(
+                rf"(?:殴打|击打|追赶|阻拦|伤害|砍伤|打伤)(?P<name>{name_atom})",
+                sentence,
+            ):
+                add(match.group("name"), "被害人", sentence, strong_action_context=True)
         # Numbered records often begin with a compact heading such as
         # "12. 证人韩某的证言". Register that speaker independently from the
         # prose matcher, which can otherwise consume "的证" as part of a name.
@@ -891,7 +979,7 @@ class WorkflowService:
         """Extract complete role lines in parallel and merge them by source name."""
         source = str(text or "")
         sections = source_sections or self._classify_source_sections(source)
-        chunk_chars = max(8000, int(os.getenv("CASE_AI_ROLE_CHUNK_CHARS", "24000")))
+        chunk_chars = max(4000, int(os.getenv("CASE_AI_ROLE_CHUNK_CHARS", "6500")))
         chunks = []
         start = 0
         while start < len(source):
@@ -899,7 +987,7 @@ class WorkflowService:
             chunks.append({"source_id": f"role-source-{len(chunks) + 1}", "start": start, "text": source[start:end]})
             if end >= len(source):
                 break
-            start = max(start + 1, end - 1200)
+            start = max(start + 1, end - 800)
 
         def extract(chunk: dict[str, Any]):
             try:
@@ -1100,16 +1188,20 @@ class WorkflowService:
                 if any(range_start <= start < range_end for range_start, range_end, _speaker in explicit_testimony_ranges):
                     continue
                 section_label = self._section_for_position(sections, max(0, start))
-                if not self._is_testimony_candidate(name, statement, statement, "source_mention", section_label):
-                    continue
                 if re.search(re.escape(name) + r"(?:称|说|表示|供述|陈述|反映|指认)", statement):
                     memory_type = "direct_statement"
                 elif any(token in statement for token in ("看见", "看到", "目击", "发现", "听见")):
                     memory_type = "direct_observation"
                 elif any(token in statement for token in ("得知", "听说", "转述")):
                     memory_type = "hearsay"
+                elif any(token in statement for token in ("持", "拿", "携带", "组织", "召集", "参与", "实施", "殴打", "击打", "追赶", "阻拦", "报警", "送医", "受伤", "损伤", "轻伤", "重伤", "被打", "逃离", "到场", "种植", "毁坏")):
+                    memory_type = "personal_experience"
                 else:
-                    memory_type = "source_mention"
+                    # A plain mention is not enough to become role memory. It
+                    # remains available in the shared event ledger instead.
+                    if not self._is_testimony_candidate(name, statement, statement, "source_mention", section_label):
+                        continue
+                    memory_type = "source_event"
                 memories[name].append({
                     "memory_id": f"{name}-M{len(memories[name]) + 1}",
                     "memory_type": memory_type,
@@ -1246,6 +1338,34 @@ class WorkflowService:
         return people
 
     @staticmethod
+    def _merge_extracted_people(
+        ai_people: list[dict[str, Any]],
+        programmatic_people: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Merge model detail with deterministic source identity coverage."""
+        people_by_name = {
+            str(item.get("name") or "").strip(): dict(item)
+            for item in ai_people
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        }
+        for fallback in programmatic_people:
+            name = str(fallback.get("name") or "").strip()
+            if not name:
+                continue
+            if name not in people_by_name:
+                people_by_name[name] = dict(fallback)
+                continue
+            target = people_by_name[name]
+            if target.get("role_type") == "相关人员" and fallback.get("role_type"):
+                target["role_type"] = fallback["role_type"]
+                target["role"] = fallback.get("role") or fallback["role_type"]
+            # A model-returned name without any usable line is only identity
+            # recognition. Preserve the deterministic provenance in that case.
+            if not target.get("role_memories"):
+                target["persona_source"] = fallback.get("persona_source") or "programmatic_identity_only"
+        return list(people_by_name.values())
+
+    @staticmethod
     def _ai_result_with_trace(result: Any) -> tuple[Any, dict[str, Any]]:
         if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
             return result[0], result[1]
@@ -1256,11 +1376,12 @@ class WorkflowService:
         trace: dict[str, Any] = {"primary_provider": "deepseek", "final_provider": "", "attempts": []}
         budget_names = {
             "document_structure_labeling": ("CASE_AI_DOCUMENT_LABEL_MAX_TOKENS", 6000),
-            "role_line_extraction": ("CASE_AI_ROLE_MAX_TOKENS", 7000),
+            "role_line_extraction": ("CASE_AI_ROLE_MAX_TOKENS", 4800),
             "evidence_extraction": ("CASE_AI_EVIDENCE_MAX_TOKENS", 4500),
             "case_story_segment": ("CASE_AI_STORY_MAX_TOKENS", 5000),
             "case_worldview": ("CASE_AI_WORLDVIEW_MAX_TOKENS", 32000),
             "scene_blueprint": ("CASE_AI_BLUEPRINT_MAX_TOKENS", 8000),
+            "scene_blueprint_completion": ("CASE_AI_BLUEPRINT_MAX_TOKENS", 8000),
             "scene_script": ("CASE_AI_SCRIPT_MAX_TOKENS", 12000),
             "scene_repair": ("CASE_AI_REPAIR_MAX_TOKENS", 8000),
         }
@@ -1282,7 +1403,7 @@ class WorkflowService:
             response, trace = self._ai_result_with_trace(result)
             payload = self._safe_json_loads(extract_message_text(response), {})
             finish_reason = str((trace.get("attempts") or [{}])[-1].get("finish_reason") or "")
-            required_key = {"document_structure_labeling": "sections", "role_line_extraction": "persons", "evidence_extraction": "facts", "case_story_segment": "story_segment", "scene_blueprint": "blueprints", "scene_script": "stages"}.get(stage)
+            required_key = {"document_structure_labeling": "sections", "role_line_extraction": "persons", "evidence_extraction": "facts", "case_story_segment": "story_segment", "scene_blueprint": "blueprints", "scene_blueprint_completion": "blueprints", "scene_script": "stages"}.get(stage)
             valid_payload = isinstance(payload, dict) and bool(payload) and (not required_key or required_key in payload)
             if not valid_payload or finish_reason == "length":
                 repair_messages = [
@@ -1381,7 +1502,11 @@ class WorkflowService:
             for row in stage_text.splitlines():
                 match = re.match(r"\s*\d+[.、]\s*([^：:]+)[：:]\s*(.+)", row)
                 if match:
-                    stages.append({"stage_name": match.group(1).strip(), "stage_goal": match.group(2).strip(), "fact_ids": fact_ids})
+                    stage_name = match.group(1).strip()
+                    stage_goal = match.group(2).strip()
+                    if stage_name in {"阶段名称", "名称"} or stage_goal in {"阶段目标", "目标"}:
+                        continue
+                    stages.append({"stage_name": stage_name, "stage_goal": stage_goal, "fact_ids": fact_ids})
             if not stages:
                 stages = [{"stage_name": "事实核实", "stage_goal": "围绕已引用案件事实开展民警问询和处置。", "fact_ids": fact_ids}]
             available_names = {
@@ -1399,6 +1524,15 @@ class WorkflowService:
             )
             scenes.append({
                 "scene_name": field("场景名称", self._default_scene_name(index)),
+                "portfolio_role": field("场景职责"),
+                "is_primary": field("是否主场景") == "是",
+                "scene_purpose": field("场景目的"),
+                "training_goal": field("训练目标"),
+                "start_state": field("开始状态"),
+                "completion_criteria": [
+                    item.strip() for item in re.split(r"[；;]", field("完成条件")) if item.strip()
+                ],
+                "end_prompt": field("结束提示"),
                 "scene_description": field("场景信息", "围绕案件事实开展民警训练。"),
                 "difficulty": "中等",
                 "dispatch_brief": field("接警信息", self._default_dispatch_brief(case_info, self._default_scene_name(index))),
@@ -2092,7 +2226,7 @@ class WorkflowService:
         "尹", "黎", "易", "常", "武", "乔", "贺", "赖", "龚", "文",
         "庞", "樊", "殷", "施", "陶", "洪", "翟", "安", "颜", "倪",
         "严", "牛", "温", "芦", "季", "俞", "章", "鲁", "葛", "伍",
-        "韦", "申", "尤", "毕", "聂", "丛", "焦", "向", "柳", "邢",
+        "韦", "申", "尤", "毕", "聂", "丛", "焦", "向", "柳", "邢", "农", "蒙",
         "岳", "齐", "欧", "祝", "尚", "梅", "莫", "佘", "牟", "练",
     })
 
@@ -2138,6 +2272,22 @@ class WorkflowService:
         if any(part in clean for part in WorkflowService.PROGRAMMATIC_NAME_FORBIDDEN_PARTS):
             return False
         return WorkflowService._is_valid_person_name(clean)
+
+    @staticmethod
+    def _is_contextual_person_name(name: str) -> bool:
+        """Allow rare real names that collide with suffix rules in action clauses."""
+        clean = WorkflowService._normalize_person_name(name)
+        if not re.fullmatch(r"[\u4e00-\u9fa5]{2,4}", clean):
+            return False
+        if clean in WorkflowService.BAD_TOKENS:
+            return False
+        if any(part in clean for part in WorkflowService.PROGRAMMATIC_NAME_FORBIDDEN_PARTS):
+            return False
+        if clean.endswith(("的", "手", "参", "伙", "一", "准备", "方向", "工具", "行为", "现场", "过程")):
+            return False
+        if any(token in clean for token in ("民警", "政府")):
+            return False
+        return clean[0] in WorkflowService.COMMON_SURNAMES
 
     @staticmethod
     def _is_valid_person_name(name: str) -> bool:
@@ -2928,15 +3078,9 @@ class WorkflowService:
             ai_people, role_traces = [], []
             role_phase_error = str(exc)
             self._append_warning(base, f"AI 人物线提取失败，已保留规则识别人物继续处理：{exc}")
-        people_by_name = {str(item.get("name") or "").strip(): item for item in ai_people if str(item.get("name") or "").strip()}
-        for fallback_person in programmatic_people:
-            name = str(fallback_person.get("name") or "").strip()
-            if name not in people_by_name:
-                people_by_name[name] = fallback_person
-            elif people_by_name[name].get("role_type") == "相关人员" and fallback_person.get("role_type"):
-                people_by_name[name]["role_type"] = fallback_person["role_type"]
-                people_by_name[name]["role"] = fallback_person.get("role") or fallback_person["role_type"]
-        base["persons"] = self._attach_programmatic_role_knowledge(list(people_by_name.values()), intelligence)
+        base["persons"] = self._attach_programmatic_role_knowledge(
+            self._merge_extracted_people(ai_people, programmatic_people), intelligence
+        )
 
         reconstruction = self._build_role_memories_and_case_flow(text, base["persons"], cards, source_sections)
         for person in base["persons"]:
@@ -2955,20 +3099,10 @@ class WorkflowService:
                     seen_memory_refs.add(marker)
             role_memories.sort(key=lambda item: (item.get("source_refs") or [{}])[0].get("start", 10**9))
             person["role_memories"] = role_memories
-            reconstruction["role_memories"][name] = role_memories
-            person["knowledge_ledger"] = [
-                {
-                    "knowledge_id": memory["memory_id"],
-                    "claim_id": memory.get("event_id") or "",
-                    "knowledge_mode": memory["memory_type"],
-                    "content": memory["statement"],
-                    "certainty": memory["certainty"],
-                    "disclosure_policy": "answer_when_asked",
-                    "verbalization": memory["statement"],
-                    "source_refs": memory["source_refs"],
-                }
-                for memory in role_memories
-            ]
+            compiled_person = compile_person_role_information(person)
+            person.clear()
+            person.update(compiled_person)
+            reconstruction["role_memories"][name] = person["role_memories"]
             person["response_constraints"] = person.get("response_constraints") or ["只陈述本人亲历、亲眼所见或原文明确记载的内容。"]
             person["unresolved_claims"] = person.get("unresolved_claims") or []
         def person_source_start(person: dict[str, Any]) -> int:
@@ -3049,6 +3183,114 @@ class WorkflowService:
             story=base["story_world"],
             source_mode=source_mode,
         )
+        return base
+
+    def parse_case_for_training(
+        self,
+        text: str,
+        source_mode: str = "plain_case",
+        source_meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Fast path for training: preserve role evidence, skip decorative long-form rewriting."""
+        text = str(text or "").strip()
+        if not text:
+            raise ValueError("案件文本为空，无法解析")
+
+        base = self._heuristic_parse_case(text, source_mode, source_meta, mark_as_fallback=False)
+        source_sections = self._classify_source_sections(text)
+        cards = self._programmatic_claim_cards(text)
+        uncertainty_words = ("不清楚", "没看清", "不详", "大概", "可能", "不确定", "不记得")
+        intelligence = normalize_case_intelligence({"case_intelligence": {
+            "source_documents": [{"document_id": "source-1", "length": len(text)}],
+            "claims": [
+                {
+                    "claim_id": card["id"],
+                    "statement": card["content"],
+                    "claim_type": card["fact_type"],
+                    "verification_status": "unverified",
+                    "certainty": "uncertain" if any(word in card["content"] for word in uncertainty_words) else "source_supported",
+                    "source_refs": card["source_refs"],
+                }
+                for card in cards
+            ],
+            "evidence": [
+                {
+                    "evidence_id": f"E{index}",
+                    "description": card["content"],
+                    "source_refs": card["source_refs"],
+                    "reliability": "reported",
+                }
+                for index, card in enumerate((item for item in cards if item["fact_type"] == "证据"), start=1)
+            ],
+            "events": [],
+            "unresolved_questions": [
+                {"question": card["content"], "reason": "source_explicit_uncertainty", "source_refs": card["source_refs"]}
+                for card in cards
+                if any(word in card["content"] for word in uncertainty_words)
+            ],
+        }})
+
+        programmatic_people = self._programmatic_people(text)
+        ai_people: list[dict[str, Any]] = []
+        extraction_warning = ""
+        try:
+            ai_people, _ = self._extract_role_lines_ai(text, new_correlation_id(), source_sections)
+        except Exception as exc:
+            extraction_warning = str(exc)[:240]
+
+        persons = self._attach_programmatic_role_knowledge(
+            self._merge_extracted_people(ai_people, programmatic_people), intelligence
+        )
+        reconstruction = self._build_role_memories_and_case_flow(text, persons, cards, source_sections)
+        for person in persons:
+            name = str(person.get("name") or "").strip()
+            memories = person.get("role_memories") if isinstance(person.get("role_memories"), list) else []
+            known = {(item.get("memory_id"), item.get("statement")) for item in memories if isinstance(item, dict)}
+            for memory in reconstruction.get("role_memories", {}).get(name, []):
+                marker = (memory.get("memory_id"), memory.get("statement"))
+                if marker not in known:
+                    memories.append(memory)
+                    known.add(marker)
+            person["role_memories"] = memories
+            compiled_person = compile_person_role_information(person)
+            person.clear()
+            person.update(compiled_person)
+            reconstruction.setdefault("role_memories", {})[name] = person["role_memories"]
+        base["persons"] = self.standardize_person_records(persons)
+        complete_story = self._render_complete_story(reconstruction, base["persons"])
+        base.update({
+            "case_intelligence": intelligence,
+            "case_reconstruction": {
+                "event_ledger": reconstruction.get("event_ledger") or [],
+                "timeline": reconstruction.get("timeline") or [],
+                "spatial_timeline": reconstruction.get("spatial_timeline") or [],
+            },
+            "complete_story": complete_story,
+            "full_narrative": complete_story,
+            "story_world": {
+                "complete_story": complete_story,
+                "fact_cards": cards,
+                "person_cards": base["persons"],
+                "events": reconstruction.get("event_ledger") or [],
+                "timeline": reconstruction.get("timeline") or [],
+                "spatial_timeline": reconstruction.get("spatial_timeline") or [],
+                "open_questions": intelligence.get("unresolved_questions") or [],
+                "source_sections": source_sections,
+                "simulation_supplements": [],
+            },
+            "source_sections": source_sections,
+            "source_quality": assess_source_quality(text),
+            "parse_engine": "training_fast_path",
+            "generation_mode": "role_evidence_then_training_compile",
+            "rawText": text,
+            "original_content": text,
+        })
+        if source_meta:
+            for key in ("source_asset_id", "source_asset_key", "ocr_method", "ocr_engine", "ocr_warnings", "ocr_metadata"):
+                if source_meta.get(key) is not None:
+                    base[key] = source_meta[key]
+        if extraction_warning:
+            self._append_warning(base, f"人物线模型辅助未完整完成，已使用来源规则补齐：{extraction_warning}")
         return base
 
     def parse_case_text(self, text: str, source_mode: str = "plain_case", source_meta: dict[str, Any] | None = None):
@@ -3403,107 +3645,53 @@ class WorkflowService:
             result.append(bound)
         return result
 
-    def _fallback_scenes(self, case_info: dict[str, Any], *, scene_generation_strategy: str = "case_driven") -> dict[str, Any]:
+    def _minimum_fallback_scenes(self, case_info: dict[str, Any], dispatch_brief: str) -> list[dict[str, Any]]:
         case_name = str(case_info.get("case_name") or "该案件").strip()
-        dispatch_brief = self._default_dispatch_brief(case_info, "接警研判")
-        scene_modules = select_scene_modules(case_info, limit=4)
-        if scene_modules:
-            scenes = []
-            for module in scene_modules:
-                scene_name = str(module.get("title") or self._default_scene_name(len(scenes) + 1)).strip()
-                roles = self._pick_scene_roles(case_info, list(module.get("role_types") or []))
-                training_form = str(module.get("training_form") or "dialogue").strip()
-                if training_form in {"case_review", "coordination", "follow_up"}:
-                    scene_description = f"围绕“{case_name}”开展{scene_name}训练，重点复盘处置链条、证据材料和后续风险。"
-                elif training_form == "record":
-                    scene_description = f"围绕“{case_name}”开展{scene_name}训练，重点补齐询问要素和笔录材料。"
-                else:
-                    scene_description = f"围绕“{case_name}”开展{scene_name}训练，重点核实本案已有事实、风险和证据线索。"
-                scenes.append(
-                    {
-                        "scene_name": scene_name,
-                        "scene_description": scene_description,
-                        "difficulty": str(module.get("difficulty") or "中等").strip(),
-                        "dispatch_brief": dispatch_brief,
-                        "first_impression": str(
-                            module.get("first_impression_hint")
-                            or self._default_first_impression(case_info, scene_name, dispatch_brief)
-                        ).strip(),
-                        "roles": roles,
-                        "stages": normalize_stages(
-                            list(module.get("stage_examples") or []),
-                            case_type=str(case_info.get("case_type") or ""),
-                            scene_name=scene_name,
-                        ),
-                    }
-                )
-            normalized = [scene for scene in scenes if scene["roles"]]
-            return {
-                "scenes": (normalized or scenes)[:4],
-                "scene_generation_mode": (
-                    "fallback_template_first" if scene_generation_strategy == "template_first" else "fallback_case_driven"
-                ),
-                "scene_generation_warning": "本次训练场景未拿到完整 AI 结果，已根据案件关键词从现实警情模块库自动组合，请人工复核场景描述与角色分配。",
-            }
+        case_type = str(case_info.get("case_type") or "").strip()
+        story_world = case_info.get("story_world") if isinstance(case_info.get("story_world"), dict) else {}
+        definitions = build_scene_portfolio_plan(case_info, story_world)
+        role_types_by_slot = {
+            "intake": ["报警人", "证人", "相关人员", "被害人"],
+            "primary": ["被害人", "证人", "相关人员", "嫌疑人"],
+            "investigation": ["被害人", "证人", "嫌疑人", "相关人员"],
+            "followup": ["被害人", "证人", "相关人员", "嫌疑人"],
+        }
+        scenes: list[dict[str, Any]] = []
+        for definition in definitions:
+            scene_name = str(definition["scene_name"])
+            portfolio_role = str(definition.get("portfolio_role") or "")
+            scenes.append({
+                "scene_name": scene_name,
+                "scene_description": f"围绕“{case_name}”开展{definition['scene_purpose']}",
+                "difficulty": "高" if definition.get("is_primary") else "中等",
+                "dispatch_brief": dispatch_brief,
+                "first_impression": str(definition.get("start_state") or "").strip(),
+                "roles": self._pick_scene_roles(case_info, role_types_by_slot.get(portfolio_role, [])),
+                "stages": normalize_stages(definition["stages"], case_type=case_type, scene_name=scene_name),
+                "training_entry_phase": definition["training_entry_phase"],
+                "entry_time_policy": definition["entry_time_policy"],
+                "canonical_outcome_locked": True,
+                "student_role": "民警",
+                "portfolio_role": portfolio_role,
+                "is_primary": bool(definition.get("is_primary")),
+                "scene_kind": definition.get("scene_kind"),
+                "scene_purpose": definition.get("scene_purpose"),
+                "training_goal": definition.get("training_goal"),
+                "start_state": definition.get("start_state"),
+                "completion_criteria": definition.get("completion_criteria") or [],
+                "end_prompt": definition.get("end_prompt"),
+            })
+        return scenes
 
-        first_impression = self._default_first_impression(case_info, "接警研判", dispatch_brief)
-        scenes = [
-            {
-                "scene_name": "接警研判",
-                "scene_description": f"围绕“{case_name}”开展首次接警问询，核实时间、地点、人员和风险等级。",
-                "difficulty": "低",
-                "dispatch_brief": dispatch_brief,
-                "first_impression": first_impression,
-                "roles": self._pick_scene_roles(case_info, ["证人", "相关人员", "被害人"]),
-                "stages": normalize_stages(
-                    [
-                        {"stage_name": "信息初核", "stage_goal": "核实报警人身份、当前位置、现场是否存在持续风险。"},
-                        {"stage_name": "关键要素确认", "stage_goal": "确认时间、地点、人物、经过和是否需要立即增援。"},
-                    ],
-                    case_type=str(case_info.get("case_type") or ""),
-                    scene_name="接警研判",
-                ),
-            },
-            {
-                "scene_name": "现场初查",
-                "scene_description": f"到达现场后围绕“{case_name}”开展现场初步核查和人员接触。",
-                "difficulty": "中等",
-                "dispatch_brief": dispatch_brief,
-                "first_impression": "你到场后需要先保护现场、确认人员状态，并快速识别关键证人或重点对象。",
-                "roles": self._pick_scene_roles(case_info, ["证人", "被害人", "相关人员"]),
-                "stages": normalize_stages(
-                    [
-                        {"stage_name": "现场控制", "stage_goal": "稳定现场秩序，确认受伤、危险和可疑人员情况。"},
-                        {"stage_name": "情况摸排", "stage_goal": "围绕在场人员的第一手所见所闻展开初步问询。"},
-                    ],
-                    case_type=str(case_info.get("case_type") or ""),
-                    scene_name="现场初查",
-                ),
-            },
-            {
-                "scene_name": "重点询问",
-                "scene_description": f"围绕“{case_name}”中的关键矛盾点，对重点对象开展深入问询。",
-                "difficulty": "高",
-                "dispatch_brief": dispatch_brief,
-                "first_impression": "你已掌握基础情况，接下来要围绕矛盾点、时间线和关键细节压实陈述。",
-                "roles": self._pick_scene_roles(case_info, ["嫌疑人", "证人", "相关人员"]),
-                "stages": normalize_stages(
-                    [
-                        {"stage_name": "时间线压实", "stage_goal": "让对方按时间顺序说明关键行为和去向。"},
-                        {"stage_name": "矛盾点核查", "stage_goal": "围绕前后不一致、动机或利益冲突展开追问。"},
-                    ],
-                    case_type=str(case_info.get("case_type") or ""),
-                    scene_name="重点询问",
-                ),
-            },
-        ]
-        normalized = [scene for scene in scenes if scene["roles"]]
+    def _fallback_scenes(self, case_info: dict[str, Any], *, scene_generation_strategy: str = "case_driven") -> dict[str, Any]:
+        dispatch_brief = self._default_dispatch_brief(case_info, "接警研判")
+        scenes = self._minimum_fallback_scenes(case_info, dispatch_brief)
         return {
-            "scenes": normalized[:3] or scenes[:2],
+            "scenes": scenes,
             "scene_generation_mode": (
                 "fallback_template_first" if scene_generation_strategy == "template_first" else "fallback_case_driven"
             ),
-            "scene_generation_warning": "本次训练场景未拿到完整 AI 结果，已切换为规则兜底场景，请人工复核场景描述与角色分配。",
+            "scene_generation_warning": "本次 AI 剧本未完整返回，已按本案训练组合计划生成主场景和辅助场景，请人工复核具体事实与角色分配。",
         }
 
     def _normalize_scenes(
@@ -3563,11 +3751,25 @@ class WorkflowService:
                     "fact_ids": fact_ids,
                     "supplement_ids": [str(value) for value in scene.get("supplement_ids") or [] if str(value).strip()],
                     "script_markdown": str(scene.get("script_markdown") or "").strip(),
+                    "training_entry_phase": str(scene.get("training_entry_phase") or "").strip(),
+                    "entry_time_policy": str(scene.get("entry_time_policy") or "").strip(),
+                    "canonical_outcome_locked": True,
+                    "student_role": "民警",
+                    "scene_kind": str(scene.get("scene_kind") or "").strip(),
+                    "portfolio_role": str(scene.get("portfolio_role") or "").strip(),
+                    "is_primary": bool(scene.get("is_primary")),
+                    "scene_purpose": str(scene.get("scene_purpose") or "").strip(),
+                    "training_goal": str(scene.get("training_goal") or "").strip(),
+                    "start_state": str(scene.get("start_state") or "").strip(),
+                    "completion_criteria": [
+                        str(value).strip() for value in scene.get("completion_criteria") or [] if str(value).strip()
+                    ],
+                    "end_prompt": str(scene.get("end_prompt") or "").strip(),
                 }
             )
-        if normalized:
+        if len(normalized) >= CASE_SCENE_MIN_COUNT:
             return {
-                "scenes": normalized[:4],
+                "scenes": normalized[:CASE_SCENE_MAX_COUNT],
                 "scene_generation_mode": (
                     "ai_template_first" if scene_generation_strategy == "template_first" else "ai_case_driven"
                 ),
@@ -3584,6 +3786,35 @@ class WorkflowService:
             case_info,
             [],
         )
+
+    @staticmethod
+    def _scene_blueprint_candidates(
+        scenes: list[dict[str, Any]],
+        default_fact_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        defaults = list(default_fact_ids or [])
+        return [
+            {
+                "scene_id": f"S{index}",
+                "scene_name": scene.get("scene_name"),
+                "scene_kind": scene.get("scene_kind") or scene.get("scene_name"),
+                "portfolio_role": scene.get("portfolio_role"),
+                "is_primary": bool(scene.get("is_primary")),
+                "scene_purpose": scene.get("scene_purpose"),
+                "training_goal": scene.get("training_goal") or scene.get("scene_description"),
+                "start_state": scene.get("start_state"),
+                "completion_criteria": scene.get("completion_criteria") or [],
+                "end_prompt": scene.get("end_prompt"),
+                "training_entry_phase": scene.get("training_entry_phase"),
+                "entry_time_policy": scene.get("entry_time_policy"),
+                "canonical_outcome_locked": True,
+                "student_role": "民警",
+                "roles": scene.get("roles") or [],
+                "fact_ids": scene.get("fact_ids") or defaults,
+                "stages": scene.get("stages") or [],
+            }
+            for index, scene in enumerate(scenes, start=1)
+        ]
 
     def _valid_scene_blueprints(
         self,
@@ -3613,14 +3844,30 @@ class WorkflowService:
             blueprints.append({
                 "scene_id": str(item.get("scene_id") or f"S{index}"),
                 "scene_name": str(item.get("scene_name") or self._default_scene_name(index)).strip(),
+                "scene_kind": str(item.get("scene_kind") or "现场处置").strip(),
                 "training_goal": str(item.get("training_goal") or "围绕本案事实开展民警处置训练。").strip(),
+                "story_node_ids": [str(value).strip() for value in item.get("story_node_ids") or [] if str(value).strip()],
+                "time": str(item.get("time") or "").strip(),
+                "place": str(item.get("place") or "").strip(),
                 "roles": roles,
                 "fact_ids": refs,
                 "open_question_ids": [str(value) for value in item.get("open_question_ids") or []],
                 "supplement_ids": supplements,
                 "stages": stages,
+                "training_entry_phase": str(item.get("training_entry_phase") or "").strip(),
+                "entry_time_policy": str(item.get("entry_time_policy") or "").strip(),
+                "canonical_outcome_locked": True,
+                "student_role": "民警",
+                "portfolio_role": str(item.get("portfolio_role") or "").strip(),
+                "is_primary": bool(item.get("is_primary")),
+                "scene_purpose": str(item.get("scene_purpose") or "").strip(),
+                "start_state": str(item.get("start_state") or "").strip(),
+                "completion_criteria": [
+                    str(value).strip() for value in item.get("completion_criteria") or [] if str(value).strip()
+                ],
+                "end_prompt": str(item.get("end_prompt") or "").strip(),
             })
-        return self._scope_scene_blueprints(blueprints[:4], case_info, story_world)
+        return blueprints[:CASE_SCENE_MAX_COUNT]
 
     @staticmethod
     def _fact_source_start(fact: dict[str, Any]) -> int:
@@ -3634,54 +3881,30 @@ class WorkflowService:
         case_info: dict[str, Any],
         story_world: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        """Make scene facts, people and later tasks a mutually exclusive scope."""
+        """Keep the model's local fact scope, then bind it to story nodes.
+
+        The old implementation distributed every case fact across every scene.
+        That made each scene an all-case summary and produced near duplicates.
+        """
         if not blueprints:
             return []
-        facts = [item for item in story_world.get("fact_cards") or [] if isinstance(item, dict) and str(item.get("id") or "").strip()]
-        facts.sort(key=self._fact_source_start)
-        if not facts:
-            return blueprints
-
-        fact_ids = [str(item["id"]) for item in facts]
-        requested = [{str(value) for value in item.get("fact_ids") or [] if str(value).strip()} for item in blueprints]
-        assigned: list[list[str]] = [[] for _ in blueprints]
-        for index, fact_id in enumerate(fact_ids):
-            candidates = [scene_index for scene_index, scene_ids in enumerate(requested) if fact_id in scene_ids]
-            if candidates:
-                target = min(candidates, key=lambda scene_index: (len(assigned[scene_index]), scene_index))
-            else:
-                target = min(range(len(blueprints)), key=lambda scene_index: (len(assigned[scene_index]), scene_index))
-            assigned[target].append(fact_id)
-
-        # Every retained scene needs a real part of the case, not a repeated
-        # all-case briefing. Borrow the latest fact only from an oversized scope.
-        for scene_index, scene_ids in enumerate(assigned):
-            if scene_ids:
+        valid_fact_ids = {
+            str(item.get("id"))
+            for item in story_world.get("fact_cards") or []
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        }
+        scoped: list[dict[str, Any]] = []
+        for blueprint in blueprints:
+            item = dict(blueprint)
+            item["fact_ids"] = list(dict.fromkeys(
+                str(value).strip()
+                for value in item.get("fact_ids") or []
+                if str(value).strip() in valid_fact_ids
+            ))[:max(24, int(os.getenv("CASE_SCENE_FACT_LIMIT", "80")))]
+            if not item["fact_ids"]:
                 continue
-            donor = max(range(len(assigned)), key=lambda candidate: len(assigned[candidate]))
-            if len(assigned[donor]) > 1:
-                scene_ids.append(assigned[donor].pop())
-
-        person_order = [str(person.get("name") or "").strip() for person in case_info.get("persons") or [] if isinstance(person, dict)]
-        scoped = []
-        for scene_index, blueprint in enumerate(blueprints):
-            refs = assigned[scene_index]
-            if not refs:
-                continue
-            context = " ".join([
-                str(blueprint.get("scene_name") or ""),
-                str(blueprint.get("training_goal") or ""),
-                " ".join(str(stage.get("stage_goal") or "") for stage in blueprint.get("stages") or [] if isinstance(stage, dict)),
-            ])
-            roles = self._roles_relevant_to_scene(case_info, story_world, refs, context)
-            if not roles:
-                requested_roles = [name for name in blueprint.get("roles") or [] if name in person_order]
-                roles = requested_roles[:3]
-            blueprint = dict(blueprint)
-            blueprint["fact_ids"] = refs
-            blueprint["roles"] = sorted(dict.fromkeys(roles), key=lambda name: person_order.index(name) if name in person_order else len(person_order))
-            scoped.append(blueprint)
-        return scoped
+            scoped.append(item)
+        return bind_blueprints_to_story(scoped, story_world, case_info.get("persons") or [])
 
     @staticmethod
     def _validate_scene_script(payload: dict[str, Any], blueprint: dict[str, Any], story_world: dict[str, Any]) -> tuple[bool, str]:
@@ -3714,14 +3937,54 @@ class WorkflowService:
         correlation_id = new_correlation_id()
         story_world = self._story_world_for_case(case_info)
         persons = case_info.get("persons") if isinstance(case_info.get("persons"), list) else []
+        compact_fact_cards = [
+            {
+                "id": item.get("id"),
+                "content": str(item.get("content") or ""),
+                "fact_type": item.get("fact_type"),
+                "status": item.get("status"),
+            }
+            for item in story_world.get("fact_cards") or []
+            if isinstance(item, dict) and item.get("id") and item.get("content")
+        ]
+        compact_people = [
+            {
+                "name": person.get("name"),
+                "role_type": person.get("role_type") or person.get("role"),
+                "status": person.get("status"),
+            }
+            for person in persons
+            if isinstance(person, dict) and person.get("name")
+        ]
+        compact_story_nodes = [
+            {
+                "node_id": node.get("node_id"),
+                "start_condition": node.get("start_condition"),
+                "end_condition": node.get("ending_state") or node.get("end_condition"),
+                "time": node.get("time"),
+                "place": node.get("place"),
+                "present_roles": node.get("present_roles") or [],
+                "environment": str(node.get("environment") or ""),
+                "story_segment": str(node.get("story_segment") or ""),
+                "fact_ids": [
+                    event.get("fact_id") for event in node.get("events") or [] if isinstance(event, dict) and event.get("fact_id")
+                ],
+            }
+            for node in story_world.get("nodes") or []
+            if isinstance(node, dict) and node.get("node_id")
+        ]
         generation_context = {
             "case_name": case_info.get("case_name"),
             "case_type": case_info.get("case_type"),
-            "story_world": story_world,
-            "persons": persons,
+            "fact_cards": compact_fact_cards,
+            "persons": compact_people,
+            "story_nodes": compact_story_nodes,
             "scene_generation_strategy": scene_generation_strategy,
             "reference": build_case_frequency_prompt(),
+            "scene_module_reference": build_scene_module_prompt(case_info),
         }
+        portfolio_plan = build_scene_portfolio_plan(case_info, story_world)
+        generation_context["required_scene_slots"] = portfolio_plan
         failure_reason = ""
         combined_trace: list[dict[str, Any]] = []
         try:
@@ -3732,16 +3995,55 @@ class WorkflowService:
             )
             combined_trace.extend(blueprint_trace.get("attempts") or [])
             blueprints = self._valid_scene_blueprints(blueprint_payload, case_info, story_world, persons)
-            if not blueprints:
-                raise ValueError("场景蓝图未包含可引用事实和有效训练阶段")
+            missing_slots = missing_scene_portfolio_slots(blueprints, portfolio_plan)
+            if missing_slots:
+                try:
+                    completion_payload, completion_trace = self._call_case_ai(
+                        stage="scene_blueprint_completion",
+                        correlation_id=correlation_id,
+                        messages=[
+                            {"role": "system", "content": SCENE_BLUEPRINT_COMPLETION_PROMPT},
+                            {"role": "user", "content": json.dumps({
+                                "existing_blueprints": blueprints,
+                                "missing_scene_slots": missing_slots,
+                                "fact_cards": compact_fact_cards,
+                                "persons": compact_people,
+                            }, ensure_ascii=False)},
+                        ],
+                    )
+                    combined_trace.extend(completion_trace.get("attempts") or [])
+                    blueprints.extend(
+                        self._valid_scene_blueprints(completion_payload, case_info, story_world, persons)
+                    )
+                except Exception as completion_exc:
+                    failure_reason = f"缺失场景维度的 AI 补全未完成：{completion_exc}"
+            blueprints = complete_scene_blueprint_portfolio(
+                blueprints,
+                portfolio_plan,
+                story_world,
+                persons,
+            )
+            blueprints = self._scope_scene_blueprints(blueprints, case_info, story_world)
+            if len(blueprints) < CASE_SCENE_MIN_COUNT:
+                raise ValueError("案件事实不足以形成完整的主场景与辅助训练场景")
             def generate_script(blueprint: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-                facts = [item for item in story_world.get("fact_cards") or [] if isinstance(item, dict) and item.get("id") in blueprint["fact_ids"]]
+                facts = [
+                    {
+                        "id": item.get("id"),
+                        "content": str(item.get("content") or ""),
+                        "fact_type": item.get("fact_type"),
+                        "status": item.get("status"),
+                    }
+                    for item in story_world.get("fact_cards") or []
+                    if isinstance(item, dict) and item.get("id") in blueprint["fact_ids"]
+                ][:max(24, int(os.getenv("CASE_SCENE_FACT_LIMIT", "80")))]
+                script_people = [item for item in compact_people if item.get("name") in blueprint.get("roles", [])]
                 script_payload, script_trace = self._call_case_ai(
                     stage="scene_script",
                     correlation_id=correlation_id,
                     messages=[
                         {"role": "system", "content": SCENE_SCRIPT_PROMPT},
-                        {"role": "user", "content": json.dumps({"blueprint": blueprint, "fact_cards": facts, "persons": persons, "simulation_supplements": story_world.get("simulation_supplements") or []}, ensure_ascii=False)},
+                        {"role": "user", "content": json.dumps({"blueprint": blueprint, "fact_cards": facts, "persons": script_people}, ensure_ascii=False)},
                     ],
                 )
                 return blueprint, script_payload, script_trace
@@ -3777,6 +4079,12 @@ class WorkflowService:
                 script_payload["roles"] = blueprint["roles"]
                 script_payload["fact_ids"] = blueprint["fact_ids"]
                 script_payload["scene_name"] = script_payload.get("scene_name") or blueprint["scene_name"]
+                for key in (
+                    "portfolio_role", "is_primary", "scene_kind", "scene_purpose", "training_goal",
+                    "start_state", "completion_criteria", "end_prompt", "training_entry_phase",
+                    "entry_time_policy", "canonical_outcome_locked", "student_role",
+                ):
+                    script_payload[key] = blueprint.get(key)
                 scenes.append(script_payload)
             result = self._normalize_scenes(
                 case_info,
@@ -3786,7 +4094,8 @@ class WorkflowService:
             )
             if not result.get("scenes") or str(result.get("scene_generation_mode") or "").startswith("fallback"):
                 raise ValueError("场景标准化未产生可用训练场景")
-            result["scenes"] = self._bind_scene_people_to_story(case_info, result["scenes"], story_world)
+            result["scenes"] = bind_scenes_to_story(result["scenes"], blueprints)
+            result["scenes"] = compile_scene_lifecycles(case_info, result["scenes"])
             result["scene_blueprints"] = blueprints
             result["training_tasks"] = build_training_tasks(case_info, result.get("scenes") or [])
             result["state_machine"] = compile_state_machine(result["training_tasks"])
@@ -3812,7 +4121,7 @@ class WorkflowService:
                     correlation_id=correlation_id,
                     messages=[
                         {"role": "system", "content": SCENE_TEXT_TEMPLATE_PROMPT},
-                        {"role": "user", "content": json.dumps({"case_name": case_info.get("case_name"), "case_type": case_info.get("case_type"), "story_world": story_world, "persons": persons}, ensure_ascii=False)},
+                        {"role": "user", "content": json.dumps({"case_name": case_info.get("case_name"), "case_type": case_info.get("case_type"), "fact_cards": compact_fact_cards, "persons": compact_people}, ensure_ascii=False)},
                     ],
                 )
                 combined_trace.extend(text_trace.get("attempts") or [])
@@ -3824,7 +4133,19 @@ class WorkflowService:
                     story_world=story_world,
                 )
                 if text_result.get("scenes") and not str(text_result.get("scene_generation_mode") or "").startswith("fallback"):
-                    text_result["scenes"] = self._bind_scene_people_to_story(case_info, text_result["scenes"], story_world)
+                    text_plan = portfolio_plan[:max(
+                        CASE_SCENE_MIN_COUNT,
+                        min(len(text_result["scenes"]), CASE_SCENE_MAX_COUNT),
+                    )]
+                    text_blueprints = complete_scene_blueprint_portfolio(
+                        self._scene_blueprint_candidates(text_result["scenes"]),
+                        text_plan,
+                        story_world,
+                        persons,
+                    )
+                    text_blueprints = self._scope_scene_blueprints(text_blueprints, case_info, story_world)
+                    text_result["scenes"] = bind_scenes_to_story(text_result["scenes"][:len(text_blueprints)], text_blueprints)
+                    text_result["scenes"] = compile_scene_lifecycles(case_info, text_result["scenes"])
                     text_result["scene_generation_mode"] = "ai_text_template"
                     text_result["scene_generation_warning"] = "大 JSON 场景生成未通过校验，已由 AI 纯文本剧本模板生成场景，请人工复核。"
                     text_result["ai_workflow"] = {
@@ -3840,7 +4161,16 @@ class WorkflowService:
             except Exception as text_exc:
                 failure_reason = f"{failure_reason}；AI 纯文本场景模板也失败：{text_exc}"
         fallback = self._fallback_scenes(case_info, scene_generation_strategy=scene_generation_strategy)
-        fallback["scenes"] = self._bind_scene_people_to_story(case_info, fallback.get("scenes") or [], story_world)
+        fallback_blueprints = bind_blueprints_to_story(
+            self._scene_blueprint_candidates(
+                fallback.get("scenes") or [],
+                [str(item.get("id")) for item in compact_fact_cards[:8] if item.get("id")],
+            ),
+            story_world,
+            persons,
+        )
+        fallback["scenes"] = bind_scenes_to_story((fallback.get("scenes") or [])[:len(fallback_blueprints)], fallback_blueprints)
+        fallback["scenes"] = compile_scene_lifecycles(case_info, fallback["scenes"])
         fallback["scene_generation_warning"] = (
             f"{fallback['scene_generation_warning']} 原因：{failure_reason}"
             if failure_reason

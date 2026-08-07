@@ -559,6 +559,8 @@ def normalize_stage(stage: dict[str, Any] | None, index: int, case_type: str = "
 
     raw_prompts = stage.get("recommended_prompts")
     recommended_prompts = _dedupe_strings(raw_prompts) if isinstance(raw_prompts, list) else []
+    observable_actions = _dedupe_strings(stage.get("observable_actions") or [])
+    exit_condition_list = _dedupe_strings(stage.get("exit_conditions") or [])
 
     return {
         "stage_name": stage_name,
@@ -578,6 +580,13 @@ def normalize_stage(stage: dict[str, Any] | None, index: int, case_type: str = "
             "closure_actions": _dedupe_strings(end_conditions.get("closure_actions") or []),
             "closing_script": str(end_conditions.get("closing_script") or "").strip(),
         },
+        "observable_actions": observable_actions,
+        "entry_condition": str(stage.get("entry_condition") or "").strip(),
+        "exit_conditions": exit_condition_list,
+        "max_turns": max(2, min(20, int(stage.get("max_turns", 8) or 8))),
+        "stuck_recovery": str(stage.get("stuck_recovery") or "").strip(),
+        "role_response_policy": str(stage.get("role_response_policy") or "").strip(),
+        "transition_mode": str(stage.get("transition_mode") or "observable_actions").strip(),
     }
 
 

@@ -25,15 +25,29 @@ def build_training_tasks(case_info: dict[str, Any], scenes: list[dict[str, Any]]
         for stage_index, stage in enumerate(stages, start=1):
             goal = _text(stage.get("stage_goal") if isinstance(stage, dict) else "") or "完成当前训练目标"
             name = _text(stage.get("stage_name") if isinstance(stage, dict) else "") or f"阶段{stage_index}"
+            observable_actions = [
+                _text(item)
+                for item in _list(stage.get("observable_actions") if isinstance(stage, dict) else [])
+                if _text(item)
+            ] or [goal]
+            exit_conditions = [
+                _text(item)
+                for item in _list(stage.get("exit_conditions") if isinstance(stage, dict) else [])
+                if _text(item)
+            ] or [f"已完成：{item}" for item in observable_actions]
             tasks.append({
                 "task_id": f"T{scene_index}-{stage_index}",
                 "scene_index": scene_index,
                 "title": name,
                 "competency": "警情处置与事实核实",
                 "objective": goal,
-                "expected_actions": [goal],
+                "expected_actions": observable_actions,
                 "prohibited_actions": [],
-                "observable_evidence": [goal],
+                "observable_evidence": observable_actions,
+                "entry_condition": _text(stage.get("entry_condition") if isinstance(stage, dict) else ""),
+                "exit_conditions": exit_conditions,
+                "max_turns": max(2, min(20, int(stage.get("max_turns", 8) or 8))) if isinstance(stage, dict) else 8,
+                "stuck_recovery": _text(stage.get("stuck_recovery") if isinstance(stage, dict) else ""),
                 # A task may only be assessed against facts assigned to its own
                 # scene. Falling back to case-wide claims made every scene look
                 # like a copy of the whole case when stage references were absent.
@@ -50,8 +64,10 @@ def compile_state_machine(tasks: list[dict[str, Any]]) -> dict[str, Any]:
             "state_id": f"S{index}",
             "task_id": task["task_id"],
             "phase": task["title"],
-            "entry_conditions": [] if index == 1 else [f"S{index - 1}:objectives_complete"],
-            "exit_conditions": ["objectives_complete", "risk_controlled" if task.get("critical") else ""],
+            "entry_conditions": [task["entry_condition"]] if task.get("entry_condition") else ([] if index == 1 else [f"S{index - 1}:objectives_complete"]),
+            "exit_conditions": task.get("exit_conditions") or ["objectives_complete"],
+            "max_turns": task.get("max_turns") or 8,
+            "stuck_recovery": task.get("stuck_recovery") or "连续两轮无新进展时提供可核实信息并允许收尾。",
             "on_events": {
                 "evidence_presented": "increase_clarity",
                 "risk_control": "decrease_risk",

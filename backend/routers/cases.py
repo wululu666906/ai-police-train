@@ -27,6 +27,9 @@ from services.case_knowledge_service import delete_case_from_knowledge, try_sync
 from services.case_intelligence_service import assess_source_quality, build_role_knowledge_view, normalize_case_intelligence
 from services.training_compiler_service import build_observable_scoring_rules, build_training_tasks, compile_state_machine
 from services.workflow_service import workflow_service
+from services.case_pipeline_service import create_pipeline_job
+from services.workflow_job_service import serialize_job
+from services.case_knowledge_repository import bind_namespace
 from services.object_storage_service import MEDIA_BUCKET, build_object_key, delete_media_assets, guess_content_type, object_storage, upsert_media_asset
 from services.assessment_point_policy import (
     ASSESSMENT_POINTS_MAX_PER_SCENE,
@@ -74,6 +77,84 @@ def _safe_json_loads(value, default):
         return json.loads(value)
     except Exception:
         return default
+
+
+@router.post("/pipeline/text")
+def create_text_pipeline(payload: dict = Body(...)):
+    source_text = str(payload.get("source_text") or payload.get("text") or "").strip()
+    if not source_text:
+        raise HTTPException(status_code=400, detail="案件内容不能为空")
+    job = create_pipeline_job(
+        source_text=source_text,
+        source_mode=str(payload.get("source_mode") or "plain_case"),
+        source_meta=payload.get("source_meta") if isinstance(payload.get("source_meta"), dict) else None,
+        force_rebuild=bool(payload.get("force_rebuild", True)),
+    )
+    return serialize_job(job, include_result=job.status == "completed")
+
+
+@router.post("/pipeline/file")
+async def create_file_pipeline(
+    file: UploadFile = File(...),
+    source_mode: str = Form("transcript_file"),
+    force_rebuild: bool = Form(True),
+    db: Session = Depends(database.get_db),
+):
+    filename = file.filename or ""
+    extension = os.path.splitext(filename)[1].lower()
+    if extension not in document_extract_service.ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="仅支持 PDF、DOCX、TXT、MD 文件")
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="上传文件为空，请重新选择文件")
+    if len(file_bytes) > document_extract_service.MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="文件大小不能超过 20MB")
+    try:
+        extraction = document_extract_service.recognize_file(filename, file_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"文件读取失败：{exc}") from exc
+
+    stored = object_storage.put_bytes(
+        bucket=MEDIA_BUCKET,
+        object_key=build_object_key("case-source-files", filename),
+        data=file_bytes,
+        content_type=guess_content_type(filename, file.content_type),
+    )
+    upsert_media_asset(
+        db,
+        owner_type="case_upload",
+        owner_key=stored.object_key,
+        asset_kind="source_file",
+        stored=stored,
+        original_filename=filename,
+        content_type=guess_content_type(filename, file.content_type),
+    )
+    db.commit()
+    source_meta = extraction.as_source_meta(name=filename, extension=extension, size=len(file_bytes))
+    source_meta.update({
+        "ocr_method": extraction.method,
+        "ocr_engine": extraction.engine,
+        "ocr_warnings": extraction.warnings,
+        "ocr_metadata": extraction.metadata,
+        "source_asset_key": stored.object_key,
+    })
+    job = create_pipeline_job(
+        source_text=extraction.text,
+        source_mode=source_mode or "transcript_file",
+        source_meta=source_meta,
+        force_rebuild=force_rebuild,
+    )
+    return serialize_job(job, include_result=job.status == "completed")
+
+
+@router.get("/pipeline/{job_id}")
+def get_pipeline_job(job_id: str, db: Session = Depends(database.get_db)):
+    job = db.query(models.CasePipelineJob).filter(models.CasePipelineJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="未找到案件整理任务")
+    return serialize_job(job, include_result=True)
 
 
 def _materialize_scene_stages_for_response(scene: models.Scene, *, case_type: str = "") -> None:
@@ -189,6 +270,9 @@ def _person_meta_fields():
         "persona_contract_version",
         "persona_source",
         "persona_autofill",
+        "soul_profile",
+        "persona_generation",
+        "narrative_context",
     )
 
 
@@ -199,13 +283,19 @@ def _extract_person_meta(payload: dict | None, base_meta: dict | None = None):
     # fields may still exist in the database for migration, but are ignored on
     # every new save so they cannot re-enter the active template.
     source = {}
-    for key in ("name", "role_type", "status", "source_verification", "persona_source"):
+    for key in ("name", "role_type", "status", "source_verification", "persona_source", "current_goal"):
         value = payload.get(key) if key in payload else base_meta.get(key)
         if value not in (None, ""):
             source[key] = str(value).strip()
-    for key in ("role_memories", "knowledge_ledger", "unresolved_claims", "response_constraints", "source_refs"):
+    for key in ("role_memories", "knowledge_ledger", "role_event_ledger", "unresolved_claims", "response_constraints", "source_refs", "narrative_context"):
         value = payload.get(key) if key in payload else base_meta.get(key)
         source[key] = _ensure_list(value)
+    soul_profile = payload.get("soul_profile") if "soul_profile" in payload else base_meta.get("soul_profile")
+    if isinstance(soul_profile, dict):
+        source["soul_profile"] = soul_profile
+    persona_generation = payload.get("persona_generation") if "persona_generation" in payload else base_meta.get("persona_generation")
+    if isinstance(persona_generation, dict):
+        source["persona_generation"] = persona_generation
     source["role_template_version"] = "source_memory_v2"
     source["persona_contract_version"] = "source_memory_v2"
     source["persona_autofill"] = False
@@ -251,6 +341,9 @@ def _role_to_person_payload(role: models.Role):
         "role_template_version": "source_memory_v2",
         "persona_contract_version": "source_memory_v2",
         "persona_autofill": False,
+        "soul_profile": meta.get("soul_profile") if isinstance(meta.get("soul_profile"), dict) else {},
+        "persona_generation": meta.get("persona_generation") if isinstance(meta.get("persona_generation"), dict) else {},
+        "current_goal": meta.get("current_goal") or "",
     }
 
 
@@ -1664,6 +1757,13 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
 
         db.commit()
         db.refresh(db_case)
+        knowledge_namespace = str(structured_data_to_save.get("knowledge_namespace") or "").strip()
+        if knowledge_namespace:
+            bound_namespace = bind_namespace(knowledge_namespace, db_case.id)
+            structured_data_to_save["knowledge_namespace"] = bound_namespace
+            db_case.structured_data = json.dumps(structured_data_to_save, ensure_ascii=False)
+            db.commit()
+            db.refresh(db_case)
         try_sync_case_to_knowledge(db_case)
         return db_case
     except Exception as exc:
@@ -1720,6 +1820,13 @@ def rebuild_case_role_memories(case_id: int, payload: dict = Body(default={}), d
 
         db.commit()
         db.refresh(db_case)
+        knowledge_namespace = str(structured.get("knowledge_namespace") or "").strip()
+        if knowledge_namespace:
+            bound_namespace = bind_namespace(knowledge_namespace, db_case.id)
+            structured["knowledge_namespace"] = bound_namespace
+            db_case.structured_data = json.dumps(structured, ensure_ascii=False)
+            db.commit()
+            db.refresh(db_case)
         try_sync_case_to_knowledge(db_case)
         _materialize_case_for_response(db_case)
         return db_case
