@@ -1178,19 +1178,14 @@ const finishTraining = async () => {
   if (isFinishingTraining.value || !sessionId.value) return
   isFinishingTraining.value = true
   faceGuardRef.value?.stopCamera?.()
-  const loader = showLoadingToast({ message: '正在生成评估报告...', forbidClick: true })
-  try {
-    await request.post(`/training/finish/${sessionId.value}`)
-    loader.close()
-    const sourceQuery = isAssignmentAssessmentMode.value
-      ? `&source=assignment${currentAssignmentId.value ? `&assignment_id=${currentAssignmentId.value}` : ''}`
-      : ''
-    router.push(`/student/evaluation?session_id=${sessionId.value}${sourceQuery}`)
-  } catch (error) {
-    loader.close()
-    isFinishingTraining.value = false
+  const currentSessionId = sessionId.value
+  const sourceQuery = isAssignmentAssessmentMode.value
+    ? `&source=assignment${currentAssignmentId.value ? `&assignment_id=${currentAssignmentId.value}` : ''}`
+    : ''
+  void request.post(`/training/finish/${currentSessionId}`, null, { _skipErrorToast: true } as any).catch(() => {
     showToast('评估报告生成失败')
-  }
+  })
+  router.push(`/student/evaluation?session_id=${currentSessionId}&generating=1${sourceQuery}`)
 }
 
 const waitForEvaluationReport = async (targetSessionId: string, timeoutMs = 15000) => {

@@ -637,6 +637,14 @@ def _build_role_brain(
         "shared_case_facts": _shared_case_facts(case, scene),
         "hidden_truths": hidden_truths,
         "does_not_know": does_not_know,
+        "synthetic_contract": (
+            {
+                "synthetic_type": _text(role_meta.get("synthetic_type")),
+                "knowledge_scope": _text(role_meta.get("knowledge_scope")),
+                "answer_limit": _text(role_meta.get("answer_limit")),
+            }
+            if _text(role_meta.get("source_kind")) == "synthetic" else {}
+        ),
         "relationship_ledger": relationship_ledger,
         "role_case_evidence": role_case_evidence,
         "scene_presence": scene_presence,
@@ -757,6 +765,13 @@ def _format_role_brain_block(role_brain: dict[str, Any]) -> str:
     lines.append(f"- 你的关系账本：{'；'.join(relationship_lines[:4]) or '没有已确认的亲属或社会关系，不能自行补全'}")
     lines.append(f"- 你本人已知：{_text(brain.get('known_facts')) or '无'}")
     lines.append(f"- 你本人不知道：{_text(brain.get('does_not_know')) or '无'}")
+    synthetic = brain.get("synthetic_contract") if isinstance(brain.get("synthetic_contract"), dict) else {}
+    if synthetic:
+        lines.extend([
+            "- 你是显式模拟角色，只能服务当前训练入口，不能扩展为案件事实来源。",
+            f"- 允许回答范围：{_text(synthetic.get('knowledge_scope')) or '仅限报警时可观察和可陈述内容'}",
+            f"- 回答限制：{_text(synthetic.get('answer_limit')) or '超出范围必须明确表示不知道'}",
+        ])
     presence = brain.get("scene_presence") if isinstance(brain.get("scene_presence"), dict) else {}
     if presence:
         lines.extend([
@@ -997,7 +1012,8 @@ def _sanitize_meta_dialogue(
         cleaned.append(item)
     if cleaned:
         return cleaned
-    return [{"content": grounded_fallback, "delivery": "normal"}] if grounded_fallback else []
+    replacement = _text(grounded_fallback) or _in_character_fallback(role, user_text)
+    return [{"content": replacement, "delivery": "normal"}]
 
 
 def _recent_dialogue_text(history: list[Any], limit: int = 4) -> str:
@@ -1441,7 +1457,19 @@ def _sanitize_topic_fixation(
     user_text: str,
     role_brain: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, str]]:
-    return utterances
+    recent_topics = _extract_recent_topics(history, role, role_brain=role_brain)
+    user_topic = _last_user_topic(user_text)
+    repeated_old_topic = (
+        len(recent_topics) >= 2
+        and recent_topics[-1] == recent_topics[-2]
+        and recent_topics[-1] != user_topic
+    )
+    if not user_topic or not repeated_old_topic:
+        return utterances
+    if any(_response_matches_current_question(_text(item.get("content")), user_text) for item in utterances):
+        return utterances
+    delivery = _text((utterances or [{}])[0].get("delivery")) or "normal"
+    return [{"content": _topic_shift_reply(role, user_text), "delivery": delivery}]
 
 
 def _normalize_repeat_key(text: str) -> str:

@@ -297,19 +297,7 @@ def resolve_scene_role(
     case: Optional[models.Case] = None,
 ) -> Optional[models.Role]:
     roles = resolve_scene_roles(db, scene, case)
-    if roles:
-        return roles[0]
-
-    if not scene:
-        return None
-
-    if case is None:
-        case = db.query(models.Case).filter(models.Case.id == scene.case_id).first()
-
-    scene_name = _text(scene.name)
-    if "接警" in scene_name:
-        return _build_virtual_role("报警人", "情绪紧张，正在向警方描述自己看到或发现的情况")
-    return None
+    return roles[0] if roles else None
 
 
 def resolve_scene_roles(
@@ -326,8 +314,7 @@ def resolve_scene_roles(
     linked_rows = db.query(models.SceneRole).filter(models.SceneRole.scene_id == scene.id).all()
     if linked_rows:
         return _resolve_linked_scene_roles(db, scene, case, linked_rows)
-
-    return _resolve_fallback_scene_roles(db, scene, case)
+    return []
 
 
 def get_primary_scene_role(db: Session, scene: Optional[models.Scene], case: Optional[models.Case] = None) -> Optional[models.Role]:

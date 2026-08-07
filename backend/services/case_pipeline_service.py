@@ -14,7 +14,7 @@ import database
 import models
 from .persona_soul_service import enrich_personas
 from .scene_design_service import compile_scene_lifecycles
-from .training_compiler_service import build_observable_scoring_rules, build_training_tasks, compile_state_machine
+from .case_scene_contract_service import build_case_quality_report, compile_case_scene_artifacts
 from .workflow_job_service import update_job
 from .workflow_service import workflow_service
 from .case_source_compaction_service import compact_case_source, compact_role_memories
@@ -171,6 +171,12 @@ def _run(job_id: str) -> None:
                 "role_type": person.get("role_type") or person.get("role"),
                 "status": person.get("status"),
                 "current_goal": person.get("current_goal"),
+                "core_concern": person.get("core_concern"),
+                "behavior_profile": person.get("behavior_profile") or person.get("personality"),
+                "triggers": person.get("triggers") or person.get("trigger_points"),
+                "calming_points": person.get("calming_points") or person.get("soothing_points"),
+                "answer_boundaries": person.get("answer_boundaries") or person.get("does_not_know"),
+                "role_memories": (person.get("role_memories") or [])[:12],
                 "knowledge_node_id": f"role:{person.get('name')}",
                 "role_memory_count": len(person.get("role_memories") or []),
             }
@@ -181,7 +187,11 @@ def _run(job_id: str) -> None:
         scenes = compile_scene_lifecycles(case_info, scene_result.get("scenes") or [])
 
         update_job(job_id, stage="validating", progress=92, status_message="正在检查角色边界和训练闭环")
-        tasks = build_training_tasks(case_info, scenes)
+        case_info["scene_generation_mode"] = scene_result.get("scene_generation_mode") or ""
+        case_info["ai_workflow"] = scene_result.get("ai_workflow") or {}
+        derived = compile_case_scene_artifacts(case_info, scenes)
+        scenes = derived["scenes"]
+        quality_report = build_case_quality_report(case_info, scenes)
         persisted_case_info = dict(case_info)
         persisted_case_info.pop("source_sections", None)
         if persisted_case_info.get("full_narrative") == persisted_case_info.get("complete_story"):
@@ -199,10 +209,16 @@ def _run(job_id: str) -> None:
             "scenes": scenes,
             "scene_generation_mode": scene_result.get("scene_generation_mode") or "",
             "scene_generation_warning": scene_result.get("scene_generation_warning") or "",
-            "scene_blueprints": scene_result.get("scene_blueprints") or [],
-            "training_tasks": tasks,
-            "state_machine": compile_state_machine(tasks),
-            "observable_scoring_rules": build_observable_scoring_rules(tasks),
+            "scene_blueprints": derived["scene_blueprints"],
+            "scene_scripts": derived["scene_scripts"],
+            "scene_role_map": derived["scene_role_map"],
+            "training_tasks": derived["training_tasks"],
+            "state_machine": derived["state_machine"],
+            "observable_scoring_rules": derived["observable_scoring_rules"],
+            "derived_artifact_version": derived["derived_artifact_version"],
+            "derived_revision": derived["derived_revision"],
+            "scene_contract_schema_version": derived["scene_contract_schema_version"],
+            "quality_report": quality_report,
             "ai_workflow": scene_result.get("ai_workflow") or {},
         }
         update_job(

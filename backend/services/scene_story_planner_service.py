@@ -19,7 +19,12 @@ def _terms(value: Any) -> set[str]:
 
 
 def build_scene_portfolio_plan(case_info: dict[str, Any], story_graph: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build the training dimensions before asking the model for scene prose."""
+    """Build candidate training dimensions before asking the model for scene prose.
+
+    These are references, not mandatory slots. Scene generation applies the
+    necessity principle: one scene is correct when it covers the practical
+    training goal, and extra scenes require distinct operational value.
+    """
     fact_cards = [item for item in story_graph.get("fact_cards") or [] if isinstance(item, dict)]
     persons = [item for item in case_info.get("persons") or [] if isinstance(item, dict)]
     context = " ".join([
@@ -45,6 +50,7 @@ def build_scene_portfolio_plan(case_info: dict[str, Any], story_graph: dict[str,
             "training_entry_phase": "intake",
             "entry_time_policy": "dispatch_intake",
             "scene_purpose": intake_purpose,
+            "necessity_note": "仅当接警阶段存在独立的要素核实、风险研判或出警准备训练价值时生成；不得作为单纯信息复述场景。",
             "training_goal": "准确形成警情基本判断、出警重点和安全预案。",
             "start_state": "民警只掌握报警或任务派发阶段的有限信息，案件完整经过尚待核实。",
             "stages": [
@@ -62,6 +68,7 @@ def build_scene_portfolio_plan(case_info: dict[str, Any], story_graph: dict[str,
             "training_entry_phase": "post_incident_onsite",
             "entry_time_policy": "after_canonical_event",
             "scene_purpose": "作为本案核心训练场景，还原案发后的空间、人员、遗留状态和现实风险，训练民警完成首次现场处置。",
+            "necessity_note": "优先作为单场景承载矛盾调处、现场控制、人员接触、信息核实和线索摸排等综合训练目标。",
             "training_goal": "完成安全确认、人员接触、现场控制、初步核实和证据保护。",
             "start_state": "案件主要行为已经发生，民警到达相关现场；既定案件事实和结果不可改变。",
             "stages": [
@@ -75,45 +82,23 @@ def build_scene_portfolio_plan(case_info: dict[str, Any], story_graph: dict[str,
         {
             "portfolio_role": "investigation",
             "is_primary": False,
-            "scene_name": "案发后调查询问与笔录",
-            "scene_kind": "案发后调查询问",
+            "scene_name": "案发后信息核实与线索摸排",
+            "scene_kind": "案发后信息核实",
             "training_entry_phase": "post_incident_inquiry",
             "entry_time_policy": "after_canonical_event",
-            "scene_purpose": "训练学员在案件发生后按人物认知边界开展询问、制作笔录并核对陈述矛盾。",
-            "training_goal": "形成时间线清晰、信息来源明确、矛盾点可继续核查的询问记录。",
-            "start_state": "现场主要风险已处置，相关人员进入分别询问或笔录制作阶段。",
+            "scene_purpose": "训练学员在案件发生后按人物认知边界开展信息核实、线索摸排并核对陈述矛盾。",
+            "necessity_note": "仅当主现场处置无法充分覆盖线索摸排或陈述核实时生成；不得设计为审问、讯问或纯笔录制作。",
+            "training_goal": "形成时间线清晰、信息来源明确、矛盾点可继续核查的处置记录。",
+            "start_state": "现场主要风险已处置，相关人员可分别沟通，仍存在需要核实的信息缺口或线索断点。",
             "stages": [
                 {"stage_name": "自由陈述与时间线建立", "stage_goal": "让被询问人按亲历顺序说明其所知经过。"},
                 {"stage_name": "关键细节与信息来源核实", "stage_goal": "区分亲历、目击、听闻和事后得知的信息。"},
-                {"stage_name": "矛盾核对与笔录确认", "stage_goal": "核对重要差异、遗漏和待查事项，完成笔录确认。"},
+                {"stage_name": "矛盾核对与线索闭合", "stage_goal": "核对重要差异、遗漏和待查事项，明确下一步核查方向。"},
             ],
-            "completion_criteria": ["人物陈述时间线已经建立", "关键行为及信息来源已经核实", "矛盾点和待查事项已经记录", "已完成笔录确认或说明下一步"],
-            "end_prompt": "调查询问与笔录目标已完成，可结束本场训练。",
+            "completion_criteria": ["人物陈述时间线已经建立", "关键行为及信息来源已经核实", "矛盾点和待查事项已经记录", "下一步核查方向已经说明"],
+            "end_prompt": "信息核实与线索摸排目标已完成，可结束本场训练。",
         },
     ]
-    complex_case = (
-        len(fact_cards) >= 8
-        or len(persons) >= 4
-        or any(term in context for term in ("诈骗", "转账", "群体", "多人", "伤情", "死亡", "持械", "监控", "电子证据"))
-    )
-    if complex_case:
-        plan.append({
-            "portfolio_role": "followup",
-            "is_primary": False,
-            "scene_name": "证据复核与后续处置",
-            "scene_kind": "案发后复盘回访",
-            "training_entry_phase": "post_incident_followup",
-            "entry_time_policy": "after_canonical_event",
-            "scene_purpose": "训练学员复核证据链、未决风险和协同事项，避免现场结束后处置脱节。",
-            "training_goal": "明确证据缺口、协同流转事项、回访重点和风险闭环。",
-            "start_state": "现场处置和首轮询问已经完成，案件进入证据复核及后续跟进阶段。",
-            "stages": [
-                {"stage_name": "证据与待查事项复核", "stage_goal": "核对已有材料、证据缺口和陈述冲突。"},
-                {"stage_name": "协同流转与风险闭环", "stage_goal": "明确移交、补证、回访和持续风险处置责任。"},
-            ],
-            "completion_criteria": ["证据缺口和待查事项已经列明", "协同流转责任已经明确", "回访或风险闭环安排已经形成"],
-            "end_prompt": "后续处置事项已形成闭环，可结束本场训练。",
-        })
     return plan
 
 
@@ -155,22 +140,41 @@ def complete_scene_blueprint_portfolio(
     story_graph: dict[str, Any],
     persons: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Map model output to required dimensions and synthesize only omitted blueprints."""
+    """Normalize necessary blueprints without forcing optional slots.
+
+    The model decides the number of scenes under the necessity principle. This
+    function fills missing fields on returned blueprints and only synthesizes a
+    single primary scene when no usable blueprint exists.
+    """
     facts = [item for item in story_graph.get("fact_cards") or [] if isinstance(item, dict) and _text(item.get("id"))]
     person_rows = [item for item in persons if isinstance(item, dict) and _text(item.get("name"))]
-    by_role: dict[str, dict[str, Any]] = {}
-    for blueprint in blueprints:
-        role = _portfolio_role(blueprint)
-        if role not in by_role:
-            by_role[role] = dict(blueprint)
+    slot_by_role = {
+        _text(slot.get("portfolio_role")): slot
+        for slot in plan
+        if isinstance(slot, dict) and _text(slot.get("portfolio_role"))
+    }
+    primary_slot = slot_by_role.get("primary") or (plan[0] if plan else {})
+    source_blueprints = [dict(item) for item in blueprints if isinstance(item, dict)]
+    if not source_blueprints and primary_slot:
+        source_blueprints = [dict(primary_slot)]
 
     output: list[dict[str, Any]] = []
-    for index, slot in enumerate(plan, start=1):
-        role = _text(slot.get("portfolio_role"))
-        item = dict(by_role.get(role) or {})
+    for index, source in enumerate(source_blueprints[:4], start=1):
+        role = _portfolio_role(source)
+        if role == "followup":
+            context = " ".join([
+                _text(source.get("scene_name")),
+                _text(source.get("scene_kind")),
+                _text(source.get("scene_purpose")),
+                _text(source.get("training_goal")),
+            ])
+            if not any(term in context for term in ("线索", "矛盾", "风险", "处置", "核实", "调处", "证据")):
+                continue
+        slot = slot_by_role.get(role) or primary_slot or {}
+        item = dict(source)
         item["scene_id"] = _text(item.get("scene_id")) or f"S{index}"
         item["portfolio_role"] = role
-        item["is_primary"] = bool(slot.get("is_primary"))
+        item["is_primary"] = bool(item.get("is_primary")) or role == "primary" or (index == 1 and not output)
         for key in (
             "scene_name", "scene_kind", "training_entry_phase", "entry_time_policy",
             "scene_purpose", "training_goal", "start_state", "completion_criteria", "end_prompt",
@@ -190,6 +194,9 @@ def complete_scene_blueprint_portfolio(
             grounded = [_text(person.get("name")) for person in person_rows if _text(person.get("name")) in fact_text]
             item["roles"] = grounded or [_text(person.get("name")) for person in person_rows]
         output.append(item)
+    if output and not any(item.get("is_primary") for item in output):
+        output[0]["is_primary"] = True
+        output[0]["portfolio_role"] = output[0].get("portfolio_role") or "primary"
     return output[:4]
 
 
@@ -333,7 +340,7 @@ def bind_blueprints_to_story(
             if name in valid_people
         ))
         requested_roles = [name for name in blueprint.get("roles") or [] if name in valid_people]
-        scene_roles = requested_roles or historical_present_roles
+        scene_roles = requested_roles
         primary_roles = scene_roles[:3]
         mentioned_roles = list(dict.fromkeys(
             name
@@ -353,7 +360,7 @@ def bind_blueprints_to_story(
         item["time"] = _entry_time_label(phase)
         item["place"] = _text(item.get("place")) or item["canonical_place"]
         item["historical_present_roles"] = historical_present_roles
-        item["present_roles"] = scene_roles
+        item["present_roles"] = list(dict.fromkeys([*historical_present_roles, *requested_roles]))
         item["primary_roles"] = primary_roles
         item["mentioned_roles"] = mentioned_roles
         item["roles"] = scene_roles
@@ -382,9 +389,18 @@ def bind_scenes_to_story(
                 item[key] = blueprint.get(key) or item.get(key) or (
                     [] if key.endswith("roles") or key in {"story_node_ids", "completion_criteria"} else ""
                 )
-        item["roles"] = list(dict.fromkeys([
-            *(item.get("roles") or []),
-            *(item.get("present_roles") or []),
-        ]))
+        item["roles"] = list(dict.fromkeys(blueprint.get("roles") or []))
+        item["fact_ids"] = list(dict.fromkeys(blueprint.get("fact_ids") or []))
+        item["supplement_ids"] = list(dict.fromkeys(blueprint.get("supplement_ids") or []))
+        allowed_facts = set(item["fact_ids"])
+        item["stages"] = [
+            {
+                **stage,
+                "fact_ids": [fact_id for fact_id in stage.get("fact_ids") or [] if fact_id in allowed_facts]
+                or list(item["fact_ids"]),
+            }
+            for stage in item.get("stages") or []
+            if isinstance(stage, dict)
+        ]
         output.append(item)
     return output

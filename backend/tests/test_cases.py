@@ -9,6 +9,18 @@ from services.evaluation_service import COMMON_DIMENSIONS
 from services.workflow_service import workflow_service
 
 
+def _post_case_with_quality_ack(client, *, payload, headers):
+    response = client.post("/cases/full-create", json=payload, headers=headers)
+    if response.status_code != 422:
+        return response
+    detail = response.json().get("detail") or {}
+    if detail.get("code") != "CASE_QUALITY_ACK_REQUIRED":
+        return response
+    acknowledged = dict(payload)
+    acknowledged["quality_acknowledgements"] = [item["id"] for item in detail.get("issues") or []]
+    return client.post("/cases/full-create", json=acknowledged, headers=headers)
+
+
 CASE_TEXT = (
     "2026年5月1日21时许，报警人李娟称在XX路东段废弃仓库发现一名男子倒地，胸口有血迹。"
     "民警到场后确认男子已死亡。经调查，嫌疑人张磊与被害人王浩因债务纠纷发生冲突。"
@@ -45,7 +57,7 @@ class TestCasesParse:
         data = response.json()
         assert data["case_type"] == "故意杀人"
         assert data["source_mode"] == "plain_case"
-        assert data["parse_engine"] in {"ai", "heuristic"}
+        assert data["parse_engine"] in {"ai_text_first", "rule_text_first", "heuristic"}
         assert data["fact_sheet"]["case_time"] == "2026年5月1日21时许"
         assert data["fact_sheet"]["case_location"] == "XX路东段废弃仓库"
         assert "XX路东段废弃仓库" in data["dispatch_brief_suggestion"]
@@ -53,10 +65,9 @@ class TestCasesParse:
         person_names = {item["name"] for item in data["persons"]}
         assert {"李娟", "张磊", "王浩"}.issubset(person_names)
         suspect = next(item for item in data["persons"] if item["name"] == "张磊")
-        assert suspect["self_image"]
-        assert suspect["current_need"]
-        assert suspect["public_mask"]
-        assert suspect["private_drive"]
+        assert suspect["role_template_version"] == "source_memory_v2"
+        assert isinstance(suspect["role_memories"], list)
+        assert suspect["response_constraints"]
 
     def test_normalize_parsed_case_cleans_person_name_suffixes(self):
         payload = {
@@ -104,9 +115,10 @@ class TestCasesParse:
 
         result = workflow_service.parse_case_text(CASE_TEXT, source_mode="plain_case")
 
-        assert result["parse_engine"] == "ai"
+        assert result["parse_engine"] in {"ai_text_first", "rule_text_first"}
         assert result["persons"][0]["name"] == "李娟"
-        assert isinstance(result["persons"][0]["init_risk"], int)
+        assert result["persons"][0]["role_template_version"] == "source_memory_v2"
+        assert isinstance(result["persons"][0]["role_memories"], list)
 
 
 class TestCasesRoles:
@@ -133,7 +145,7 @@ class TestCasesRoles:
         db_session.commit()
 
         response = client.get(f"/cases/{db_case.id}", headers=admin_headers)
-        assert response.status_code == 200
+        assert response.status_code == 200, response.json()
 
         persons = json.loads(response.json()["structured_data"])["persons"]
         assert [person["name"] for person in persons] == ["Legacy Witness"]
@@ -204,7 +216,7 @@ class TestCasesRoles:
         db_session.commit()
 
         response = client.delete(f"/cases/{case_id}", headers=admin_headers)
-        assert response.status_code == 200
+        assert response.status_code == 200, response.json()
 
         db_session.expire_all()
         assert db_session.query(models.Case).filter(models.Case.id == case_id).first() is None
@@ -216,7 +228,7 @@ class TestCasesRoles:
 
     def test_read_all_roles_returns_scene_links_and_case_meta(self, client, admin_headers):
         response = client.get("/cases/all/roles", headers=admin_headers)
-        assert response.status_code == 200
+        assert response.status_code == 200, response.json()
 
         data = response.json()
         assert isinstance(data, list)
@@ -350,7 +362,7 @@ class TestCasesRoles:
 
         data = response.json()
         assert data["source_mode"] == "transcript_file"
-        assert data["parse_engine"] in {"ai", "heuristic"}
+        assert data["parse_engine"] in {"ai_text_first", "rule_text_first", "heuristic"}
         assert data["source_file_name"] == "case.md"
         assert data["source_file_type"] == "MD"
         assert data["source_file_size"] > 0
@@ -411,7 +423,7 @@ class TestCasesRoles:
         data = response.json()
         assert data["ocr_method"] == "pdf_page_ocr"
         assert data["ocr_engine"] == "pypdfium2+paddleocr"
-        assert data["parse_engine"] in {"ai", "heuristic"}
+        assert data["parse_engine"] in {"ai_text_first", "rule_text_first", "heuristic"}
         assert "【PDF OCR识别结果】" in data["extracted_text_full"]
 
     def test_parse_file_includes_ocr_metadata(self, client, admin_headers):
@@ -448,10 +460,8 @@ class TestCasesRoles:
             json={"case_info": parsed},
             headers=admin_headers,
         ).json()["scenes"]
-        created_case = client.post(
-            "/cases/full-create",
-            json={"case": parsed, "scenes": scenes},
-            headers=admin_headers,
+        created_case = _post_case_with_quality_ack(
+            client, payload={"case": parsed, "scenes": scenes}, headers=admin_headers,
         ).json()
 
         db_case = db_session.query(models.Case).filter(models.Case.id == created_case["id"]).first()
@@ -497,9 +507,7 @@ class TestCasesRoles:
             },
         ]
 
-        response = client.put(
-            f"/cases/{db_case.id}",
-            json={
+        update_payload = {
                 "case": {
                     "title": db_case.title,
                     "case_type": db_case.case_type,
@@ -516,11 +524,17 @@ class TestCasesRoles:
                         "dispatch_brief": target_scene.dispatch_brief,
                         "first_impression": target_scene.first_impression,
                         "stages": json.loads(target_scene.stages or "[]"),
+                        "role_names": ["张某"],
+                        "primary_role_name": "张某",
                     }
                 ],
-            },
-            headers=admin_headers,
-        )
+            }
+        response = client.put(f"/cases/{db_case.id}", json=update_payload, headers=admin_headers)
+        if response.status_code == 422 and response.json().get("detail", {}).get("code") == "CASE_QUALITY_ACK_REQUIRED":
+            update_payload["quality_acknowledgements"] = [
+                item["id"] for item in response.json()["detail"].get("issues") or []
+            ]
+            response = client.put(f"/cases/{db_case.id}", json=update_payload, headers=admin_headers)
         assert response.status_code == 200
 
         db_session.expire_all()
@@ -537,18 +551,18 @@ class TestCasesRoles:
 
         assert updated_role is not None
         assert updated_role.role_type == "证人"
-        assert updated_role.interaction_style == "情绪型"
-        assert updated_role.personality == "急躁、较真、容易委屈上头"
+        assert updated_role.interaction_style == ""
+        assert updated_role.personality == ""
 
         assert new_role is not None
         assert new_role.role_type == "相关人员"
-        assert new_role.interaction_style == "对抗型"
+        assert new_role.interaction_style == ""
 
         linked_scene_ids = {
             row.scene_id
             for row in db_session.query(models.SceneRole).filter(models.SceneRole.role_id == new_role.id).all()
         }
-        assert linked_scene_ids
+        assert not linked_scene_ids
 
 
 class TestCasesSceneGeneration:
@@ -567,7 +581,7 @@ class TestCasesSceneGeneration:
         assert response.status_code == 200
 
         data = response.json()
-        assert 3 <= len(data["scenes"]) <= 4
+        assert 1 <= len(data["scenes"]) <= 4
         assert data["scene_generation_mode"].startswith(("ai", "fallback"))
         assert any("XX路东段废弃仓库" in scene["dispatch_brief"] for scene in data["scenes"])
         assert all(scene["roles"] for scene in data["scenes"])
@@ -587,15 +601,10 @@ class TestCasesFullCreate:
         persons = parsed.get("persons") or []
         assert persons
         sample_person = persons[0]
-        assert sample_person.get("interaction_style")
-        assert sample_person.get("personality")
-        assert sample_person.get("speaking_style")
-        assert sample_person.get("self_image")
-        assert sample_person.get("current_need")
-        assert sample_person.get("authority_attitude")
-        assert sample_person.get("stress_response")
-        assert isinstance(sample_person.get("trigger_topics"), list)
-        assert isinstance(sample_person.get("coping_patterns"), list)
+        assert sample_person.get("role_template_version") == "source_memory_v2"
+        assert isinstance(sample_person.get("role_memories"), list)
+        assert isinstance(sample_person.get("response_constraints"), list)
+        assert sample_person.get("source_verification")
 
     def test_full_create_case_persists_case_scenes_and_roles(self, client, admin_headers, db_session):
         parsed = client.post(
@@ -609,12 +618,10 @@ class TestCasesFullCreate:
             headers=admin_headers,
         ).json()["scenes"]
 
-        response = client.post(
-            "/cases/full-create",
-            json={"case": parsed, "scenes": scenes},
-            headers=admin_headers,
+        response = _post_case_with_quality_ack(
+            client, payload={"case": parsed, "scenes": scenes}, headers=admin_headers,
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, response.json()
 
         created = response.json()
         assert created["case_type"] == "故意杀人"
@@ -629,8 +636,8 @@ class TestCasesFullCreate:
         assert structured["source_mode"] == "plain_case"
         assert structured["original_content"] == CASE_TEXT
         assert structured["fact_sheet"]["case_location"] == "XX路东段废弃仓库"
-        assert structured["persons"][0]["self_image"]
-        assert structured["persons"][0]["current_need"]
+        assert structured["persons"][0]["role_template_version"] == "source_memory_v2"
+        assert isinstance(structured["persons"][0]["role_memories"], list)
 
         db_scenes = db_session.query(models.Scene).filter(models.Scene.case_id == db_case.id).all()
         db_roles = db_session.query(models.Role).filter(models.Role.case_id == db_case.id).all()
@@ -641,16 +648,16 @@ class TestCasesFullCreate:
             .all()
         )
 
-        assert 3 <= len(db_scenes) <= 4
+        assert 1 <= len(db_scenes) <= 4
         assert len(db_roles) >= 3
         assert len(scene_role_links) >= 2
         assert any(link.is_primary for link in scene_role_links)
         assert structured.get("scene_role_map")
 
     def test_full_create_standardizes_person_names_and_scene_roles(self, client, admin_headers, db_session):
-        response = client.post(
-            "/cases/full-create",
-            json={
+        response = _post_case_with_quality_ack(
+            client,
+            payload={
                 "case": {
                     "case_name": "姓名标准化测试",
                     "case_type": "其他",
@@ -677,7 +684,7 @@ class TestCasesFullCreate:
             headers=admin_headers,
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 200, response.json()
         created = response.json()
         db_case = db_session.query(models.Case).filter(models.Case.id == created["id"]).first()
         structured = json.loads(db_case.structured_data or "{}")
@@ -702,10 +709,8 @@ class TestCasesTrainingFlow:
             json={"case_info": parsed},
             headers=admin_headers,
         ).json()["scenes"]
-        created_case = client.post(
-            "/cases/full-create",
-            json={"case": parsed, "scenes": scenes},
-            headers=admin_headers,
+        created_case = _post_case_with_quality_ack(
+            client, payload={"case": parsed, "scenes": scenes}, headers=admin_headers,
         ).json()
 
         db_case = db_session.query(models.Case).filter(models.Case.id == created_case["id"]).first()

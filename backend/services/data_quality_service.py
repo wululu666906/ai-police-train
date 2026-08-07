@@ -1,4 +1,7 @@
 import json
+import re
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -12,6 +15,7 @@ from services.case_schema_service import (
     migrate_structured_data_payload,
 )
 from services.text_repair import repair_text
+from services.case_scene_contract_service import build_case_quality_report, compile_case_scene_artifacts
 
 
 def _as_text_list(value: Any) -> list[str]:
@@ -63,7 +67,7 @@ def _person_has_alias_conflict(person: dict[str, Any]) -> bool:
     return False
 
 
-def repair_person_alias_conflicts(db: Session, case_id: Optional[int] = None) -> Dict[str, Any]:
+def repair_person_alias_conflicts(db: Session, case_id: Optional[int] = None, *, commit: bool = True) -> Dict[str, Any]:
     cases_query = db.query(models.Case).order_by(models.Case.id.asc())
     if case_id is not None:
         cases_query = cases_query.filter(models.Case.id == case_id)
@@ -102,10 +106,194 @@ def repair_person_alias_conflicts(db: Session, case_id: Optional[int] = None) ->
         case.structured_data = json.dumps(migrated, ensure_ascii=False)
         repaired_case_count += 1
 
-    db.commit()
+    if commit:
+        db.commit()
     return {
         "repaired_person_count": repaired_person_count,
         "repaired_case_count": repaired_case_count,
+    }
+
+
+def _clean_case_title(title: Any) -> str:
+    text = repair_text(str(title or "")).strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    wrapper = re.compile(r"^(第[一二三四五六七八九十百零\d]+[章节编]|目录|正文|裁判要旨|审理经过|案件材料|案情介绍|文书正文)$")
+    clean = next((line for line in lines if not wrapper.fullmatch(line)), "")
+    return clean[:100] or "未命名案件"
+
+
+def _case_backup_payload(db: Session, cases: list[models.Case]) -> dict[str, Any]:
+    case_ids = [case.id for case in cases]
+    scenes = db.query(models.Scene).filter(models.Scene.case_id.in_(case_ids)).all() if case_ids else []
+    roles = db.query(models.Role).filter(models.Role.case_id.in_(case_ids)).all() if case_ids else []
+    scene_ids = [scene.id for scene in scenes]
+    role_ids = [role.id for role in roles]
+    links = (
+        db.query(models.SceneRole)
+        .filter(models.SceneRole.scene_id.in_(scene_ids), models.SceneRole.role_id.in_(role_ids))
+        .all()
+        if scene_ids and role_ids else []
+    )
+    return {
+        "created_at": datetime.now().isoformat(),
+        "cases": [{column.name: getattr(case, column.name) for column in models.Case.__table__.columns} for case in cases],
+        "scenes": [{column.name: getattr(scene, column.name) for column in models.Scene.__table__.columns} for scene in scenes],
+        "roles": [{column.name: getattr(role, column.name) for column in models.Role.__table__.columns} for role in roles],
+        "scene_roles": [{column.name: getattr(link, column.name) for column in models.SceneRole.__table__.columns} for link in links],
+    }
+
+
+def migrate_case_data_quality(
+    db: Session,
+    *,
+    case_id: Optional[int] = None,
+    apply: bool = False,
+    backup_dir: str | None = None,
+) -> Dict[str, Any]:
+    query = db.query(models.Case).order_by(models.Case.id.asc())
+    if case_id is not None:
+        query = query.filter(models.Case.id == case_id)
+    cases = query.all()
+    original_backup = _case_backup_payload(db, cases) if apply else None
+    affected: list[models.Case] = []
+    previews: list[dict[str, Any]] = []
+    blocking_issues: list[dict[str, Any]] = []
+    alias_residue_count = 0
+
+    for case in cases:
+        try:
+            structured = json.loads(case.structured_data or "{}")
+        except Exception:
+            structured = {}
+        if not isinstance(structured, dict):
+            structured = {}
+        persons = structured.get("persons") if isinstance(structured.get("persons"), list) else []
+        residue = sum(
+            1 for person in persons if isinstance(person, dict)
+            for alias in PERSON_ALIAS_TO_CANONICAL if person.get(alias) not in (None, "", [])
+        )
+        alias_residue_count += residue
+        migrated, migration_report = migrate_structured_data_payload(structured)
+        scenes = db.query(models.Scene).filter(models.Scene.case_id == case.id).order_by(models.Scene.id.asc()).all()
+        roles = db.query(models.Role).filter(models.Role.case_id == case.id).all()
+        roles_by_id = {role.id: role for role in roles}
+        roles_by_name = {str(role.name or "").strip(): role for role in roles if str(role.name or "").strip()}
+        scene_payloads: list[dict[str, Any]] = []
+        for scene in scenes:
+            links = db.query(models.SceneRole).filter(models.SceneRole.scene_id == scene.id).all()
+            linked_names = [roles_by_id[link.role_id].name for link in links if link.role_id in roles_by_id]
+            configured_entry = (structured.get("scene_role_map") or {}).get(scene.name) or {}
+            configured = configured_entry.get("role_names") or []
+            if links and configured and set(linked_names) != set(configured):
+                blocking_issues.append({
+                    "case_id": case.id,
+                    "scene_id": scene.id,
+                    "code": "SCENE_ROLE_SOURCE_CONFLICT",
+                    "message": f"{case.title} / {scene.name} 的 SceneRole 与旧结构化角色映射冲突，未自动猜测。",
+                })
+            if not links:
+                missing_names = [name for name in configured if name not in roles_by_name]
+                if configured and not missing_names:
+                    linked_names = list(dict.fromkeys(configured))
+                    primary_name = str(configured_entry.get("primary_role_name") or "").strip()
+                    if primary_name not in linked_names:
+                        primary_name = linked_names[0]
+                    primary_role = roles_by_name.get(primary_name)
+                    if primary_role and not is_role_speakable(primary_role):
+                        blocking_issues.append({
+                            "case_id": case.id,
+                            "scene_id": scene.id,
+                            "code": "NON_SPEAKABLE_PRIMARY_ROLE",
+                            "message": f"{case.title} / {scene.name} 的旧主角色不可交流，未自动改选。",
+                        })
+                    elif apply:
+                        for name in linked_names:
+                            role = roles_by_name[name]
+                            db.add(models.SceneRole(scene_id=scene.id, role_id=role.id, is_primary=name == primary_name))
+                        db.flush()
+                        links = db.query(models.SceneRole).filter(models.SceneRole.scene_id == scene.id).all()
+                else:
+                    blocking_issues.append({
+                        "case_id": case.id,
+                        "scene_id": scene.id,
+                        "code": "SCENE_ROLE_BINDING_MISSING",
+                        "message": (
+                            f"{case.title} / {scene.name} 的旧映射引用不存在人物：{'、'.join(missing_names)}。"
+                            if missing_names else f"{case.title} / {scene.name} 同时缺少 SceneRole 和旧角色映射，未自动猜测。"
+                        ),
+                    })
+            primary = next((roles_by_id[link.role_id].name for link in links if link.is_primary and link.role_id in roles_by_id), "")
+            scene_payloads.append({
+                "id": scene.id,
+                "scene_ref": f"db:{scene.id}",
+                "scene_name": scene.name,
+                "scene_description": scene.description,
+                "difficulty": scene.difficulty,
+                "dispatch_brief": scene.dispatch_brief,
+                "first_impression": scene.first_impression,
+                "stages": json.loads(scene.stages or "[]") if scene.stages else [],
+                "roles": linked_names,
+                "primary_role_name": primary,
+            })
+        derived = compile_case_scene_artifacts(migrated, scene_payloads)
+        changed = bool(
+            structured != migrated
+            or migration_report
+            or residue
+            or case.title != _clean_case_title(case.title)
+            or migrated.get("derived_revision") != derived["derived_revision"]
+        )
+        if changed:
+            affected.append(case)
+        previews.append({
+            "case_id": case.id,
+            "title": case.title,
+            "schema_from": structured.get("schema_version"),
+            "schema_to": migrated.get("schema_version"),
+            "alias_residue_count": residue,
+            "scene_count": len(scenes),
+            "will_change": changed,
+        })
+        if not apply or not changed:
+            continue
+        case.title = _clean_case_title(case.title)
+        for key, value in derived.items():
+            if key != "scenes":
+                migrated[key] = value
+        migrated["quality_report"] = build_case_quality_report(migrated, derived["scenes"])
+        case.structured_data = json.dumps(migrated, ensure_ascii=False)
+        for role in roles:
+            role_links = [link for scene in scenes for link in db.query(models.SceneRole).filter(models.SceneRole.scene_id == scene.id, models.SceneRole.role_id == role.id).all()]
+            role_links.sort(key=lambda item: (not bool(item.is_primary), item.scene_id))
+            role.scene_id = role_links[0].scene_id if role_links else None
+
+    backup_path = ""
+    if apply and affected:
+        directory = Path(backup_dir) if backup_dir else Path(__file__).resolve().parents[1] / "backups"
+        directory.mkdir(parents=True, exist_ok=True)
+        backup_path = str(directory / f"case_quality_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+        affected_ids = {case.id for case in affected}
+        affected_scene_ids = {
+            item["id"] for item in (original_backup or {}).get("scenes", []) if item.get("case_id") in affected_ids
+        }
+        backup_payload = {
+            **(original_backup or {}),
+            "cases": [item for item in (original_backup or {}).get("cases", []) if item.get("id") in affected_ids],
+            "scenes": [item for item in (original_backup or {}).get("scenes", []) if item.get("id") in affected_scene_ids],
+            "roles": [item for item in (original_backup or {}).get("roles", []) if item.get("case_id") in affected_ids],
+            "scene_roles": [item for item in (original_backup or {}).get("scene_roles", []) if item.get("scene_id") in affected_scene_ids],
+        }
+        Path(backup_path).write_text(json.dumps(backup_payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        db.commit()
+
+    return {
+        "mode": "apply" if apply else "dry_run",
+        "case_count": len(cases),
+        "affected_case_count": len(affected),
+        "alias_residue_count": alias_residue_count,
+        "blocking_issues": blocking_issues,
+        "backup_path": backup_path,
+        "cases": previews,
     }
 
 
@@ -208,7 +396,11 @@ def build_data_quality_report(db: Session) -> Dict[str, Any]:
                 )
                 scene_issue_found = True
 
-            scene_roles = [role for role in case_roles if role.scene_id == scene.id]
+            linked_role_ids = {
+                row.role_id
+                for row in db.query(models.SceneRole).filter(models.SceneRole.scene_id == scene.id).all()
+            }
+            scene_roles = [role for role in case_roles if role.id in linked_role_ids]
             speakable_roles = [role for role in scene_roles if is_role_speakable(role)]
             resolved_role = resolve_scene_role(db, scene, case)
             if not speakable_roles and not (resolved_role and is_role_speakable(resolved_role)):

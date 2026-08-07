@@ -139,9 +139,14 @@ def canonicalize_person_payload(
         _as_text(source.get("role_template_version")) == ROLE_TEMPLATE_VERSION
         or bool(source.get("role_memories"))
         or bool(source.get("role_event_ledger"))
+        or _as_text(source.get("source_kind")) == "synthetic"
     )
     if is_v2:
-        for key in ("person_id", "aliases", "source_verification", "source_refs", "persona_source", "persona_contract_version", "role_template_version"):
+        for key in (
+            "person_id", "aliases", "source_verification", "source_refs", "persona_source",
+            "persona_contract_version", "role_template_version", "source_kind", "synthetic_type",
+            "knowledge_scope", "answer_limit",
+        ):
             if key in source and source.get(key) not in (None, "", []):
                 canonical[key] = copy.deepcopy(source[key])
         canonical["role_template_version"] = ROLE_TEMPLATE_VERSION
@@ -162,6 +167,9 @@ def canonicalize_person_payload(
             canonical["persona_generation"] = copy.deepcopy(source["persona_generation"])
         if _as_text(source.get("current_goal")):
             canonical["current_goal"] = _as_text(source.get("current_goal"))
+        for key in PERSON_CANONICAL_FIELDS:
+            if source.get(key) not in (None, "", []):
+                canonical[key] = copy.deepcopy(source[key])
         return canonical, warnings
     if _as_text(source.get("person_id")):
         canonical["person_id"] = _as_text(source.get("person_id"))
@@ -192,6 +200,9 @@ def canonicalize_person_payload(
             canonical[key] = _as_text(source.get(key))
     if isinstance(source.get("persona_autofill"), bool):
         canonical["persona_autofill"] = source.get("persona_autofill")
+    for key in PERSON_CANONICAL_FIELDS:
+        if source.get(key) not in (None, "", []):
+            canonical[key] = copy.deepcopy(source[key])
     for alias, target in PERSON_ALIAS_TO_CANONICAL.items():
         if target in canonical and canonical.get(target) not in (None, "", []):
             continue
@@ -286,6 +297,8 @@ def migrate_structured_data_payload(structured_data: dict[str, Any] | None) -> t
         migrated_persons = []
         for person in persons:
             canonical_person, person_warnings = canonicalize_person_payload(person if isinstance(person, dict) else {})
+            for alias in PERSON_ALIAS_TO_CANONICAL:
+                canonical_person.pop(alias, None)
             migrated_persons.append(canonical_person)
             warnings.extend(person_warnings)
         payload["persons"] = migrated_persons

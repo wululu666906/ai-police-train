@@ -256,6 +256,7 @@ const emptyState = ref({
 let evaluationPollTimer: number | null = null
 const assignmentContext = computed(() => sessionDetail.value?.assignment_context || null)
 const isAssignmentReport = computed(() => !isVideoReport.value && Boolean(assignmentContext.value || route.query.source === 'assignment'))
+const isGeneratingReport = computed(() => route.query.generating === '1')
 const isVideoReport = computed(() => {
   if (route.meta.reportKind === 'video') return true
   if (route.path.includes('/video-report/')) return true
@@ -1142,7 +1143,9 @@ const fetchEvaluation = async (options: { silent?: boolean; attempt?: number } =
     } as any)
     sessionDetail.value = res || null
     if (!res.evaluation_result) {
-      if (res.status === 'evaluating' && (options.attempt || 0) < 12) {
+      const shouldKeepPolling = res.status === 'evaluating' || isGeneratingReport.value
+      const maxAttempts = isGeneratingReport.value ? 100 : 12
+      if (shouldKeepPolling && (options.attempt || 0) < maxAttempts) {
         pollingReport.value = true
         setEmptyState('评估报告生成中', '系统正在生成评估报告，请稍候。')
         loading.value = false

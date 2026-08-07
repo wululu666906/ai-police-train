@@ -16,9 +16,12 @@
           v-for="scene in displayScenes"
           :key="scene.id"
           class="scene-row"
-          :class="`scene-row--${sceneStatus(scene)}`"
+          :class="[`scene-row--${sceneStatus(scene)}`, { 'scene-row--single': isSingleScene }]"
         >
-          <span class="scene-name">{{ scene.name }}</span>
+          <div class="scene-main">
+            <span class="scene-name">{{ scene.name }}</span>
+            <span v-if="isSingleScene" class="scene-description">{{ scene.description || '围绕当前警情开展实操训练' }}</span>
+          </div>
           <span class="scene-difficulty" :class="`scene-difficulty--${difficultyLevel(scene.difficulty)}`">
             {{ difficultyLabel(scene.difficulty) }}
           </span>
@@ -78,6 +81,7 @@ export type TaskSceneItem = {
   id: number
   name: string
   difficulty?: string
+  description?: string
   has_active_session?: boolean
   active_session_id?: number | null
   finished_session_id?: number | null
@@ -113,10 +117,11 @@ const emit = defineEmits<{
   'view-detail': []
 }>()
 
-const displayScenes = computed(() => (props.caseItem.scenes || []).slice(0, 3))
+const displayScenes = computed(() => (props.caseItem.scenes || []).slice(0, 4))
 const totalScenes = computed(() => (props.caseItem.scenes || []).length)
 const hiddenSceneCount = computed(() => Math.max(0, totalScenes.value - displayScenes.value.length))
 const hasMoreScenes = computed(() => hiddenSceneCount.value > 0)
+const isSingleScene = computed(() => totalScenes.value === 1)
 
 const sceneStatus = (scene: TaskSceneItem) => {
   if (scene.training_status) return scene.training_status
@@ -296,6 +301,13 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
   border: 1px solid #f1f5f9;
 }
 
+.scene-row--single {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  padding: 14px;
+  background: #f8fafc;
+}
+
 .scene-expand-btn {
   display: flex;
   align-items: center;
@@ -370,8 +382,15 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
   flex-shrink: 0;
 }
 
-.scene-name {
+.scene-main {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.scene-name {
   min-width: 0;
   font-size: 12px;
   color: #4b5563;
@@ -379,6 +398,18 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
+}
+
+.scene-description {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.5;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
 }
 
 .scene-btn {

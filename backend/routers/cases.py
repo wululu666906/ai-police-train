@@ -12,7 +12,7 @@ import database
 import models
 import schemas
 from routers.auth import require_admin_user
-from services.data_quality_service import build_data_quality_report, repair_person_alias_conflicts
+from services.data_quality_service import build_data_quality_report, migrate_case_data_quality
 from services.case_schema_service import (
     canonicalize_person_payload,
     migrate_structured_data_payload,
@@ -28,6 +28,11 @@ from services.case_intelligence_service import assess_source_quality, build_role
 from services.training_compiler_service import build_observable_scoring_rules, build_training_tasks, compile_state_machine
 from services.workflow_service import workflow_service
 from services.case_pipeline_service import create_pipeline_job
+from services.case_scene_contract_service import (
+    build_case_quality_report,
+    compile_case_scene_artifacts,
+    unacknowledged_warnings,
+)
 from services.workflow_job_service import serialize_job
 from services.case_knowledge_repository import bind_namespace
 from services.object_storage_service import MEDIA_BUCKET, build_object_key, delete_media_assets, guess_content_type, object_storage, upsert_media_asset
@@ -77,6 +82,28 @@ def _safe_json_loads(value, default):
         return json.loads(value)
     except Exception:
         return default
+
+
+def _published_case_title(case_data: dict) -> str:
+    wrapper = re.compile(r"^(第[一二三四五六七八九十百零\d]+[章节编]|目录|正文|裁判要旨|审理经过|案件材料|案情介绍|文书正文)$")
+
+    def valid(value) -> str:
+        lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+        return next((line[:100] for line in lines if not wrapper.fullmatch(line)), "")
+
+    manual = valid(case_data.get("title"))
+    if manual:
+        return manual
+    ai_title = valid(case_data.get("case_name"))
+    if ai_title:
+        return ai_title
+    persons = [item for item in case_data.get("persons") or [] if isinstance(item, dict)]
+    first_person = valid((persons[0] if persons else {}).get("name"))
+    case_type = valid(case_data.get("case_type"))
+    if first_person or case_type:
+        return f"{first_person}{case_type or '警情'}案"[:100]
+    filename = os.path.splitext(str(case_data.get("source_file_name") or ""))[0]
+    return valid(filename) or "未命名案件"
 
 
 @router.post("/pipeline/text")
@@ -283,7 +310,10 @@ def _extract_person_meta(payload: dict | None, base_meta: dict | None = None):
     # fields may still exist in the database for migration, but are ignored on
     # every new save so they cannot re-enter the active template.
     source = {}
-    for key in ("name", "role_type", "status", "source_verification", "persona_source", "current_goal"):
+    for key in (
+        "name", "role_type", "status", "source_verification", "persona_source", "current_goal",
+        "source_kind", "synthetic_type", "knowledge_scope", "answer_limit",
+    ):
         value = payload.get(key) if key in payload else base_meta.get(key)
         if value not in (None, ""):
             source[key] = str(value).strip()
@@ -386,9 +416,8 @@ def _canonicalize_scene_role_payloads(scenes_data: list[dict] | None, persons: l
         scene_payload = dict(scene)
         roles = scene_payload.get("roles") or scene_payload.get("role_names") or []
         canonical_roles = workflow_service.canonicalize_role_names(roles, persons)
-        if canonical_roles:
-            scene_payload["roles"] = canonical_roles
-            scene_payload["role_names"] = canonical_roles
+        scene_payload["roles"] = canonical_roles
+        scene_payload["role_names"] = canonical_roles
         primary_role_name = workflow_service.canonicalize_role_name(scene_payload.get("primary_role_name"), persons)
         if primary_role_name in canonical_roles:
             scene_payload["primary_role_name"] = primary_role_name
@@ -465,7 +494,6 @@ def _upsert_case_roles_from_structured_persons(db: Session, case: models.Case):
                 pass
 
     changed = False
-    newly_created_roles: list[models.Role] = []
     person_id_counter = max_existing_id + 1
     for person in persons:
         if not isinstance(person, dict):
@@ -512,7 +540,6 @@ def _upsert_case_roles_from_structured_persons(db: Session, case: models.Case):
             )
             db.add(role)
             existing_roles[person_name] = role
-            newly_created_roles.append(role)
             changed = True
             continue
 
@@ -535,24 +562,70 @@ def _upsert_case_roles_from_structured_persons(db: Session, case: models.Case):
 
     if changed:
         db.flush()
-        default_scene = (
-            db.query(models.Scene)
-            .filter(models.Scene.case_id == case.id)
-            .order_by(models.Scene.id.asc())
-            .first()
+
+
+def _enforce_case_quality_gate(case_info: dict, scenes: list[dict], acknowledgements) -> dict:
+    report = build_case_quality_report(case_info, scenes)
+    if report["blocking_issues"]:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "CASE_QUALITY_BLOCKED", "issues": report["blocking_issues"], "quality_report": report},
         )
-        if default_scene:
-            for role in newly_created_roles:
-                has_scene_link = (
-                    db.query(models.SceneRole)
-                    .filter(models.SceneRole.role_id == role.id)
-                    .first()
-                    is not None
-                )
-                if has_scene_link:
-                    continue
-                role.scene_id = role.scene_id or default_scene.id
-                db.add(models.SceneRole(scene_id=default_scene.id, role_id=role.id, is_primary=False))
+    pending = unacknowledged_warnings(report, acknowledgements)
+    if pending:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "CASE_QUALITY_ACK_REQUIRED", "issues": pending, "quality_report": report},
+        )
+    return report
+
+
+def _sync_role_compatibility_scene(db: Session, case_id: int) -> None:
+    roles = db.query(models.Role).filter(models.Role.case_id == case_id).all()
+    for role in roles:
+        links = (
+            db.query(models.SceneRole)
+            .filter(models.SceneRole.role_id == role.id)
+            .order_by(models.SceneRole.is_primary.desc(), models.SceneRole.scene_id.asc())
+            .all()
+        )
+        role.scene_id = links[0].scene_id if links else None
+
+
+def _compile_persisted_case_artifacts(db: Session, db_case: models.Case, structured: dict) -> dict:
+    roles_by_id = {
+        role.id: role for role in db.query(models.Role).filter(models.Role.case_id == db_case.id).all()
+    }
+    scene_rows = db.query(models.Scene).filter(models.Scene.case_id == db_case.id).order_by(models.Scene.id.asc()).all()
+    scene_payloads = []
+    for scene in scene_rows:
+        links = (
+            db.query(models.SceneRole)
+            .filter(models.SceneRole.scene_id == scene.id)
+            .order_by(models.SceneRole.id.asc())
+            .all()
+        )
+        role_names = [roles_by_id[link.role_id].name for link in links if link.role_id in roles_by_id]
+        primary = next((roles_by_id[link.role_id].name for link in links if link.is_primary and link.role_id in roles_by_id), "")
+        scene_payloads.append({
+            "id": scene.id,
+            "scene_ref": f"db:{scene.id}",
+            "scene_name": scene.name,
+            "scene_description": scene.description,
+            "difficulty": scene.difficulty,
+            "dispatch_brief": scene.dispatch_brief,
+            "first_impression": scene.first_impression,
+            "stages": _safe_json_loads(scene.stages, []),
+            "roles": role_names,
+            "role_names": role_names,
+            "primary_role_name": primary,
+        })
+    derived = compile_case_scene_artifacts(structured, scene_payloads)
+    for key, value in derived.items():
+        if key != "scenes":
+            structured[key] = value
+    structured["quality_report"] = build_case_quality_report(structured, derived["scenes"])
+    return structured
 
 
 def _remove_legacy_empty_roles_not_in_source(db: Session, case: models.Case, source_person_names: set[str]) -> list[str]:
@@ -771,7 +844,7 @@ def read_all_roles(db: Session = Depends(database.get_db)):
     for role in roles:
         scene_links = scene_links_by_role_id.get(role.id, [])
         case_meta = case_meta_by_case_id.get(role.case_id or -1, {}).get(role.name, {})
-        person_meta = _extract_person_meta({}, case_meta) if role.case_id else _extract_person_meta({}, _get_role_person_meta(role))
+        person_meta = _extract_person_meta({}, case_meta) if role.case_id else _get_role_person_meta(role)
         base_payload = {
             "id": role.id,
             "name": role.name,
@@ -833,7 +906,7 @@ def _serialize_admin_role(db: Session, role: models.Role) -> dict:
                 )
                 case_meta = _extract_person_meta({}, person or {})
 
-    person_meta = case_meta if role.case_id else _extract_person_meta({}, _get_role_person_meta(role))
+    person_meta = case_meta if role.case_id else _get_role_person_meta(role)
     base_payload = {
         "id": role.id,
         "name": role.name,
@@ -924,24 +997,26 @@ def create_role(payload: dict = Body(...), db: Session = Depends(database.get_db
     if duplicate_query.first():
         raise HTTPException(status_code=400, detail="同一范围内已存在同名角色")
 
+    public_role = db_case is None
+    public_meta, _ = canonicalize_person_payload(payload) if public_role else ({}, [])
     db_role = models.Role(
         case_id=db_case.id if db_case else None,
         name=role_name,
         role_type=payload.get("role_type") or "相关人员",
-        interaction_style="",
-        personality="",
-        speaking_style="",
+        interaction_style=(payload.get("interaction_style") or "配合型") if public_role else "",
+        personality=(payload.get("personality") or "") if public_role else "",
+        speaking_style=(payload.get("speaking_style") or "") if public_role else "",
         init_emotion=payload.get("init_emotion", 50),
         init_trust=payload.get("init_trust", 30),
         status=payload.get("status") or "正常",
-        iq_level="",
-        eq_level="",
-        lying_ability="",
-        weakness="",
-        knows_facts="[]",
-        does_not_know="[]",
-        hidden_truths="[]",
-        persona_meta=_serialize_person_meta(_extract_person_meta(payload)),
+        iq_level=(payload.get("iq_level") or "") if public_role else "",
+        eq_level=(payload.get("eq_level") or "") if public_role else "",
+        lying_ability=(payload.get("lying_ability") or "") if public_role else "",
+        weakness=(payload.get("weakness") or "") if public_role else "",
+        knows_facts=_serialize_role_list(payload.get("knows_facts")) if public_role else "[]",
+        does_not_know=_serialize_role_list(payload.get("does_not_know")) if public_role else "[]",
+        hidden_truths=_serialize_role_list(payload.get("hidden_truths")) if public_role else "[]",
+        persona_meta=_serialize_person_meta(public_meta if public_role else _extract_person_meta(payload)),
     )
     db.add(db_role)
     db.flush()
@@ -983,19 +1058,20 @@ def update_role(role_id: int, payload: dict = Body(...), db: Session = Depends(d
 
     db_role.name = new_name
     db_role.role_type = payload.get("role_type") or db_role.role_type
-    db_role.interaction_style = ""
-    db_role.personality = ""
-    db_role.speaking_style = ""
+    public_role = db_role.case_id is None
+    db_role.interaction_style = (payload.get("interaction_style") or db_role.interaction_style or "配合型") if public_role else ""
+    db_role.personality = (payload.get("personality") or db_role.personality or "") if public_role else ""
+    db_role.speaking_style = (payload.get("speaking_style") or db_role.speaking_style or "") if public_role else ""
     db_role.init_emotion = payload.get("init_emotion", db_role.init_emotion)
     db_role.init_trust = payload.get("init_trust", db_role.init_trust)
     db_role.status = payload.get("status") or db_role.status
-    db_role.iq_level = ""
-    db_role.eq_level = ""
-    db_role.lying_ability = ""
-    db_role.weakness = ""
-    db_role.knows_facts = "[]"
-    db_role.does_not_know = "[]"
-    db_role.hidden_truths = "[]"
+    db_role.iq_level = (payload.get("iq_level") or db_role.iq_level or "") if public_role else ""
+    db_role.eq_level = (payload.get("eq_level") or db_role.eq_level or "") if public_role else ""
+    db_role.lying_ability = (payload.get("lying_ability") or db_role.lying_ability or "") if public_role else ""
+    db_role.weakness = (payload.get("weakness") or db_role.weakness or "") if public_role else ""
+    db_role.knows_facts = _serialize_role_list(payload.get("knows_facts")) if public_role else "[]"
+    db_role.does_not_know = _serialize_role_list(payload.get("does_not_know")) if public_role else "[]"
+    db_role.hidden_truths = _serialize_role_list(payload.get("hidden_truths")) if public_role else "[]"
 
     if db_role.case_id:
         db_case = db.query(models.Case).filter(models.Case.id == db_role.case_id).first()
@@ -1010,7 +1086,9 @@ def update_role(role_id: int, payload: dict = Body(...), db: Session = Depends(d
         )
     else:
         existing_meta = _get_role_person_meta(db_role)
-        db_role.persona_meta = _serialize_person_meta(_extract_person_meta(payload, existing_meta))
+        public_payload = {**existing_meta, **payload}
+        public_meta, _ = canonicalize_person_payload(public_payload)
+        db_role.persona_meta = _serialize_person_meta(public_meta)
 
     db.commit()
     if db_role.case_id:
@@ -1550,7 +1628,12 @@ def get_case_intelligence_rollout_metrics(db: Session = Depends(database.get_db)
 @router.post("/data-quality-repair")
 def repair_data_quality(payload: dict = Body(default={}), db: Session = Depends(database.get_db)):
     case_id = payload.get("case_id")
-    repair_result = repair_person_alias_conflicts(db, case_id=case_id)
+    repair_result = migrate_case_data_quality(
+        db,
+        case_id=case_id,
+        apply=str(payload.get("mode") or "dry_run").strip().lower() == "apply",
+        backup_dir=payload.get("backup_dir"),
+    )
     report = build_data_quality_report(db)
     return {
         **repair_result,
@@ -1573,9 +1656,10 @@ def repair_scene_roles(payload: dict = Body(default={}), db: Session = Depends(d
 def full_create_case(payload: dict = Body(...), db: Session = Depends(database.get_db)):
     case_data = payload.get("case") or {}
     scenes_data = payload.get("scenes") or []
+    acknowledgements = payload.get("quality_acknowledgements") or []
 
     try:
-        case_title = case_data.get("title") or case_data.get("case_name") or "未命名案件"
+        case_title = _published_case_title(case_data)
         original_content = case_data.get("original_content") or case_data.get("rawText") or ""
         background = case_data.get("background") or case_data.get("case_background") or "暂无案件背景"
         normalized_case_type = workflow_service.normalize_case_type(
@@ -1586,6 +1670,9 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
         standardized_persons = workflow_service.standardize_person_records(case_data.get("persons") or [])
         case_data = {**case_data, "persons": standardized_persons}
         scenes_data = _canonicalize_scene_role_payloads(scenes_data, standardized_persons)
+        derived = compile_case_scene_artifacts(case_data, scenes_data)
+        scenes_data = derived["scenes"]
+        quality_report = _enforce_case_quality_gate(case_data, scenes_data, acknowledgements)
 
         structured_data_to_save = {
             "fact_sheet": case_data.get("fact_sheet", {}),
@@ -1599,6 +1686,7 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
             "source_file_size": case_data.get("source_file_size"),
             "extracted_text_preview": case_data.get("extracted_text_preview", ""),
             "transcript_summary": case_data.get("transcript_summary", ""),
+            "case_tags": case_data.get("case_tags", []),
             "evidence_points": case_data.get("evidence_points", []),
             "inconsistencies": case_data.get("inconsistencies", []),
             "parse_warnings": case_data.get("parse_warnings", []),
@@ -1615,7 +1703,16 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
             ],
             **case_data,
             "case_type": normalized_case_type,
-            "scene_role_map": _build_scene_role_map(scenes_data),
+            "scene_blueprints": derived["scene_blueprints"],
+            "scene_scripts": derived["scene_scripts"],
+            "scene_role_map": derived["scene_role_map"],
+            "training_tasks": derived["training_tasks"],
+            "state_machine": derived["state_machine"],
+            "observable_scoring_rules": derived["observable_scoring_rules"],
+            "derived_artifact_version": derived["derived_artifact_version"],
+            "derived_revision": derived["derived_revision"],
+            "scene_contract_schema_version": derived["scene_contract_schema_version"],
+            "quality_report": quality_report,
         }
         structured_data_to_save = _standardize_case_structured_people(structured_data_to_save)
         structured_data_to_save, _ = migrate_structured_data_payload(structured_data_to_save)
@@ -1731,7 +1828,6 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
                     continue
 
                 linked_role_ids.add(role.id)
-                role.scene_id = db_scene.id
                 selected_roles.append(role)
 
             primary_role = next((role for role in selected_roles if role.name == requested_primary_role_name), None)
@@ -1743,17 +1839,10 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
             for role in selected_roles:
                 db.add(models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=bool(primary_role and role.id == primary_role.id)))
 
-            if primary_role is None:
-                for role in created_roles.values():
-                    if not is_role_speakable(role):
-                        continue
-                    if role.id in linked_role_ids:
-                        continue
-
-                    db.add(models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=True))
-                    linked_role_ids.add(role.id)
-                    role.scene_id = db_scene.id
-                    break
+        db.flush()
+        _sync_role_compatibility_scene(db, db_case.id)
+        structured_data_to_save = _compile_persisted_case_artifacts(db, db_case, structured_data_to_save)
+        db_case.structured_data = json.dumps(structured_data_to_save, ensure_ascii=False)
 
         db.commit()
         db.refresh(db_case)
@@ -1766,6 +1855,9 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
             db.refresh(db_case)
         try_sync_case_to_knowledge(db_case)
         return db_case
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
         print(f"Full create failed: {exc}")
@@ -1846,6 +1938,7 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
 
     case_data = payload.get("case") or {}
     scenes_data = payload.get("scenes") or []
+    acknowledgements = payload.get("quality_acknowledgements") or []
 
     try:
         if "title" in case_data:
@@ -1885,6 +1978,9 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
         structured_data = _safe_json_loads(db_case.structured_data, {})
         scene_persons = structured_data.get("persons") if isinstance(structured_data, dict) else []
         scenes_data = _canonicalize_scene_role_payloads(scenes_data, scene_persons if isinstance(scene_persons, list) else [])
+        if scenes_data:
+            candidate = compile_case_scene_artifacts(structured_data, scenes_data)
+            _enforce_case_quality_gate(structured_data, candidate["scenes"], acknowledgements)
 
         scene_map = {scene.id: scene for scene in db_case.scenes}
         role_map = {
@@ -1929,18 +2025,23 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
                     role_names.append(name)
 
                 selected_roles = [role_map[name] for name in role_names if name in role_map]
-                if selected_roles:
-                    db.query(models.SceneRole).filter(models.SceneRole.scene_id == db_scene.id).delete()
-                    for role in selected_roles:
-                        role.scene_id = db_scene.id
-                    primary_role = next((role for role in selected_roles if role.name == primary_role_name), selected_roles[0])
-                    if not is_role_speakable(primary_role):
-                        primary_role = next((role for role in selected_roles if is_role_speakable(role)), primary_role)
-                    for role in selected_roles:
-                        db.add(models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=role.id == primary_role.id))
+                db.query(models.SceneRole).filter(models.SceneRole.scene_id == db_scene.id).delete()
+                speakable_roles = [role for role in selected_roles if is_role_speakable(role)]
+                if selected_roles and not speakable_roles:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "code": "CASE_QUALITY_BLOCKED",
+                            "issues": [{"id": f"NON_SPEAKABLE_PRIMARY_ROLE:db:{db_scene.id}", "code": "NON_SPEAKABLE_PRIMARY_ROLE", "message": f"{db_scene.name} 没有可设为主对话人的可交流角色", "scene_ref": f"db:{db_scene.id}"}],
+                        },
+                    )
+                primary_role = next((role for role in speakable_roles if role.name == primary_role_name), speakable_roles[0] if speakable_roles else None)
+                for role in selected_roles:
+                    db.add(models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=bool(primary_role and role.id == primary_role.id)))
 
-        if scenes_data:
-            structured_data["scene_role_map"] = _build_scene_role_map(scenes_data)
+        db.flush()
+        _sync_role_compatibility_scene(db, db_case.id)
+        structured_data = _compile_persisted_case_artifacts(db, db_case, structured_data)
         structured_data = _standardize_case_structured_people(structured_data)
         structured_data, _ = migrate_structured_data_payload(structured_data)
         db_case.structured_data = json.dumps(structured_data, ensure_ascii=False)

@@ -26,25 +26,26 @@ def compile_scene_lifecycles(case_info: dict[str, Any], scenes: list[dict[str, A
         scene["start_state"] = _text(scene.get("start_state")) or "案件主要行为已经发生，民警进入当前处置阶段。"
         scene["completion_criteria"] = overall_completion
         scene["end_prompt"] = _text(scene.get("end_prompt")) or "本场景核心目标已完成，可结束训练或继续补充非必要询问。"
-        impression_parts = [
-            _text(scene.get("first_impression")),
+        first_impression = _text(scene.get("first_impression")) or "暂无现场第一印象描述，请人工补充到场可观察信息。"
+        runtime_context_parts = [
             _text(scene.get("scene_description")),
         ]
         visible_roles = [str(item).strip() for item in (scene.get("roles") or []) if str(item).strip()]
         if visible_roles:
-            impression_parts.append(f"当前可接触人员：{'、'.join(visible_roles)}。")
+            runtime_context_parts.append(f"当前可接触人员：{'、'.join(visible_roles)}。")
         time_place = "，".join(filter(None, [_text(scene.get("time")), _text(scene.get("place"))]))
         if time_place:
-            impression_parts.insert(0, f"当前时空：{time_place}。")
+            runtime_context_parts.insert(0, f"当前时空：{time_place}。")
         if phase == "intake":
-            impression_parts.append("当前仅掌握接警或任务派发信息，民警需要先核实要素并形成出警判断。")
+            runtime_context_parts.append("当前仅掌握接警或任务派发信息，民警需要先核实要素并形成出警判断。")
         elif phase == "post_incident_onsite":
-            impression_parts.append("案件主要行为已经发生，民警应根据案发后可见状态判断残余风险，再开展处置和初查。")
+            runtime_context_parts.append("案件主要行为已经发生，民警应根据案发后可见状态判断残余风险，再开展处置和初查。")
         elif phase == "post_incident_inquiry":
-            impression_parts.append("现场主要风险已处置，当前应围绕人物亲历范围、时间线和信息来源开展询问。")
+            runtime_context_parts.append("现场主要风险已处置，当前应围绕人物亲历范围、时间线和信息来源开展询问。")
         else:
-            impression_parts.append("当前进入案发后跟进阶段，应围绕证据缺口、协同事项和风险闭环开展处置。")
-        scene["first_impression"] = "\n".join(dict.fromkeys(item for item in impression_parts if item))
+            runtime_context_parts.append("当前进入案发后跟进阶段，应围绕证据缺口、协同事项和风险闭环开展处置。")
+        scene["first_impression"] = first_impression
+        scene["runtime_entry_context"] = "\n".join(dict.fromkeys(item for item in runtime_context_parts if item))
         stages = []
         raw_stages = scene.get("stages") if isinstance(scene.get("stages"), list) else []
         for stage_index, raw in enumerate(raw_stages, start=1):
