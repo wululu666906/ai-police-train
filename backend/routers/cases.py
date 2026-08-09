@@ -19,6 +19,7 @@ from services.case_schema_service import (
 )
 from services.document_extract_service import document_extract_service
 from services.role_resolver import is_role_speakable
+from services.role_state_service import ensure_scene_role_initial_state
 from services.scene_role_service import audit_scene_roles, normalize_scene_roles
 from services.scene_compact_service import build_scene_stages_from_compact, infer_training_focus
 from services.stage_config_service import infer_scene_behavior_mode, normalize_stages
@@ -82,6 +83,63 @@ def _safe_json_loads(value, default):
         return json.loads(value)
     except Exception:
         return default
+
+
+def _resolve_estimated_minutes(scene_data: dict) -> int | None:
+    for key in ("estimated_minutes", "estimate_minutes", "duration_minutes", "training_minutes"):
+        value = scene_data.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            minutes = int(value)
+        except (TypeError, ValueError):
+            continue
+        return minutes if minutes > 0 else None
+    return None
+
+
+def _normalize_opening_config(value, role_by_name: dict[str, models.Role] | None = None) -> str:
+    raw = _safe_json_loads(value, {})
+    raw = raw if isinstance(raw, dict) else {}
+    role_by_name = role_by_name or {}
+    speaker_ids: list[int] = []
+    for item in raw.get("speaker_role_ids") or []:
+        try:
+            role_id = int(item)
+        except (TypeError, ValueError):
+            continue
+        if role_id > 0 and role_id not in speaker_ids:
+            speaker_ids.append(role_id)
+    for name in raw.get("speaker_names") or []:
+        role = role_by_name.get(str(name or "").strip())
+        if role and role.id not in speaker_ids:
+            speaker_ids.append(role.id)
+
+    preset_turns = []
+    for item in raw.get("preset_turns") or []:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        role_id = item.get("speaker_role_id")
+        if not role_id and item.get("speaker_name") in role_by_name:
+            role_id = role_by_name[item["speaker_name"]].id
+        try:
+            role_id = int(role_id) if role_id else None
+        except (TypeError, ValueError):
+            role_id = None
+        preset_turns.append({"speaker_role_id": role_id, "content": content[:500]})
+
+    config = {
+        "schema_version": 1,
+        "enabled": raw.get("enabled") is not False,
+        "mode": "preset" if raw.get("mode") == "preset" else "dynamic",
+        "speaker_role_ids": speaker_ids[:3],
+        "director_note": str(raw.get("director_note") or "").strip()[:1000],
+        "preset_turns": preset_turns[:9],
+    }
+    return json.dumps(config, ensure_ascii=False)
 
 
 def _published_case_title(case_data: dict) -> str:
@@ -252,6 +310,7 @@ def _serialize_person_meta(value: dict | None):
 def _person_meta_fields():
     return (
         "behavior_archetype",
+        "opening_preset",
         "police_attitude",
         "scene_behavior_mode",
         "current_goal",
@@ -265,6 +324,8 @@ def _person_meta_fields():
         "cooperation_level",
         "risk_level",
         "clarity_level",
+        "init_emotion",
+        "init_trust",
         "init_risk",
         "init_expression_clarity",
         "known_key_points",
@@ -330,6 +391,14 @@ def _extract_person_meta(payload: dict | None, base_meta: dict | None = None):
     source["persona_contract_version"] = "source_memory_v2"
     source["persona_autofill"] = False
     canonical_result, _ = canonicalize_person_payload(source)
+    for key in (
+        "behavior_archetype", "opening_preset", "scene_behavior_mode",
+        "init_emotion", "init_trust", "init_risk", "init_expression_clarity",
+        "emotion_level", "cooperation_level", "risk_level", "clarity_level",
+    ):
+        value = payload.get(key) if key in payload else base_meta.get(key)
+        if value not in (None, ""):
+            canonical_result[key] = value
     return canonical_result
 
 
@@ -374,6 +443,10 @@ def _role_to_person_payload(role: models.Role):
         "soul_profile": meta.get("soul_profile") if isinstance(meta.get("soul_profile"), dict) else {},
         "persona_generation": meta.get("persona_generation") if isinstance(meta.get("persona_generation"), dict) else {},
         "current_goal": meta.get("current_goal") or "",
+        "init_emotion": role.init_emotion,
+        "init_trust": role.init_trust,
+        "init_risk": role.init_risk,
+        "init_expression_clarity": role.init_expression_clarity,
     }
 
 
@@ -528,6 +601,8 @@ def _upsert_case_roles_from_structured_persons(db: Session, case: models.Case):
                 speaking_style="",
                 init_emotion=person.get("init_emotion", 50),
                 init_trust=person.get("init_trust", 30),
+                init_risk=person.get("init_risk", 50),
+                init_expression_clarity=person.get("init_expression_clarity", 50),
                 status=str(person.get("status") or "正常").strip(),
                 hidden_truths="[]",
                 knows_facts="[]",
@@ -549,6 +624,8 @@ def _upsert_case_roles_from_structured_persons(db: Session, case: models.Case):
         role.speaking_style = ""
         role.init_emotion = person.get("init_emotion", role.init_emotion)
         role.init_trust = person.get("init_trust", role.init_trust)
+        role.init_risk = person.get("init_risk", role.init_risk)
+        role.init_expression_clarity = person.get("init_expression_clarity", role.init_expression_clarity)
         role.status = str(person.get("status") or role.status or "正常").strip()
         role.knows_facts = "[]"
         role.does_not_know = "[]"
@@ -854,6 +931,8 @@ def read_all_roles(db: Session = Depends(database.get_db)):
             "speaking_style": role.speaking_style,
             "init_emotion": role.init_emotion,
             "init_trust": role.init_trust,
+            "init_risk": role.init_risk,
+            "init_expression_clarity": role.init_expression_clarity,
             "status": role.status,
             "iq_level": role.iq_level,
             "eq_level": role.eq_level,
@@ -916,6 +995,8 @@ def _serialize_admin_role(db: Session, role: models.Role) -> dict:
         "speaking_style": role.speaking_style,
         "init_emotion": role.init_emotion,
         "init_trust": role.init_trust,
+        "init_risk": role.init_risk,
+        "init_expression_clarity": role.init_expression_clarity,
         "status": role.status,
         "iq_level": role.iq_level,
         "eq_level": role.eq_level,
@@ -1008,6 +1089,8 @@ def create_role(payload: dict = Body(...), db: Session = Depends(database.get_db
         speaking_style=(payload.get("speaking_style") or "") if public_role else "",
         init_emotion=payload.get("init_emotion", 50),
         init_trust=payload.get("init_trust", 30),
+        init_risk=payload.get("init_risk", 50),
+        init_expression_clarity=payload.get("init_expression_clarity", 50),
         status=payload.get("status") or "正常",
         iq_level=(payload.get("iq_level") or "") if public_role else "",
         eq_level=(payload.get("eq_level") or "") if public_role else "",
@@ -1064,6 +1147,8 @@ def update_role(role_id: int, payload: dict = Body(...), db: Session = Depends(d
     db_role.speaking_style = (payload.get("speaking_style") or db_role.speaking_style or "") if public_role else ""
     db_role.init_emotion = payload.get("init_emotion", db_role.init_emotion)
     db_role.init_trust = payload.get("init_trust", db_role.init_trust)
+    db_role.init_risk = payload.get("init_risk", db_role.init_risk)
+    db_role.init_expression_clarity = payload.get("init_expression_clarity", db_role.init_expression_clarity)
     db_role.status = payload.get("status") or db_role.status
     db_role.iq_level = (payload.get("iq_level") or db_role.iq_level or "") if public_role else ""
     db_role.eq_level = (payload.get("eq_level") or db_role.eq_level or "") if public_role else ""
@@ -1785,6 +1870,8 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
                 speaking_style="",
                 init_emotion=person.get("init_emotion", 50),
                 init_trust=person.get("init_trust", 30),
+                init_risk=person.get("init_risk", 50),
+                init_expression_clarity=person.get("init_expression_clarity", 50),
                 status=person.get("status") or "正常",
                 hidden_truths="[]",
                 knows_facts="[]",
@@ -1811,6 +1898,8 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
                 name=scene_name,
                 description=scene_data.get("scene_description") or "",
                 difficulty=scene_data.get("difficulty") or "中等",
+                estimated_minutes=_resolve_estimated_minutes(scene_data),
+                opening_config=_normalize_opening_config(scene_data.get("opening_config"), created_roles),
                 dispatch_brief=scene_data.get("dispatch_brief") or "暂无接警信息",
                 first_impression=scene_data.get("first_impression") or "暂无现场第一印象描述",
                 stages=json.dumps(normalized_stages, ensure_ascii=False),
@@ -1837,7 +1926,9 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
                 primary_role = next((role for role in selected_roles if is_role_speakable(role)), None)
 
             for role in selected_roles:
-                db.add(models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=bool(primary_role and role.id == primary_role.id)))
+                link = models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=bool(primary_role and role.id == primary_role.id))
+                db.add(link)
+                ensure_scene_role_initial_state(link, role, db_case, db_scene, source="generated_profile")
 
         db.flush()
         _sync_role_compatibility_scene(db, db_case.id)
@@ -2000,6 +2091,10 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
                 db_scene.description = scene_data.get("description") or ""
             if "difficulty" in scene_data:
                 db_scene.difficulty = scene_data.get("difficulty") or "中等"
+            if any(key in scene_data for key in ("estimated_minutes", "estimate_minutes", "duration_minutes", "training_minutes")):
+                db_scene.estimated_minutes = _resolve_estimated_minutes(scene_data)
+            if "opening_config" in scene_data:
+                db_scene.opening_config = _normalize_opening_config(scene_data.get("opening_config"), role_map)
             if "dispatch_brief" in scene_data:
                 db_scene.dispatch_brief = scene_data.get("dispatch_brief") or ""
             if "first_impression" in scene_data:
@@ -2037,7 +2132,14 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
                     )
                 primary_role = next((role for role in speakable_roles if role.name == primary_role_name), speakable_roles[0] if speakable_roles else None)
                 for role in selected_roles:
-                    db.add(models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=bool(primary_role and role.id == primary_role.id)))
+                    link = models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=bool(primary_role and role.id == primary_role.id))
+                    db.add(link)
+                    ensure_scene_role_initial_state(link, role, db_case, db_scene, source="generated_profile")
+
+            for link in db.query(models.SceneRole).filter(models.SceneRole.scene_id == db_scene.id).all():
+                linked_role = next((item for item in role_map.values() if item.id == link.role_id), None)
+                if linked_role:
+                    ensure_scene_role_initial_state(link, linked_role, db_case, db_scene, source="edited_profile")
 
         db.flush()
         _sync_role_compatibility_scene(db, db_case.id)

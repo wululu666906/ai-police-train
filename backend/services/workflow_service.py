@@ -3787,6 +3787,7 @@ class WorkflowService:
             "scene_name": scene_name,
             "scene_description": f"围绕“{case_name}”开展{primary_definition['scene_purpose']}",
             "difficulty": "中等",
+            "estimated_minutes": 45,
             "dispatch_brief": dispatch_brief,
             "first_impression": str(primary_definition.get("start_state") or "").strip(),
             "roles": self._pick_scene_roles(case_info, role_types_by_slot.get(portfolio_role, [])),
@@ -3816,6 +3817,14 @@ class WorkflowService:
             ),
             "scene_generation_warning": "本次 AI 剧本未完整返回，已按必要性原则生成一个主训练场景，请人工复核具体事实与角色分配。",
         }
+
+    @staticmethod
+    def _resolve_estimated_minutes(value: Any) -> int | None:
+        try:
+            minutes = int(value)
+        except (TypeError, ValueError):
+            return None
+        return minutes if minutes > 0 else None
 
     def _normalize_scenes(
         self,
@@ -3858,11 +3867,18 @@ class WorkflowService:
                 scene_name,
             )
             stages = normalize_stages(stages, case_type=str(case_info.get("case_type") or ""), scene_name=scene_name)
+            estimated_minutes = self._resolve_estimated_minutes(
+                scene.get("estimated_minutes")
+                or scene.get("estimate_minutes")
+                or scene.get("duration_minutes")
+                or scene.get("training_minutes")
+            )
             normalized.append(
                 {
                     "scene_name": scene_name,
                     "scene_description": str(scene.get("scene_description") or "围绕案件关键节点开展训练。").strip(),
                     "difficulty": str(scene.get("difficulty") or "中等").strip(),
+                    "estimated_minutes": estimated_minutes,
                     "dispatch_brief": dispatch_brief,
                     "first_impression": first_impression,
                     "roles": roles,

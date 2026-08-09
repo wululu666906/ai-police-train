@@ -12,8 +12,11 @@ $BundledNodeExe = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primar
 $DatabasePath = Join-Path $Root "data\ai_police.db"
 $ChromaPath = Join-Path $Root "data\chroma_db"
 $BackendLog = Join-Path $LogsRoot "dev-backend.log"
+$BackendErrLog = Join-Path $LogsRoot "dev-backend.err.log"
 $FrontendLog = Join-Path $LogsRoot "dev-frontend.log"
+$FrontendErrLog = Join-Path $LogsRoot "dev-frontend.err.log"
 $OpsFrontendLog = Join-Path $LogsRoot "dev-ops-frontend.log"
+$OpsFrontendErrLog = Join-Path $LogsRoot "dev-ops-frontend.err.log"
 
 . (Join-Path $Root "scripts\fix-terminal-env.ps1")
 
@@ -33,6 +36,18 @@ function Stop-PortListener {
     }
 }
 
+function Wait-PortReleased {
+    param([int]$Port, [int]$Seconds = 15)
+    for ($i = 0; $i -lt $Seconds; $i++) {
+        $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+        if (-not $listener) {
+            return $true
+        }
+        Start-Sleep -Seconds 1
+    }
+    return $false
+}
+
 function Wait-HttpOk {
     param([string]$Url, [int]$Seconds = 30)
     for ($i = 0; $i -lt $Seconds; $i++) {
@@ -48,23 +63,22 @@ function Wait-HttpOk {
     return $null
 }
 
-function Start-HiddenPowerShell {
+function Start-HiddenNativeProcess {
     param(
-        [Parameter(Mandatory = $true)][string]$Command,
-        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][string]$StandardOutputPath,
+        [Parameter(Mandatory = $true)][string]$StandardErrorPath
     )
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = "powershell.exe"
-    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
-    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encodedCommand"
-    $psi.WorkingDirectory = $WorkingDirectory
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $envVars = $psi.EnvironmentVariables
-    if ($null -ne $envVars -and $envVars.ContainsKey("Path") -and $envVars.ContainsKey("PATH")) {
-        $envVars.Remove("PATH")
-    }
-    [System.Diagnostics.Process]::Start($psi) | Out-Null
+    return Start-Process `
+        -FilePath $FilePath `
+        -ArgumentList $ArgumentList `
+        -WorkingDirectory $WorkingDirectory `
+        -RedirectStandardOutput $StandardOutputPath `
+        -RedirectStandardError $StandardErrorPath `
+        -WindowStyle Hidden `
+        -PassThru
 }
 
 function Stop-BackendDevProcesses {
@@ -110,64 +124,79 @@ Stop-PortListener 6666
 Stop-PortListener 6670
 Stop-PortListener 5175
 Stop-BackendDevProcesses
-Start-Sleep -Seconds 2
+foreach ($port in @(8000, 5556, 6666, 6670, 5175)) {
+    if (-not (Wait-PortReleased -Port $port)) {
+        $ownerIds = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique
+        Write-Host "端口 $port 未释放，残留 PID: $($ownerIds -join ', ')" -ForegroundColor Red
+        exit 1
+    }
+}
 
 Set-Content -Path $BackendLog -Value "" -Encoding UTF8
+Set-Content -Path $BackendErrLog -Value "" -Encoding UTF8
 Set-Content -Path $FrontendLog -Value "" -Encoding UTF8
+Set-Content -Path $FrontendErrLog -Value "" -Encoding UTF8
 Set-Content -Path $OpsFrontendLog -Value "" -Encoding UTF8
+Set-Content -Path $OpsFrontendErrLog -Value "" -Encoding UTF8
 
 $DatabaseUrl = "sqlite:///$($DatabasePath.Replace('\', '/'))"
-$BackendCommand = @"
-`$env:DATABASE_URL = '$DatabaseUrl'
-`$env:CHROMA_DB_PATH = '$ChromaPath'
-`$env:PYTHONIOENCODING = 'utf-8'
-Remove-Item Env:SSL_CERT_FILE -ErrorAction SilentlyContinue
-Remove-Item Env:SSL_CERT_DIR -ErrorAction SilentlyContinue
-Remove-Item Env:REQUESTS_CA_BUNDLE -ErrorAction SilentlyContinue
-Remove-Item Env:CURL_CA_BUNDLE -ErrorAction SilentlyContinue
-Set-Location '$BackendRoot'
-& '$PythonExe' -m uvicorn main:app --host 0.0.0.0 --port 8000 *> '$BackendLog'
-"@
-
-$FrontendCommand = @"
-`$env:CI = 'true'
-Set-Location '$FrontendRoot'
-& '$BundledNodeExe' node_modules\vite\bin\vite.js --host 0.0.0.0 --port 5556 --strictPort *> '$FrontendLog'
-"@
-
-$OpsFrontendCommand = @"
-`$env:CI = 'true'
-Set-Location '$FrontendRoot'
-& '$BundledNodeExe' node_modules\vite\bin\vite.js --host 0.0.0.0 --port 6670 --strictPort *> '$OpsFrontendLog'
-"@
+$env:DATABASE_URL = $DatabaseUrl
+$env:CHROMA_DB_PATH = $ChromaPath
+$env:PYTHONIOENCODING = "utf-8"
+$env:CI = "true"
 
 Write-Host "启动后端热重载服务 ..." -ForegroundColor Cyan
-Start-HiddenPowerShell -Command $BackendCommand -WorkingDirectory $BackendRoot
+$backendProcess = Start-HiddenNativeProcess `
+    -FilePath $PythonExe `
+    -ArgumentList @("-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", ".") `
+    -WorkingDirectory $BackendRoot `
+    -StandardOutputPath $BackendLog `
+    -StandardErrorPath $BackendErrLog
 
 Write-Host "启动前端 Vite 服务 ..." -ForegroundColor Cyan
-Start-HiddenPowerShell -Command $FrontendCommand -WorkingDirectory $FrontendRoot
+$frontendProcess = Start-HiddenNativeProcess `
+    -FilePath $BundledNodeExe `
+    -ArgumentList @("node_modules\vite\bin\vite.js", "--host", "0.0.0.0", "--port", "5556", "--strictPort") `
+    -WorkingDirectory $FrontendRoot `
+    -StandardOutputPath $FrontendLog `
+    -StandardErrorPath $FrontendErrLog
 
 Write-Host "启动维护端 Vite 服务 ..." -ForegroundColor Cyan
-Start-HiddenPowerShell -Command $OpsFrontendCommand -WorkingDirectory $FrontendRoot
+$opsFrontendProcess = Start-HiddenNativeProcess `
+    -FilePath $BundledNodeExe `
+    -ArgumentList @("node_modules\vite\bin\vite.js", "--host", "0.0.0.0", "--port", "6670", "--strictPort") `
+    -WorkingDirectory $FrontendRoot `
+    -StandardOutputPath $OpsFrontendLog `
+    -StandardErrorPath $OpsFrontendErrLog
 
 Write-Host "检查后端 /healthz ..." -ForegroundColor Cyan
-$backendResp = Wait-HttpOk -Url "http://127.0.0.1:8000/healthz" -Seconds 45
+$backendResp = Wait-HttpOk -Url "http://127.0.0.1:8000/healthz" -Seconds 90
 if (-not $backendResp) {
     Write-Host "后端启动校验失败，请查看 $BackendLog" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "检查后端开场流式路由版本 ..." -ForegroundColor Cyan
+$openApiResp = Wait-HttpOk -Url "http://127.0.0.1:8000/openapi.json" -Seconds 15
+$requiredOpeningRoute = "/training/session/{session_id}/opening-stream"
+if (-not $openApiResp -or $openApiResp.Content -notmatch [Regex]::Escape($requiredOpeningRoute)) {
+    Write-Host "后端版本校验失败：OpenAPI 未注册 $requiredOpeningRoute" -ForegroundColor Red
+    Write-Host "请查看 $BackendLog 和 $BackendErrLog" -ForegroundColor Yellow
     exit 1
 }
 
 Write-Host "检查 Vite 热更新客户端 ..." -ForegroundColor Cyan
 $frontendResp = Wait-HttpOk -Url "http://127.0.0.1:5556/" -Seconds 45
 if (-not $frontendResp -or ($frontendResp.Content -notmatch "/@vite/client")) {
-    Write-Host "前端热更新校验失败，请查看 $FrontendLog" -ForegroundColor Red
+    Write-Host "前端热更新校验失败，请查看 $FrontendLog 和 $FrontendErrLog" -ForegroundColor Red
     exit 1
 }
 
 Write-Host "检查维护端 Vite 热更新客户端 ..." -ForegroundColor Cyan
 $opsFrontendResp = Wait-HttpOk -Url "http://127.0.0.1:6670/" -Seconds 45
 if (-not $opsFrontendResp -or ($opsFrontendResp.Content -notmatch "/@vite/client")) {
-    Write-Host "维护端热更新校验失败，请查看 $OpsFrontendLog" -ForegroundColor Red
+    Write-Host "维护端热更新校验失败，请查看 $OpsFrontendLog 和 $OpsFrontendErrLog" -ForegroundColor Red
     exit 1
 }
 
@@ -177,5 +206,6 @@ Write-Host "  管理端/学员端: http://localhost:5556/" -ForegroundColor Gree
 Write-Host "  维护端: http://localhost:6670/" -ForegroundColor Green
 Write-Host "  后端接口文档: http://127.0.0.1:8000/docs" -ForegroundColor Green
 Write-Host "  后端日志: $BackendLog" -ForegroundColor DarkGray
+Write-Host "  后端错误日志: $BackendErrLog" -ForegroundColor DarkGray
 Write-Host "  前端日志: $FrontendLog" -ForegroundColor DarkGray
 Write-Host "  维护端日志: $OpsFrontendLog" -ForegroundColor DarkGray

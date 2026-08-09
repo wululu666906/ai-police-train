@@ -118,6 +118,7 @@ def ensure_role_schema_compatibility():
         models.SceneRole.__table__.create(bind=engine, checkfirst=True)
         inspector = inspect(engine)
         role_columns = {column["name"] for column in inspector.get_columns("roles")}
+        scene_role_columns = {column["name"] for column in inspector.get_columns("scene_roles")}
         statements = []
         if "person_id" not in role_columns:
             statements.append("ALTER TABLE roles ADD COLUMN person_id VARCHAR(50)")
@@ -125,6 +126,12 @@ def ensure_role_schema_compatibility():
             statements.append("ALTER TABLE roles ADD COLUMN interaction_style VARCHAR(20) DEFAULT '配合型'")
         if "persona_meta" not in role_columns:
             statements.append("ALTER TABLE roles ADD COLUMN persona_meta TEXT DEFAULT '{}'")
+        if "init_risk" not in role_columns:
+            statements.append("ALTER TABLE roles ADD COLUMN init_risk INTEGER DEFAULT 50")
+        if "init_expression_clarity" not in role_columns:
+            statements.append("ALTER TABLE roles ADD COLUMN init_expression_clarity INTEGER DEFAULT 50")
+        if "initial_state" not in scene_role_columns:
+            statements.append("ALTER TABLE scene_roles ADD COLUMN initial_state TEXT DEFAULT '{}'")
 
         if not statements:
             return
@@ -343,6 +350,39 @@ def ensure_training_session_schema_compatibility():
         _backfill_training_session_timer_fields()
     except Exception as error:
         print(f"Training session schema compatibility check failed: {error}")
+
+
+def ensure_scene_schema_compatibility():
+    try:
+        models.Scene.__table__.create(bind=database.engine, checkfirst=True)
+        inspector = inspect(database.engine)
+        if "scenes" not in inspector.get_table_names():
+            return
+        existing = {column["name"] for column in inspector.get_columns("scenes")}
+        statements = []
+        if "estimated_minutes" not in existing:
+            statements.append("ALTER TABLE scenes ADD COLUMN estimated_minutes INTEGER")
+        if "opening_config" not in existing:
+            statements.append("ALTER TABLE scenes ADD COLUMN opening_config TEXT DEFAULT '{}'")
+        if statements:
+            with database.engine.begin() as connection:
+                for statement in statements:
+                    connection.execute(text(statement))
+    except Exception as error:
+        print(f"Scene schema compatibility check failed: {error}")
+
+
+def backfill_role_state_defaults():
+    db = database.SessionLocal()
+    try:
+        from services.role_state_service import backfill_role_initial_states
+
+        backfill_role_initial_states(db)
+    except Exception as error:
+        db.rollback()
+        print(f"Role state backfill failed: {error}")
+    finally:
+        db.close()
 
 
 def _parse_training_timer_datetime(value):
@@ -653,6 +693,8 @@ def on_startup():
     ensure_user_schema_compatibility()
     ensure_message_schema_compatibility()
     ensure_role_schema_compatibility()
+    ensure_scene_schema_compatibility()
+    backfill_role_state_defaults()
     ensure_training_session_schema_compatibility()
     ensure_classroom_schema_compatibility()
     ensure_video_schema_compatibility()

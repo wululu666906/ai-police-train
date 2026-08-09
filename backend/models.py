@@ -196,6 +196,8 @@ class Scene(Base):
     name = Column(String(100))
     description = Column(Text)
     difficulty = Column(String(20))
+    estimated_minutes = Column(Integer, nullable=True)
+    opening_config = Column(Text, default="{}")
     dispatch_brief = Column(Text, nullable=True)
     first_impression = Column(Text, nullable=True)
     stages = Column(Text, default="[]")
@@ -218,6 +220,8 @@ class Role(Base):
     speaking_style = Column(String(100))
     init_emotion = Column(Integer, default=50)
     init_trust = Column(Integer, default=30)
+    init_risk = Column(Integer, default=50)
+    init_expression_clarity = Column(Integer, default=50)
     status = Column(String(50), default="正常")
     iq_level = Column(String(20), default="中等")
     eq_level = Column(String(20), default="中等")
@@ -239,6 +243,7 @@ class SceneRole(Base):
     scene_id = Column(Integer, ForeignKey("scenes.id"))
     role_id = Column(Integer, ForeignKey("roles.id"))
     is_primary = Column(Boolean, default=False)
+    initial_state = Column(Text, default="{}")
 
 
 class AvatarImage(Base):

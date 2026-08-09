@@ -6,6 +6,24 @@ import re
 from typing import Any
 
 
+SCENE_OPENING_EVENT_MARKER = "[SCENE_OPENING_EVENT]"
+
+
+def is_internal_prompt_text(value: Any) -> bool:
+    """Identify orchestration prompts that must never become dialogue data."""
+    return SCENE_OPENING_EVENT_MARKER in str(value or "")
+
+
+def is_internal_prompt_message(message: Any) -> bool:
+    if isinstance(message, dict):
+        return is_internal_prompt_text(message.get("content") or message.get("text"))
+    return is_internal_prompt_text(getattr(message, "content", None))
+
+
+def filter_internal_prompt_messages(messages: Any) -> list[Any]:
+    return [message for message in (messages or []) if not is_internal_prompt_message(message)]
+
+
 _META_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"我最怕的就是(.+?)，"), r"我现在特别担心\1，"),
     (re.compile(r"我最怕的是(.+?)，"), r"我现在特别担心\1，"),
@@ -104,7 +122,11 @@ def sanitize_spoken_line(text: str) -> str:
     content = str(text or "").strip()
     if not content:
         return content
-    if contains_role_meta_language(content) or contains_role_coaching_language(content):
+    if contains_role_meta_language(content):
+        if "信息边界" in content or "事实边界" in content:
+            return "我只能说自己亲眼看到、亲耳听到的，不敢乱讲。"
+        return ""
+    if contains_role_coaching_language(content):
         return ""
     for pattern, replacement in _META_PATTERNS:
         content = pattern.sub(replacement, content)

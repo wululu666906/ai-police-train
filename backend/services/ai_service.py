@@ -6,18 +6,15 @@ from sqlalchemy.orm import Session
 
 import models
 from .llm_provider import create_json_chat_completion, extract_message_text, get_roleplay_model
-from .case_knowledge_service import load_case_knowledge_bundle
+from .role_generation_context_service import compile_role_generation_context
 from .rag_service import RUNTIME_RETRIEVAL_LIBRARIES, rag_service
 from .persona_engine import (
     analyze_dialogue_momentum,
     build_persona_profile,
     build_personalized_questions,
-    build_recent_memory,
-    build_role_script,
     derive_stage_dynamic_adjustment,
     evaluate_truth_stage,
     format_memory_block,
-    format_persona_block,
     format_runtime_persona_block,
     summarize_session_memory,
 )
@@ -29,6 +26,7 @@ from .multi_role_service import (
 from .role_resolver import is_role_speakable, resolve_scene_role, resolve_scene_roles
 from .dialogue_sequence_service import build_intake_sequence_feedback, merge_sequence_feedback
 from .dialogue_sanitize_service import (
+    is_internal_prompt_text,
     repair_learner_echoed_spoken_line,
     repair_repetitive_spoken_line,
     sanitize_spoken_line,
@@ -70,14 +68,10 @@ SYSTEM_PROMPT_TEMPLATE = """
 7. 只输出一个合法 JSON 对象，不要输出解释和 markdown。
 8. 决策优先级固定为：本轮问题与事实 > 信息边界 > 当前状态 > 行为风格。人设字段只能影响语气、长度和披露程度，不能改变回答主题。
 
-案件信息：
-- 案发时间：{case_time}
-- 案发地点：{case_location}
-- 报警时间：{report_time}
-- 时间线：
-{timeline}
+完整案件剧情核心基准（每轮强制读取）：
+{full_case_story_block}
 
-案件库与角色剧本库：
+角色专属事实边界：
 {case_knowledge_block}
 
 知识库实时召回（法律法规 / SOP / 教学资料）：
@@ -171,32 +165,6 @@ def _parse_json_list(raw_value: Any) -> list[str]:
     except Exception:
         pass
     return [line.strip() for line in str(raw_value).splitlines() if line.strip()]
-
-
-def _format_list_block(raw_value: Any) -> str:
-    values = _parse_json_list(raw_value)
-    if not values:
-        return "[]"
-    return "\n".join(f"- {item}" for item in values)
-
-
-def _build_timeline_text(structured: dict[str, Any]) -> str:
-    fact_sheet = structured.get("fact_sheet", {}) if isinstance(structured, dict) else {}
-    timeline_items = fact_sheet.get("timeline") or structured.get("timeline") or []
-    if isinstance(timeline_items, list):
-        rows = []
-        for item in timeline_items:
-            if isinstance(item, dict):
-                time_text = str(item.get("time", "") or "").strip()
-                event_text = str(item.get("event", "") or "").strip()
-                if time_text or event_text:
-                    rows.append(f"- {time_text or '时间待核实'}：{event_text or '事件待核实'}")
-            elif str(item).strip():
-                rows.append(f"- {str(item).strip()}")
-        return "\n".join(rows) if rows else "未记录"
-    if isinstance(timeline_items, str) and timeline_items.strip():
-        return timeline_items.strip()
-    return "未记录"
 
 
 def _get_case_type(case: Any) -> str:
@@ -1077,7 +1045,7 @@ def _run_training_turn(
     history = (
         db.query(models.Message)
         .filter(models.Message.session_id == session_id)
-        .order_by(models.Message.created_at.asc())
+        .order_by(models.Message.created_at.asc(), models.Message.id.asc())
         .all()
     )
 
@@ -1091,14 +1059,10 @@ def _run_training_turn(
     stage_turn_target = _stage_turn_target_for_config(stage_config, current_stage)
 
     recognized_actions = explicit_actions or detect_actions_from_text(stage_config, user_text)
-    structured = json.loads(case.structured_data or "{}") if case and case.structured_data else {}
-    fact_sheet = structured.get("fact_sheet", {}) if isinstance(structured, dict) else {}
-
     prompt_text = user_text if turn_role == "user" else f"警方执行动作：{user_text}"
     persona_profile = build_persona_profile(role, case, scene)
     current_state_snapshot = _normalize_state_snapshot(ts, runtime_state, persona_profile)
     runtime_state["state_snapshot"] = current_state_snapshot
-    recent_memory = build_recent_memory(history[-12:])
     momentum = analyze_dialogue_momentum(
         prompt_text,
         persona_profile,
@@ -1134,13 +1098,24 @@ def _run_training_turn(
         stage_turn_count,
     )
     runtime_state["dynamic_adjustment"] = dynamic_adjustment
-    knowledge_bundle = load_case_knowledge_bundle(case, role)
+    generation_context = compile_role_generation_context(case, role)
+    full_story_source = generation_context.get("full_story_source") or {}
+    runtime_state["full_story_context"] = {
+        "source": full_story_source.get("source"),
+        "node_id": full_story_source.get("node_id"),
+        "content_hash": full_story_source.get("content_hash"),
+        "loaded": bool(full_story_source.get("content")),
+    }
+    knowledge_bundle = {
+        "documents": generation_context.get("documents") or [],
+        "knowledge_block": generation_context.get("role_knowledge_block") or "暂无角色专属案件知识",
+        "role_knowledge_view": generation_context.get("role_knowledge_view") or {},
+    }
     runtime_state["case_knowledge_doc_ids"] = [
         item.get("id") for item in knowledge_bundle.get("documents", []) if item.get("id")
     ]
-    # Runtime retrieval may contain case-library documents.  Supplying that
-    # context to an actor bypasses the role's epistemic boundary, therefore
-    # role dialogue uses only its explicit role view by default.
+    # External retrieval is supplementary policy/training material only. Core
+    # case reasoning comes from the forced full-story source above.
     retrieval_bundle = {"hits": [], "context_block": "", "error": ""}
     if os.getenv("ROLE_AI_USE_RAG", "0").strip().lower() in {"1", "true", "yes", "on"}:
         retrieval_query = rag_service.build_retrieval_query(
@@ -1163,9 +1138,7 @@ def _run_training_turn(
     ]
     if retrieval_bundle.get("error"):
         runtime_state["rag_error"] = retrieval_bundle.get("error")
-    role_script = build_role_script(role, case, scene, persona_profile)
     session_memory = summarize_session_memory(history[-12:], revealed_info, current_stage_goal)
-    persona_block = format_persona_block(persona_profile, role_script, recent_memory, momentum, dynamic_adjustment)
     memory_block = format_memory_block(session_memory, truth_state)
 
     multi_turn_payload: dict[str, Any] | None = None
@@ -1226,30 +1199,10 @@ def _run_training_turn(
 
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
         role_name=role.name or "相关人员",
-        case_time=fact_sheet.get("case_time", "未记录"),
-        case_location=fact_sheet.get("case_location", "未记录"),
-        report_time=fact_sheet.get("report_time", "未记录"),
-        timeline=_build_timeline_text(structured),
+        full_case_story_block=generation_context.get("full_story_block") or "完整剧情数据源缺失，不得自行补全案件事实。",
         case_knowledge_block=knowledge_bundle.get("knowledge_block") or "暂无案件知识库内容",
         retrieved_knowledge_block=retrieval_bundle.get("context_block") or "本轮未召回到可用法规、SOP或教学资料；继续依据案件事实和角色边界作答。",
         runtime_persona_block=format_runtime_persona_block(role, persona_profile),
-        knows_facts=_format_list_block(getattr(role, "knows_facts", [])),
-        does_not_know=_format_list_block(getattr(role, "does_not_know", [])),
-        hidden_truths=_format_list_block(getattr(role, "hidden_truths", [])),
-        role_type=role.role_type or "相关人员",
-        behavior_archetype=persona_profile.get("behavior_archetype") or "求助配合型",
-        interaction_style=getattr(role, "interaction_style", "") or "配合型",
-        status=role.status or "正常",
-        personality=role.personality or "普通人",
-        speaking_style=getattr(role, "speaking_style", "") or "口语化、谨慎",
-        police_attitude=persona_profile.get("police_attitude") or persona_profile.get("authority_attitude") or "暂无明确对警方态度",
-        current_goal=persona_profile.get("current_goal") or "暂无明确当前诉求",
-        core_concern=persona_profile.get("core_concern") or role.weakness or "暂无明确核心顾虑",
-        relationship_pressure="、".join(persona_profile.get("relationship_pressure") or []) or "暂无明显关系压力",
-        surface_stance=persona_profile.get("surface_stance") or "暂无明确对外口径",
-        pressure_response=persona_profile.get("pressure_response") or "暂无明确承压反应",
-        trigger_points="、".join(persona_profile.get("trigger_points") or []) or "暂无明确触发点",
-        calming_points="、".join(persona_profile.get("calming_points") or []) or "暂无明确安抚点",
         current_stage=current_stage,
         current_stage_goal=current_stage_goal,
         stage_turn_count=stage_turn_count,
@@ -1257,9 +1210,6 @@ def _run_training_turn(
         stage_assessment_points=_format_stage_assessment_points(stage_config),
         stage_action_catalog=_format_stage_action_catalog(stage_config),
         revealed_info="\n".join(f"- {item}" for item in revealed_info) if revealed_info else "[]",
-        persona_block=persona_block,
-        role_archetype_block=_build_role_archetype_block(role, scene, persona_profile),
-        scene_mode_block=_build_scene_mode_block(scene, current_stage, current_stage_goal),
         memory_block=memory_block,
         emotion=ts.current_emotion,
         trust=current_state_snapshot["cooperation"],
@@ -1624,7 +1574,7 @@ def _run_training_turn(
         communication_feedback = merge_sequence_feedback(communication_feedback, sequence_feedback)
 
     persisted_input = user_text.strip()
-    if persisted_input:
+    if persisted_input and not is_internal_prompt_text(persisted_input):
         db.add(models.Message(session_id=session_id, role=turn_role, content=persisted_input))
     for index, turn in enumerate(reply_turns):
         db.add(

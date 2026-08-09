@@ -15,6 +15,7 @@ from services.face_service import (
     count_video_session_monitor_failures,
     count_video_session_monitor_failures_total,
     engine_status,
+    has_successful_session_verification,
     is_face_session_terminated_by_policy,
     is_video_face_session_terminated_by_policy,
     read_upload,
@@ -221,6 +222,7 @@ def get_session_face_status(
     terminated_by_policy = is_face_session_terminated_by_policy(db, session.id)
     return {
         "registered": profile is not None,
+        "verified": has_successful_session_verification(db, session.id),
         "failure_count": monitor_failure_count,
         "monitor_failure_count": monitor_failure_count,
         "monitor_failure_total": monitor_failure_total,

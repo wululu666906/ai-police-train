@@ -17,6 +17,7 @@ from .multi_role_service import (
     detect_addressed_roles,
     partition_addressed_roles,
 )
+from .role_state_service import resolve_role_initial_state
 
 DIRECTOR_ORCHESTRATION_PROMPT = """
 你是警情训练场景的「对话导演」。你只负责编排现场发言秩序，不写任何角色台词。
@@ -30,6 +31,9 @@ DIRECTOR_ORCHESTRATION_PROMPT = """
 
 近期对话：
 {history_block}
+
+分层会话上下文（必须先读取，相关早期事实以原文为准）：
+{conversation_summary_block}
 
 真人化现场判断：
 {human_context_block}
@@ -95,12 +99,7 @@ def _clamp_count(value: Any, default: int = 1) -> int:
 
 
 def _default_role_snapshot(role: models.Role) -> dict[str, int]:
-    return {
-        "emotion": int(getattr(role, "init_emotion", None) or 50),
-        "cooperation": int(getattr(role, "init_trust", None) or 30),
-        "risk": 50,
-        "clarity": 50,
-    }
+    return resolve_role_initial_state(role)
 
 
 def _build_cast_summary(roles: list[models.Role], role_snapshots: dict[str, dict[str, int]]) -> str:
@@ -401,6 +400,7 @@ def run_director(
     target_role_name: Optional[str] = None,
     role_snapshots: Optional[dict[str, dict[str, int]]] = None,
     case_roles: Optional[list[models.Role]] = None,
+    conversation_summary_block: str = "（暂无累计摘要）",
     use_llm: bool = True,
 ) -> Optional[dict[str, Any]]:
     if not roles:
@@ -443,6 +443,7 @@ def run_director(
             current_stage_goal=current_stage_goal or "推进处置",
             cast_summary=_build_cast_summary(roles, snapshots),
             history_block=_build_history_block(history),
+            conversation_summary_block=conversation_summary_block or "（暂无累计摘要）",
             human_context_block=human_context["block"],
         ) + hint
         try:

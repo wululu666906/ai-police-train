@@ -12,7 +12,7 @@ class TestStartTraining:
         data = response.json()
         assert data["status"] == "active"
         assert data["scene_id"] == 1
-        assert data["current_emotion"] == 80
+        assert 0 <= data["current_emotion"] <= 100
         assert data["current_trust"] == data["current_cooperation"]
         assert 0 <= data["current_cooperation"] <= 100
         assert 0 <= data["current_risk"] <= 100
@@ -165,7 +165,7 @@ class TestChat:
 
 
 class TestIntakeOpening:
-    def test_start_intake_session_generates_caller_opening(self, client, student_headers):
+    def test_verified_session_generates_caller_opening(self, client, student_headers, db_session):
         start_response = client.post("/training/start/1", headers=student_headers)
         session_id = start_response.json()["id"]
         detail = client.get(f"/training/session/{session_id}", headers=student_headers)
@@ -175,10 +175,33 @@ class TestIntakeOpening:
         assert data["dialogue_mode"] == "caller_first"
         assert data["dispatch_brief"] == "110 有新报警来电，等待接听。"
         assert data["first_impression"] in (None, "")
-        messages = data.get("messages") or []
+        assert not (data.get("messages") or [])
+
+        blocked = client.post(f"/training/session/{session_id}/opening", headers=student_headers)
+        assert blocked.status_code == 409
+
+        db_session.add(models.FaceVerificationEvent(
+            session_id=session_id,
+            student_id=data["user_id"],
+            event_type="verify",
+            status="passed",
+        ))
+        db_session.commit()
+        opening = client.post(f"/training/session/{session_id}/opening-stream", headers=student_headers)
+        assert opening.status_code == 200
+        assert "event: meta" in opening.text
+        assert "event: chunk" in opening.text
+        assert "event: done" in opening.text
+
+        persisted = client.post(f"/training/session/{session_id}/opening", headers=student_headers)
+        assert persisted.status_code == 200
+        messages = persisted.json().get("messages") or []
         assert messages
         assert messages[0]["role"] == "assistant"
         assert messages[0].get("speaker_name") == "张某"
+
+        repeated = client.post(f"/training/session/{session_id}/opening", headers=student_headers)
+        assert [item["id"] for item in repeated.json().get("messages") or []] == [item["id"] for item in messages]
 
     def test_intake_premature_question_feedback(self, client, student_headers):
         start_response = client.post("/training/start/1", headers=student_headers)

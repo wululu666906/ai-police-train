@@ -24,6 +24,7 @@ DEFAULT_RUNTIME_STATE = {
     "auto_finish_ready": False,
     "closure_summary": {},
     "state_snapshot": {
+        "emotion": 50,
         "cooperation": 30,
         "risk": 50,
         "clarity": 50,
@@ -34,6 +35,8 @@ DEFAULT_RUNTIME_STATE = {
     "last_guidance_outcomes": {},
     "last_active_role_ids": [],
     "last_target_role_name": "",
+    "conversation_summary": {},
+    "agent_context": {},
     "state_influence_turn_log": [],
 }
 
@@ -45,6 +48,7 @@ _RUNTIME_PASSTHROUGH_KEYS = (
     "opening_delivered",
     "dialogue_mode",
     "last_guidance_outcomes",
+    "opening_message_ids",
 )
 
 
@@ -83,6 +87,7 @@ def _normalize_state_snapshot(value: Any) -> dict[str, int]:
     value = value if isinstance(value, dict) else {}
     defaults = DEFAULT_RUNTIME_STATE["state_snapshot"]
     return {
+        "emotion": _clamp_score(value.get("emotion"), defaults["emotion"]),
         "cooperation": _clamp_score(value.get("cooperation"), defaults["cooperation"]),
         "risk": _clamp_score(value.get("risk"), defaults["risk"]),
         "clarity": _clamp_score(value.get("clarity"), defaults["clarity"]),
@@ -244,6 +249,8 @@ def load_runtime_state(raw_value: Any) -> dict[str, Any]:
     state["role_brains"] = _normalize_role_brains(parsed.get("role_brains"))
     state["last_active_role_ids"] = _normalize_role_id_list(parsed.get("last_active_role_ids"))
     state["last_target_role_name"] = str(parsed.get("last_target_role_name") or "").strip()
+    state["conversation_summary"] = parsed.get("conversation_summary") if isinstance(parsed.get("conversation_summary"), dict) else {}
+    state["agent_context"] = parsed.get("agent_context") if isinstance(parsed.get("agent_context"), dict) else {}
     progress = parsed.get("assessment_progress")
     if isinstance(progress, dict):
         state["assessment_progress"] = progress
@@ -273,6 +280,8 @@ def dump_runtime_state(state: dict[str, Any]) -> str:
         "role_brains": _normalize_role_brains((state or {}).get("role_brains")),
         "last_active_role_ids": _normalize_role_id_list((state or {}).get("last_active_role_ids")),
         "last_target_role_name": str((state or {}).get("last_target_role_name") or "").strip(),
+        "conversation_summary": (state or {}).get("conversation_summary") if isinstance((state or {}).get("conversation_summary"), dict) else {},
+        "agent_context": (state or {}).get("agent_context") if isinstance((state or {}).get("agent_context"), dict) else {},
     }
     for key in _RUNTIME_PASSTHROUGH_KEYS:
         if key in (state or {}):

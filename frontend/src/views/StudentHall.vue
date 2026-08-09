@@ -52,11 +52,7 @@
             <el-button type="primary" @click="fetchCases">重新加载</el-button>
           </el-empty>
         </div>
-        <div
-          v-else-if="displayCases.length"
-          class="task-grid task-grid--list-view"
-          :class="{ 'task-grid--list': viewMode === 'list' }"
-        >
+        <div v-else-if="displayCases.length" class="task-grid task-grid--list-view" :class="{ 'task-grid--list': viewMode === 'list' }">
           <TrainingTaskCard
             v-for="caseItem in displayCases"
             :key="caseItem.id"
@@ -66,9 +62,7 @@
             :view-mode="viewMode"
             :loading-scene-id="loadingSceneId"
             :disabled="loadingSceneId !== null"
-            @start-scene="startTraining"
-            @view-review="viewSceneReview"
-            @view-detail="openExpandedDetail(caseItem)"
+            @start-case="openTrainingBrief"
           />
         </div>
         <div v-else class="state-panel">
@@ -77,73 +71,51 @@
       </section>
     </div>
 
-    <van-popup
-      v-model:show="showExpanded"
-      round
-      class="detail-popup"
-      :overlay-style="{ backgroundColor: 'rgba(15, 23, 42, 0.24)', backdropFilter: 'blur(6px)' }"
+    <TrainingBriefDialog
+      v-model:show="showTrainingBrief"
+      :title="activeCase?.title || '未命名案件'"
+      :subtitle="activeCase?.background || '请选择一个训练场景后开始训练。'"
+      hero-type="案件训练"
+      :tag-label="activeCase?.case_type || '未分类'"
+      tag-type="warning"
+      summary-title="案件背景"
+      :briefing="activeCase?.background"
+      :fallback-briefing="activeCase?.background || '当前案件暂无可展示背景。'"
+      :cancel-text="'取消'"
+      :confirm-text="dialogConfirmText"
+      :allow-mode-switch="false"
+      @cancel="closeTrainingBrief"
+      @confirm="confirmTrainingSelection"
     >
-      <div v-if="expandedCase" class="detail-card">
-        <div class="detail-header">
-          <div>
-            <el-tag type="primary" effect="plain">{{ expandedCase.case_type || '未分类' }}</el-tag>
-            <h2>{{ expandedCase.title || '未命名案件' }}</h2>
-          </div>
-          <van-icon name="cross" class="detail-close" @click="showExpanded = false" />
+      <section class="scene-picker">
+        <div class="scene-picker__head">
+          <h3>选择训练场景</h3>
+          <span>{{ activeSceneList.length }} 个场景</span>
         </div>
-        <section class="detail-section">
-          <div class="detail-label">案件背景</div>
-          <p>{{ expandedCase.background || '暂无案件背景信息。' }}</p>
-        </section>
-        <section class="detail-section">
-          <div class="detail-label">全部训练场景（{{ getVisibleScenes(expandedCase).length }}）</div>
-          <div class="detail-scene-list">
-            <div v-for="scene in getVisibleScenes(expandedCase)" :key="scene.id" class="detail-scene-item">
-              <div>
-                <div class="scene-name">{{ scene.name }}</div>
-                <div class="scene-meta">
-                  <span>{{ normalizeDifficulty(scene.difficulty || '中') }}</span>
-                  <span :class="scene.training_status === 'completed' ? 'meta-done' : scene.has_active_session ? 'meta-active' : 'meta-idle'">
-                    {{ getSceneStatusLabel(scene) }}
-                  </span>
-                </div>
-              </div>
-              <div class="scene-actions">
-                <template v-if="scene.training_status === 'completed'">
-                  <el-button
-                    plain
-                    size="small"
-                    :disabled="loadingSceneId !== null"
-                    @click="viewSceneReview(scene)"
-                  >
-                    查看复盘
-                  </el-button>
-                  <el-button
-                    type="primary"
-                    size="small"
-                    :loading="loadingSceneId === scene.id"
-                    :disabled="loadingSceneId !== null"
-                    @click="startTraining(scene)"
-                  >
-                    重新训练
-                  </el-button>
-                </template>
-                <el-button
-                  v-else
-                  type="primary"
-                  size="small"
-                  :loading="loadingSceneId === scene.id"
-                  :disabled="loadingSceneId !== null || scene.training_status === 'evaluating'"
-                  @click="startTraining(scene)"
-                >
-                  {{ getSceneActionLabel(scene) }}
-                </el-button>
-              </div>
+        <div class="scene-picker__list">
+          <button
+            v-for="scene in activeSceneList"
+            :key="scene.id"
+            type="button"
+            class="scene-picker__item"
+            :class="{ 'scene-picker__item--active': selectedSceneId === scene.id }"
+            @click="selectedSceneId = scene.id"
+          >
+            <div class="scene-picker__title">
+              <strong>{{ scene.name }}</strong>
+              <span>{{ normalizeDifficulty(scene.difficulty || '中') }}</span>
             </div>
-          </div>
-        </section>
-      </div>
-    </van-popup>
+            <div class="scene-picker__meta">
+              <span>{{ scene.estimated_minutes ? `${scene.estimated_minutes} 分钟` : '时长待定' }}</span>
+              <span :class="scene.training_status === 'completed' ? 'scene-picker__meta--done' : scene.has_active_session ? 'scene-picker__meta--active' : 'scene-picker__meta--idle'">
+                {{ getSceneStatusLabel(scene) }}
+              </span>
+            </div>
+            <p>{{ scene.dispatch_brief || scene.first_impression || scene.description || '暂无结构化场景说明' }}</p>
+          </button>
+        </div>
+      </section>
+    </TrainingBriefDialog>
   </div>
 </template>
 
@@ -152,6 +124,7 @@ import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import { Grid, List } from '@element-plus/icons-vue'
+import TrainingBriefDialog from '../components/TrainingBriefDialog.vue'
 import SelectFilter from '../geeker-adapt/components/SelectFilter/index.vue'
 import TrainingTaskCard from '../geeker-adapt/components/TrainingTaskCard.vue'
 import request from '../utils/request'
@@ -161,6 +134,11 @@ type SceneItem = {
   id: number
   name: string
   difficulty?: string
+  estimated_minutes?: number | null
+  description?: string
+  dispatch_brief?: string | null
+  first_impression?: string | null
+  stages?: any[]
   has_active_session?: boolean
   active_session_id?: number | null
   active_session_is_empty?: boolean
@@ -177,6 +155,10 @@ type CaseItem = {
   background: string
   created_at?: string
   train_count?: number
+  scene_count?: number
+  primary_difficulty?: string
+  estimated_minutes_summary?: string | null
+  core_items?: string[]
   scenes?: SceneItem[]
 }
 
@@ -196,8 +178,9 @@ const viewMode = ref<'grid' | 'list'>('grid')
 const isLoadingCases = ref(false)
 const loadError = ref('')
 const loadingSceneId = ref<number | null>(null)
-const showExpanded = ref(false)
-const expandedCase = ref<CaseItem | null>(null)
+const showTrainingBrief = ref(false)
+const activeCase = ref<CaseItem | null>(null)
+const selectedSceneId = ref<number | null>(null)
 
 onMounted(() => {
   setMainScrollable?.(false)
@@ -277,11 +260,6 @@ const normalizeDifficulty = (value: string) => {
   return text || '中'
 }
 
-const openExpandedDetail = (caseItem: CaseItem) => {
-  expandedCase.value = caseItem
-  showExpanded.value = true
-}
-
 const getVisibleScenes = (caseItem: CaseItem) => getFilteredScenes(caseItem)
 
 const getFilteredScenes = (caseItem: CaseItem) => {
@@ -320,6 +298,45 @@ const getSceneActionLabel = (scene: SceneItem) => {
   if (status === 'evaluating') return '评估中'
   if (status === 'in_progress') return '继续训练'
   return '开始训练'
+}
+
+const activeSceneList = computed(() => activeCase.value ? getVisibleScenes(activeCase.value) : [])
+
+const selectedScene = computed(() => activeSceneList.value.find((scene) => scene.id === selectedSceneId.value) || null)
+
+const dialogConfirmText = computed(() => {
+  if (!selectedScene.value) return '请选择场景'
+  return getSceneActionLabel(selectedScene.value)
+})
+
+const openTrainingBrief = (caseItem: CaseItem) => {
+  const scenes = getVisibleScenes(caseItem)
+  if (!scenes.length) {
+    showToast('该案件暂无可训练场景')
+    return
+  }
+  activeCase.value = caseItem
+  selectedSceneId.value = scenes.find((scene) => getSceneTrainingStatus(scene) !== 'evaluating')?.id || scenes[0].id
+  showTrainingBrief.value = true
+}
+
+const closeTrainingBrief = () => {
+  showTrainingBrief.value = false
+  activeCase.value = null
+  selectedSceneId.value = null
+}
+
+const confirmTrainingSelection = () => {
+  const scene = selectedScene.value
+  if (!scene) {
+    showToast('请先选择训练场景')
+    return
+  }
+  if (scene.training_status === 'evaluating') {
+    showToast('该场景正在评估中，暂不能开始')
+    return
+  }
+  startTraining(scene)
 }
 
 const getCaseStatus = (caseItem: CaseItem): 'active' | 'completed' | 'idle' => {
@@ -409,6 +426,7 @@ const startTraining = async (scene: SceneItem) => {
     if (scene?.has_active_session && scene?.active_session_id === res.id) {
       showToast('已恢复你上次未完成的训练')
     }
+    closeTrainingBrief()
     router.push(`/student/training/${res.id}`)
   } catch (error: any) {
     showToast(error?.response?.data?.detail || error?.message || '训练环境初始化失败')
@@ -421,6 +439,14 @@ const startTraining = async (scene: SceneItem) => {
 <style scoped lang="scss">
 .tasks-panel {
   padding: 0;
+  border: 1px solid rgb(255 255 255 / 58%);
+  background:
+    linear-gradient(135deg, rgb(255 255 255 / 56%), rgb(255 255 255 / 26%)),
+    radial-gradient(circle at 8% 0%, rgb(59 130 246 / 10%), transparent 34%),
+    radial-gradient(circle at 92% 12%, rgb(20 184 166 / 10%), transparent 30%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 72%), 0 18px 42px rgb(15 23 42 / 8%);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
 }
 
 .tasks-toolbar {
@@ -428,8 +454,8 @@ const startTraining = async (scene: SceneItem) => {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 0 14px;
-  border-bottom: 1px solid #f3f4f6;
+  padding: 8px 16px;
+  border-bottom: 1px solid rgb(226 232 240 / 64%);
   flex-shrink: 0;
 }
 
@@ -498,11 +524,12 @@ const startTraining = async (scene: SceneItem) => {
 .task-grid--list-view {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  padding: 14px;
+  gap: 22px;
+  justify-content: start;
+  padding: 24px;
 
   &.task-grid--list {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -519,110 +546,146 @@ const startTraining = async (scene: SceneItem) => {
   color: #111827;
 }
 
+.filter-card {
+  border: 1px solid rgb(255 255 255 / 58%);
+  background: rgb(255 255 255 / 54%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 72%), 0 12px 28px rgb(15 23 42 / 6%);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+}
+
 .state-panel {
   padding: 32px 16px;
   text-align: center;
 }
 
-.detail-popup {
-  width: min(820px, calc(100vw - 24px));
-  max-height: calc(100vh - 32px);
-  overflow: auto;
-  background: transparent;
+.scene-picker {
+  display: grid;
+  gap: 12px;
 }
 
-.detail-card {
-  border-radius: 12px;
-  background: #fff;
-  padding: 24px;
-  border: 1px solid #e5e7eb;
-}
-
-.detail-header {
+.scene-picker__head {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
+  gap: 12px;
 
-  h2 {
-    margin: 12px 0 0;
+  h3 {
+    margin: 0;
     color: #111827;
+    font-size: 14px;
+    font-weight: 800;
+  }
+
+  span {
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 700;
   }
 }
 
-.detail-close {
-  font-size: 22px;
-  color: #9ca3af;
-  cursor: pointer;
+.scene-picker__list {
+  display: grid;
+  gap: 10px;
 }
 
-.detail-section + .detail-section {
-  margin-top: 20px;
-}
-
-.detail-label {
-  margin-bottom: 10px;
-  font-size: 13px;
-  font-weight: 700;
-  color: #6b7280;
-}
-
-.detail-section p {
-  margin: 0;
-  color: #6b7280;
-  line-height: 1.8;
-}
-
-.detail-scene-list {
+.scene-picker__item {
   display: grid;
   gap: 8px;
-}
-
-.detail-scene-item {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-  border-radius: 8px;
-  background: #f8fafc;
+  width: 100%;
+  padding: 13px 14px;
   border: 1px solid #e5e7eb;
-  padding: 10px 12px;
+  border-radius: 14px;
+  background: #fff;
+  color: #334155;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 180ms ease, background 180ms ease, transform 180ms ease;
+
+  &:hover {
+    border-color: #93c5fd;
+    background: #f8fafc;
+  }
+
+  &--active {
+    border-color: #60a5fa;
+    background: #eff6ff;
+  }
+
+  p {
+    display: -webkit-box;
+    margin: 0;
+    overflow: hidden;
+    color: #475569;
+    font-size: 12px;
+    line-height: 1.7;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    word-break: break-word;
+  }
 }
 
-.scene-name {
-  font-weight: 700;
-  color: #1e293b;
-  font-size: 14px;
-}
-
-.scene-meta {
+.scene-picker__title,
+.scene-picker__meta {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 4px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.scene-picker__title strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-picker__title span {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #b45309;
   font-size: 12px;
-  color: #9ca3af;
+  font-weight: 800;
 }
 
-.meta-active {
-  color: var(--student-accent, #0066ff);
+.scene-picker__meta {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+
+  span {
+    white-space: nowrap;
+  }
 }
 
-.meta-done {
-  color: #047857;
+.scene-picker__meta--active {
+  color: #2563eb;
 }
 
-.meta-idle {
-  color: #9ca3af;
+.scene-picker__meta--done {
+  color: #059669;
+}
+
+.scene-picker__meta--idle {
+  color: #64748b;
 }
 
 @media (max-width: 1400px) {
   .task-grid--list-view:not(.task-grid--list) {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 960px) {
+  .task-grid--list-view,
+  .task-grid--list-view.task-grid--list,
   .task-grid--list-view:not(.task-grid--list) {
     grid-template-columns: 1fr;
   }

@@ -1,4 +1,5 @@
 import { onUnmounted, ref } from 'vue'
+import { resolveMediaUrl } from '../utils/media'
 import { captureBestVideoFrame } from '../utils/videoFrame'
 
 interface CoverableVideo {
@@ -19,7 +20,7 @@ export function useVideoCover() {
     loadingIds.add(video.id)
 
     try {
-      const coverUrl = await captureVideoFrame(video.video_url)
+      const coverUrl = await captureVideoFrame(resolveMediaUrl(video.video_url))
       if (coverUrl) {
         generatedCovers.value = {
           ...generatedCovers.value,
@@ -40,7 +41,7 @@ export function useVideoCover() {
 
   function getVideoCover(video?: CoverableVideo | null) {
     if (!video) return ''
-    return video.thumbnail_url || generatedCovers.value[video.id] || ''
+    return resolveMediaUrl(video.thumbnail_url) || generatedCovers.value[video.id] || ''
   }
 
   function clearGeneratedCovers() {

@@ -202,14 +202,31 @@ def build_role_knowledge_view(
                 }
             )
 
+    canonical_ledger: list[dict[str, Any]] = []
+    seen_ledger: set[tuple[str, str]] = set()
+    for item in ledger:
+        key = (_text(item.get("knowledge_mode")), _text(item.get("content")))
+        if not key[1] or key in seen_ledger:
+            continue
+        seen_ledger.add(key)
+        normalized = dict(item)
+        normalized["knowledge_id"] = _text(normalized.get("knowledge_id")) or f"K{len(canonical_ledger) + 1}"
+        canonical_ledger.append(normalized)
+
     return {
         "role_name": role_name,
-        "ledger": ledger,
+        "ledger": canonical_ledger,
         "known": known,
         "withheld": withheld,
         "unknown": unknown,
         "unresolved_questions": normalize_case_intelligence(structured)["unresolved_questions"],
         "role_information_version": _text(combined.get("role_information_version")),
+        "merged_legacy_interfaces": {
+            "known": ["knows_facts", "known_information", "known_key_points"],
+            "withheld": ["hidden_truths", "hidden_information", "withheld_key_points"],
+            "unknown": ["does_not_know", "cannot_answer"],
+            "ledger": ["role_event_ledger", "knowledge_ledger"],
+        },
         "quality_policy": {
             "unsupported_answer": "state_specific_uncertainty",
             "may_invent": False,
@@ -219,16 +236,12 @@ def build_role_knowledge_view(
 
 
 def format_role_knowledge_view(view: dict[str, Any]) -> str:
-    def block(title: str, values: list[str], empty: str) -> list[str]:
-        return [f"{title}：", *([f"- {item}" for item in values] or [f"- {empty}"])]
-
     lines = [f"角色：{_text(view.get('role_name')) or '相关人员'}"]
     for item in view.get("ledger") or []:
         if isinstance(item, dict) and _text(item.get("content")):
             lines.append(f"[{_text(item.get('knowledge_id'))}] {item.get('knowledge_mode')}：{_text(item.get('content'))}")
-    lines += block("本人明确知道", _dedupe_text(_list(view.get("known"))), "暂无已配置的确定信息")
-    lines += block("本人知道但当前可能隐瞒", _dedupe_text(_list(view.get("withheld"))), "无")
-    lines += block("本人不知道或无法确认", _dedupe_text(_list(view.get("unknown"))), "未明确配置")
+    if len(lines) == 1:
+        lines.append("- 暂无已配置的角色事实")
     lines += [
         "回答规则：只能依据以上角色知识和本轮公开听到的信息作答。",
         "材料不足时必须具体说明看见了什么、没看清什么、信息来自谁；不得补造时间、地点、人物或行为。",

@@ -1,6 +1,7 @@
 import { onUnmounted, ref, type Ref } from 'vue'
 import Hls, { ErrorTypes, Events } from 'hls.js'
 import { waitForPlaybackManifest } from '../services/videoPlayback'
+import { resolveMediaUrl } from '../utils/media'
 
 export type PlaybackState = 'idle' | 'preparing' | 'ready' | 'playing' | 'buffering' | 'fallback' | 'error'
 
@@ -42,9 +43,24 @@ export function useSegmentedVideoPlayback(videoRef: Ref<HTMLVideoElement | null>
       state.value = 'error'
       return
     }
-    element.src = fallbackUrl
+    element.src = resolveMediaUrl(fallbackUrl)
     element.load()
     state.value = 'fallback'
+  }
+
+  function resolveManifestUrls(manifest: string): string {
+    return manifest
+      .split(/\r?\n/)
+      .map((line) => {
+        const stripped = line.trim()
+        if (!stripped) return line
+        if (stripped.startsWith('#EXT-X-MAP')) {
+          return line.replace(/URI="([^"]+)"/, (_match, url) => `URI="${resolveMediaUrl(url)}"`)
+        }
+        if (stripped.startsWith('#')) return line
+        return resolveMediaUrl(stripped)
+      })
+      .join('\n')
   }
 
   async function attach(videoId: number, fallbackUrl: string): Promise<void> {
@@ -60,7 +76,7 @@ export function useSegmentedVideoPlayback(videoRef: Ref<HTMLVideoElement | null>
         return
       }
 
-      manifestBlobUrl = URL.createObjectURL(new Blob([playback.manifest], {
+      manifestBlobUrl = URL.createObjectURL(new Blob([resolveManifestUrls(playback.manifest)], {
         type: 'application/vnd.apple.mpegurl',
       }))
       if (Hls.isSupported()) {

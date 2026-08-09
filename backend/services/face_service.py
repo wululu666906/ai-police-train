@@ -771,6 +771,19 @@ def _vote_window(
     }
 
 
+def has_successful_session_verification(db: Session, session_id: int) -> bool:
+    return (
+        db.query(models.FaceVerificationEvent.id)
+        .filter(
+            models.FaceVerificationEvent.session_id == session_id,
+            models.FaceVerificationEvent.event_type == "verify",
+            models.FaceVerificationEvent.status == "passed",
+        )
+        .first()
+        is not None
+    )
+
+
 def is_face_session_terminated_by_policy(db: Session, session_id: int) -> bool:
     consecutive_failures = _count_consecutive_session_failures(db, session_id=session_id, monitor_only=True)
     return consecutive_failures >= FACE_CONSECUTIVE_MAX_FAILURES

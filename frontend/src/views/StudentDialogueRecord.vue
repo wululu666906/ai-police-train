@@ -109,6 +109,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import request from '../utils/request'
 import { resolveMediaUrl } from '../utils/media'
+import { isInternalPromptMessage } from '../utils/dialogueMessage'
 
 type DialogueRole = 'assistant' | 'human' | 'system'
 
@@ -170,6 +171,7 @@ const statusLabel = computed(() => {
 const dialogueMessages = computed<DialogueMessage[]>(() => {
   const messages = Array.isArray(sessionDetail.value?.messages) ? sessionDetail.value.messages : []
   return messages
+    .filter((message: any) => !isInternalPromptMessage(message))
     .map((message: any, index: number) => {
       const role = normalizeRole(message?.role)
       const content = String(message?.content || '').trim()

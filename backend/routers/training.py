@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import uuid
 import time
@@ -6,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -34,7 +36,9 @@ from services.classroom_service import (
     validate_assignment_training_access,
 )
 from services.case_knowledge_service import try_sync_case_to_knowledge
-from services.persona_engine import build_persona_profile
+from services.face_service import has_successful_session_verification
+from services.dialogue_sanitize_service import filter_internal_prompt_messages
+from services.role_state_service import resolve_role_initial_state
 from services.recommended_questions_service import (
     build_recommended_question_items,
     filter_stale_missing_requirements_for_history,
@@ -55,6 +59,7 @@ from services.training_runtime_service import dump_runtime_state, load_runtime_s
 from services.object_storage_service import MEDIA_BUCKET, build_object_key, delete_media_assets, get_media_asset, guess_content_type, object_storage, upsert_media_asset
 
 router = APIRouter(prefix="/training", tags=["Training"])
+logger = logging.getLogger(__name__)
 
 SESSION_MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "session_media")
 ALLOWED_ARTIFACT_TYPES = {
@@ -89,6 +94,54 @@ def _redact_internal_role_fields(result: dict[str, Any]) -> dict[str, Any]:
         if isinstance(turn, dict):
             turn.pop("inner_thought", None)
     return result
+
+
+def _sse_event(name: str, payload: dict[str, Any]) -> str:
+    return f"event: {name}\ndata: {json.dumps(jsonable_encoder(payload), ensure_ascii=False)}\n\n"
+
+
+def _serialize_opening_message(item: models.Message) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "session_id": item.session_id,
+        "role": item.role,
+        "content": repair_text(item.content),
+        "speaker_role_id": item.speaker_role_id,
+        "speaker_name": repair_text(item.speaker_name) if item.speaker_name else None,
+        "created_at": _as_utc_datetime(item.created_at),
+    }
+
+
+def _opening_payload(db: Session, session: models.TrainingSession) -> dict[str, Any]:
+    runtime_state = load_runtime_state(session.revealed_info)
+    opening_ids = [int(item) for item in runtime_state.get("opening_message_ids") or [] if str(item).isdigit()]
+    query = db.query(models.Message).filter(models.Message.session_id == session.id)
+    if opening_ids:
+        query = query.filter(models.Message.id.in_(opening_ids))
+    elif runtime_state.get("opening_delivered"):
+        query = query.filter(models.Message.role == "assistant")
+    else:
+        return {"opening_delivered": False, "messages": []}
+    messages = filter_internal_prompt_messages(
+        query.order_by(models.Message.created_at.asc(), models.Message.id.asc()).all()
+    )
+    return {
+        "opening_delivered": bool(runtime_state.get("opening_delivered")),
+        "messages": [_serialize_opening_message(item) for item in messages],
+    }
+
+
+def _ensure_opening_payload(
+    db: Session,
+    session: models.TrainingSession,
+    scene: models.Scene | None,
+    case: models.Case | None,
+    role: models.Role | None,
+) -> dict[str, Any]:
+    ensure_opening_turn(db, session, scene, case, role)
+    db.commit()
+    db.refresh(session)
+    return _opening_payload(db, session)
 
 
 def _artifact_url(db: Session, artifact: models.TrainingSessionArtifact) -> str | None:
@@ -158,21 +211,7 @@ def _as_utc_datetime(value):
 
 
 def _default_state_snapshot(role: models.Role | None, case: models.Case | None, scene: models.Scene | None):
-    snapshot = {
-        "cooperation": _clamp_score(getattr(role, "init_trust", 30), 30),
-        "risk": 50,
-        "clarity": 50,
-    }
-    if role is None:
-        return snapshot
-    try:
-        persona_profile = build_persona_profile(role, case, scene)
-    except Exception:
-        persona_profile = {}
-    snapshot["cooperation"] = _clamp_score(persona_profile.get("init_cooperation"), snapshot["cooperation"])
-    snapshot["risk"] = _clamp_score(persona_profile.get("init_risk"), snapshot["risk"])
-    snapshot["clarity"] = _clamp_score(persona_profile.get("init_expression_clarity"), snapshot["clarity"])
-    return snapshot
+    return resolve_role_initial_state(role, case, scene)
 
 
 def _resolve_state_snapshot(
@@ -182,15 +221,19 @@ def _resolve_state_snapshot(
     scene: models.Scene | None,
     *,
     current_trust: int | None = None,
+    current_emotion: int | None = None,
 ):
     snapshot = _default_state_snapshot(role, case, scene)
     raw_snapshot = (runtime_state or {}).get("state_snapshot") if isinstance(runtime_state, dict) else {}
     if isinstance(raw_snapshot, dict):
+        snapshot["emotion"] = _clamp_score(raw_snapshot.get("emotion"), snapshot["emotion"])
         snapshot["cooperation"] = _clamp_score(raw_snapshot.get("cooperation"), snapshot["cooperation"])
         snapshot["risk"] = _clamp_score(raw_snapshot.get("risk"), snapshot["risk"])
         snapshot["clarity"] = _clamp_score(raw_snapshot.get("clarity"), snapshot["clarity"])
     if current_trust is not None:
         snapshot["cooperation"] = _clamp_score(current_trust, snapshot["cooperation"])
+    if current_emotion is not None:
+        snapshot["emotion"] = _clamp_score(current_emotion, snapshot["emotion"])
     return snapshot
 
 
@@ -207,6 +250,7 @@ def _serialize_session_response(
         case,
         scene,
         current_trust=session.current_trust,
+        current_emotion=session.current_emotion,
     )
     return schemas.Session(
         id=session.id,
@@ -216,7 +260,7 @@ def _serialize_session_response(
         training_started_at=_as_utc_datetime(session.training_started_at),
         training_finished_at=_as_utc_datetime(session.training_finished_at),
         current_stage=session.current_stage or "",
-        current_emotion=_session_emotion(session),
+        current_emotion=state_snapshot["emotion"],
         current_trust=state_snapshot["cooperation"],
         current_cooperation=state_snapshot["cooperation"],
         current_risk=state_snapshot["risk"],
@@ -264,8 +308,9 @@ def _build_session_guidance(
         case,
         scene,
         current_trust=session.current_trust,
+        current_emotion=session.current_emotion,
     )
-    session_emotion = _session_emotion(session)
+    session_emotion = state_snapshot["emotion"]
     revealed_info = [repair_text(str(item)) for item in runtime_state.get("revealed_info", []) if str(item).strip()]
     case_type = _get_case_type(case)
     stage_goal = current_stage_goal or ""
@@ -464,7 +509,6 @@ def start_training(
         if latest_session and latest_session.status == "active":
             if latest_session.training_started_at is None:
                 latest_session.training_started_at = latest_session.created_at or datetime.utcnow()
-            ensure_opening_turn(db, latest_session, scene, case, role)
             if assignment_id is not None:
                 link_session_to_assignment(db, assignment_id, current_user, latest_session, scene)
             db.commit()
@@ -484,7 +528,13 @@ def start_training(
             return _serialize_session_response(latest_session, role, case, scene)
         stage_config = _get_stage_config(scene, "", case_type=_get_case_type(case))
         initial_runtime_state = load_runtime_state([])
-        initial_state_snapshot = _default_state_snapshot(role, case, scene)
+        scene_role_link = (
+            db.query(models.SceneRole)
+            .filter(models.SceneRole.scene_id == scene.id, models.SceneRole.role_id == role.id)
+            .first()
+            if role else None
+        )
+        initial_state_snapshot = resolve_role_initial_state(role, case, scene, scene_role_link)
         initial_runtime_state["state_snapshot"] = initial_state_snapshot
         first_stage = str(stage_config.get("stage_name") or "初始接触")
 
@@ -492,7 +542,7 @@ def start_training(
             user_id=current_user.id,
             scene_id=scene_id,
             current_stage=first_stage,
-            current_emotion=role.init_emotion if role else 50,
+            current_emotion=initial_state_snapshot["emotion"],
             current_trust=initial_state_snapshot["cooperation"],
             revealed_info=dump_runtime_state(initial_runtime_state),
             training_started_at=datetime.utcnow(),
@@ -500,7 +550,6 @@ def start_training(
         db.add(new_session)
         db.commit()
         db.refresh(new_session)
-        ensure_opening_turn(db, new_session, scene, case, role)
         if assignment_id is not None:
             link_session_to_assignment(db, assignment_id, current_user, new_session, scene)
         db.commit()
@@ -511,6 +560,68 @@ def start_training(
     except Exception as error:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to start training: {error}") from error
+
+
+@router.post("/session/{session_id}/opening")
+def start_session_opening(
+    session_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    session = get_owned_session(db, session_id, current_user.id)
+    if session.status != "active":
+        raise HTTPException(status_code=409, detail="训练会话已结束，不能生成开场对话")
+    if not has_successful_session_verification(db, session.id):
+        raise HTTPException(status_code=409, detail="请先完成人脸身份验证")
+
+    scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
+    case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
+    role = resolve_scene_role(db, scene, case) if scene else None
+    return _ensure_opening_payload(db, session, scene, case, role)
+
+
+@router.post("/session/{session_id}/opening-stream")
+def stream_session_opening(
+    session_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    session = get_owned_session(db, session_id, current_user.id)
+    if session.status != "active":
+        raise HTTPException(status_code=409, detail="训练会话已结束，不能生成开场对话")
+    if not has_successful_session_verification(db, session.id):
+        raise HTTPException(status_code=409, detail="请先完成人脸身份验证")
+
+    scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
+    case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
+    role = resolve_scene_role(db, scene, case) if scene else None
+
+    def _stream():
+        yield _sse_event("meta", {"session_id": session.id, "phase": "generating"})
+        try:
+            payload = _ensure_opening_payload(db, session, scene, case, role)
+            messages = payload.get("messages") or []
+            for index, message in enumerate(messages):
+                yield _sse_event("chunk", {
+                    "index": index,
+                    "message_id": message.get("id"),
+                    "speaker_name": message.get("speaker_name") or "",
+                    "speaker_role_id": message.get("speaker_role_id"),
+                    "content": message.get("content") or "",
+                    "is_last": index == len(messages) - 1,
+                })
+                time.sleep(0.03)
+            yield _sse_event("done", payload)
+        except Exception:
+            db.rollback()
+            logger.exception("Failed to generate opening stream for session %s", session.id)
+            yield _sse_event("error", {"message": "开场对话生成失败，请稍后重试"})
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/chat/{session_id}")
@@ -583,11 +694,8 @@ def training_chat_stream(
     result.pop("state_influence_metrics", None)
     _redact_internal_role_fields(result)
 
-    def _event(name: str, payload: dict[str, Any]) -> str:
-        return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
     def _stream():
-        yield _event("meta", {
+        yield _sse_event("meta", {
             "session_id": session_id,
             "status": session.status,
             "auto_finished": bool(result.get("auto_finished")),
@@ -605,9 +713,9 @@ def training_chat_stream(
                 "content": content,
                 "is_last": index == len(reply_turns) - 1,
             }
-            yield _event("chunk", chunk_payload)
+            yield _sse_event("chunk", chunk_payload)
             time.sleep(0.03)
-        yield _event("done", {
+        yield _sse_event("done", {
             "response": result.get("response"),
             "reply_sequence": result.get("reply_sequence"),
             "reply_turns": result.get("reply_turns"),
@@ -707,14 +815,10 @@ def get_session(
     case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
     role = resolve_scene_role(db, scene, case)
 
-    if not for_report:
-        ensure_opening_turn(db, session, scene, case, role)
-        db.commit()
-
-    messages = (
+    messages = filter_internal_prompt_messages(
         db.query(models.Message)
         .filter(models.Message.session_id == session_id)
-        .order_by(models.Message.created_at.asc())
+        .order_by(models.Message.created_at.asc(), models.Message.id.asc())
         .all()
     )
     repaired_messages = [
@@ -738,6 +842,7 @@ def get_session(
         case,
         scene,
         current_trust=session.current_trust,
+        current_emotion=session.current_emotion,
     )
     repaired_revealed_info = json.dumps(runtime_state.get("revealed_info") or [], ensure_ascii=False)
 
@@ -922,11 +1027,12 @@ def finish_training(
 ):
     session = get_owned_session(db, session_id, current_user.id)
 
-    user_message_count = (
+    user_messages = (
         db.query(models.Message)
         .filter(models.Message.session_id == session_id, models.Message.role == "user")
-        .count()
+        .all()
     )
+    user_message_count = len(filter_internal_prompt_messages(user_messages))
     if user_message_count <= 0:
         raise HTTPException(status_code=400, detail="At least one valid round of dialogue is required before finishing")
 
@@ -961,11 +1067,12 @@ def re_evaluate_training(
 ):
     session = get_owned_session(db, session_id, current_user.id)
 
-    user_message_count = (
+    user_messages = (
         db.query(models.Message)
         .filter(models.Message.session_id == session.id, models.Message.role == "user")
-        .count()
+        .all()
     )
+    user_message_count = len(filter_internal_prompt_messages(user_messages))
     if user_message_count <= 0:
         raise HTTPException(status_code=400, detail="At least one valid round of dialogue is required before evaluation")
 

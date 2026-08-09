@@ -21,6 +21,7 @@ from services.classroom_service import (
     set_assignment_scenes,
 )
 from services.text_repair import repair_text
+from services.dialogue_sanitize_service import filter_internal_prompt_messages
 
 router = APIRouter(prefix="/classes", tags=["Classes"])
 
@@ -1018,7 +1019,7 @@ def get_submission_detail(
     )
     messages = []
     if session:
-        messages = (
+        messages = filter_internal_prompt_messages(
             db.query(models.Message)
             .filter(models.Message.session_id == session.id)
             .order_by(models.Message.created_at.asc())

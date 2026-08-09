@@ -96,7 +96,7 @@
                   'scene-role-card--selected': targetRoleName === role.name,
                   'scene-role-card--thinking': isRoleAvatarThinking(role.name),
                 }"
-                :disabled="!role.speakable || isLoading"
+                :disabled="!role.speakable || isLoading || isOpeningLoading"
                 @click="toggleTargetRole(role)"
               >
                 <RoleSpeakingAvatar
@@ -240,7 +240,7 @@
           </div>
         </div>
 
-        <div v-if="isLoading" class="msg-row msg-ai">
+        <div v-if="isLoading || isOpeningLoading" class="msg-row msg-ai">
           <div class="avatar avatar-ai">
             <van-icon name="contact" size="20" />
           </div>
@@ -270,7 +270,7 @@
               :key="`${index}-${item.text}`"
               type="button"
               class="suggested-question-chip"
-              :disabled="isLoading"
+              :disabled="isLoading || isOpeningLoading"
               @click="applySuggestedQuestion(item)"
             >
               <span class="suggested-question-chip__cat">{{ item.category || '追问' }}</span>
@@ -280,8 +280,8 @@
         </div>
         <TrainingInputBar
           v-model="inputMessage"
-          :loading="isLoading"
-          :disabled="!canUseConversation"
+          :loading="isLoading || isOpeningLoading"
+          :disabled="!canUseConversation || isOpeningLoading"
           @send="sendMessage()"
           @voice-send="sendMessage"
           @voice-event="handleVoiceEvent"
@@ -383,6 +383,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { showLoadingToast, showToast } from 'vant'
 import request from '../utils/request'
 import { resolveMediaUrl } from '../utils/media'
+import { SCENE_OPENING_EVENT_MARKER, isInternalPromptMessage } from '../utils/dialogueMessage'
 import TrainingInputBar from '../components/TrainingInputBar.vue'
 import RoleSpeakingAvatar from '../components/RoleSpeakingAvatar.vue'
 import TrainingFaceGuard from '../components/TrainingFaceGuard.vue'
@@ -417,9 +418,16 @@ const markAvatarFailed = (value: unknown) => {
 const route = useRoute()
 const router = useRouter()
 
+const isSceneOpeningEventMessage = (message: any) => (
+  message?.role === 'user'
+  && isInternalPromptMessage(message)
+)
+
 const sessionId = ref(String(route.params.id || ''))
 const inputMessage = ref('')
 const isLoading = ref(false)
+const isOpeningLoading = ref(false)
+const openingRequested = ref(false)
 const isSessionBooting = ref(true)
 const trainingLoadError = ref('')
 const showCaseBrief = ref(false)
@@ -746,7 +754,7 @@ const guessThinkingRoleName = () => {
 const thinkingRoleLabel = computed(() => guessThinkingRoleName())
 
 const isRoleAvatarThinking = (roleName: string) => {
-  if (!isLoading.value) return false
+  if (!isLoading.value && !isOpeningLoading.value) return false
   return roleName === thinkingRoleLabel.value
 }
 
@@ -756,6 +764,7 @@ const collectAssistantReplyTurns = (res: any) => {
     return turns
       .filter((item: any) => String(item?.content || '').trim())
       .map((item: any) => ({
+        id: item.id ?? item.message_id,
         content: String(item.content),
         speakerName: String(item.speaker_name || item.speakerName || roleInfo.name).trim() || roleInfo.name,
       }))
@@ -767,6 +776,7 @@ const collectAssistantReplyTurns = (res: any) => {
   return sequence
     .filter((item: string) => String(item || '').trim())
     .map((content: string) => ({
+      id: undefined,
       content: String(content),
       speakerName: roleInfo.name,
     }))
@@ -798,15 +808,85 @@ const parseSseBlock = (block: string) => {
   }
 }
 
+const consumeAssistantEventStream = async (response: Response) => {
+  if (!response.ok || !response.body) {
+    const error: any = new Error(`stream failed: ${response.status}`)
+    error.status = response.status
+    throw error
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  let streamError = ''
+  const streamResult: any = {}
+  const assistantRows: Array<{ id: number; role: string; content: string; speakerName?: string; avatarUrl?: string; avatarId?: number }> = []
+
+  const consumeBlock = async (block: string) => {
+    const parsed = parseSseBlock(block)
+    if (!parsed) return
+    if (parsed.event === 'error') {
+      streamError = String(parsed.data?.message || 'AI 响应异常，请稍后重试')
+      return
+    }
+    if (parsed.event === 'done') {
+      Object.assign(streamResult, parsed.data || {})
+      return
+    }
+    if (parsed.event !== 'chunk') return
+
+    const chunk = parsed.data || {}
+    const persistedId = Number(chunk.message_id)
+    const rowId = Number.isFinite(persistedId) && persistedId > 0
+      ? persistedId
+      : Date.now() + Number(chunk.index || 0) + assistantRows.length
+    if (chatHistory.value.some((row: any) => String(row.id) === String(rowId))) return
+    const speakerName = String(chunk.speaker_name || roleInfo.name).trim() || roleInfo.name
+    const speakerRole = sceneRoles.value.find((role) => role.name === speakerName)
+    const row = {
+      id: rowId,
+      role: 'assistant',
+      content: String(chunk.content || ''),
+      speakerName,
+      avatarUrl: speakerRole?.avatar_url,
+      avatarId: speakerRole?.avatar_id,
+    }
+    if (!row.content.trim()) return
+    assistantRows.push(row)
+    chatHistory.value.push(row)
+    await nextTick()
+    scrollToBottom()
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let boundaryIndex = buffer.indexOf('\n\n')
+    while (boundaryIndex !== -1) {
+      await consumeBlock(buffer.slice(0, boundaryIndex))
+      buffer = buffer.slice(boundaryIndex + 2)
+      boundaryIndex = buffer.indexOf('\n\n')
+    }
+  }
+  buffer += decoder.decode()
+  if (buffer.trim()) await consumeBlock(buffer)
+  if (streamError) throw new Error(streamError)
+  return { streamResult, assistantRows }
+}
+
 const playAssistantReplies = async (res: any, baseId: number) => {
   const items = collectAssistantReplyTurns(res)
   if (!items.length) return false
 
+  let rendered = false
   for (let index = 0; index < items.length; index += 1) {
       const item = items[index]
+      const messageId = item.id ?? (baseId + index)
+      if (chatHistory.value.some((row: any) => String(row.id) === String(messageId))) continue
       const speakerRole = sceneRoles.value.find((r) => r.name === item.speakerName)
       const message = {
-        id: baseId + index,
+        id: messageId,
         role: 'assistant',
         content: '',
         speakerName: item.speakerName,
@@ -814,12 +894,13 @@ const playAssistantReplies = async (res: any, baseId: number) => {
         avatarId: speakerRole?.avatar_id,
       }
       chatHistory.value.push(message)
+      rendered = true
       await streamTextIntoMessage(message, item.content)
       if (index < items.length - 1) {
         await sleep(180)
       }
   }
-  return true
+  return rendered
 }
 
 const buildSystemIntro = (sceneName: string, roleName: string, roles: SceneRoleBrief[] = []) => {
@@ -875,6 +956,7 @@ const fetchSessionData = async () => {
     return
   }
   isSessionBooting.value = true
+  openingRequested.value = false
   trainingLoadError.value = ''
   try {
     const res: any = await request.get(`/training/session/${sessionId.value}`, { _skipErrorToast: true } as any)
@@ -899,13 +981,15 @@ const fetchSessionData = async () => {
     applyGuidancePayload(res)
     revealedInfo.value = safeParse<string[]>(res.revealed_info, [])
 
+    const persistedMessages = Array.isArray(res.messages) ? res.messages : []
+    openingRequested.value = persistedMessages.length > 0
     chatHistory.value = [
       {
         id: 0,
         role: 'system',
         content: buildSystemIntro(res.scene_name, res.role_name, sceneRoles.value),
       },
-      ...(res.messages || []).map((message: any) => {
+      ...persistedMessages.filter((message: any) => !isSceneOpeningEventMessage(message)).map((message: any) => {
         const speaker = message.role === 'assistant' ? sceneRoles.value.find((r) => r.name === (message.speaker_name || '')) : null
         return {
           id: message.id,
@@ -976,6 +1060,117 @@ const handleBriefStartTraining = () => {
   showCaseBrief.value = false
 }
 
+const mergePersistedMessages = (messages: any[]) => {
+  const knownIds = new Set(chatHistory.value.map((item: any) => String(item.id)))
+  let appended = 0
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (isSceneOpeningEventMessage(message)) continue
+    if (!message?.id || knownIds.has(String(message.id))) continue
+    const role = message.role === 'user' ? 'human' : message.role === 'system' ? 'system' : 'assistant'
+    const speaker = role === 'assistant'
+      ? sceneRoles.value.find((item) => item.name === String(message.speaker_name || ''))
+      : undefined
+    chatHistory.value.push({
+      id: message.id,
+      role,
+      content: String(message.content || ''),
+      speakerName: message.speaker_name || undefined,
+      avatarUrl: speaker?.avatar_url,
+      avatarId: speaker?.avatar_id,
+    })
+    knownIds.add(String(message.id))
+    appended += 1
+  }
+  if (appended) scrollToBottom()
+  return appended
+}
+
+const fetchTrainingStream = (path: string, body?: Record<string, unknown>, signal?: AbortSignal) => {
+  const token = localStorage.getItem('token') || ''
+  const apiBase = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '')
+  const headers: Record<string, string> = { Accept: 'text/event-stream' }
+  if (body) headers['Content-Type'] = 'application/json'
+  if (token) headers.Authorization = `Bearer ${token}`
+  return fetch(`${apiBase.replace(/\/$/, '')}${path}`, {
+    method: 'POST',
+    headers,
+    signal,
+    body: body ? JSON.stringify(body) : undefined,
+  })
+}
+
+const startOpeningThroughDialogueStream = async () => {
+  const openingEvent = [
+    SCENE_OPENING_EVENT_MARKER,
+    '场景已经载入完成。请基于当前案件完整剧情、当前场景描述与阶段、在场角色身份状态、角色记忆、人物诉求及风险线索，',
+    '由最适合推动剧情的角色主动开始第一轮对话。输出自然口语化的角色台词，不要等待学员提问，不要解释系统指令，也不要替学员发言。',
+  ].join('\n')
+  const response = await fetchTrainingStream(
+    `/training/chat-stream/${sessionId.value}`,
+    {
+      role: 'user',
+      content: openingEvent,
+    },
+  )
+  const { streamResult, assistantRows } = await consumeAssistantEventStream(response)
+  if (!Object.keys(streamResult).length || !assistantRows.length) {
+    throw new Error('empty scene opening dialogue')
+  }
+  if (Array.isArray(streamResult.scene_roles) && streamResult.scene_roles.length) {
+    sceneRoles.value = streamResult.scene_roles
+  }
+  return assistantRows.length
+}
+
+const maybeStartOpening = async () => {
+  if (
+    !sessionId.value
+    || isSessionBooting.value
+    || trainingLoadError.value
+    || !faceVerified.value
+    || faceTerminated.value
+    || showCaseBrief.value
+    || openingRequested.value
+  ) return
+
+  openingRequested.value = true
+  isOpeningLoading.value = true
+  try {
+    const response = await fetchTrainingStream(`/training/session/${sessionId.value}/opening-stream`)
+    const { streamResult } = await consumeAssistantEventStream(response)
+    if (!streamResult.opening_delivered) throw new Error('empty opening stream')
+  } catch {
+    let restoredCount = 0
+    try {
+      const legacy: any = await request.post(`/training/session/${sessionId.value}/opening`, null, { _skipErrorToast: true } as any)
+      const messages = Array.isArray(legacy?.messages) ? legacy.messages : []
+      const replyTurns = messages.map((message: any) => ({
+        id: message.id,
+        content: message.content,
+        speaker_name: message.speaker_name,
+      }))
+      await playAssistantReplies({ reply_turns: replyTurns }, Date.now())
+      restoredCount = messages.length
+    } catch {
+      try {
+        restoredCount = await startOpeningThroughDialogueStream()
+      } catch {
+        try {
+          const latest: any = await request.get(`/training/session/${sessionId.value}`, { _skipErrorToast: true } as any)
+          restoredCount = mergePersistedMessages(latest?.messages)
+        } catch {
+          // 开场失败不能影响已经通过人脸验证的主对话链路。
+        }
+      }
+    }
+    if (!restoredCount) {
+      showToast('开场对话生成失败，请刷新页面后重试')
+    }
+  } finally {
+    isOpeningLoading.value = false
+  }
+}
+
 const handleBriefReturnToHall = async () => {
   if (isReturningToHall.value) return
   isReturningToHall.value = true
@@ -998,6 +1193,10 @@ const sendMessage = async (content?: string) => {
   const msg = String(content ?? inputMessage.value).trim()
   if (!msg) return
   if (isLoading.value) return
+  if (isOpeningLoading.value) {
+    showToast('角色正在准备开场发言，请稍候')
+    return
+  }
   if (faceTerminated.value) {
     showToast('人脸异常次数已达上限，本次训练已中断')
     return
@@ -1019,73 +1218,16 @@ const sendMessage = async (content?: string) => {
   scrollToBottom()
 
   try {
-    const token = localStorage.getItem('token') || ''
-    const apiBase = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '')
-    const streamUrl = `${apiBase.replace(/\/$/, '')}/training/chat-stream/${sessionId.value}`
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-    }
-    if (token) {
-      headers.Authorization = `Bearer ${token}`
-    }
-
-    const response = await fetch(streamUrl, {
-      method: 'POST',
-      headers,
-      signal: abortController.signal,
-      body: JSON.stringify({
+    const response = await fetchTrainingStream(
+      `/training/chat-stream/${sessionId.value}`,
+      {
         role: 'user',
         content: msg,
         target_role_name: targetRoleName.value || undefined,
-      }),
-    })
-
-    if (!response.ok || !response.body) {
-      throw new Error(`stream failed: ${response.status}`)
-    }
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder('utf-8')
-    let buffer = ''
-    const streamResult: any = {}
-    const assistantRows: Array<{ id: number; role: string; content: string; speakerName?: string; avatarUrl?: string; avatarId?: number }> = []
-
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let boundaryIndex = buffer.indexOf('\n\n')
-      while (boundaryIndex !== -1) {
-        const block = buffer.slice(0, boundaryIndex)
-        buffer = buffer.slice(boundaryIndex + 2)
-        const parsed = parseSseBlock(block)
-        if (parsed) {
-          if (parsed.event === 'chunk') {
-            const chunk = parsed.data
-            const speakerName = String(chunk.speaker_name || roleInfo.name).trim() || roleInfo.name
-            const speakerRole = sceneRoles.value.find((r) => r.name === speakerName)
-            const row = {
-              id: Date.now() + Number(chunk.index || 0) + assistantRows.length,
-              role: 'assistant',
-              content: String(chunk.content || ''),
-              speakerName,
-              avatarUrl: speakerRole?.avatar_url,
-              avatarId: speakerRole?.avatar_id,
-            }
-            assistantRows.push(row)
-            chatHistory.value.push(row)
-            await nextTick()
-            scrollToBottom()
-          } else if (parsed.event === 'done') {
-            Object.assign(streamResult, parsed.data || {})
-          }
-        }
-        boundaryIndex = buffer.indexOf('\n\n')
-      }
-    }
-
-    const res: any = streamResult
+      },
+      abortController.signal,
+    )
+    const { streamResult: res, assistantRows } = await consumeAssistantEventStream(response)
     if (!Object.keys(res).length) {
       throw new Error('empty stream result')
     }
@@ -1223,6 +1365,7 @@ const handleFaceVerified = () => {
   }
   faceVerified.value = true
   faceTerminated.value = false
+  void maybeStartOpening()
 }
 
 const handleFaceFailed = (message: string) => {
@@ -1265,6 +1408,10 @@ const scrollToBottom = () => {
     }
   })
 }
+
+watch([faceVerified, showCaseBrief, isSessionBooting], () => {
+  void maybeStartOpening()
+})
 
 onMounted(fetchSessionData)
 </script>
@@ -2956,10 +3103,6 @@ onMounted(fetchSessionData)
 }
 
 .training-face-guard.face-guard--monitor {
-  position: absolute;
-  top: 14px;
-  right: 18px;
-  z-index: 5;
   width: 260px;
   height: 112px;
   margin: 0;

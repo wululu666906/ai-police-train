@@ -48,6 +48,7 @@ export default defineConfig({
       '/avatars':   { target: process.env.VITE_DEV_PROXY_TARGET || 'http://127.0.0.1:8000', changeOrigin: true },
       // 静态文件（视频、封面图等）
       '/static':    { target: process.env.VITE_DEV_PROXY_TARGET || 'http://127.0.0.1:8000', changeOrigin: true },
+      '/object-storage': { target: process.env.VITE_DEV_PROXY_TARGET || 'http://127.0.0.1:8000', changeOrigin: true },
     },
   },
 })

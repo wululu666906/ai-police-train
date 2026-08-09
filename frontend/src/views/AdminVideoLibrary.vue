@@ -136,6 +136,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshRight, Search, SetUp, UploadFilled, VideoPlay } from '@element-plus/icons-vue'
 import request from '../utils/request'
+import { resolveMediaUrl } from '../utils/media'
 import VideoNodeEditor from '../components/VideoNodeEditor.vue'
 import { useVideoCover } from '../composables/useVideoCover'
 
@@ -393,7 +394,8 @@ async function onNodesUpdated() {
 }
 
 function openDetail(video: VideoItem) {
-  if (video.video_url) window.open(video.video_url, '_blank')
+  const url = resolveMediaUrl(video.video_url)
+  if (url) window.open(url, '_blank')
 }
 
 function difficultyLabel(level?: string) {

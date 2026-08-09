@@ -1,89 +1,62 @@
 <template>
-  <article
-    class="task-card card"
-    :class="{ 'task-card--list': viewMode === 'list', 'task-card--compact': compact }"
-  >
-    <div class="task-card-head">
-      <span class="status-tag" :class="`status-tag--${status}`">{{ statusLabel }}</span>
-      <span class="task-date">{{ formattedDate }}</span>
-    </div>
+  <article class="task-card" :class="{ 'task-card--list': viewMode === 'list' }">
+    <section class="task-card__main" aria-label="案件训练概要">
+      <div class="task-card__topline">
+        <span class="task-card__difficulty" :class="`task-card__difficulty--${difficultyLevel}`">
+          <i aria-hidden="true" />
+          {{ difficultyLabel }}
+        </span>
+        <span class="task-card__date">
+          <el-icon><Clock /></el-icon>
+          {{ formattedDate }}
+        </span>
+      </div>
 
-    <h3 class="task-title">{{ caseItem.title || '未命名案件' }}</h3>
-    <p class="task-summary" :class="{ mle: !compact }">{{ summary }}</p>
+      <div class="task-card__content">
+        <h3>{{ caseItem.title || '未命名案件' }}</h3>
+        <p class="task-card__summary">{{ summary }}</p>
+      </div>
+    </section>
 
-    <div class="scene-panel">
-        <div
-          v-for="scene in displayScenes"
-          :key="scene.id"
-          class="scene-row"
-          :class="[`scene-row--${sceneStatus(scene)}`, { 'scene-row--single': isSingleScene }]"
-        >
-          <div class="scene-main">
-            <span class="scene-name">{{ scene.name }}</span>
-            <span v-if="isSingleScene" class="scene-description">{{ scene.description || '围绕当前警情开展实操训练' }}</span>
-          </div>
-          <span class="scene-difficulty" :class="`scene-difficulty--${difficultyLevel(scene.difficulty)}`">
-            {{ difficultyLabel(scene.difficulty) }}
-          </span>
-          <span class="scene-status">{{ sceneStatusLabel(scene) }}</span>
-          <div class="scene-actions">
-            <template v-if="scene.training_status === 'completed'">
-              <el-button
-                size="small"
-                plain
-                class="scene-btn detail-btn"
-                :disabled="disabled"
-                @click="emit('view-review', scene)"
-              >
-                查看复盘
-              </el-button>
-              <el-button
-                type="primary"
-                size="small"
-                class="scene-btn"
-                :loading="loadingSceneId === scene.id"
-                :disabled="disabled"
-                @click="emit('start-scene', scene)"
-              >
-                重新训练
-              </el-button>
-            </template>
-            <el-button
-              v-else
-              type="primary"
-              size="small"
-              class="scene-btn"
-              :loading="loadingSceneId === scene.id"
-              :disabled="disabled || scene.training_status === 'evaluating'"
-              @click="emit('start-scene', scene)"
-            >
-              {{ sceneActionLabel(scene) }}
-            </el-button>
-          </div>
-        </div>
-        <button
-          v-if="hasMoreScenes"
-          type="button"
-          class="scene-expand-btn"
-          @click="emit('view-detail')"
-        >
-          <span>展开全部场景</span>
-          <span class="scene-expand-btn__count">+{{ hiddenSceneCount }}</span>
-        </button>
-    </div>
+    <section class="task-card__footer">
+      <div class="task-card__meta" aria-label="训练配置">
+        <span>
+          <el-icon><Clock /></el-icon>
+          {{ estimatedTimeText }}
+        </span>
+        <span>
+          <el-icon>
+            <UserFilled v-if="isTeamTraining" />
+            <User v-else />
+          </el-icon>
+          {{ modeText }}
+        </span>
+      </div>
+
+      <button class="task-card__button" type="button" :disabled="disabled" @click="emit('start-case', caseItem)">
+        <span>{{ actionLabel }}</span>
+        <el-icon><Right /></el-icon>
+      </button>
+    </section>
   </article>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Clock, Right, User, UserFilled } from '@element-plus/icons-vue'
 
 export type TaskSceneItem = {
   id: number
   name: string
   difficulty?: string
+  estimated_minutes?: number | null
   description?: string
+  dispatch_brief?: string | null
+  first_impression?: string | null
+  stages?: any[]
   has_active_session?: boolean
   active_session_id?: number | null
+  active_session_is_empty?: boolean
   finished_session_id?: number | null
   final_score?: number | null
   training_status?: 'not_started' | 'in_progress' | 'evaluating' | 'completed'
@@ -97,6 +70,10 @@ export type TaskCaseItem = {
   background: string
   created_at?: string
   train_count?: number
+  scene_count?: number
+  primary_difficulty?: string
+  estimated_minutes_summary?: string | null
+  core_items?: string[]
   scenes?: TaskSceneItem[]
 }
 
@@ -112,36 +89,25 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'start-scene': [scene: TaskSceneItem]
-  'view-review': [scene: TaskSceneItem]
-  'view-detail': []
+  'start-case': [caseItem: TaskCaseItem]
 }>()
 
-const displayScenes = computed(() => (props.caseItem.scenes || []).slice(0, 4))
-const totalScenes = computed(() => (props.caseItem.scenes || []).length)
-const hiddenSceneCount = computed(() => Math.max(0, totalScenes.value - displayScenes.value.length))
-const hasMoreScenes = computed(() => hiddenSceneCount.value > 0)
-const isSingleScene = computed(() => totalScenes.value === 1)
+const scenes = computed(() => Array.isArray(props.caseItem.scenes) ? props.caseItem.scenes : [])
 
-const sceneStatus = (scene: TaskSceneItem) => {
-  if (scene.training_status) return scene.training_status
-  if (scene.has_active_session) return 'in_progress'
-  return 'not_started'
-}
-
-const difficultyLabel = (value?: string) => {
-  const text = String(value || '').trim()
-  if (text.includes('低') || text.includes('简')) return '低'
-  if (text.includes('高') || text.includes('困')) return '高'
+const normalizeDifficulty = (value?: string) => {
+  const text = String(value || '').trim().toLowerCase()
+  if (text.includes('低') || text.includes('简') || text.includes('easy') || text.includes('low')) return '低'
+  if (text.includes('高') || text.includes('困') || text.includes('hard') || text.includes('high')) return '高'
   return '中'
 }
 
-const difficultyLevel = (value?: string) => {
-  const label = difficultyLabel(value)
-  if (label === '低') return 'low'
-  if (label === '高') return 'high'
-  return 'medium'
-}
+const difficultyText = computed(() => normalizeDifficulty(props.caseItem.primary_difficulty || scenes.value[0]?.difficulty))
+const difficultyLevel = computed(() => difficultyText.value === '低' ? 'low' : difficultyText.value === '高' ? 'high' : 'medium')
+const difficultyLabel = computed(() => {
+  if (difficultyText.value === '低') return '低 (Low)'
+  if (difficultyText.value === '高') return '高 (High)'
+  return '中 (Medium)'
+})
 
 const formattedDate = computed(() => {
   const raw = props.caseItem.created_at
@@ -155,272 +121,251 @@ const formattedDate = computed(() => {
 const summary = computed(() => {
   const text = String(props.caseItem.background || '').trim()
   if (!text) return '当前案件暂无完整背景描述。'
-  const max = props.compact ? 40 : 80
-  return text.length > max ? `${text.slice(0, max)}...` : text
+  return text.length > 66 ? `${text.slice(0, 66)}...` : text
 })
 
-const sceneStatusLabel = (scene: TaskSceneItem) => {
-  if (scene.training_status === 'completed') return scene.final_score != null ? `已评分 ${scene.final_score}分` : '已完成训练'
-  if (scene.status_label) return scene.status_label
-  if (scene.training_status === 'evaluating') return '评估中'
-  if (scene.training_status === 'in_progress' || scene.has_active_session) return '可继续'
-  return '未开始训练'
-}
-
-const sceneActionLabel = (scene: TaskSceneItem) => {
-  if (scene.training_status === 'evaluating') return '评估中'
-  if (scene.training_status === 'in_progress' || scene.has_active_session) return '继续训练'
-  return '开始训练'
-}
+const estimatedTimeText = computed(() => {
+  const summaryText = String(props.caseItem.estimated_minutes_summary || '').trim()
+  if (summaryText) return summaryText.replace(/分钟/g, 'mins')
+  const minutes = scenes.value.find((scene) => Number(scene.estimated_minutes) > 0)?.estimated_minutes
+  return minutes ? `${minutes} mins` : '待定'
+})
+const isTeamTraining = computed(() => Number(props.caseItem.scene_count || scenes.value.length || 0) > 1)
+const modeText = computed(() => isTeamTraining.value ? 'Team' : 'Solo')
+const actionLabel = computed(() => props.status === 'active' ? '继续训练' : props.status === 'completed' ? '重新训练' : '开始训练')
 </script>
 
 <style scoped lang="scss">
 .task-card {
+  position: relative;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 14px 18px;
   width: 100%;
-  height: 380px;
-  box-sizing: border-box;
+  max-width: calc(100vw - 32px);
+  min-height: 292px;
+  flex-direction: column;
   overflow: hidden;
-
-  &--list {
-    height: auto;
-    min-height: auto;
-  }
-
-  &--compact {
-    gap: 3px;
-    min-height: 0;
-    height: 100%;
-    padding: 8px 12px;
-
-    .task-title {
-      font-size: 12px;
-    }
-
-    .task-summary {
-      font-size: 11px;
-      height: 18px;
-      min-height: auto;
-    }
-
-    .scene-panel {
-      flex: 1;
-
-      .scene-row {
-        min-height: 0;
-        max-height: none;
-      }
-    }
-  }
+  border: none;
+  border-radius: 20px;
+  background: #f7f7f2;
+  box-shadow:
+    10px 10px 20px rgb(0 0 0 / 7%),
+    -10px -10px 20px #fff;
+  transition: transform 220ms ease, box-shadow 220ms ease;
 }
 
-.task-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  height: 20px;
-  flex-shrink: 0;
-  overflow: hidden;
+.task-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    12px 12px 24px rgb(0 0 0 / 8%),
+    -10px -10px 20px #fff;
 }
 
-.status-tag {
-  padding: 2px 7px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 600;
-
-  &--active,
-  &--completed {
-    color: #047857;
-    background: #ecfdf5;
-  }
-
-  &--idle {
-    color: #c2410c;
-    background: #fff7ed;
-  }
-}
-
-.task-date {
-  font-size: 10px;
-  color: #9ca3af;
-}
-
-.task-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 800;
-  color: #111827;
-  line-height: 22px;
-  height: 22px;
-  flex-shrink: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-summary {
-  margin: 0;
-  font-size: 12px;
-  color: #6b7280;
-  line-height: 1.4;
-  height: 34px;
-  flex-shrink: 0;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  word-break: break-word;
-}
-
-.scene-panel {
-  flex: 1;
-  min-height: 0;
+.task-card__main {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  min-height: 178px;
+  padding: 24px 26px 20px;
   overflow: hidden;
-  box-sizing: border-box;
+  border-bottom: 1px solid rgb(226 226 218 / 66%);
+  background: #f7f7f2;
 }
 
-.scene-row {
+.task-card__topline {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  flex: 1;
-  min-height: 0;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 28px;
+}
+
+.task-card__difficulty {
+  display: inline-flex;
+  max-width: 52%;
+  min-height: 30px;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 13px;
   overflow: hidden;
-  border-radius: 6px;
-  background: #f8fafc;
-  padding: 0 10px;
-  border: 1px solid #f1f5f9;
-}
-
-.scene-row--single {
-  align-items: flex-start;
-  flex-wrap: wrap;
-  padding: 14px;
-  background: #f8fafc;
-}
-
-.scene-expand-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  flex-shrink: 0;
-  min-height: 32px;
-  padding: 0 12px;
-  border: 1px dashed #bfdbfe;
-  border-radius: 6px;
-  background: #eff6ff;
-  color: #2563eb;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.scene-expand-btn__count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 24px;
-  height: 18px;
-  padding: 0 6px;
+  border: 1px solid rgb(255 255 255 / 70%);
   border-radius: 999px;
-  background: #dbeafe;
-  color: #1d4ed8;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.scene-status {
-  font-size: 11px;
-  color: #9ca3af;
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
-.scene-difficulty {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  min-width: 28px;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: 999px;
-  font-size: 11px;
+  background: rgb(255 255 255 / 46%);
+  box-shadow: 2px 2px 5px rgb(0 0 0 / 5%);
+  color: #1f2937;
+  font-size: 14px;
   font-weight: 800;
   line-height: 1;
-
-  &--low {
-    color: #047857;
-    background: #ecfdf5;
-  }
-
-  &--medium {
-    color: #b45309;
-    background: #fffbeb;
-  }
-
-  &--high {
-    color: #b91c1c;
-    background: #fef2f2;
-  }
-}
-
-.scene-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.scene-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.scene-name {
-  min-width: 0;
-  font-size: 12px;
-  color: #4b5563;
-  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 600;
 }
 
-.scene-description {
+.task-card__difficulty i {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #eab308;
+  box-shadow: 0 0 0 3px rgb(234 179 8 / 12%);
+}
+
+.task-card__difficulty--low i {
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgb(34 197 94 / 12%);
+}
+
+.task-card__difficulty--high i {
+  background: #ef4444;
+  box-shadow: 0 0 0 3px rgb(239 68 68 / 12%);
+}
+
+.task-card__date {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  color: #64748b;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.task-card__content {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.task-card__content h3 {
   display: -webkit-box;
-  max-width: 100%;
+  min-height: 34px;
+  margin: 0;
   overflow: hidden;
-  color: #6b7280;
-  font-size: 12px;
-  line-height: 1.5;
-  -webkit-line-clamp: 3;
+  color: #061936;
+  font-size: 26px;
+  font-weight: 900;
+  line-height: 1.24;
+  letter-spacing: 0;
   -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
   word-break: break-word;
 }
 
-.scene-btn {
-  flex-shrink: 0;
-  padding: 4px 10px !important;
-  height: 26px !important;
-  font-size: 12px !important;
+.task-card__summary {
+  display: -webkit-box;
+  min-height: 42px;
+  margin: 0;
+  overflow: hidden;
+  color: #41556f;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.36;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  word-break: break-word;
 }
 
-.detail-btn {
-  color: var(--student-accent, #0066ff) !important;
-  border-color: #b3d4ff !important;
+.task-card__footer {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 24px 26px 26px;
+}
+
+.task-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 22px;
+  min-width: 0;
+  color: #34465e;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.task-card__meta span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.task-card__button {
+  display: inline-flex;
+  width: 100%;
+  min-height: 56px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: auto;
+  border: none;
+  border-radius: 14px;
+  background: #f7f7f2;
+  box-shadow:
+    8px 8px 16px rgb(0 0 0 / 6%),
+    -8px -8px 16px #fff;
+  color: #061936;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1;
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.task-card__button:hover:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow:
+    inset 6px 6px 12px rgb(0 0 0 / 6%),
+    inset -6px -6px 12px #fff;
+}
+
+.task-card__button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.task-card--list {
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .task-card {
+    min-height: 334px;
+  }
+
+  .task-card__main,
+  .task-card__footer {
+    padding: 24px;
+  }
+
+  .task-card__topline {
+    margin-bottom: 28px;
+  }
+
+  .task-card__difficulty {
+    max-width: 58%;
+    min-height: 34px;
+    padding: 7px 12px;
+    font-size: 14px;
+  }
+
+  .task-card__date,
+  .task-card__summary,
+  .task-card__meta {
+    font-size: 16px;
+  }
+
+  .task-card__content h3 {
+    min-height: 36px;
+    font-size: 26px;
+  }
+
+  .task-card__button {
+    min-height: 60px;
+    font-size: 18px;
+  }
 }
 </style>

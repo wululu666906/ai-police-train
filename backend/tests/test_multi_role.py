@@ -3,6 +3,37 @@
 import models
 from services import ai_service
 from services.training_runtime_service import dump_runtime_state, load_runtime_state
+from services.dialogue_context_service import build_agent_context
+from services.role_state_service import calculate_scene_role_state
+
+
+class _ContextMessage:
+    def __init__(self, message_id, role, content, speaker_name=""):
+        self.id = message_id
+        self.role = role
+        self.content = content
+        self.speaker_name = speaker_name
+        self.speaker_role_id = None
+
+
+def test_layered_context_recalls_relevant_early_raw_message():
+    history = [_ContextMessage(1, "assistant", "红色背包放在东门储物柜。", "张某")]
+    history.extend(_ContextMessage(index, "user", f"普通对话第{index}轮") for index in range(2, 17))
+    context = build_agent_context(history, current_query="背包放在哪里")
+    assert context["message_count"] == 16
+    assert any("东门储物柜" in item["content"] for item in context["relevant_messages"])
+
+
+def test_same_role_gets_scene_specific_initial_state():
+    role = models.Role(name="张某", role_type="报警人", status="正常", persona_meta="{}")
+    case = models.Case(title="测试案件", case_type="纠纷", background="邻里纠纷")
+    calm_scene = models.Scene(name="回访", description="当事人已经冷静，愿意配合并清楚陈述。")
+    crisis_scene = models.Scene(name="现场控制", description="当事人持刀威胁，情绪激动且现场失控。")
+    calm = calculate_scene_role_state(role, case, calm_scene)
+    crisis = calculate_scene_role_state(role, case, crisis_scene)
+    assert crisis["risk"] > calm["risk"]
+    assert crisis["emotion"] > calm["emotion"]
+    assert crisis["cooperation"] < calm["cooperation"]
 
 
 def test_session_includes_scene_roles(client, student_headers):

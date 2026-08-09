@@ -6,11 +6,13 @@ import { showConfirmDialog, showToast } from 'vant'
 import RoleCompactForm from '../components/RoleCompactForm.vue'
 import CaseStoryViewer from '../components/CaseStoryViewer.vue'
 import TextZoomField from '../components/cases/TextZoomField.vue'
+import SceneOpeningConfigForm from '../components/cases/SceneOpeningConfigForm.vue'
 import { saveWithCaseQualityGate } from '../utils/caseQuality'
 import {
   buildRoleCompactSummary,
   expandRoleCompactToPerson,
   inferTrainingFocus,
+  normalizeSceneOpeningConfig,
   personToRoleCompact,
   trainingFocusToBehaviorMode,
 } from '../utils/roleCompact'
@@ -1115,6 +1117,7 @@ const normalizeSceneEditors = (scenes: any, structuredData: any, persons: any[])
       stagesModel,
       stagesAdvanced: false,
       assessmentPointsModel: normalizeAssessmentPointsFromStages(stagesModel),
+      opening_config: normalizeSceneOpeningConfig(scene.opening_config),
       role_names: normalizedRoleNames,
       primary_role_name: normalizedRoleNames.includes(mappedPrimaryRoleName)
         ? mappedPrimaryRoleName
@@ -1897,6 +1900,7 @@ const saveCaseDetail = async () => {
       difficulty: scene.difficulty,
       dispatch_brief: scene.dispatch_brief,
       first_impression: scene.first_impression,
+      opening_config: normalizeSceneOpeningConfig(scene.opening_config),
       scene_ref: scene.scene_ref || `db:${scene.id}`,
       fact_ids: Array.isArray(scene.fact_ids) ? scene.fact_ids : [],
       supplement_ids: Array.isArray(scene.supplement_ids) ? scene.supplement_ids : [],
@@ -2494,6 +2498,7 @@ const previewFormatDate = (dt: string | null | undefined) => {
                         :rows="4"
                       />
                     </div>
+                    <SceneOpeningConfigForm v-model="scene.opening_config" :roles="editableCase?.persons || []" />
                   </div>
                 </div>
 

@@ -9,49 +9,8 @@ from .avatar_service import _safe_json_loads, assign_avatar, get_avatar_url
 from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
 from .persona_engine import build_persona_profile, build_role_script, format_persona_block
 from .role_resolver import is_role_speakable, resolve_scene_roles
-
-# DEPRECATED: This prompt is no longer used at runtime.
-# The active director prompt is DIRECTOR_ORCHESTRATION_PROMPT in multi_role_director.py.
-# Kept here only as reference; remove once multi_role_service refactor is complete.
-MULTI_ROLE_DIRECTOR_PROMPT = """
-你是警情训练场景的“对话导演”，负责根据学员（执法民警）输入，决定现场哪些角色开口、各自说什么。
-
-规则：
-1. 只能让【可对话角色列表】中的角色发言，禁止旁白、禁止助手口吻。
-2. 每轮最多安排 2 名角色发言；若学员明确点名某人，该角色必须发言。
-3. 根据语境判断：调解/纠纷场景可双方轮流；询问单人时只让被问者回答；情绪激动时允许插话。
-4. 每个角色的台词必须符合其性格、状态、已知/未知信息，不能串人设。
-5. 只输出合法 JSON，不要 markdown。
-
-场景：{scene_name}
-阶段：{current_stage}（目标：{current_stage_goal}）
-学员本轮输入：{user_text}
-
-可对话角色（含人设摘要）：
-{cast_block}
-
-近期对话（带说话人标注）：
-{history_block}
-
-请输出 JSON：
-{{
-  "speakers": [
-    {{
-      "speaker_name": "角色姓名",
-      "response": "该角色本轮台词",
-      "inner_thought": "该角色心理活动，仅第一条可详细"
-    }}
-  ],
-  "primary_speaker_name": "本轮主要影响情绪/信任的角色姓名",
-  "updated_emotion": 55,
-  "updated_trust": 35,
-  "updated_risk": 50,
-  "updated_clarity": 50,
-  "new_fact_revealed": null,
-  "is_stage_completed": false,
-  "follow_up_response": null
-}}
-"""
+from .dialogue_context_service import build_agent_context, format_agent_context
+from .role_state_service import resolve_role_initial_state, resolve_scene_role_initial_states
 
 
 def _text(value: Any) -> str:
@@ -90,7 +49,7 @@ def _append_actor_output_to_history(history: list[Any], actor_outputs: list[dict
     return augmented
 
 
-def _role_thread_history(history: list[Any], role: models.Role, limit: int = 12) -> list[Any]:
+def _role_thread_history(history: list[Any], role: models.Role, limit: int = 0) -> list[Any]:
     """Project the shared transcript into one role's private conversation thread.
 
     A role keeps the learner's visible questions/actions and only its own prior
@@ -112,10 +71,10 @@ def _role_thread_history(history: list[Any], role: models.Role, limit: int = 12)
         speaker_name = _text(getattr(message, "speaker_name", ""))
         if (role_id is not None and str(speaker_id or "") == str(role_id)) or (speaker_name and speaker_name == role_name):
             thread.append(message)
-    return thread[-limit:]
+    return thread[-limit:] if limit else thread
 
 
-def _public_scene_utterances(history: list[Any], role: models.Role, limit: int = 6) -> list[dict[str, Any]]:
+def _public_scene_utterances(history: list[Any], role: models.Role, limit: int = 0) -> list[dict[str, Any]]:
     """Expose other roles' visible words without importing their private memory."""
     role_id = getattr(role, "id", None)
     role_name = _role_display_name(role)
@@ -137,7 +96,7 @@ def _public_scene_utterances(history: list[Any], role: models.Role, limit: int =
                 "content": content,
             }
         )
-    return rows[-limit:]
+    return rows[-limit:] if limit else rows
 
 
 def _role_display_name(role: models.Role) -> str:
@@ -313,18 +272,22 @@ def generate_multi_role_turn(
         return None
 
     runtime_state = runtime_state if isinstance(runtime_state, dict) else {}
+    agent_context = build_agent_context(
+        history,
+        previous_context=runtime_state.get("agent_context"),
+        current_query=user_text,
+        target_role_name=target_role_name or "",
+    )
+    runtime_state["agent_context"] = agent_context
+    summary_block = format_agent_context(agent_context)
     role_snapshots: dict[str, dict[str, int]] = dict(runtime_state.get("role_state_snapshots") or {})
+    stored_initial_states = resolve_scene_role_initial_states(db, roles, case, scene)
     raw_role_brains = runtime_state.get("role_brains")
     role_brains: dict[str, dict[str, Any]] = dict(raw_role_brains) if isinstance(raw_role_brains, dict) else {}
     for role in roles:
         key = str(role.id)
         if key not in role_snapshots:
-            role_snapshots[key] = {
-                "emotion": int(getattr(role, "init_emotion", None) or 50),
-                "cooperation": int(getattr(role, "init_trust", None) or 30),
-                "risk": 50,
-                "clarity": 50,
-            }
+            role_snapshots[key] = stored_initial_states.get(key) or resolve_role_initial_state(role, case, scene)
 
     case_roles = list_case_speakable_roles(db, case) if case else []
     director_plan = run_director(
@@ -337,6 +300,7 @@ def generate_multi_role_turn(
         target_role_name=target_role_name,
         role_snapshots=role_snapshots,
         case_roles=case_roles,
+        conversation_summary_block=summary_block,
         use_llm=use_llm,
     )
     if not director_plan or not director_plan.get("cast_plan"):
@@ -349,14 +313,9 @@ def generate_multi_role_turn(
         if not role:
             continue
         brain_key = str(role.id)
-        snap = role_snapshots.get(str(role.id)) or {
-            "emotion": int(getattr(role, "init_emotion", None) or 50),
-            "cooperation": int(getattr(role, "init_trust", None) or 30),
-            "risk": 50,
-            "clarity": 50,
-        }
+        snap = role_snapshots.get(str(role.id)) or stored_initial_states.get(str(role.id)) or resolve_role_initial_state(role, case, scene)
         prior_brain = role_brains.get(brain_key) or {}
-        actor_history = _role_thread_history(history, role, limit=6)
+        actor_history = _role_thread_history(history, role)
         public_scene_utterances = _public_scene_utterances(history, role)
         built_brain = _build_role_brain(
             role=role,
@@ -381,8 +340,12 @@ def generate_multi_role_turn(
             public_scene_utterances=public_scene_utterances,
             recognized_actions=recognized_actions,
             role_brain=built_brain,
+            conversation_summary_block=summary_block,
+            comparison_history=history,
             use_llm=use_llm,
         )
+        if not actor_output.get("utterances"):
+            continue
         role_brains[brain_key] = actor_output.get("role_brain") or built_brain
         updated = actor_output.get("updated_snapshot") or {}
         guidance_outcomes[brain_key] = {
@@ -434,15 +397,11 @@ def serialize_scene_roles(
         deltas = {}
     active_ids = set(active_role_ids or (runtime_state or {}).get("last_active_role_ids") or [])
     target_clean = _text(target_role_name)
+    stored_initial_states = resolve_scene_role_initial_states(db, roles, case, scene) if scene else {}
 
     payload: list[dict[str, Any]] = []
     for role in roles:
-        snap = snapshots.get(str(role.id)) or {
-            "emotion": int(getattr(role, "init_emotion", None) or 50),
-            "cooperation": int(getattr(role, "init_trust", None) or 30),
-            "risk": 50,
-            "clarity": 50,
-        }
+        snap = snapshots.get(str(role.id)) or stored_initial_states.get(str(role.id)) or resolve_role_initial_state(role, case, scene)
         emotion = int(snap.get("emotion", 50))
         cooperation = int(snap.get("cooperation", 30))
         risk = int(snap.get("risk", 50))

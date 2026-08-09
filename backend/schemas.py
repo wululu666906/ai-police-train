@@ -13,6 +13,8 @@ class RoleBase(BaseModel):
     speaking_style: Optional[str] = "冷静"
     init_emotion: int = 50
     init_trust: int = 30
+    init_risk: int = 50
+    init_expression_clarity: int = 50
     status: Optional[str] = "正常"
     iq_level: Optional[str] = "中等"
     eq_level: Optional[str] = "中等"
@@ -37,6 +39,8 @@ class SceneBase(BaseModel):
     name: str
     description: Optional[str] = None
     difficulty: str
+    estimated_minutes: Optional[int] = None
+    opening_config: Optional[str] = "{}"
     dispatch_brief: Optional[str] = None
     first_impression: Optional[str] = None
     stages: Optional[str] = "[]"

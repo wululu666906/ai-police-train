@@ -9,7 +9,7 @@ import re
 from typing import Any, Optional
 
 import models
-from .case_knowledge_service import load_case_knowledge_bundle
+from .role_generation_context_service import compile_role_generation_context
 from .case_intelligence_service import validate_supporting_knowledge_ids
 from .llm_provider import (
     create_json_chat_completion,
@@ -18,12 +18,10 @@ from .llm_provider import (
     get_fast_generation_kwargs,
     get_roleplay_model,
 )
-from .rag_service import RUNTIME_RETRIEVAL_LIBRARIES, rag_service
 from .persona_engine import (
     analyze_dialogue_momentum,
     build_persona_profile,
     build_role_script,
-    format_runtime_persona_block,
 )
 from .state_influence_engine import (
     apply_delivery_from_contract,
@@ -51,6 +49,7 @@ from .multi_role_service import _build_history_block, _role_display_name
 from .role_memory_retrieval_service import build_role_answer_context, format_retrieved_memories
 from .dialogue_policy_service import blend_state_delta
 from .role_dialogue_policy_service import build_dialogue_priority
+from .dialogue_context_service import find_repetition
 
 LEGACY_ROLE_ACTOR_PROMPT = """
 你正在扮演警情训练场景中的角色「{role_name}」，根据导演编排意图说出台词。
@@ -159,6 +158,8 @@ ROLE_ACTOR_PROMPT = """你是警情训练现场人物「{role_name}」。只输�
 
 当前场景：{scene_name}；阶段：{current_stage}
 学员刚才说：{user_text}
+完整案件剧情核心基准（每轮强制读取）：
+{full_case_story_block}
 本轮唯一执行策略：{dialogue_priority}
 当前问题要求：{question_instruction}
 本轮参与方式：{participation}；发言意图：{intent}；触发原因：{trigger_reason}
@@ -171,15 +172,18 @@ ROLE_ACTOR_PROMPT = """你是警情训练现场人物「{role_name}」。只输�
 {history_block}
 本轮其他角色已说：{peer_utterances_block}
 当前公开现场信息：{public_scene_block}
+分层会话上下文（较早摘要、相关原文与近期原文）：
+{conversation_summary_block}
 视角要求：{perspective_hint}
 
 执行顺序：
 1. 先回答学员刚才这句话，不评价其提问技巧，不重复后台字段和模板话术。
-2. 事实只能来自本人记忆或本轮公开听到的话；不知道时明确说不知道哪一部分。
+2. 先用完整剧情校验全局逻辑，再按本人记忆和本轮公开信息过滤可说内容；不得把全案知情能力赋给角色。
 3. 人物性格只影响口吻和披露节奏，不能压过当前问题。普通群众通常会对警方保持基本尊重并逐步配合。
 4. 有效安抚、明确保护或说明下一步后，应自然缓和；除非存在明确危险刺激，不得长期维持同样的激烈反应。
 5. 最多输出 {utterance_count} 条连续台词；能一句说清就只输出一句。
 6. supporting_knowledge_ids 填所用记忆ID；state_delta 仅表示轻微建议，最终状态由系统计算。
+7. 不得复述本人或其他角色已经说过的同义台词；需要继续回答时，换用尚未披露的本人记忆事实、不同立场或新的具体细节。
 
 只输出 JSON：
 {{"utterances":[{{"content":"自然台词","delivery":"normal","supporting_knowledge_ids":["K1"]}}],"inner_thought":"","state_delta":{{"emotion":0,"cooperation":0,"risk":0,"clarity":0}},"new_fact_revealed":null}}
@@ -1936,6 +1940,8 @@ def generate_role_dialogue(
     public_scene_utterances: Optional[list[dict[str, Any]]] = None,
     recognized_actions: Optional[list[Any]] = None,
     role_brain: Optional[dict[str, Any]] = None,
+    conversation_summary_block: str = "（暂无累计摘要）",
+    comparison_history: Optional[list[Any]] = None,
     use_llm: bool = True,
 ) -> dict[str, Any]:
     utterance_count = max(1, min(4, int(cast_entry.get("utterance_count") or 1)))
@@ -1955,7 +1961,12 @@ def generate_role_dialogue(
         public_scene_utterances,
         peer_utterances,
     )
-    knowledge_bundle = load_case_knowledge_bundle(case, role)
+    generation_context = compile_role_generation_context(case, role)
+    knowledge_bundle = {
+        "documents": generation_context.get("documents") or [],
+        "knowledge_block": generation_context.get("role_knowledge_block") or "暂无角色专属案件知识",
+        "role_knowledge_view": generation_context.get("role_knowledge_view") or {},
+    }
     role_memory_block = format_retrieved_memories(
         knowledge_bundle.get("role_knowledge_view") or {},
         user_text,
@@ -1963,10 +1974,6 @@ def generate_role_dialogue(
         limit=12,
         max_chars=6000,
     )
-    retrieval_bundle = {"context_block": ""}
-    if os.getenv("ROLE_AI_USE_RAG", "0").strip().lower() in {"1", "true", "yes"}:
-        retrieval_query = rag_service.build_retrieval_query(user_text, getattr(case, "case_type", "") if case else "", getattr(case, "title", "") if case else "", getattr(scene, "name", "") if scene else "", current_stage, history=[getattr(message, "content", "") for message in history[-3:]])
-        retrieval_bundle = rag_service.build_context_block(retrieval_query, limit=2, libraries=RUNTIME_RETRIEVAL_LIBRARIES, max_chars=1200)
     momentum = analyze_dialogue_momentum(
         user_text,
         profile,
@@ -1976,8 +1983,6 @@ def generate_role_dialogue(
     )
     momentum = enrich_momentum_with_axis_deltas(momentum, user_text, recognized_actions, profile)
     state_contract = build_state_contract(role_snapshot, momentum, profile)
-    persona_block = format_runtime_persona_block(role, profile)
-    role_brain_block = _format_role_brain_block(role_brain)
     identity_anchor_block = _text(role_brain.get("identity_anchor")) or _format_identity_anchor(role, case, profile)
     state_contract_block = format_state_contract_block(state_contract)
     reaction = choose_role_reaction(
@@ -2020,7 +2025,7 @@ def generate_role_dialogue(
     if use_llm and output is None:
         prompt = ROLE_ACTOR_PROMPT.format(
             role_name=_role_display_name(role),
-            interaction_mode=_text(director_plan.get("interaction_mode")) or "mixed",
+            full_case_story_block=generation_context.get("full_story_block") or "完整剧情数据源缺失，不得自行补全案件事实。",
             participation=_text(cast_entry.get("participation")) or "primary_respond",
             utterance_count=utterance_count,
             intent=_text(cast_entry.get("intent")) or "respond",
@@ -2030,23 +2035,15 @@ def generate_role_dialogue(
             user_text=user_text or "（学员沉默）",
             dialogue_priority=dialogue_policy["priority"],
             question_instruction=dialogue_policy["instruction"],
-            persona_block=persona_block,
-            role_brain_block=role_brain_block,
             identity_anchor_block=identity_anchor_block,
             state_contract_block=state_contract_block,
             human_reaction_block=human_reaction_block,
             perspective_hint=perspective_hint,
-            # Do not leak the canonical whole-case ledger into the actor
-            # prompt. It is reserved for post-generation validation.
-            canonical_facts_block="全案基准不会直接提供给角色；只允许使用下方角色专属案件知识和本轮公开信息。",
             case_knowledge_block=role_memory_block,
-            retrieved_knowledge_block=(retrieval_bundle.get("context_block") or "（本角色未启用外部检索）")[:1200],
-            knows_facts=_text(role_brain.get("known_facts")) or "（无）",
-            hidden_truths=_text(role_brain.get("hidden_truths")) or "（无）",
-            does_not_know=_text(role_brain.get("does_not_know")) or "（无）",
             peer_utterances_block=format_peer_utterances_block(peer_utterances or []),
             public_scene_block=_format_public_scene_block(public_scene_utterances),
-            history_block=_build_history_block(history[-6:]),
+            history_block=_build_history_block(history),
+            conversation_summary_block=conversation_summary_block or "（暂无累计摘要）",
         )
         try:
             response = create_json_chat_completion(
@@ -2283,6 +2280,77 @@ def generate_role_dialogue(
         user_text=user_text,
         grounded_fallback=grounded_fallback,
     )
+
+    # Compare against the complete shared transcript, not only this role's
+    # projected short thread. One source-grounded retry is allowed; persistent
+    # repetition is suppressed instead of emitting another homogeneous bubble.
+    full_history = comparison_history if comparison_history is not None else history
+    accepted: list[dict[str, Any]] = []
+    for utterance in output["utterances"]:
+        content = _text(utterance.get("content"))
+        conflict = find_repetition(
+            content,
+            speaker_name=_role_display_name(role),
+            history=full_history,
+            peer_utterances=peer_utterances,
+        )
+        if not conflict:
+            accepted.append(utterance)
+            continue
+
+        replacement = ""
+        replacement_ids: list[str] = []
+        if use_llm:
+            retry_prompt = (
+                f"你是{_role_display_name(role)}。当前回答与历史台词过于相似。\n"
+                f"冲突台词：{conflict['content']}\n当前问题：{user_text}\n"
+                f"本人可用记忆：\n{role_memory_block}\n"
+                "只根据本人记忆，换一个尚未说过的事实角度、句式和角色立场直接回答。"
+                "不要编造，不要解释修改原因。只输出JSON：{\"content\":\"台词\"}"
+            )
+            try:
+                retry_response = create_json_chat_completion(
+                    messages=[{"role": "user", "content": retry_prompt}],
+                    temperature=0.55,
+                    model=get_roleplay_model(),
+                    max_tokens=240,
+                    extra_kwargs=get_fast_generation_kwargs(),
+                )
+                retry_raw = extract_message_text(retry_response) or ""
+                retry_match = re.search(r"\{[\s\S]*\}", retry_raw)
+                retry_payload = json.loads(retry_match.group(0) if retry_match else retry_raw)
+                replacement = _text(retry_payload.get("content"))
+                replacement_ids = _auto_ground_utterance(
+                    replacement,
+                    knowledge_bundle.get("role_knowledge_view") or {},
+                    user_text,
+                )
+            except Exception:
+                replacement = ""
+        if not replacement:
+            replacement, replacement_ids = _repair_grounded_utterance(
+                role,
+                knowledge_bundle.get("role_knowledge_view") or {},
+                user_text,
+                history=history,
+                allow_model=False,
+            )
+        if replacement and not find_repetition(
+            replacement,
+            speaker_name=_role_display_name(role),
+            history=full_history,
+            peer_utterances=peer_utterances,
+        ):
+            accepted.append({
+                **utterance,
+                "content": replacement,
+                "grounding": validate_supporting_knowledge_ids(
+                    knowledge_bundle.get("role_knowledge_view") or {},
+                    replacement_ids,
+                    require_support=bool((knowledge_bundle.get("role_knowledge_view") or {}).get("ledger")),
+                ),
+            })
+    output["utterances"] = accepted
     output["state_delta"] = blend_state_delta(
         role_snapshot,
         _merge_user_influence_delta(output.get("state_delta") or {}, momentum),
@@ -2311,6 +2379,12 @@ def generate_role_dialogue(
         "guidance_acknowledged": reaction.get("key") == "guided_acknowledgement",
         "role_brain": role_brain,
         "grounding": [item.get("grounding") for item in output["utterances"] if isinstance(item, dict) and item.get("grounding")],
+        "full_story_context": {
+            "source": (generation_context.get("full_story_source") or {}).get("source"),
+            "node_id": (generation_context.get("full_story_source") or {}).get("node_id"),
+            "content_hash": (generation_context.get("full_story_source") or {}).get("content_hash"),
+            "loaded": bool((generation_context.get("full_story_source") or {}).get("content")),
+        },
     }
 
 

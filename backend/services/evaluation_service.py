@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Tuple
 from sqlalchemy.orm import Session
 
 import models
+from .dialogue_sanitize_service import filter_internal_prompt_messages, is_internal_prompt_message
 from .llm_provider import create_json_chat_completion, extract_json_payload, extract_message_text, get_chat_model
 from .persona_engine import build_persona_profile
 from .rag_service import rag_service
@@ -470,6 +471,8 @@ def format_dialogue(msgs: List[models.Message]) -> Tuple[str, List[str]]:
     history_lines = []
     student_lines = []
     for msg in msgs:
+        if is_internal_prompt_message(msg):
+            continue
         role = str(msg.role or "")
         if role == "user":
             speaker = "学员"
@@ -1876,10 +1879,10 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
         cached_report = json.loads(session.evaluation_result)
         scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
         case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
-        msgs = (
+        msgs = filter_internal_prompt_messages(
             db.query(models.Message)
             .filter(models.Message.session_id == session_id)
-            .order_by(models.Message.created_at.asc())
+            .order_by(models.Message.created_at.asc(), models.Message.id.asc())
             .all()
         )
         _, student_lines = format_dialogue(msgs)
@@ -1900,10 +1903,10 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
 
     scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
     case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
-    msgs = (
+    msgs = filter_internal_prompt_messages(
         db.query(models.Message)
         .filter(models.Message.session_id == session_id)
-        .order_by(models.Message.created_at.asc())
+        .order_by(models.Message.created_at.asc(), models.Message.id.asc())
         .all()
     )
     role = resolve_scene_role(db, scene, case) if scene else None

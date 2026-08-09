@@ -294,6 +294,8 @@ def _build_default_auto_nodes(
         return []
 
     profile = _infer_scene_profile(title)
+    if not (video.briefing or "").strip():
+        video.briefing = str(profile.get("briefing") or "").strip() or video.briefing
     node_specs = profile.get("nodes") or []
     trigger_times: list[int] = []
     source_asset = _get_video_source_asset(db, video) if db is not None else None

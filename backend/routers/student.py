@@ -54,6 +54,63 @@ def safe_json_loads(value, default):
         return default
 
 
+def _scene_estimated_minutes(scene: models.Scene) -> int | None:
+    value = getattr(scene, "estimated_minutes", None)
+    if value is None:
+        return None
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return None
+    return minutes if minutes > 0 else None
+
+
+def _normalize_difficulty_label(value: str | None) -> str:
+    text_value = repair_text(value) if value else ""
+    text_value = str(text_value or "").strip().lower()
+    if any(token in text_value for token in ("低", "简", "easy", "low")):
+        return "低"
+    if any(token in text_value for token in ("高", "困", "hard", "high")):
+        return "高"
+    return "中"
+
+
+def _difficulty_rank(value: str | None) -> int:
+    return {"低": 1, "中": 2, "高": 3}.get(_normalize_difficulty_label(value), 2)
+
+
+def _format_minutes_summary(minutes: list[int]) -> str | None:
+    values = sorted({item for item in minutes if item > 0})
+    if not values:
+        return None
+    if len(values) == 1:
+        return f"{values[0]} 分钟"
+    return f"{values[0]}-{values[-1]} 分钟"
+
+
+def _stage_core_items(raw_stages) -> list[str]:
+    stages = safe_json_loads(raw_stages, [])
+    if not isinstance(stages, list):
+        return []
+    items: list[str] = []
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        text_value = (
+            stage.get("stage_name")
+            or stage.get("name")
+            or stage.get("title")
+            or stage.get("stage_goal")
+            or stage.get("goal")
+        )
+        text_value = repair_text(str(text_value or "")).strip()
+        if text_value and text_value not in items:
+            items.append(text_value)
+        if len(items) >= 4:
+            break
+    return items
+
+
 @router.get("/cases")
 def get_student_cases(
     case_type: Optional[str] = None,
@@ -173,6 +230,17 @@ def get_student_cases(
         case_scenes = scenes_by_case_id.get(case.id, [])
         if not case_scenes:
             continue
+        estimated_values = [minutes for minutes in (_scene_estimated_minutes(scene) for scene in case_scenes) if minutes]
+        primary_scene = max(case_scenes, key=lambda item: _difficulty_rank(item.difficulty))
+        core_items = []
+        for scene in case_scenes:
+            for item in _stage_core_items(scene.stages):
+                if item not in core_items:
+                    core_items.append(item)
+                if len(core_items) >= 4:
+                    break
+            if len(core_items) >= 4:
+                break
 
         results.append(
             {
@@ -183,12 +251,20 @@ def get_student_cases(
                 "created_at": case.created_at.isoformat() if case.created_at else None,
                 "train_count": sum(scene_stats[scene.id]["valid_train_count"] for scene in case_scenes),
                 "empty_session_count": sum(scene_stats[scene.id]["empty_session_count"] for scene in case_scenes),
+                "scene_count": len(case_scenes),
+                "primary_difficulty": _normalize_difficulty_label(primary_scene.difficulty),
+                "estimated_minutes_summary": _format_minutes_summary(estimated_values),
+                "core_items": core_items,
                 "scenes": [
                     {
                         "id": scene.id,
                         "name": repair_text(scene.name),
                         "difficulty": repair_text(scene.difficulty),
+                        "estimated_minutes": _scene_estimated_minutes(scene),
                         "description": repair_text(scene.description),
+                        "dispatch_brief": repair_text(scene.dispatch_brief),
+                        "first_impression": repair_text(scene.first_impression),
+                        "stages": safe_json_loads(scene.stages, []),
                         "training_status": latest_session_meta_by_scene.get(scene.id, {}).get("training_status", "not_started"),
                         "status_label": {
                             "not_started": "未开始训练",

@@ -7,6 +7,7 @@ import database
 import models
 from .rag_service import rag_service
 from .case_intelligence_service import build_role_knowledge_view, format_role_knowledge_view
+from .case_knowledge_repository import upsert_node
 
 
 CASE_SOURCE = "case_library"
@@ -15,6 +16,10 @@ ROLE_DOC_TYPE = "role_script"
 CANONICAL_DOC_TYPE = "case_knowledge_node"
 _SYNC_LOCK = threading.Lock()
 _SYNC_FINGERPRINTS: dict[int, str] = {}
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8", errors="ignore")).hexdigest()
 
 
 def _safe_json_loads(value: Any, fallback: Any):
@@ -115,6 +120,76 @@ def _canonical_documents(case: models.Case) -> list[dict[str, Any]]:
             }
         )
     return docs
+
+
+def _structured_complete_story(case: models.Case) -> str:
+    structured = _safe_json_loads(getattr(case, "structured_data", None), {})
+    if not isinstance(structured, dict):
+        structured = {}
+    story_world = structured.get("story_world") if isinstance(structured.get("story_world"), dict) else {}
+    narrative_document = structured.get("narrative_document") if isinstance(structured.get("narrative_document"), dict) else {}
+    candidates = (
+        structured.get("complete_story"),
+        structured.get("full_narrative"),
+        story_world.get("complete_story"),
+        narrative_document.get("content"),
+        getattr(case, "background", None),
+        getattr(case, "original_content", None),
+    )
+    return next((str(item).strip() for item in candidates if str(item or "").strip()), "")
+
+
+def load_complete_story_source(
+    case: models.Case | None,
+    *,
+    canonical_docs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Load the full case story for every actor turn, with legacy fallbacks."""
+    if not case or not getattr(case, "id", None):
+        return {"content": "", "content_hash": "", "source": "missing", "node_id": "story"}
+
+    docs = canonical_docs if canonical_docs is not None else _canonical_documents(case)
+    story_doc = next(
+        (
+            item for item in docs
+            if (item.get("metadata") or {}).get("node_type") == "complete_story"
+            or (item.get("metadata") or {}).get("node_id") == "story"
+        ),
+        None,
+    )
+    content = str((story_doc or {}).get("content") or "").strip()
+    metadata = (story_doc or {}).get("metadata") or {}
+    if content:
+        return {
+            "content": content,
+            "content_hash": str(metadata.get("content_hash") or _content_hash(content)),
+            "source": "case_knowledge_node",
+            "node_id": str(metadata.get("node_id") or "story"),
+        }
+
+    content = _structured_complete_story(case)
+    return {
+        "content": content,
+        "content_hash": _content_hash(content) if content else "",
+        "source": "structured_data_fallback" if content else "missing",
+        "node_id": "story",
+    }
+
+
+def sync_complete_story_source(case: models.Case | None) -> dict[str, Any]:
+    """Keep the case-scoped canonical story node aligned after case edits."""
+    if not case or not getattr(case, "id", None):
+        return {"status": "skipped", "reason": "case_not_persisted"}
+    content = _structured_complete_story(case)
+    if not content:
+        return {"status": "skipped", "reason": "complete_story_missing"}
+    return upsert_node(
+        f"case:{int(case.id)}",
+        "story",
+        "complete_story",
+        content,
+        metadata={"case_id": int(case.id), "role": "actor_global_story_baseline"},
+    )
 
 
 def _case_fact_lines(case: models.Case, structured: dict[str, Any]) -> list[str]:
@@ -295,7 +370,12 @@ def sync_case_to_knowledge(case: models.Case) -> dict[str, Any]:
 
 def try_sync_case_to_knowledge(case: models.Case) -> dict[str, Any]:
     try:
-        return sync_case_to_knowledge(case)
+        story_sync = sync_complete_story_source(case)
+        # The canonical node is authoritative for actor turns; RAG remains a
+        # secondary index and is refreshed only after the story node is current.
+        result = sync_case_to_knowledge(case)
+        result["complete_story_sync"] = story_sync
+        return result
     except Exception as exc:
         print(f"Case knowledge sync failed for case {getattr(case, 'id', None)}: {exc}")
         return {
@@ -321,6 +401,7 @@ def load_case_knowledge_bundle(case: models.Case | None, role: models.Role | Non
     # that a witness, suspect or caller may not know.  The full case remains
     # available to validators and admin tools; roleplay receives a scoped view.
     canonical_docs = _canonical_documents(case)
+    complete_story_source = load_complete_story_source(case, canonical_docs=canonical_docs)
     ids = [] if role else [
         item["id"]
         for item in canonical_docs
@@ -367,6 +448,7 @@ def load_case_knowledge_bundle(case: models.Case | None, role: models.Role | Non
             "documents": role_docs,
             "knowledge_block": f"案件：{getattr(case, 'title', '') or case.id}\n{role_block}",
             "role_knowledge_view": role_view,
+            "complete_story_source": complete_story_source,
         }
 
     docs = rag_service.get_documents_by_ids(ids)
@@ -395,4 +477,8 @@ def load_case_knowledge_bundle(case: models.Case | None, role: models.Role | Non
         content = str(doc.get("content") or "").strip()
         if content:
             sections.append(f"【{title}】\n{content[:2400]}")
-    return {"documents": ordered, "knowledge_block": "\n\n".join(sections) or "暂无案件知识库内容"}
+    return {
+        "documents": ordered,
+        "knowledge_block": "\n\n".join(sections) or "暂无案件知识库内容",
+        "complete_story_source": complete_story_source,
+    }

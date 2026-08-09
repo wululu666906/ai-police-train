@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from collections import defaultdict
 from typing import Any
 
 import models
@@ -11,10 +13,13 @@ from .persona_engine import build_persona_profile
 from .role_compact_service import person_to_role_compact_view
 from .role_resolver import is_role_speakable
 from .stage_config_service import infer_scene_behavior_mode, infer_scene_kind
-from .dialogue_sanitize_service import sanitize_utterances
+from .dialogue_sanitize_service import filter_internal_prompt_messages, sanitize_utterances
 from .training_runtime_service import dump_runtime_state, load_runtime_state
+from .role_state_service import resolve_role_initial_state
+from .role_resolver import resolve_scene_roles
 
 INTAKE_MINIMAL_DISPATCH = "110 有新报警来电，等待接听。"
+_OPENING_LOCKS: defaultdict[int, threading.Lock] = defaultdict(threading.Lock)
 
 CALLER_OPEN_ROLE_HINTS = ("报警", "报案", "证人", "被害人", "受害人")
 
@@ -49,6 +54,23 @@ OPENING_TURN_PROMPT = """你是警情训练模拟中的报警人/报案人，刚
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _opening_config(scene: models.Scene | None) -> dict[str, Any]:
+    raw = getattr(scene, "opening_config", "") if scene else ""
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) and raw.strip() else (raw or {})
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "enabled": payload.get("enabled") is not False,
+        "mode": "preset" if payload.get("mode") == "preset" else "dynamic",
+        "speaker_role_ids": [int(item) for item in (payload.get("speaker_role_ids") or []) if str(item).isdigit()][:3],
+        "director_note": _text(payload.get("director_note")),
+        "preset_turns": [item for item in (payload.get("preset_turns") or []) if isinstance(item, dict) and _text(item.get("content"))][:9],
+    }
 
 
 def infer_session_scene_kind(scene: models.Scene | None, session: models.TrainingSession | None) -> str:
@@ -177,6 +199,16 @@ def _fallback_opening_utterances(context: dict[str, Any]) -> list[dict[str, str]
     return [{"content": line} for line in lines[:3]]
 
 
+def _fallback_scene_opening(case: models.Case | None, scene: models.Scene | None, role: models.Role) -> list[dict[str, str]]:
+    context = _build_opening_context(case, role, scene)
+    timeline = _text(getattr(scene, "description", "")) or _text(context.get("incident_hints")) or "现场情况"
+    memory = _text(context.get("core_concern"))
+    lines = [f"我是{context['role_name']}，刚才现场{timeline[:90]}。"]
+    if memory:
+        lines.append(f"我最担心的是{memory[:70]}。")
+    return [{"content": item} for item in lines]
+
+
 def _parse_opening_payload(raw: Any) -> list[dict[str, str]]:
     if not isinstance(raw, dict):
         return []
@@ -230,6 +262,52 @@ def generate_opening_utterances(
     return sanitize_utterances(_fallback_opening_utterances(context)), inner_thought
 
 
+def generate_scene_opening_utterances(
+    case: models.Case | None,
+    scene: models.Scene | None,
+    roles: list[models.Role],
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    selected = [role for role in roles if role.id in set(config.get("speaker_role_ids") or [])]
+    if not selected:
+        selected = [role for role in roles if is_role_speakable(role)][:3]
+    if not selected:
+        return []
+    if config.get("mode") == "preset":
+        role_map = {role.id: role for role in selected}
+        rows: list[dict[str, Any]] = []
+        for item in config.get("preset_turns") or []:
+            if not _text(item.get("content")):
+                continue
+            try:
+                role_id = int(item.get("speaker_role_id") or 0)
+            except (TypeError, ValueError):
+                role_id = 0
+            rows.append({"content": _text(item.get("content")), "role": role_map.get(role_id) or selected[0]})
+        return rows
+    outputs: list[dict[str, Any]] = []
+    for role in selected:
+        context = _build_opening_context(case, role, scene)
+        prompt = (
+            f"你是警情训练场景中的{context['role_name']}（{context['role_type']}），刚进入场景。\n"
+            f"场景：{_text(getattr(scene, 'name', ''))}；场景描述：{_text(getattr(scene, 'description', ''))[:500]}\n"
+            f"案件线索：{context['incident_hints']}\n人物记忆与诉求：{context.get('current_goal') or '无'}；{context.get('core_concern') or '无'}\n"
+            f"四维状态：{resolve_role_initial_state(role, case, scene)}\n导演约束：{config.get('director_note') or '自然开场，直接给出本角色此刻最重要的事实'}\n"
+            "只输出1-2条角色气泡台词，不要旁白、不要编造未给出的事实。JSON：{\"utterances\":[{\"content\":\"台词\"}]}"
+        )
+        utterances: list[dict[str, str]] = []
+        try:
+            response = create_json_chat_completion(messages=[{"role": "user", "content": prompt}], temperature=0.6, max_tokens=420)
+            payload = extract_json_payload(extract_message_text(response))
+            utterances = _parse_opening_payload(payload)
+        except Exception:
+            utterances = []
+        if not utterances:
+            utterances = _fallback_scene_opening(case, scene, role)
+        outputs.extend({"content": item["content"], "role": role} for item in sanitize_utterances(utterances))
+    return outputs
+
+
 def should_generate_opening(
     scene: models.Scene | None,
     session: models.TrainingSession,
@@ -241,9 +319,59 @@ def should_generate_opening(
         return False
     if messages:
         return False
-    if resolve_dialogue_mode(scene, session) != "caller_first":
-        return False
-    return is_caller_opening_role(role)
+    config = _opening_config(scene)
+    return bool(config["enabled"]) and is_role_speakable(role)
+
+
+def _ensure_opening_turn_unlocked(
+    db,
+    session: models.TrainingSession,
+    scene: models.Scene | None,
+    case: models.Case | None,
+    role: models.Role | None,
+) -> list[models.Message]:
+    messages = filter_internal_prompt_messages(
+        db.query(models.Message)
+        .filter(models.Message.session_id == session.id)
+        .order_by(models.Message.created_at.asc(), models.Message.id.asc())
+        .all()
+    )
+    roles = resolve_scene_roles(db, scene, case) if scene else []
+    speakable_roles = [item for item in roles if is_role_speakable(item)]
+    opening_role = role if is_role_speakable(role) else (speakable_roles[0] if speakable_roles else None)
+    if not should_generate_opening(scene, session, opening_role, messages):
+        return []
+    config = _opening_config(scene)
+    if not speakable_roles and opening_role:
+        speakable_roles = [opening_role]
+    scene_opening = generate_scene_opening_utterances(case, scene, speakable_roles, config)
+    if scene_opening:
+        utterances = scene_opening
+        inner_thought = "场景开场已按角色顺序进入对话。"
+    else:
+        utterances, inner_thought = generate_opening_utterances(case, opening_role, scene)
+    created: list[models.Message] = []
+    for index, item in enumerate(utterances):
+        message = models.Message(
+            session_id=session.id,
+            role="assistant",
+            content=item["content"],
+            speaker_role_id=getattr(item.get("role") or opening_role, "id", None),
+            speaker_name=_text(getattr(item.get("role") or opening_role, "name", "")) or None,
+            inner_thought=inner_thought if index == 0 else None,
+        )
+        db.add(message)
+        created.append(message)
+
+    runtime_state = load_runtime_state(session.revealed_info)
+    runtime_state["opening_delivered"] = True
+    runtime_state["dialogue_mode"] = "caller_first" if resolve_dialogue_mode(scene, session) == "caller_first" else "scene_opening"
+    session.revealed_info = dump_runtime_state(runtime_state)
+    db.flush()
+    runtime_state["opening_message_ids"] = [message.id for message in created if message.id]
+    session.revealed_info = dump_runtime_state(runtime_state)
+    db.flush()
+    return created
 
 
 def ensure_opening_turn(
@@ -253,32 +381,7 @@ def ensure_opening_turn(
     case: models.Case | None,
     role: models.Role | None,
 ) -> list[models.Message]:
-    messages = (
-        db.query(models.Message)
-        .filter(models.Message.session_id == session.id)
-        .order_by(models.Message.created_at.asc())
-        .all()
-    )
-    if not should_generate_opening(scene, session, role, messages):
-        return []
-
-    utterances, inner_thought = generate_opening_utterances(case, role, scene)
-    created: list[models.Message] = []
-    for index, item in enumerate(utterances):
-        message = models.Message(
-            session_id=session.id,
-            role="assistant",
-            content=item["content"],
-            speaker_role_id=getattr(role, "id", None),
-            speaker_name=_text(getattr(role, "name", "")) or None,
-            inner_thought=inner_thought if index == 0 else None,
-        )
-        db.add(message)
-        created.append(message)
-
-    runtime_state = load_runtime_state(session.revealed_info)
-    runtime_state["opening_delivered"] = True
-    runtime_state["dialogue_mode"] = "caller_first"
-    session.revealed_info = dump_runtime_state(runtime_state)
-    db.flush()
-    return created
+    """Generate at most one opening turn per session in the application process."""
+    with _OPENING_LOCKS[int(session.id)]:
+        db.refresh(session)
+        return _ensure_opening_turn_unlocked(db, session, scene, case, role)

@@ -328,6 +328,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Document, MagicStick, Search, SetUp, Timer, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
 import request from '../utils/request'
+import { resolveMediaUrl } from '../utils/media'
 import { useVideoCover } from '../composables/useVideoCover'
 import { useSegmentedVideoPlayback } from '../composables/useSegmentedVideoPlayback'
 import { clearPlaybackPrefetchQueue, prefetchPlayback } from '../services/videoPlayback'
@@ -560,7 +561,7 @@ function openVideo(video: VideoItem) {
 
   if (video.video_type === 'teaching') {
     showTeachingPlayer.value = true
-    void nextTick().then(() => attachTeachingPlayback(video.id, String(video.video_url || '')))
+    void nextTick().then(() => attachTeachingPlayback(video.id, resolveMediaUrl(video.video_url)))
   } else {
     entryStep.value = 1
     entryMode.value = 'practice'

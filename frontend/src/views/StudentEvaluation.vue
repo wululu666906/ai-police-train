@@ -235,6 +235,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Download, Printer } from '@element-plus/icons-vue'
 import { showToast } from 'vant'
 import request from '../utils/request'
+import { isInternalPromptMessage, isInternalPromptText } from '../utils/dialogueMessage'
 import ECharts from '../geeker-adapt/components/ECharts/index.vue'
 import TrainingReportShell from '../components/training-report/TrainingReportShell.vue'
 import VideoReportPaper from '../components/training-report/VideoReportPaper.vue'
@@ -585,6 +586,7 @@ const weakAssessmentItems = computed(() =>
 
 const studentMessages = computed(() =>
   (Array.isArray(sessionDetail.value?.messages) ? sessionDetail.value.messages : [])
+    .filter((message: any) => !isInternalPromptMessage(message))
     .filter((message: any) => message?.role === 'user' && String(message?.content || '').trim())
     .map((message: any) => String(message.content || '').trim()),
 )
@@ -746,7 +748,7 @@ const normalizeDialogueText = (value: string) =>
 const findUtteranceFromEvidence = (evidence: any[]) => {
   const candidates = (Array.isArray(evidence) ? evidence : [])
     .map((item) => stripSpeakerPrefix(String(item || '')))
-    .filter(Boolean)
+    .filter((item) => Boolean(item) && !isInternalPromptText(item))
   for (const candidate of candidates) {
     const matched = studentMessages.value.find((message: string) => message.includes(candidate) || candidate.includes(message))
     if (matched) return matched
@@ -807,11 +809,12 @@ const normalizeEvidenceItems = (value: any) => {
       const text = String(item || '').trim()
       return { kind: 'text', text, label: text }
     })
-    .filter((item) => item.text)
+    .filter((item) => item.text && !isInternalPromptText(item.text))
 }
 
 const dialogueMessages = computed(() =>
   (Array.isArray(sessionDetail.value?.messages) ? sessionDetail.value.messages : [])
+    .filter((message: any) => !isInternalPromptMessage(message))
     .filter((message: any) => ['user', 'assistant'].includes(String(message?.role || '')) && String(message?.content || '').trim())
     .map((message: any, index: number) => ({
       index,
@@ -873,6 +876,7 @@ const pushChatRecord = (
   key: string,
   speakerName = '',
 ) => {
+  if (isInternalPromptText(text)) return
   const clean = chatRecordText(text)
   if (!clean) return
   const dedupeKey = `${role}:${normalizeDialogueText(clean)}`

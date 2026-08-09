@@ -1175,6 +1175,7 @@ import {
   Microphone, Check,
 } from '@element-plus/icons-vue'
 import request from '../utils/request'
+import { resolveMediaUrl } from '../utils/media'
 import { usePresenceMonitor } from '../composables/usePresenceMonitor'
 import { useFaceIdentityVerify } from '../composables/useFaceIdentityVerify'
 import { useGestureDetector } from '../composables/useGestureDetector'
@@ -2046,7 +2047,7 @@ async function fetchVideo() {
     const res: any = await request.get(`/videos/${videoId}`)
     video.value = res
     await nextTick()
-    playbackPreparePromise = attachPlayback(videoId, String(res.video_url || ''))
+    playbackPreparePromise = attachPlayback(videoId, resolveMediaUrl(res.video_url))
   } catch (error: any) {
     ElMessage.error('加载视频失败')
     video.value = null
