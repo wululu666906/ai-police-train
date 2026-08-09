@@ -1,160 +1,146 @@
-<template>
-  <div class="admin-shell h-screen overflow-hidden bg-[var(--police-bg)] lg:flex" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+﻿<template>
+  <div class="admin-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <div v-if="menuOpen" class="fixed inset-0 z-30 bg-slate-900/40 lg:hidden" @click="menuOpen = false"></div>
 
     <aside
       :class="[
-        'admin-sidebar fixed inset-y-0 left-0 z-40 flex flex-col shadow-xl transition-transform duration-200 lg:translate-x-0',
+        'admin-sidebar fixed inset-y-0 left-0 z-40 transition-transform duration-200 lg:translate-x-0',
         menuOpen ? 'translate-x-0' : '-translate-x-full',
       ]"
     >
-      <div class="border-b border-white/10">
-        <div
-          :class="[
-            'pt-5 transition-[padding] duration-[260ms] ease-out',
-            sidebarCollapsed ? 'px-0 pb-4' : 'px-4 pb-4',
-          ]"
-        >
-          <div :class="['flex items-center overflow-hidden', sidebarCollapsed ? 'justify-center gap-0' : 'gap-3']">
-            <div class="flex h-9 w-9 items-center justify-center rounded-[8px] bg-[var(--police-primary)] text-white shadow-[0_4px_12px_rgba(0,48,135,0.35)]">
-              <van-icon name="shield-o" size="20" />
-            </div>
-
-            <div
-              :class="[
-                'min-w-0 overflow-hidden transition-[max-width,opacity,transform] duration-[320ms] ease-[cubic-bezier(0.22,1,0.36,1)]',
-                sidebarCollapsed ? 'max-w-0 -translate-x-1 opacity-0 delay-0' : 'max-w-[160px] translate-x-0 opacity-100 delay-75',
-              ]"
-            >
-              <h1 class="truncate text-[13px] font-semibold leading-tight text-white">警情模拟平台</h1>
-              <p class="mt-0.5 text-[10px] uppercase tracking-[0.16em] text-blue-100/55">Admin Console</p>
-            </div>
-          </div>
+      <div class="admin-brand">
+        <div class="crest">
+          <van-icon name="shield-o" size="19" />
+        </div>
+        <div class="admin-brand-text">
+          <b>虚拟警情模拟训练平台</b>
+          <span>ADMIN CONSOLE</span>
         </div>
       </div>
 
-      <nav
-          :class="[
-            'flex-1 overflow-y-auto transition-[padding] duration-[260ms] ease-out',
-          sidebarCollapsed ? 'flex flex-col items-center px-0 py-3 space-y-1' : 'px-2 py-3 space-y-1',
-        ]"
-      >
-        <button
-          v-for="item in navItems"
-          :key="item.name"
-          type="button"
-          :title="sidebarCollapsed ? item.label : ''"
-          @click="onChange(item.name)"
-          :class="[
-            'admin-nav-item group relative isolate grid items-center overflow-hidden rounded-[8px] text-left transition-[padding,gap,background-color,color,box-shadow] duration-200',
-            sidebarCollapsed ? 'admin-nav-item--collapsed h-10 w-10 grid-cols-[1fr] justify-items-center px-0 py-0 gap-x-0' : 'w-full grid-cols-[32px_minmax(0,1fr)] px-3 py-2.5 gap-x-2.5',
-            active === item.name ? 'bg-[var(--police-primary)] text-white shadow-[0_2px_8px_rgba(0,48,135,0.4)]' : 'text-white/65 hover:bg-[#002d6e] hover:text-white',
-          ]"
-        >
-            <span
-              :class="[
-                'relative z-[1] flex items-center justify-center rounded-[6px] transition-[background-color,color,transform] duration-200',
-                'h-8 w-8 shrink-0',
-                active === item.name
-                  ? 'bg-white/10 text-white'
-                  : 'bg-transparent text-white/70 group-hover:text-white',
-              ]"
-            >
-              <van-icon :name="item.icon" size="20" />
-            </span>
-
-          <div
-            :class="[
-              'relative z-[1] min-w-0 overflow-hidden whitespace-nowrap transition-[max-width,opacity,transform] duration-200',
-              sidebarCollapsed ? 'max-w-0 -translate-x-1 opacity-0 delay-0' : 'max-w-[132px] translate-x-0 opacity-100 delay-75',
-            ]"
+      <nav class="admin-nav">
+        <template v-for="group in navGroups" :key="group.name || group.label">
+          <button
+            v-if="group.name"
+            type="button"
+            class="admin-nav-item"
+            :class="{ active: active === group.name, 'admin-nav-item--collapsed': sidebarCollapsed }"
+            :title="sidebarCollapsed ? group.label : ''"
+            @click="onChange(group.name)"
           >
-            <span class="block truncate text-[14px] font-medium">{{ item.label }}</span>
+            <span class="admin-nav-icon"><van-icon :name="group.icon" size="19" /></span>
+            <span class="admin-nav-label">{{ group.label }}</span>
+          </button>
+
+          <div v-else class="admin-group">
+            <button
+              type="button"
+              class="admin-nav-item admin-nav-item--group"
+              :class="{ 'admin-nav-item--collapsed': sidebarCollapsed }"
+              :aria-expanded="!isGroupCollapsed(group.label)"
+              @click="toggleGroup(group.label)"
+            >
+              <span class="admin-nav-icon"><van-icon :name="group.icon" size="19" /></span>
+              <span class="admin-nav-label">{{ group.label }}</span>
+              <span class="admin-nav-arrow" :class="{ 'admin-nav-arrow--closed': isGroupCollapsed(group.label) }">⌄</span>
+            </button>
+            <div v-if="!isGroupCollapsed(group.label)" class="admin-sub">
+              <button
+                v-for="child in group.children || []"
+                :key="child.name"
+                type="button"
+                class="admin-nav-item admin-nav-item--sub"
+                :class="{ active: active === child.name, 'admin-nav-item--collapsed': sidebarCollapsed }"
+                :title="sidebarCollapsed ? child.label : ''"
+                @click="onChange(child.name)"
+              >
+                <span class="admin-nav-label">{{ child.label }}</span>
+              </button>
+            </div>
           </div>
-        </button>
+        </template>
       </nav>
 
-      <div
-        :class="[
-          'hidden transition-[padding] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)] lg:block',
-          sidebarCollapsed ? 'flex justify-center px-0 py-4' : 'px-3 py-4',
-        ]"
-      >
-        <button
-          type="button"
-          :title="sidebarCollapsed ? '展开导航' : '收起导航'"
-          @click="toggleSidebar"
-          :class="[
-            'group grid items-center overflow-hidden rounded-[8px] text-left text-white/65 transition-[padding,gap,background-color,color] duration-200 hover:bg-[#002d6e] hover:text-white',
-            sidebarCollapsed ? 'h-10 w-10 grid-cols-[1fr] justify-items-center px-0 py-0 gap-x-0' : 'w-full grid-cols-[32px_minmax(0,1fr)] px-3 py-2.5 gap-x-2.5',
-          ]"
-        >
-          <span
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] bg-transparent text-blue-50 transition-[background-color,color,transform] duration-200 group-hover:text-white"
-          >
-            <van-icon :name="sidebarCollapsed ? 'arrow' : 'arrow-left'" size="18" />
-          </span>
-
-          <span
-            :class="[
-              'min-w-0 overflow-hidden whitespace-nowrap font-medium transition-[max-width,opacity,transform] duration-[320ms] ease-[cubic-bezier(0.22,1,0.36,1)]',
-              sidebarCollapsed ? 'max-w-0 -translate-x-1 opacity-0 delay-0' : 'max-w-[72px] translate-x-0 opacity-100 delay-75',
-            ]"
-          >
-            {{ sidebarCollapsed ? '展开' : '收起' }}
-          </span>
-        </button>
-      </div>
     </aside>
 
-    <main class="admin-main flex h-screen min-w-0 flex-1 flex-col overflow-hidden">
-      <header
-        class="sticky top-0 z-20 flex h-14 flex-shrink-0 items-center justify-between border-b border-[var(--police-border)] bg-white px-4 lg:px-6"
-      >
-        <div class="flex min-w-0 items-center gap-4">
+    <main class="admin-main">
+      <header class="admin-topbar">
+        <div class="admin-top-left">
           <button
             type="button"
-            class="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 lg:hidden"
+            class="admin-sidebar-toggle hidden lg:inline-flex"
+            @click="toggleSidebar"
+            :title="sidebarCollapsed ? '展开导航' : '收起导航'"
+            :aria-label="sidebarCollapsed ? '展开导航' : '收起导航'"
+            :aria-pressed="sidebarCollapsed"
+          >
+            <van-icon :name="sidebarCollapsed ? 'arrow-right' : 'arrow-left'" size="18" />
+          </button>
+          <button
+            type="button"
+            class="admin-sidebar-toggle inline-flex lg:hidden"
             @click="menuOpen = true"
+            aria-label="打开导航"
+            title="打开导航"
           >
             <van-icon name="wap-nav" size="18" />
           </button>
 
-          <div class="min-w-0">
-            <h2 class="truncate text-base font-semibold text-[var(--police-text-primary)]">{{ currentItem?.label || '管理后台' }}</h2>
-            <p class="truncate text-[13px] text-[var(--police-text-muted)]">管理端负责配置、审核与发布，训练统一走学员链路</p>
-          </div>
+          <div class="admin-top-title">{{ currentItem?.label || route.meta.title || '管理后台' }}</div>
         </div>
 
-        <div class="flex items-center gap-3 lg:gap-5">
+        <div class="admin-top-actions">
+          <van-button
+            size="small"
+            plain
+            type="primary"
+            icon="bell"
+            class="admin-head-btn admin-head-btn--icon"
+            aria-label="消息"
+            title="消息"
+          />
+
           <van-button
             size="small"
             plain
             type="primary"
             icon="exchange"
-            @click="router.push('/student/hall')"
-            class="!rounded-[6px] !border-[var(--police-border)] !bg-white !px-4 !text-[var(--police-primary)] lg:!px-4"
+            @click="router.push('/student/home')"
+            class="admin-head-btn admin-head-btn--link"
           >
             切换到学员端
           </van-button>
 
-          <div class="hidden text-right sm:block">
-            <p class="text-sm font-bold text-slate-700">{{ username }}</p>
-            <p class="text-xs text-slate-400">{{ roleLabel }}</p>
-          </div>
-
-          <div class="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--police-primary)] text-[13px] font-semibold text-white">
-            {{ avatarText }}
+          <div class="admin-user">
+            <div class="admin-avatar">{{ avatarText }}</div>
+            <b>{{ username }}</b>
+            <span>{{ roleLabel }}</span>
           </div>
         </div>
       </header>
 
-      <div
-        :class="[
-          'admin-content flex-1 p-4 lg:p-6',
-          isFixedContentPage ? 'admin-content--fixed overflow-hidden' : 'overflow-y-auto',
-        ]"
-      >
+      <div class="admin-tabs">
+        <button
+          v-for="tab in pageTabs"
+          :key="tab.path"
+          type="button"
+          class="page-tab"
+          :class="{ active: route.fullPath === tab.path }"
+          @click="activateTab(tab.path)"
+        >
+          <span v-if="route.fullPath === tab.path" class="page-tab-dot"></span>
+          <span class="page-tab-label">{{ tab.label }}</span>
+          <span
+            v-if="tab.closable"
+            class="page-tab-close"
+            @click.stop="closeTab(tab.path)"
+          >
+            <van-icon name="cross" size="12" />
+          </span>
+        </button>
+      </div>
+
+      <div class="admin-content" :class="{ 'admin-content--fixed': isFixedContentPage }">
         <router-view :key="route.path" v-slot="{ Component }">
           <transition name="fade-slide" mode="out-in">
             <component :is="Component" />
@@ -166,7 +152,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 const SIDEBAR_COLLAPSED_KEY = 'admin.sidebar.collapsed'
@@ -176,27 +162,96 @@ const route = useRoute()
 
 const active = ref('dashboard')
 const menuOpen = ref(false)
-const sidebarCollapsed = ref(false)
+const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1')
+const collapsedGroups = ref<Record<string, boolean>>({})
+const pageTabs = ref<PageTab[]>([])
 
-const rawNavItems = [
-  { name: 'dashboard', label: '数据总览', shortLabel: '总览', icon: 'bar-chart-o' },
-  { name: 'cases', label: '案件剧本库', shortLabel: '案件', icon: 'orders-o' },
-  { name: 'videos', label: '视频素材库', shortLabel: '视频', icon: 'video-o' },
-  { name: 'video-sessions', label: '实训记录', shortLabel: '记录', icon: 'records-o' },
-  { name: 'knowledge', label: '知识库管理', shortLabel: '知识', icon: 'cluster-o' },
-  { name: 'roles', label: 'AI角色库', shortLabel: '角色', icon: 'friends-o' },
-  { name: 'classes', label: '班级训练', shortLabel: '班级', icon: 'cluster-o' },
-  { name: 'students', label: '学员账号', shortLabel: '账号', icon: 'contact-o' },
-  { name: 'profile', label: '个人中心', shortLabel: '我的', icon: 'user-o' },
+type AdminNavLeaf = {
+  name: string
+  label: string
+  shortLabel?: string
+  icon?: string
+}
+
+type AdminNavGroup = {
+  label: string
+  icon: string
+  name?: string
+  shortLabel?: string
+  children?: AdminNavLeaf[]
+}
+
+type PageTab = {
+  path: string
+  label: string
+  closable: boolean
+}
+
+const navGroups: AdminNavGroup[] = [
+  { name: 'dashboard', label: '工作台', shortLabel: '首页', icon: 'home-o' },
+  {
+    label: '内容中心',
+    icon: 'apps-o',
+    children: [
+      { name: 'cases', label: '案件与场景', shortLabel: '案件' },
+      { name: 'roles', label: '角色配置', shortLabel: '角色' },
+      { name: 'knowledge', label: '知识库', shortLabel: '知识' },
+      { name: 'videos', label: '视频内容', shortLabel: '视频' },
+    ],
+  },
+  {
+    label: '教务管理',
+    icon: 'friends-o',
+    children: [
+      { name: 'classes', label: '班级管理', shortLabel: '班级' },
+      { name: 'students', label: '学员关系', shortLabel: '学员' },
+    ],
+  },
+  {
+    label: '训练管理',
+    icon: 'todo-list-o',
+    children: [
+      { name: 'cases', label: '普通训练', shortLabel: '普通训练' },
+      { name: 'video-sessions', label: '视频训练记录', shortLabel: '视频记录' },
+    ],
+  },
+  { name: 'settings', label: '系统设置', shortLabel: '设置', icon: 'setting-o' },
 ]
 
-const navItems = rawNavItems
+const navItems = computed(() => navGroups.flatMap((item) => item.name ? [item as AdminNavLeaf] : (item.children || [])))
 
 const username = computed(() => localStorage.getItem('username') || '管理员')
 const roleLabel = computed(() => (localStorage.getItem('role') === 'admin' ? '管理员账号' : '学员账号'))
 const avatarText = computed(() => username.value.slice(0, 1).toUpperCase())
-const currentItem = computed(() => navItems.find((item) => item.name === active.value))
+const currentItem = computed(() => navItems.value.find((item) => item.name === active.value))
 const isFixedContentPage = computed(() => route.path === '/admin/students')
+
+const getPageTabLabel = () => {
+  const metaTitle = route.meta.title
+  const isNavRoot = route.path.split('/').filter(Boolean).length <= 2
+
+  if (isNavRoot) {
+    return currentItem.value?.shortLabel || currentItem.value?.label || (typeof metaTitle === 'string' ? metaTitle : route.path)
+  }
+
+  return typeof metaTitle === 'string' ? metaTitle : currentItem.value?.label || route.path
+}
+
+const ensureActiveTab = () => {
+  const existing = pageTabs.value.find((tab) => tab.path === route.fullPath)
+  const label = getPageTabLabel()
+
+  if (existing) {
+    existing.label = label
+    return
+  }
+
+  pageTabs.value.push({
+    path: route.fullPath,
+    label,
+    closable: route.path !== '/admin/dashboard',
+  })
+}
 
 watch(
   () => route.path,
@@ -212,13 +267,12 @@ watch(
     else if (val.includes('/classes')) active.value = 'classes'
     else if (val.includes('/students')) active.value = 'students'
     else if (val.includes('/profile')) active.value = 'profile'
+    else if (val.includes('/settings')) active.value = 'settings'
+
+    ensureActiveTab()
   },
   { immediate: true }
 )
-
-onMounted(() => {
-  sidebarCollapsed.value = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
-})
 
 watch(sidebarCollapsed, (value) => {
   localStorage.setItem(SIDEBAR_COLLAPSED_KEY, value ? '1' : '0')
@@ -228,69 +282,417 @@ const onChange = (name: string) => {
   router.push(`/admin/${name}`)
 }
 
+const activateTab = (path: string) => {
+  if (path !== route.fullPath) router.push(path)
+}
+
+const closeTab = (path: string) => {
+  const index = pageTabs.value.findIndex((tab) => tab.path === path)
+  const tab = pageTabs.value[index]
+  if (!tab?.closable) return
+
+  pageTabs.value.splice(index, 1)
+
+  if (path !== route.fullPath) return
+
+  const nextTab = pageTabs.value[index] || pageTabs.value[index - 1] || pageTabs.value[0]
+  router.push(nextTab?.path || '/admin/dashboard')
+}
+
 const toggleSidebar = () => {
   sidebarCollapsed.value = !sidebarCollapsed.value
 }
+
+const isGroupCollapsed = (label: string) => Boolean(collapsedGroups.value[label])
+
+const toggleGroup = (label: string) => {
+  collapsedGroups.value[label] = !collapsedGroups.value[label]
+}
+
 </script>
 
 <style scoped>
 .admin-shell {
-  --sidebar-width: 160px;
+  --sidebar-width: 226px;
+  --admin-navy: #0b1e3c;
+  --admin-navy-panel: #102947;
+  --admin-blue: #0b49b4;
+  --admin-blue-hover: #083f9d;
+  --admin-bg: #eef3f8;
+  --admin-card-border: #e3eaf3;
   height: 100dvh;
   max-height: 100dvh;
   overflow: hidden;
+  display: flex;
+  background: var(--admin-bg);
+  color: #17213b;
 }
 
 .admin-shell.sidebar-collapsed {
-  --sidebar-width: 56px;
+  --sidebar-width: 60px;
 }
 
 .admin-sidebar {
-  width: 160px;
+  width: var(--sidebar-width);
   height: 100dvh;
   max-height: 100dvh;
-  background: var(--police-sidebar-bg);
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  background: var(--admin-navy);
+  color: #c4ccdc;
+  box-shadow: none;
   will-change: width, transform;
 }
 
+.admin-brand {
+  height: 68px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+  flex: none;
+}
+
+.crest {
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  border: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #dbe8ff;
+  background: var(--admin-blue);
+  flex: none;
+}
+
+.admin-brand-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.admin-brand-text b {
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.admin-brand-text span {
+  color: rgba(216, 225, 244, 0.56);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+}
+
+.admin-nav {
+  flex: 1;
+  overflow: auto;
+  padding: 13px 6px 24px;
+}
+
+.admin-nav-item {
+  width: 100%;
+  height: 44px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 18px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  cursor: pointer;
+  color: #bdc6d8;
+  background: transparent;
+  margin: 2px 0;
+  position: relative;
+  text-align: left;
+  transition:
+    background 0.18s ease,
+    color 0.18s ease;
+}
+
 .admin-nav-item:hover {
-  padding-left: 16px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
 }
 
-.sidebar-collapsed .admin-nav-item,
-.sidebar-collapsed .admin-nav-item:hover {
-  padding-left: 0;
-  padding-right: 0;
+.admin-nav-item.active {
+  background: var(--admin-blue);
+  color: #fff;
 }
 
-.sidebar-collapsed .admin-nav-item span {
-  grid-column: 1;
+.admin-nav-icon {
+  width: 19px;
+  height: 19px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
 }
 
-.sidebar-collapsed .admin-nav-item--collapsed {
-  display: grid;
-  place-items: center;
+.admin-nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-nav-arrow {
+  margin-left: auto;
+  color: rgba(196, 204, 220, 0.72);
+  transition: transform 0.18s ease;
+}
+
+.admin-nav-arrow--closed {
+  transform: rotate(-90deg);
+}
+
+.admin-group {
+  margin-top: 5px;
+}
+
+.admin-nav-item--group {
+  cursor: default;
+}
+
+.admin-sub {
+  padding-left: 36px;
+}
+
+.admin-sub .admin-nav-item {
+  height: 40px;
+  padding-left: 15px;
+  font-size: 13px;
 }
 
 .admin-main {
   height: 100dvh;
   max-height: 100dvh;
-  background: var(--police-bg, #f2f5fa);
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--admin-bg);
   transition: margin-left 0.38s cubic-bezier(0.22, 1, 0.36, 1);
   will-change: margin-left;
 }
 
+.admin-topbar {
+  height: 64px;
+  background: #fff;
+  border-bottom: 1px solid var(--admin-card-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 22px;
+  gap: 16px;
+  flex: none;
+}
+
+.admin-top-left {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.admin-sidebar-toggle {
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  color: #53647d;
+  background: #fff;
+  font-size: 23px;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  flex: none;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease;
+}
+
+.admin-sidebar-toggle:hover {
+  background: #f5f8fd;
+  border-color: #c8d5e6;
+  color: var(--admin-blue);
+}
+
+.admin-top-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: #17213b;
+  font-size: 18px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+}
+
+.admin-head-btn {
+  height: 34px !important;
+  border-color: #dfe5ed !important;
+  border-radius: 6px !important;
+  background: #fff !important;
+  color: #5d6677 !important;
+  padding: 0 12px !important;
+}
+
+.admin-head-btn--icon {
+  width: 34px !important;
+  padding: 0 !important;
+}
+
+.admin-head-btn--link {
+  color: var(--admin-blue) !important;
+}
+
+.admin-user {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #253047;
+  white-space: nowrap;
+}
+
+.admin-user b {
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.admin-user span {
+  color: #8b96a8;
+  font-size: 12px;
+}
+
+.admin-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--admin-blue);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.admin-tabs {
+  height: 40px;
+  background: #fff;
+  border-bottom: 1px solid var(--admin-card-border);
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 5px;
+  flex: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.page-tab {
+  height: 31px;
+  max-width: 180px;
+  border: 0;
+  border-radius: 5px;
+  background: #f2f4f7;
+  color: #5d6677;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  font-size: 13px;
+  cursor: pointer;
+  flex: none;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.page-tab.active {
+  background: var(--admin-blue);
+  color: #fff;
+}
+
+.page-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  flex: none;
+}
+
+.page-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.page-tab-close {
+  width: 17px;
+  height: 17px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  margin-right: -4px;
+  color: inherit;
+}
+
+.page-tab-close:hover {
+  background: rgba(23, 33, 59, 0.1);
+}
+
+.page-tab.active .page-tab-close:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
 .admin-content {
-  background:
-    radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 34rem),
-    var(--police-bg, #f2f5fa);
+  flex: 1;
+  overflow: auto;
+  padding: 24px;
+  background: var(--admin-bg);
 }
 
 .admin-content--fixed {
-  height: 100%;
   min-height: 0;
   overflow: hidden;
   overscroll-behavior: none;
+}
+
+.sidebar-collapsed .admin-brand {
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar-collapsed .admin-brand-text,
+.sidebar-collapsed .admin-nav-label,
+.sidebar-collapsed .admin-nav-arrow,
+.sidebar-collapsed .admin-sub {
+  display: none;
+}
+
+.sidebar-collapsed .admin-nav-item,
+.sidebar-collapsed .admin-nav-item:hover {
+  justify-content: center;
+  padding: 0;
 }
 
 .fade-slide-enter-active,
@@ -306,6 +708,128 @@ const toggleSidebar = () => {
 .fade-slide-leave-to {
   opacity: 0;
   transform: translateX(-12px);
+}
+
+.admin-content :deep(.rounded-3xl),
+.admin-content :deep(.rounded-2xl),
+.admin-content :deep(.rounded-xl) {
+  border-radius: 8px !important;
+}
+
+.admin-content :deep(.shadow-xl),
+.admin-content :deep(.shadow-lg),
+.admin-content :deep(.shadow-md),
+.admin-content :deep(.shadow-sm) {
+  box-shadow: 0 4px 16px rgba(35, 56, 104, 0.07) !important;
+}
+
+.admin-content :deep(.border-gray-100),
+.admin-content :deep(.border-gray-200),
+.admin-content :deep(.border-slate-200),
+.admin-content :deep(.border-slate-100) {
+  border-color: #e6ebf3 !important;
+}
+
+.admin-content :deep(.bg-white) {
+  background-color: #fff !important;
+}
+
+.admin-content :deep(.bg-gray-50),
+.admin-content :deep(.bg-slate-50) {
+  background-color: #fafbfd !important;
+}
+
+.admin-content :deep(.text-gray-800),
+.admin-content :deep(.text-slate-800) {
+  color: #17213b !important;
+}
+
+.admin-content :deep(.text-gray-700),
+.admin-content :deep(.text-slate-700) {
+  color: #253047 !important;
+}
+
+.admin-content :deep(.text-gray-500),
+.admin-content :deep(.text-gray-400),
+.admin-content :deep(.text-slate-500),
+.admin-content :deep(.text-slate-400) {
+  color: #8b96aa !important;
+}
+
+.admin-content :deep(.admin-card),
+.admin-content :deep(.admin-filter-panel),
+.admin-content :deep(.admin-table-panel),
+.admin-content :deep(.admin-table-card),
+.admin-content :deep(.stat-card),
+.admin-content :deep(.metric-card),
+.admin-content :deep(.a-card) {
+  border: 1px solid #e6ebf3 !important;
+  border-radius: 8px !important;
+  background: #fff !important;
+  box-shadow: 0 4px 16px rgba(35, 56, 104, 0.07) !important;
+}
+
+.admin-content :deep(.admin-filter-panel),
+.admin-content :deep(.filter-bar),
+.admin-content :deep(.admin-filter-bar) {
+  background: #fff !important;
+  border-color: #e6ebf3 !important;
+}
+
+.admin-content :deep(table) {
+  border-collapse: collapse;
+}
+
+.admin-content :deep(th) {
+  background: #fafbfd !important;
+  color: #263248 !important;
+  font-weight: 700 !important;
+}
+
+.admin-content :deep(td),
+.admin-content :deep(th) {
+  border-color: #edf0f5 !important;
+}
+
+.admin-content :deep(tr:hover td) {
+  background: #fbfcff !important;
+}
+
+.admin-content :deep(input),
+.admin-content :deep(select),
+.admin-content :deep(textarea),
+.admin-content :deep(.el-input__wrapper),
+.admin-content :deep(.el-select__wrapper) {
+  border: 1px solid #dde3ec !important;
+  border-color: #dde3ec !important;
+  border-radius: 7px !important;
+  box-shadow: none !important;
+}
+
+.admin-content :deep(input:focus),
+.admin-content :deep(select:focus),
+.admin-content :deep(textarea:focus),
+.admin-content :deep(.el-input__wrapper.is-focus),
+.admin-content :deep(.el-select__wrapper.is-focused) {
+  border-color: #7996f7 !important;
+  box-shadow: 0 0 0 3px rgba(53, 102, 246, 0.08) !important;
+}
+
+.admin-content :deep(.van-button),
+.admin-content :deep(.el-button) {
+  border-radius: 7px !important;
+}
+
+.admin-content :deep(.van-button--primary),
+.admin-content :deep(.el-button--primary) {
+  background: var(--admin-blue) !important;
+  border-color: var(--admin-blue) !important;
+  color: #fff !important;
+}
+
+.admin-content :deep(.van-tag),
+.admin-content :deep(.el-tag) {
+  border-radius: 7px !important;
 }
 
 @media (min-width: 1024px) {
@@ -328,3 +852,4 @@ const toggleSidebar = () => {
   }
 }
 </style>
+

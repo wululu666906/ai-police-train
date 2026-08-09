@@ -20,6 +20,26 @@ const manifestCache = new Map<number, CachedManifest>()
 const queuedPriorities = new Map<number, number>()
 let queueRunning = false
 
+function resolveManifestMediaUrl(value: string): string {
+  const url = String(value || '').trim()
+  if (!url) return url
+  if (/^(https?:)?\/\//i.test(url) || url.startsWith('data:') || url.startsWith('blob:')) return url
+  if (url.startsWith('/')) return `${window.location.origin}${url}`
+  return new URL(url, window.location.href).href
+}
+
+function absolutizeManifestUrls(manifest: string): string {
+  return manifest
+    .replace(/URI="([^"]+)"/g, (_match, url) => `URI="${resolveManifestMediaUrl(url)}"`)
+    .split(/\r?\n/)
+    .map((line) => {
+      const stripped = line.trim()
+      if (!stripped || stripped.startsWith('#')) return line
+      return resolveManifestMediaUrl(stripped)
+    })
+    .join('\n')
+}
+
 export async function getPlaybackManifest(videoId: number, force = false): Promise<PlaybackManifest> {
   const cached = manifestCache.get(videoId)
   if (!force && cached && cached.expiresAt > Date.now() && cached.value.status === 'ready') {
@@ -29,6 +49,7 @@ export async function getPlaybackManifest(videoId: number, force = false): Promi
     _skipErrorToast: true,
   } as any)
   if (value.status === 'ready' && value.manifest) {
+    value.manifest = absolutizeManifestUrls(value.manifest)
     manifestCache.set(videoId, { value, expiresAt: Date.now() + 90 * 60 * 1000 })
   }
   return value
@@ -67,7 +88,7 @@ async function warmVideo(videoId: number): Promise<void> {
     await request.post(`/videos/${videoId}/prepare-playback`, null, { _skipErrorToast: true } as any)
     return
   }
-  for (const url of firstMediaUrls(manifest.manifest)) {
+  for (const url of firstMediaUrls(absolutizeManifestUrls(manifest.manifest))) {
     const response = await fetch(url, { cache: 'force-cache' })
     if (!response.ok) break
     await response.arrayBuffer()

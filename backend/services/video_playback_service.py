@@ -33,6 +33,58 @@ _worker_started = False
 LEGACY_VIDEO_ROOT = Path(__file__).resolve().parents[1] / "static" / "videos"
 
 
+def _is_external_hls_reference(value: str) -> bool:
+    stripped = value.strip()
+    return bool(re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", stripped) or stripped.startswith("//"))
+
+
+def _manifest_media_references(manifest: str) -> set[str]:
+    references: set[str] = set()
+    for match in re.finditer(r'URI="([^"]+)"', manifest):
+        uri = match.group(1).strip()
+        if uri and not _is_external_hls_reference(uri):
+            references.add(uri.split("?", 1)[0].split("#", 1)[0].lstrip("/"))
+    for line in manifest.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and not _is_external_hls_reference(stripped):
+            references.add(stripped.split("?", 1)[0].split("#", 1)[0].lstrip("/"))
+    return {name for name in references if name}
+
+
+def _output_manifest_references_exist(output_dir: Path, manifest: str) -> bool:
+    output_root = output_dir.resolve()
+    for name in _manifest_media_references(manifest):
+        candidate = (output_dir / name).resolve()
+        if output_root not in candidate.parents or not candidate.is_file():
+            return False
+    return True
+
+
+def _playback_asset_complete(asset: models.MediaAsset | None) -> bool:
+    if not asset or not asset.object_key:
+        return False
+    try:
+        manifest = object_storage.read_bytes(
+            bucket=asset.bucket,
+            object_key=asset.object_key,
+            provider=asset.storage_provider,
+        ).decode("utf-8")
+    except Exception:
+        return False
+    metadata = _metadata(asset)
+    prefix = str(metadata.get("prefix") or "").rstrip("/")
+    if not prefix:
+        return False
+    for name in _manifest_media_references(manifest):
+        if not object_storage.object_exists(
+            bucket=asset.bucket,
+            object_key=f"{prefix}/{name.lstrip('/')}",
+            provider=asset.storage_provider,
+        ):
+            return False
+    return True
+
+
 def _metadata(asset: models.MediaAsset | None) -> dict:
     if not asset or not asset.extra_json:
         return {}
@@ -53,6 +105,8 @@ def get_playback_status(db, video: models.TrainingVideo) -> dict:
     metadata = _metadata(playback)
     status = metadata.get("status", "missing")
     if source and metadata.get("source_fingerprint") != _source_fingerprint(source):
+        status = "missing"
+    if status == "ready" and not _playback_asset_complete(playback):
         status = "missing"
     return {
         "video_id": video.id,
@@ -119,7 +173,11 @@ def _process_video(video_id: int) -> None:
             db.commit()
         current = get_media_asset(db, "video", video_id, PLAYBACK_ASSET_KIND)
         current_meta = _metadata(current)
-        if current_meta.get("status") == "ready" and current_meta.get("source_fingerprint") == _source_fingerprint(source):
+        if (
+            current_meta.get("status") == "ready"
+            and current_meta.get("source_fingerprint") == _source_fingerprint(source)
+            and _playback_asset_complete(current)
+        ):
             return
 
         version = uuid.uuid4().hex[:12]
@@ -164,10 +222,10 @@ def _process_video(video_id: int) -> None:
                 "-hls_fmp4_init_filename",
                 "init.mp4",
                 "-hls_segment_filename",
-                str(output_dir / "segment_%05d.m4s"),
-                str(output_dir / "index.m3u8"),
+                "segment_%05d.m4s",
+                "index.m3u8",
             ]
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=1800)
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=1800, cwd=output_dir)
             if completed.returncode != 0:
                 raise RuntimeError((completed.stderr or "ffmpeg HLS packaging failed")[-2000:])
 
@@ -175,6 +233,9 @@ def _process_video(video_id: int) -> None:
         segments = [path.name for path in files if path.suffix == ".m4s"]
         if not segments or not (output_dir / "index.m3u8").exists():
             raise RuntimeError("HLS packaging produced no playable segments")
+        manifest_text = (output_dir / "index.m3u8").read_text(encoding="utf-8")
+        if not _output_manifest_references_exist(output_dir, manifest_text):
+            raise RuntimeError("HLS packaging produced a manifest with missing media files")
 
         for path in files:
             content_type = {
@@ -282,6 +343,8 @@ def build_signed_manifest(db, video: models.TrainingVideo) -> dict:
         return status
     asset = get_media_asset(db, "video", video.id, PLAYBACK_ASSET_KIND)
     if not asset or not asset.object_key:
+        return {**status, "status": "missing"}
+    if not _playback_asset_complete(asset):
         return {**status, "status": "missing"}
     metadata = _metadata(asset)
     prefix = str(metadata.get("prefix") or "").rstrip("/")

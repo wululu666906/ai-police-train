@@ -39,7 +39,7 @@
 
     padding: 16px 20px 28px;
 
-    background: var(--student-page-bg, #f0f2f5);
+    background: transparent !important;
 
     min-height: 100%;
     overflow: visible;
@@ -59,6 +59,22 @@
 
     box-sizing: border-box;
 
+  }
+
+  .student-main__surface > .student-page {
+    min-height: 100%;
+    background: transparent !important;
+  }
+
+  .section-kicker {
+    display: none !important;
+  }
+
+  .task-header__main > div > p,
+  .history-heading p,
+  .practice-history-page .history-heading p,
+  .training-heading p {
+    display: none !important;
   }
 
 

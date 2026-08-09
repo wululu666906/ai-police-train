@@ -173,12 +173,14 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
 .task-card {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 14px 18px;
+  gap: 10px;
+  padding: 18px;
   width: 100%;
-  height: 380px;
+  height: 360px;
   box-sizing: border-box;
   overflow: hidden;
+  border-color: #e6ebf3 !important;
+  box-shadow: 0 5px 16px rgba(31, 50, 94, 0.045) !important;
 
   &--list {
     height: auto;
@@ -217,41 +219,52 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  height: 20px;
+  height: 24px;
   flex-shrink: 0;
   overflow: hidden;
 }
 
 .status-tag {
-  padding: 2px 7px;
-  border-radius: 4px;
-  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  font-size: 12px;
   font-weight: 600;
 
-  &--active,
+  &--active {
+    color: #3f6cf6;
+    background: #eef3ff;
+    border-color: #d8e2ff;
+  }
+
   &--completed {
-    color: #047857;
-    background: #ecfdf5;
+    color: #20a85e;
+    background: #ecfbf3;
+    border-color: #bfeecd;
   }
 
   &--idle {
-    color: #c2410c;
-    background: #fff7ed;
+    color: #d78018;
+    background: #fff6e9;
+    border-color: #ffe0ab;
   }
 }
 
 .task-date {
-  font-size: 10px;
-  color: #9ca3af;
+  font-size: 12px;
+  color: #8b96aa;
 }
 
 .task-title {
   margin: 0;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 800;
-  color: #111827;
-  line-height: 22px;
-  height: 22px;
+  color: #17213b;
+  line-height: 24px;
+  height: 24px;
   flex-shrink: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -260,10 +273,10 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
 
 .task-summary {
   margin: 0;
-  font-size: 12px;
-  color: #6b7280;
-  line-height: 1.4;
-  height: 34px;
+  font-size: 13px;
+  color: #6e7888;
+  line-height: 1.65;
+  height: 42px;
   flex-shrink: 0;
   overflow: hidden;
   display: -webkit-box;
@@ -277,7 +290,7 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   overflow: hidden;
   box-sizing: border-box;
 }
@@ -290,10 +303,18 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  border-radius: 6px;
-  background: #f8fafc;
-  padding: 0 10px;
-  border: 1px solid #f1f5f9;
+  border-radius: 8px;
+  background: #fafbfd;
+  padding: 0 12px;
+  border: 1px solid #edf0f5;
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease;
+
+  &:hover {
+    background: #fff;
+    border-color: #dbe5ff;
+  }
 }
 
 .scene-expand-btn {
@@ -304,10 +325,10 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
   flex-shrink: 0;
   min-height: 32px;
   padding: 0 12px;
-  border: 1px dashed #bfdbfe;
-  border-radius: 6px;
-  background: #eff6ff;
-  color: #2563eb;
+  border: 1px dashed #cdd9ff;
+  border-radius: 8px;
+  background: #f1f5ff;
+  color: #3566f6;
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
@@ -320,7 +341,7 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
   min-width: 24px;
   height: 18px;
   padding: 0 6px;
-  border-radius: 999px;
+  border-radius: 7px;
   background: #dbeafe;
   color: #1d4ed8;
   font-size: 11px;
@@ -328,8 +349,8 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
 }
 
 .scene-status {
-  font-size: 11px;
-  color: #9ca3af;
+  font-size: 12px;
+  color: #8b96aa;
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -342,7 +363,7 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
   min-width: 28px;
   height: 20px;
   padding: 0 7px;
-  border-radius: 999px;
+  border-radius: 7px;
   font-size: 11px;
   font-weight: 800;
   line-height: 1;
@@ -373,8 +394,8 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
 .scene-name {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
-  color: #4b5563;
+  font-size: 13px;
+  color: #3f495c;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -383,8 +404,8 @@ const sceneActionLabel = (scene: TaskSceneItem) => {
 
 .scene-btn {
   flex-shrink: 0;
-  padding: 4px 10px !important;
-  height: 26px !important;
+  padding: 4px 11px !important;
+  height: 28px !important;
   font-size: 12px !important;
 }
 

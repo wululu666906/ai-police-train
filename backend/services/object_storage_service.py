@@ -204,6 +204,17 @@ class ObjectStorage:
             response.close()
             response.release_conn()
 
+    def object_exists(self, *, bucket: str | None, object_key: str, provider: str | None = None) -> bool:
+        active_bucket = bucket or MEDIA_BUCKET
+        active_provider = provider or self.provider
+        if active_provider == "local":
+            return (LOCAL_OBJECT_ROOT / active_bucket / object_key).is_file()
+        try:
+            self._minio_client().stat_object(active_bucket, object_key)
+            return True
+        except Exception:
+            return False
+
     def url_for_object(
         self,
         *,

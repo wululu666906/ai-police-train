@@ -62,6 +62,12 @@ def _dedupe_strings(values: list[Any], limit: int = 6) -> list[str]:
     return output
 
 
+def _semantic_point_text(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("point") or item.get("label") or item.get("content") or "").strip()
+    return str(item or "").strip()
+
+
 def _share_weight(total_weight: int, count: int) -> list[int]:
     count = max(1, count)
     total_weight = max(count, int(total_weight or count))
@@ -85,6 +91,7 @@ def _reason_label(reason: str) -> str:
         "page_leave": "训练中途离开页面",
         "device_lost": "设备接入状态异常",
         "identity_lost": "身份校验中断",
+        "training_finished_early": "主动结束训练",
     }
     return labels.get(reason, reason)
 
@@ -232,6 +239,29 @@ def resolve_node_assessment_points(node: models.VideoNode) -> list[dict[str, Any
             point.setdefault("rule", {"channel": point.get("channel") or "result", "mode": point.get("mode") or "result_pass"})
             point.setdefault("weight", weights[idx])
             output.append(point)
+        if output:
+            return output
+    standard_points = config.get("standard_points") if isinstance(config, dict) else None
+    if isinstance(standard_points, list) and standard_points:
+        output: list[dict[str, Any]] = []
+        weights = _share_weight(max(node.score_weight or len(standard_points), len(standard_points)), len(standard_points))
+        for idx, item in enumerate(standard_points):
+            text = str(item or "").strip()
+            if not text:
+                continue
+            output.append(
+                {
+                    "id": f"node_{node.node_index + 1}_standard_{idx + 1}",
+                    "label": text,
+                    "content": text,
+                    "category": "procedure_execution",
+                    "dimension": "procedure_execution",
+                    "required": True,
+                    "stage_name": node.title or f"节点{node.node_index + 1}",
+                    "rule": {"channel": "result", "mode": "result_pass"},
+                    "weight": weights[idx],
+                }
+            )
         if output:
             return output
     return _default_assessment_points(node)
@@ -640,124 +670,6 @@ def _summarize_dimension_scores(node_payloads: list[dict[str, Any]]) -> list[dic
     return sorted(dimension_scores, key=lambda item: item["percentage"])
 
 
-def _level_from_percentage(percentage: int) -> str:
-    if percentage >= 90:
-        return "excellent"
-    if percentage >= 75:
-        return "good"
-    if percentage >= 60:
-        return "fair"
-    return "weak"
-
-
-def _normalize_assessment_check_results(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for point in points:
-        if not isinstance(point, dict):
-            continue
-        status = str(point.get("status") or "missed")
-        full_score = max(_safe_int(point.get("full_score") or point.get("weight"), 1), 1)
-        score = point.get("score")
-        if score is None:
-            score = _point_score(status, full_score)
-        evidence = point.get("evidence") if isinstance(point.get("evidence"), list) else []
-        reason = str(point.get("reason") or point.get("feedback") or "").strip()
-        normalized.append(
-            {
-                **point,
-                "full_score": full_score,
-                "score": round(_safe_float(score), 1),
-                "status": status if status in {"hit", "partial", "missed"} else "missed",
-                "evidence": _dedupe_strings(evidence, limit=8),
-                "reason": reason or "系统根据节点结果、语音、动作和身份校验证据完成判定。",
-            }
-        )
-    return normalized
-
-
-def _build_common_reviews(dimension_scores: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    reviews: list[dict[str, Any]] = []
-    for item in dimension_scores:
-        percentage = _safe_int(item.get("percentage"))
-        label = str(item.get("label") or item.get("key") or "视频实训能力").strip()
-        if percentage >= 90:
-            reason = f"{label}表现稳定，相关节点完成度较高。"
-        elif percentage >= 75:
-            reason = f"{label}整体达标，少量节点仍可继续巩固。"
-        elif percentage >= 60:
-            reason = f"{label}基本完成，但存在部分漏项或动作、话术不够稳定。"
-        else:
-            reason = f"{label}完成度偏低，需要结合失败节点进行专项复训。"
-        reviews.append(
-            {
-                "dimension": label,
-                "full_score": round(_safe_float(item.get("full_score")), 1),
-                "score": round(_safe_float(item.get("score")), 1),
-                "level": _level_from_percentage(percentage),
-                "reason": reason,
-                "evidence": [f"该维度得分率 {percentage}%，来自视频节点的动作、语音、流程和身份校验结果。"],
-            }
-        )
-    return reviews
-
-
-def _build_video_report_summary(
-    *,
-    percentage: int,
-    pass_count: int,
-    fail_count: int,
-    skip_count: int,
-    violation_count: int,
-    weakest_dimensions: list[dict[str, Any]],
-) -> str:
-    if percentage >= 90:
-        opening = "本次视频实训整体完成度较高，流程推进、节点响应和关键操作较稳定。"
-    elif percentage >= 70:
-        opening = "本次视频实训整体达到训练要求，但仍有部分节点需要复盘巩固。"
-    else:
-        opening = "本次视频实训暴露出较明显的流程、动作或判断短板，需要进行针对性复训。"
-    issue_parts: list[str] = []
-    if fail_count:
-        issue_parts.append(f"{fail_count} 个节点未通过")
-    if skip_count:
-        issue_parts.append(f"{skip_count} 个节点跳过或超时")
-    if violation_count:
-        issue_parts.append(f"出现 {violation_count} 次训练过程异常")
-    labels = "、".join(str(item.get("label") or "") for item in weakest_dimensions[:2] if item.get("label"))
-    if labels:
-        issue_parts.append(f"薄弱维度集中在 {labels}")
-    if not issue_parts:
-        issue_parts.append(f"通过 {pass_count} 个训练节点")
-    return f"{opening} 主要依据：{'；'.join(issue_parts)}。"
-
-
-def _build_video_strengths(
-    dimension_scores: list[dict[str, Any]],
-    ability_profile: dict[str, Any],
-    pass_count: int,
-) -> list[str]:
-    strengths = list(ability_profile.get("strengths") or [])
-    for item in sorted(dimension_scores, key=lambda value: value.get("percentage", 0), reverse=True):
-        if _safe_int(item.get("percentage")) >= 85:
-            strengths.append(f"{item['label']}完成度较高")
-    if pass_count:
-        strengths.append(f"完成并通过 {pass_count} 个视频实训节点")
-    return _dedupe_strings(strengths, limit=4)
-
-
-def _build_video_improvements(
-    weakness_summary: list[str],
-    assessment_points: list[dict[str, Any]],
-) -> list[str]:
-    improvements = list(weakness_summary)
-    for point in assessment_points:
-        if point.get("status") == "missed":
-            label = str(point.get("label") or "").strip()
-            if label:
-                improvements.append(f"未完成考察点：{label}")
-    return _dedupe_strings(improvements, limit=4)
-
-
 def build_video_evaluation_report(
     session: models.VideoTrainingSession,
     node_results: list[models.VideoNodeResult],
@@ -819,7 +731,6 @@ def build_video_evaluation_report(
             }
         )
 
-    all_assessment_points = _normalize_assessment_check_results(all_assessment_points)
     dimension_scores = _summarize_dimension_scores(node_payloads)
     weakness_summary = [
         f"{item['label']}偏弱（{item['percentage']}%），建议针对相关节点复训。"
@@ -834,8 +745,8 @@ def build_video_evaluation_report(
     police_hit_points: list[str] = []
     police_missed_points: list[str] = []
     for semantic in police_semantics:
-        police_hit_points.extend([str(item) for item in semantic.get("hit_points") or [] if str(item).strip()])
-        police_missed_points.extend([str(item) for item in semantic.get("missed_points") or [] if str(item).strip()])
+        police_hit_points.extend([text for item in semantic.get("hit_points") or [] if (text := _semantic_point_text(item))])
+        police_missed_points.extend([text for item in semantic.get("missed_points") or [] if (text := _semantic_point_text(item))])
     police_hit_points = _dedupe_strings(police_hit_points, limit=12)
     police_missed_points = _dedupe_strings(police_missed_points, limit=12)
     semantic_average = round(
@@ -859,34 +770,33 @@ def build_video_evaluation_report(
     pass_count = sum(1 for item in node_results if item.result == "pass")
     skip_count = sum(1 for item in node_results if item.result in {"skip", "timeout"})
     fail_count = sum(1 for item in node_results if item.result == "fail")
-    violation_count = sum(violation_summary.values())
-    common_reviews = _build_common_reviews(dimension_scores)
-    weakest_dimensions = [item for item in dimension_scores if item.get("percentage", 0) < 85]
-    summary = _build_video_report_summary(
-        percentage=percentage,
-        pass_count=pass_count,
-        fail_count=fail_count,
-        skip_count=skip_count,
-        violation_count=violation_count,
-        weakest_dimensions=weakest_dimensions,
-    )
-    strengths = _build_video_strengths(dimension_scores, ability_profile, pass_count)
-    improvements = _build_video_improvements(weakness_summary, all_assessment_points)
-    suggestions = ability_profile.get("next_training", [])[:3] or [
-        "建议按照未完成考察点进行专项复训，并重点回看失败节点的动作、话术和处置选择。"
+    total_nodes = len(node_summaries)
+    major_reasons = [
+        _reason_label(key)
+        for key, _ in sorted(failure_reason_summary.items(), key=lambda item: item[1], reverse=True)[:3]
     ]
-    assessment_completion = {
-        "hit_count": sum(1 for item in all_assessment_points if item.get("status") == "hit"),
-        "partial_count": sum(1 for item in all_assessment_points if item.get("status") == "partial"),
-        "missed_count": sum(1 for item in all_assessment_points if item.get("status") == "missed"),
-        "total_count": len(all_assessment_points),
-    }
-    assessment_completion["weight_rate"] = round(
-        sum(_safe_float(item.get("score")) for item in all_assessment_points)
-        / max(sum(_safe_float(item.get("full_score")) for item in all_assessment_points), 1)
-        * 100,
-        1,
+    strongest_dimension = max(dimension_scores, key=lambda item: item["percentage"], default=None)
+    weakest_dimension = min(dimension_scores, key=lambda item: item["percentage"], default=None)
+    overall_comment = (
+        f"本次视频实训得分率 {percentage}%，{pass_count}/{total_nodes or len(node_results)} 个节点通过。"
+        f"{'主要失分集中在' + '、'.join(major_reasons) + '。' if major_reasons else '关键节点完成情况较稳定。'}"
+        f"{'建议优先复盘' + weakest_dimension['label'] + '相关节点。' if weakest_dimension and weakest_dimension['percentage'] < 85 else '后续可继续保持规范流程和稳定表达。'}"
     )
+    ability_evaluation = {
+        "grade": ability_grade,
+        "strongest_dimension": strongest_dimension,
+        "weakest_dimension": weakest_dimension,
+        "comment": (
+            f"优势能力：{strongest_dimension['label']}（{strongest_dimension['percentage']}%）。"
+            if strongest_dimension
+            else "暂无足够节点形成优势能力画像。"
+        ),
+        "risk": (
+            f"待提升能力：{weakest_dimension['label']}（{weakest_dimension['percentage']}%）。"
+            if weakest_dimension
+            else "暂无明显能力短板。"
+        ),
+    }
     return {
         "session_id": session.id,
         "video_id": session.video_id,
@@ -898,22 +808,20 @@ def build_video_evaluation_report(
         "full_score": full_score,
         "percentage": percentage,
         "grade": grade,
-        "grade_level": ability_grade,
-        "summary": summary,
         "pass_count": pass_count,
         "skip_count": skip_count,
         "fail_count": fail_count,
-        "total_nodes": len(node_summaries),
+        "total_nodes": total_nodes,
         "total_deducted": sum(_safe_int(item.score_deducted) for item in node_results),
-        "violation_count": violation_count,
+        "violation_count": sum(violation_summary.values()),
         "violation_summary": violation_summary,
         "failure_reason_summary": failure_reason_summary,
+        "overall_comment": overall_comment,
+        "ability_evaluation": ability_evaluation,
         "dimension_scores": dimension_scores,
         "weakness_summary": weakness_summary,
-        "common_reviews": common_reviews,
         "ability_profile": ability_profile,
         "assessment_point_results": all_assessment_points,
-        "assessment_check_results": all_assessment_points,
         "node_summaries": node_summaries,
         "finished_at": session.finished_at.isoformat() if session.finished_at else None,
         "evaluation_meta": {
@@ -926,11 +834,9 @@ def build_video_evaluation_report(
                 "ability_grade": ability_grade,
                 "total_score": total_score,
                 "full_score": full_score,
-                "summary": summary,
             },
             "ability_grade": ability_grade,
             "ability_profile": ability_profile,
-            "assessment_completion": assessment_completion,
         },
         # 兼容 StudentEvaluation.vue 的字段格式
         "scores": [
@@ -943,7 +849,7 @@ def build_video_evaluation_report(
             }
             for item in dimension_scores
         ],
-        "improvements": improvements,
-        "strengths": strengths,
-        "suggestions": suggestions,
+        "improvements": weakness_summary,
+        "strengths": ability_profile.get("strengths", [])[:3],
+        "suggestions": ability_profile.get("next_training", [])[:3],
     }

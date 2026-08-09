@@ -2,7 +2,12 @@
   <el-config-provider :locale="studentElementLocale" size="default">
     <div class="student-app">
       <div class="student-shell" :class="{ 'student-shell--sidebar-collapsed': sidebarCollapsed }">
-        <StudentSidebar :collapsed="sidebarCollapsed" @toggle-collapse="toggleSidebar" />
+        <StudentSidebar
+          :collapsed="sidebarCollapsed"
+          :display-name="displayName"
+          @toggle-collapse="toggleSidebar"
+          @notify="openNotificationCenter"
+        />
 
         <div class="student-content">
           <StudentTopbar
@@ -15,11 +20,13 @@
           />
 
           <main class="student-main" :class="{ 'student-main--scrollable': mainScrollable }">
-            <router-view v-slot="{ Component }">
-              <transition appear name="fade-transform" mode="out-in">
-                <component :is="Component" />
-              </transition>
-            </router-view>
+            <div class="student-main__surface">
+              <router-view v-slot="{ Component }">
+                <transition appear name="fade-transform" mode="out-in">
+                  <component :is="Component" />
+                </transition>
+              </router-view>
+            </div>
           </main>
         </div>
       </div>
@@ -229,6 +236,10 @@ watch(sidebarCollapsed, (value) => {
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(236, 245, 255, 0.74)),
+    linear-gradient(135deg, #eef6ff 0%, #f8fbff 48%, #eaf3ff 100%);
 }
 
 .student-shell {
@@ -237,6 +248,10 @@ watch(sidebarCollapsed, (value) => {
   min-height: 0;
   width: 100%;
   overflow: hidden;
+  gap: 0;
+  padding: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .student-content {
@@ -245,7 +260,7 @@ watch(sidebarCollapsed, (value) => {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  background: var(--student-page-bg, #f0f2f5);
+  background: transparent;
 }
 
 .student-content :deep(.student-topbar) {
@@ -262,11 +277,23 @@ watch(sidebarCollapsed, (value) => {
   overscroll-behavior: auto;
   scrollbar-gutter: stable;
   -webkit-overflow-scrolling: touch;
+  padding: 0;
 
   &--scrollable {
     overflow-y: auto;
     overflow-x: hidden;
   }
+}
+
+.student-main__surface {
+  min-height: 100%;
+  margin: 0 18px 18px 0;
+  border: 1px solid rgba(219, 231, 247, 0.88);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 24px 60px rgba(58, 102, 180, 0.12);
+  overflow: hidden;
+  backdrop-filter: blur(14px);
 }
 
 .student-notice-popup {

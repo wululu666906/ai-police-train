@@ -105,17 +105,25 @@ const logout = () => {
 
 <style scoped>
 .ops-shell {
+  --ops-navy: #0b1e3c;
+  --ops-navy-panel: #102947;
+  --ops-blue: #0b49b4;
+  --ops-blue-hover: #083f9d;
+  --ops-blue-soft: #eaf1ff;
+  --ops-bg: #eef3f8;
+  --ops-border: #e3eaf3;
+  --ops-muted: #8b96aa;
   display: flex;
   min-height: 100vh;
-  background: #eef2f7;
+  background: var(--ops-bg);
 }
 
 .ops-sidebar {
   width: 210px;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid #1f2937;
-  background: #111827;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--ops-navy);
   color: #fff;
 }
 
@@ -132,9 +140,9 @@ const logout = () => {
   height: 38px;
   display: grid;
   place-items: center;
-  border-radius: 6px;
-  background: #2563eb;
-  color: #dbeafe;
+  border-radius: 8px;
+  background: var(--ops-blue);
+  color: #dbe8ff;
 }
 
 .ops-brand h1 {
@@ -150,12 +158,12 @@ const logout = () => {
 }
 
 .ops-brand__title .ops-icon {
-  color: #bfdbfe;
+  color: #dbe8ff;
 }
 
 .ops-brand p {
   margin: 2px 0 0;
-  color: #94a3b8;
+  color: rgba(216, 225, 244, 0.56);
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.12em;
@@ -176,7 +184,7 @@ const logout = () => {
   border: 0;
   border-radius: 6px;
   padding: 0 12px;
-  color: #cbd5e1;
+  color: #c4ccdc;
   background: transparent;
   font-weight: 800;
   text-align: left;
@@ -184,7 +192,7 @@ const logout = () => {
 
 .ops-nav__item--active {
   color: #fff;
-  background: #2563eb;
+  background: var(--ops-blue);
 }
 
 .ops-logout {
@@ -195,7 +203,7 @@ const logout = () => {
 .ops-logout:hover,
 .ops-nav__item:hover {
   color: #fff;
-  background: #1f2937;
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .ops-main {
@@ -211,20 +219,20 @@ const logout = () => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  border-bottom: 1px solid #dbe3ee;
+  border-bottom: 1px solid var(--ops-border);
   background: #fff;
   padding: 12px 24px;
 }
 
 .ops-topbar h2 {
   margin: 0;
-  color: #0f172a;
+  color: #17213b;
   font-size: 18px;
 }
 
 .ops-topbar p {
   margin: 5px 0 0;
-  color: #64748b;
+  color: var(--ops-muted);
   font-size: 13px;
 }
 
@@ -232,7 +240,7 @@ const logout = () => {
   display: flex;
   align-items: center;
   gap: 12px;
-  color: #475569;
+  color: #4a5467;
   font-size: 13px;
 }
 
@@ -243,7 +251,7 @@ const logout = () => {
 }
 
 .ops-user strong {
-  color: #2563eb;
+  color: var(--ops-blue);
 }
 
 .ops-topbar-logout {
@@ -251,10 +259,10 @@ const logout = () => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid #dfe5ed;
   border-radius: 6px;
   background: #fff;
-  color: #334155;
+  color: #253047;
   padding: 0 10px;
   font-weight: 900;
 }
@@ -270,6 +278,73 @@ const logout = () => {
   min-width: 0;
   padding: 20px;
   overflow: auto;
+}
+
+.ops-content :deep(.ops-card),
+.ops-content :deep(.panel),
+.ops-content :deep(.toolbar),
+.ops-content :deep(.ops-overview-toolbar),
+.ops-content :deep(.ops-metric-card),
+.ops-content :deep(.ops-panel),
+.ops-content :deep(.ops-toolbar),
+.ops-content :deep(.ops-summary),
+.ops-content :deep(.ops-table-wrap),
+.ops-content :deep(.ops-usage-toolbar),
+.ops-content :deep(.account-panel),
+.ops-content :deep(.usage-panel),
+.ops-content :deep(.ops-account-panel),
+.ops-content :deep(.ops-detail-panel) {
+  border-color: var(--ops-border) !important;
+  background: #fff !important;
+}
+
+.ops-content :deep(.ops-action--primary),
+.ops-content :deep(.ops-action-btn--primary),
+.ops-content :deep(.tabs .active),
+.ops-content :deep(.ops-tabs button.active),
+.ops-content :deep(.toggle button.active),
+.ops-content :deep(.progress__fill),
+.ops-content :deep(.ops-role-bar i),
+.ops-content :deep(.ops-import-role-action.is-active) {
+  border-color: var(--ops-blue) !important;
+  background: var(--ops-blue) !important;
+  color: #fff !important;
+}
+
+.ops-content :deep(.ops-action--primary:hover),
+.ops-content :deep(.ops-action-btn--primary:hover:not(:disabled)) {
+  border-color: var(--ops-blue-hover) !important;
+  background: var(--ops-blue-hover) !important;
+}
+
+.ops-content :deep(.ops-action--ghost.active),
+.ops-content :deep(.issue.active),
+.ops-content :deep(.filter-chip.active),
+.ops-content :deep(.ops-action-btn:hover:not(:disabled)),
+.ops-content :deep(.ops-overview-toolbar button:hover),
+.ops-content :deep(.ops-panel header button:hover),
+.ops-content :deep(.ops-risk-list button:hover),
+.ops-content :deep(.ops-active-list button:hover),
+.ops-content :deep(.ops-account-card.active),
+.ops-content :deep(.ops-category-tabs button.active),
+.ops-content :deep(.ops-group-nav button.active),
+.ops-content :deep(.ops-context-menu button:hover),
+.ops-content :deep(.ops-preview),
+.ops-content :deep(.ops-reset-target),
+.ops-content :deep(.ops-role--maintainer) {
+  border-color: var(--ops-blue) !important;
+  background: var(--ops-blue-soft) !important;
+  color: var(--ops-blue) !important;
+}
+
+.ops-content :deep(.ops-group-nav__create),
+.ops-content :deep(.ops-account-name),
+.ops-content :deep(.ops-row-actions button:not(.danger)) {
+  color: var(--ops-blue) !important;
+}
+
+.ops-content :deep(input[type='checkbox']) {
+  accent-color: var(--ops-blue);
 }
 
 @media (max-width: 780px) {

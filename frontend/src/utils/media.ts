@@ -10,6 +10,14 @@ export const resolveMediaUrl = (value: unknown): string => {
   if (url.startsWith('/')) {
     const apiBase = String((request as any).defaults?.baseURL || '').replace(/\/$/, '')
     if (/^https?:\/\//i.test(apiBase)) {
+      if (/^\/(static|object-storage|avatars)\//.test(url)) {
+        try {
+          const parsed = new URL(apiBase)
+          return `${parsed.origin}${url}`
+        } catch {
+          return url
+        }
+      }
       return `${apiBase}${url}`
     }
     return url

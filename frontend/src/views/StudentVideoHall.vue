@@ -11,7 +11,7 @@
           @input="onFilterChanged"
           @clear="onFilterChanged"
         />
-        <el-button plain class="history-btn" @click="router.push('/student/video-history')">实训历史</el-button>
+        <el-button plain class="history-btn" @click="router.push('/student/history?tab=video')">实训历史</el-button>
       </div>
     </section>
 
@@ -28,7 +28,13 @@
         </el-tabs>
 
         <div class="filter-row">
-          <el-select v-model="sortBy" class="filter-select filter-select--sort" placeholder="排序方式" @change="onFilterChanged">
+          <el-select
+            v-model="sortBy"
+            class="filter-select filter-select--sort"
+            placeholder="排序方式"
+            :teleported="false"
+            @change="onFilterChanged"
+          >
             <el-option label="默认排序" value="default" />
             <el-option label="最新上传" value="latest" />
             <el-option label="时长优先" value="duration" />
@@ -52,7 +58,7 @@
           class="video-card"
         >
           <div class="video-card__cover" @click="openVideo(video)">
-            <img v-if="coverFor(video)" :src="coverFor(video)" :alt="video.title" class="video-card__image" />
+            <img v-if="coverFor(video)" :src="coverFor(video)" :alt="video.title" class="video-card__image" @error="markVideoCoverFailed(video)" />
             <div v-else class="video-card__placeholder">
               <el-icon :size="36"><VideoPlay /></el-icon>
             </div>
@@ -187,7 +193,7 @@
         <div v-if="entryStep === 1" class="entry-dialog__body entry-dialog__body--split">
           <div class="entry-left">
             <div class="entry-cover entry-cover--compact">
-              <img v-if="coverFor(playerVideo)" :src="coverFor(playerVideo)" class="entry-cover__img" />
+              <img v-if="coverFor(playerVideo)" :src="coverFor(playerVideo)" class="entry-cover__img" @error="markVideoCoverFailed(playerVideo)" />
               <div v-else class="entry-cover__placeholder">
                 <el-icon :size="40" color="rgba(255,255,255,0.2)"><VideoPlay /></el-icon>
               </div>
@@ -381,7 +387,7 @@ const entryStep = ref(1)
 const entryMode = ref<'practice' | 'exam'>('practice')
 const playerVideo = ref<VideoItem | null>(null)
 const recentSessionMap = ref<Record<number, SessionBrief>>({})
-const { ensureVideoCover, ensureVideoCovers, getVideoCover } = useVideoCover()
+const { ensureVideoCover, ensureVideoCovers, getVideoCover, markVideoCoverFailed } = useVideoCover()
 const teachingVideoRef = ref<HTMLVideoElement | null>(null)
 const { attach: attachTeachingPlayback, release: releaseTeachingPlayback } = useSegmentedVideoPlayback(teachingVideoRef)
 
@@ -756,11 +762,13 @@ function formatDuration(seconds?: number) {
   border-radius: 8px;
   border: 1px solid rgba(214, 223, 237, 0.95);
   box-shadow: 0 20px 50px rgba(15, 23, 42, 0.06);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .content-card__toolbar {
   padding: 14px 18px 0;
+  position: relative;
+  z-index: 5;
 }
 
 .video-tabs {
@@ -1413,12 +1421,6 @@ function formatDuration(seconds?: number) {
   align-items: center;
   margin-top: 20px;
   justify-content: flex-end;
-}
-
-@media (max-width: 1440px) {
-  .video-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 1180px) {

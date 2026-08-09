@@ -23,8 +23,6 @@ function isKnownDevNoise(args: unknown[]): boolean {
 }
 
 export function suppressKnownDevConsoleNoise() {
-  if (!import.meta.env.DEV) return
-
   ;(['log', 'info', 'warn', 'debug'] as const).forEach((method) => {
     const original = console[method].bind(console)
     console[method] = (...args: unknown[]) => {

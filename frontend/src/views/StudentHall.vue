@@ -1,6 +1,37 @@
 <template>
   <div class="student-page student-page--hall hall-page">
     <div class="hall-layout hall-layout--list">
+      <section class="hall-hero">
+        <div class="hall-hero__content">
+          <span class="hall-hero__eyebrow">训练工作台</span>
+          <h1>警情处置模拟训练</h1>
+          <p>围绕案件脚本、现场角色和处置阶段开展 AI 对话训练，按场景继续、复盘或重新训练。</p>
+          <div class="hall-hero__chips">
+            <span>AI 对话</span>
+            <span>多角色沟通</span>
+            <span>处置复盘</span>
+          </div>
+        </div>
+        <div class="hall-hero__metrics">
+          <div class="hall-metric hall-metric--primary">
+            <span class="hall-metric__label">可训练场景</span>
+            <strong>{{ totalSceneCount }}</strong>
+          </div>
+          <div class="hall-metric">
+            <span class="hall-metric__label">进行中</span>
+            <strong>{{ activeSceneCount }}</strong>
+          </div>
+          <div class="hall-metric">
+            <span class="hall-metric__label">已完成</span>
+            <strong>{{ completedSceneCount }}</strong>
+          </div>
+          <div class="hall-metric">
+            <span class="hall-metric__label">案件数</span>
+            <strong>{{ totalCaseCount }}</strong>
+          </div>
+        </div>
+      </section>
+
       <div class="list-toolbar">
         <span class="list-title">{{ resultSummary }}</span>
       </div>
@@ -18,7 +49,7 @@
             <el-tab-pane label="已完成训练" name="completed" />
           </el-tabs>
           <div class="tasks-controls">
-            <el-select v-model="sortBy" size="small" class="sort-select">
+            <el-select v-model="sortBy" size="small" class="sort-select" :teleported="false">
               <el-option label="最新创建" value="newest" />
               <el-option label="训练次数" value="train_count" />
               <el-option label="案件名称" value="title" />
@@ -155,6 +186,7 @@ import { Grid, List } from '@element-plus/icons-vue'
 import SelectFilter from '../geeker-adapt/components/SelectFilter/index.vue'
 import TrainingTaskCard from '../geeker-adapt/components/TrainingTaskCard.vue'
 import request from '../utils/request'
+import { fetchStudentCases, fetchStudentCaseTypes } from '../utils/studentCases'
 import '../geeker-adapt/styles/student-hall.scss'
 
 type SceneItem = {
@@ -246,6 +278,15 @@ const resultSummary = computed(() => {
   return `筛选结果（${sceneCount} 个场景 / ${displayCases.value.length} 个案件）`
 })
 
+const allScenes = computed(() => cases.value.flatMap((caseItem) => Array.isArray(caseItem.scenes) ? caseItem.scenes : []))
+const totalCaseCount = computed(() => cases.value.length)
+const totalSceneCount = computed(() => allScenes.value.length)
+const activeSceneCount = computed(() => allScenes.value.filter((scene) => {
+  const status = getSceneTrainingStatus(scene)
+  return status === 'in_progress' || status === 'evaluating'
+}).length)
+const completedSceneCount = computed(() => allScenes.value.filter((scene) => getSceneTrainingStatus(scene) === 'completed').length)
+
 const displayCases = computed(() => {
   let result = filteredCases.value
     .map((caseItem) => ({
@@ -293,7 +334,7 @@ const getFilteredScenes = (caseItem: CaseItem) => {
   })
 }
 
-const getSceneTrainingStatus = (scene: SceneItem) => {
+function getSceneTrainingStatus(scene: SceneItem) {
   if (scene.training_status) return scene.training_status
   if (scene.has_active_session) return 'in_progress'
   return 'not_started'
@@ -351,12 +392,9 @@ const fetchCases = async () => {
   isLoadingCases.value = true
   loadError.value = ''
   try {
-    const [casesRes, typesRes]: any = await Promise.all([
-      request.get('/student/cases', { _skipErrorToast: true } as any),
-      request.get('/student/case-types', { _skipErrorToast: true } as any),
-    ])
-    cases.value = Array.isArray(casesRes) ? casesRes : []
-    caseTypes.value = Array.isArray(typesRes) ? typesRes : []
+    const casesRes = await fetchStudentCases()
+    cases.value = casesRes
+    caseTypes.value = await fetchStudentCaseTypes(casesRes)
     filterCases()
   } catch (error: any) {
     loadError.value = error?.response?.data?.detail || '当前无法加载训练案件，请稍后重试。'
@@ -419,6 +457,115 @@ const startTraining = async (scene: SceneItem) => {
 </script>
 
 <style scoped lang="scss">
+.hall-page {
+  color: #17213b;
+}
+
+.hall-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.95fr);
+  gap: 18px;
+  min-height: 210px;
+  overflow: hidden;
+  border-radius: 8px;
+  padding: 24px;
+  background:
+    linear-gradient(135deg, rgba(3, 28, 80, 0.96), rgba(24, 63, 168, 0.94)),
+    #031c50;
+  color: #fff;
+  box-shadow: 0 14px 30px rgba(23, 56, 145, 0.16);
+}
+
+.hall-hero__content {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+
+  h1 {
+    margin: 14px 0 10px;
+    font-size: 30px;
+    line-height: 1.16;
+    font-weight: 800;
+    letter-spacing: 0;
+  }
+
+  p {
+    max-width: 640px;
+    margin: 0;
+    color: rgba(255, 255, 255, 0.78);
+    font-size: 14px;
+    line-height: 1.9;
+  }
+}
+
+.hall-hero__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.hall-hero__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 22px;
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    height: 30px;
+    padding: 0 12px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    color: rgba(255, 255, 255, 0.84);
+    font-size: 12px;
+    font-weight: 600;
+  }
+}
+
+.hall-hero__metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-content: center;
+}
+
+.hall-metric {
+  min-height: 82px;
+  border-radius: 8px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+
+  &--primary {
+    background: rgba(255, 255, 255, 0.16);
+  }
+}
+
+.hall-metric__label {
+  display: block;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+}
+
+.hall-metric strong {
+  display: block;
+  margin-top: 10px;
+  font-size: 28px;
+  line-height: 1;
+  font-weight: 800;
+}
+
 .tasks-panel {
   padding: 0;
 }
@@ -428,8 +575,8 @@ const startTraining = async (scene: SceneItem) => {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 0 14px;
-  border-bottom: 1px solid #f3f4f6;
+  padding: 4px 16px 0;
+  border-bottom: 1px solid #edf0f5;
   flex-shrink: 0;
 }
 
@@ -498,8 +645,8 @@ const startTraining = async (scene: SceneItem) => {
 .task-grid--list-view {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  padding: 14px;
+  gap: 14px;
+  padding: 16px;
 
   &.task-grid--list {
     grid-template-columns: 1fr;
@@ -511,12 +658,13 @@ const startTraining = async (scene: SceneItem) => {
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
+  min-height: 24px;
 }
 
 .list-title {
   font-size: 14px;
   font-weight: 700;
-  color: #111827;
+  color: #253047;
 }
 
 .state-panel {
@@ -623,7 +771,26 @@ const startTraining = async (scene: SceneItem) => {
 }
 
 @media (max-width: 960px) {
+  .hall-hero {
+    grid-template-columns: 1fr;
+    padding: 20px;
+  }
+
+  .hall-hero__content h1 {
+    font-size: 24px;
+  }
+
+  .hall-hero__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .task-grid--list-view:not(.task-grid--list) {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .hall-hero__metrics {
     grid-template-columns: 1fr;
   }
 }

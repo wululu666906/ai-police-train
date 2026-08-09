@@ -105,7 +105,7 @@
 
             <div class="form-section-title">节点类型</div>
             <el-form-item label="训练形式">
-              <el-select v-model="currentNode.node_type" style="width: 240px">
+              <el-select v-model="currentNode.node_type" style="width: 240px" @change="onNodeTypeChange">
                 <el-option label="动作实操" value="action" />
                 <el-option label="判断题" value="judge" />
                 <el-option label="单选题" value="choice" />
@@ -138,68 +138,23 @@
                 placeholder="如：A 或 true/false 或关键词"
               />
             </el-form-item>
-
-            <div class="form-section-title">训练设计</div>
             <el-form-item label="训练目标">
               <el-input
-                v-model="currentNode.node_config.training_objective"
+                v-model="currentNode.node_config.training_goal"
                 type="textarea"
                 :rows="2"
-                placeholder="说明本节点训练学员哪项能力，如风险识别、现场控场、规范询问、依法告知"
-              />
-            </el-form-item>
-            <el-form-item label="暂停原因">
-              <el-input
-                v-model="currentNode.node_config.decision_reason"
-                type="textarea"
-                :rows="2"
-                placeholder="说明为什么在这里暂停：风险点、决策点或处置转折点"
-              />
-            </el-form-item>
-            <el-form-item label="现场压力">
-              <el-input
-                v-model="currentNode.node_config.scene_pressure"
-                type="textarea"
-                :rows="2"
-                placeholder="描述对方情绪、围观、冲突趋势、时间压力等"
+                placeholder="说明本节点希望学员达成的训练目标"
               />
             </el-form-item>
             <el-form-item label="标准要点">
               <el-input
-                :model-value="listToText(currentNode.node_config.standard_points)"
+                v-model="standardPointsInput"
                 type="textarea"
-                :rows="3"
-                placeholder="每行一个标准处置要点"
-                @input="updateListField('standard_points', $event)"
+                :rows="4"
+                placeholder="每行一个标准要点，如：表明身份、告知原因、规范检查证件"
+                @blur="syncStandardPoints"
               />
-            </el-form-item>
-            <el-form-item label="可接受答案">
-              <el-input
-                :model-value="listToText(currentNode.node_config.acceptable_answers)"
-                type="textarea"
-                :rows="3"
-                placeholder="每行一个可接受表达或做法"
-                @input="updateListField('acceptable_answers', $event)"
-              />
-            </el-form-item>
-            <el-form-item label="常见错误">
-              <el-input
-                :model-value="listToText(currentNode.node_config.common_mistakes)"
-                type="textarea"
-                :rows="3"
-                placeholder="每行一个常见错误或扣分点"
-                @input="updateListField('common_mistakes', $event)"
-              />
-            </el-form-item>
-            <el-form-item label="答案时间">
-              <el-input-number
-                v-model="currentNode.node_config.answer_appears_at"
-                :min="0"
-                :step="1"
-                controls-position="right"
-                style="width: 140px"
-              />
-              <span class="form-unit">秒（可为空，表示没有明确示范答案时间）</span>
+              <div class="form-help-text">用于学员端标准提示和评估报告考察点展示。</div>
             </el-form-item>
 
             <template v-if="currentNode.node_type === 'action'">
@@ -242,22 +197,6 @@
                   <el-radio :value="false">错误</el-radio>
                 </el-radio-group>
               </el-form-item>
-              <el-form-item label="选项文案">
-                <div class="choice-options">
-                  <div
-                    v-for="(option, optionIndex) in currentNode.choice_options"
-                    :key="option.label"
-                    class="choice-option"
-                  >
-                    <span class="choice-alpha">{{ option.label }}</span>
-                    <el-input
-                      v-model="option.text"
-                      placeholder="学员端显示的选项内容"
-                      style="flex: 1"
-                    />
-                  </div>
-                </div>
-              </el-form-item>
               <el-form-item label="答案解析">
                 <el-input
                   v-model="currentNode.node_config.explanation"
@@ -280,7 +219,7 @@
               <el-form-item label="选项设置">
                 <div class="choice-options">
                   <div
-                    v-for="(option, optionIndex) in currentNode.choice_options"
+                    v-for="(option, optionIndex) in (currentNode.node_config.options || [])"
                     :key="optionIndex"
                     class="choice-option"
                   >
@@ -292,7 +231,7 @@
                       <span class="choice-alpha">{{ String.fromCharCode(65 + Number(optionIndex)) }}</span>
                     </el-radio>
                     <el-input
-                      v-model="option.text"
+                      v-model="currentNode.node_config.options[optionIndex]"
                       placeholder="选项内容"
                       style="flex: 1"
                     />
@@ -511,8 +450,6 @@ import { Close, Delete, Plus, Rank, SetUp, Setting, Timer } from '@element-plus/
 import draggable from 'vuedraggable'
 import request from '../utils/request'
 
-type ChoiceOption = { label: string; text: string }
-
 interface NodeItem {
   id?: number
   video_id: number
@@ -528,7 +465,7 @@ interface NodeItem {
   node_type: string
   node_interaction_type: string
   ai_instructor_hint: string
-  choice_options: ChoiceOption[] | null
+  choice_options: Array<{ label: string; text: string }> | null
   correct_answer: string | null
   node_config: Record<string, any>
   required_gesture: string | null
@@ -545,6 +482,7 @@ const selectedIndex = ref(-1)
 const saving = ref(false)
 const saveSuccess = ref(false)
 const keywordsInput = ref('')
+const standardPointsInput = ref('')
 
 const currentNode = computed<NodeItem | null>(() =>
   selectedIndex.value >= 0 && selectedIndex.value < nodes.value.length
@@ -575,6 +513,7 @@ const previewMetaList = computed(() => {
 
   if (node.required_gesture) list.push(`动作：${gestureLabel(node.required_gesture)}`)
   if (node.required_keywords?.length) list.push(`关键词 ${node.required_keywords.length} 个`)
+  if (node.node_config?.standard_points?.length) list.push(`标准要点 ${node.node_config.standard_points.length} 条`)
   if (node.prompt_content?.prop_label?.trim()) list.push(`道具：${node.prompt_content.prop_label.trim()}`)
   return list
 })
@@ -585,6 +524,8 @@ const nodeWarnings = computed(() => {
 
   const warnings: string[] = []
   if (!node.title?.trim()) warnings.push('建议补充节点名称，方便教师和学员识别当前训练点。')
+  if (!node.node_config?.training_goal?.trim()) warnings.push('建议补充训练目标，便于报告形成能力评价。')
+  if (!node.node_config?.standard_points?.length) warnings.push('建议补充标准要点，便于学员复盘和报告展示。')
   if ((node.node_type === 'action' || node.node_type === 'voice_qa') && !node.prompt_content?.instruction?.trim()) {
     warnings.push('当前节点缺少给学员的操作说明，学员端会不知道先做什么。')
   }
@@ -617,183 +558,45 @@ onMounted(fetchNodes)
 watch(currentNode, (node) => {
   if (!node) return
   keywordsInput.value = Array.isArray(node.required_keywords) ? node.required_keywords.join(', ') : ''
+  standardPointsInput.value = Array.isArray(node.node_config?.standard_points) ? node.node_config.standard_points.join('\n') : ''
 })
 
 watch(
   () => currentNode.value?.node_type,
   (nextType) => {
     if (!currentNode.value || !nextType) return
-    currentNode.value.choice_options = normalizeChoiceOptions(currentNode.value.choice_options || [], nextType)
-    currentNode.value.node_config = ensureNodeConfig(
-      nextType,
-      currentNode.value.node_config,
-      currentNode.value.choice_options,
-      currentNode.value.correct_answer,
-    )
-    if (nextType === 'judge') currentNode.value.node_interaction_type = 'judgment'
-    if (nextType === 'choice' && !['choice', 'prop_select'].includes(currentNode.value.node_interaction_type)) {
-      currentNode.value.node_interaction_type = 'choice'
-    }
+    currentNode.value.node_config = ensureNodeConfig(nextType, currentNode.value.node_config)
   },
 )
 
 async function fetchNodes() {
-  const videoId = props.video?.id
-  if (!videoId) {
-    nodes.value = []
-    selectedIndex.value = -1
-    ElMessage.error('视频信息缺少 ID，无法加载节点')
-    return
-  }
-
   try {
-    const response: any = await request.get(`/videos/${videoId}/nodes`)
-    nodes.value = readNodeListResponse(response).map(normalizeFetchedNode)
+    const response: any = await request.get(`/videos/${props.video.id}/nodes`)
+    nodes.value = (response || []).map(normalizeFetchedNode)
     if (nodes.value.length) selectedIndex.value = 0
-    else selectedIndex.value = -1
   } catch {
-    nodes.value = []
-    selectedIndex.value = -1
     ElMessage.error('加载节点失败')
   }
 }
 
-function readNodeListResponse(response: any): any[] {
-  if (Array.isArray(response)) return response
-  if (Array.isArray(response?.nodes)) return response.nodes
-  if (Array.isArray(response?.items)) return response.items
-  console.warn('Unexpected video nodes response:', response)
-  return []
-}
-
 function normalizeFetchedNode(node: any): NodeItem {
-  try {
-      const nodeConfigRaw = parseJsonLike(node.node_config, {})
-      const promptContent = normalizePromptContent(parseJsonLike(node.prompt_content, {}))
-      const nodeType = normalizeNodeType(node.node_type, node.node_interaction_type, {
-      ...node,
-      node_config: nodeConfigRaw,
-      prompt_content: promptContent,
-    })
-    const choiceOptions = normalizeChoiceOptions(readRawChoiceOptions({
-      ...node,
-      node_config: nodeConfigRaw,
-    }), nodeType)
-      const nodeConfig = {
-        ...nodeConfigRaw,
-        question: nodeConfigRaw.question || promptContent.police_question || promptContent.instruction || '',
-        training_objective: nodeConfigRaw.training_objective || promptContent.training_objective || '',
-        decision_reason: nodeConfigRaw.decision_reason || promptContent.decision_reason || '',
-        scene_pressure: nodeConfigRaw.scene_pressure || promptContent.scene_pressure || '',
-      }
-    return {
-      ...node,
-      node_type: nodeType,
-      node_interaction_type: normalizeInteractionType(node.node_interaction_type || nodeType),
-      ai_instructor_hint: node.ai_instructor_hint || '',
-      choice_options: choiceOptions,
-      correct_answer: node.correct_answer || null,
-      prompt_content: promptContent,
-      node_config: ensureNodeConfig(nodeType, nodeConfig, choiceOptions, node.correct_answer),
-      required_keywords: Array.isArray(node.required_keywords) ? node.required_keywords : parseJsonLike(node.required_keywords, []),
-    }
-  } catch (error) {
-    console.error('Failed to normalize video node:', node, error)
-    return {
-      ...node,
-      node_interaction_type: normalizeInteractionType(node.node_interaction_type || node.node_type),
-      ai_instructor_hint: node.ai_instructor_hint || '',
-      choice_options: null,
-      correct_answer: node.correct_answer || null,
-      prompt_content: normalizePromptContent({}),
-      node_config: ensureNodeConfig(node.node_type || 'action', {}),
-      required_keywords: [],
-    }
+  const nodeType = node.node_type || 'action'
+  const nodeConfig = normalizeConfigFromLegacy(
+    nodeType,
+    ensureNodeConfig(nodeType, node.node_config || {}),
+    node.choice_options,
+    node.correct_answer,
+  )
+  return {
+    ...node,
+    node_interaction_type: node.node_interaction_type || defaultInteractionType(nodeType),
+    ai_instructor_hint: node.ai_instructor_hint || '',
+    choice_options: node.choice_options || null,
+    correct_answer: node.correct_answer || null,
+    prompt_content: normalizePromptContent(node.prompt_content),
+    node_config: nodeConfig,
+    required_keywords: Array.isArray(node.required_keywords) ? node.required_keywords : [],
   }
-}
-
-function parseJsonLike<T>(value: unknown, fallback: T): T {
-  if (value == null) return fallback
-  if (typeof value !== 'string') return value as T
-  const trimmed = value.trim()
-  if (!trimmed) return fallback
-  try {
-    return JSON.parse(trimmed) as T
-  } catch {
-    return fallback
-  }
-}
-
-function normalizeInteractionType(raw?: string | null) {
-  const value = String(raw || 'voice_qa').trim()
-  if (value === 'judge') return 'judgment'
-  return value
-}
-
-function normalizeNodeType(nodeType: string, interactionType: string, node: Record<string, any>) {
-  const interaction = normalizeInteractionType(interactionType || nodeType)
-  if (interaction === 'judgment') return 'judge'
-  if (interaction === 'choice' || interaction === 'prop_select') return 'choice'
-  if (interaction === 'voice_qa') return 'voice_qa'
-  if (interaction === 'action') return 'action'
-  if (nodeType === 'judge') return 'judge'
-  if (nodeType === 'choice') return 'choice'
-  if (Array.isArray(readRawChoiceOptions(node)) && readRawChoiceOptions(node).length) return 'choice'
-  return nodeType || 'action'
-}
-
-function normalizeChoiceOption(option: unknown, index: number): ChoiceOption {
-  if (typeof option === 'string') {
-    const trimmed = option.trim()
-    const match = trimmed.match(/^([A-Za-z])[.、:：)\]]\s*(.+)$/) || trimmed.match(/^([A-Za-z])\s+(.+)$/)
-    if (match) return { label: match[1].toUpperCase(), text: match[2].trim() }
-    return { label: String.fromCharCode(65 + index), text: trimmed }
-  }
-  if (option && typeof option === 'object') {
-    const item = option as Record<string, unknown>
-    const label = String(item.label ?? item.value ?? '').trim()
-    const text = String(item.text ?? item.content ?? item.description ?? '').trim()
-    if (label && text) return { label, text }
-    if (text) return { label: label || String.fromCharCode(65 + index), text }
-    if (label) return { label, text: label }
-  }
-  return { label: String.fromCharCode(65 + index), text: String(option ?? '').trim() }
-}
-
-function normalizeChoiceOptions(rawOptions: unknown[], nodeType: string): ChoiceOption[] | null {
-  const options = rawOptions
-    .map((option, index) => normalizeChoiceOption(option, index))
-    .filter((option) => option.label || option.text)
-  if (options.length) return options
-  if (nodeType === 'judge') {
-    return [
-      { label: '对', text: '正确' },
-      { label: '错', text: '错误' },
-    ]
-  }
-  if (nodeType === 'choice') {
-    return [
-      { label: 'A', text: '' },
-      { label: 'B', text: '' },
-    ]
-  }
-  return null
-}
-
-function readRawChoiceOptions(node: Record<string, any>): unknown[] {
-  const direct = node.choice_options
-  if (Array.isArray(direct) && direct.length) return direct
-  if (typeof direct === 'string' && direct.trim()) {
-    try {
-      const parsed = JSON.parse(direct)
-      if (Array.isArray(parsed)) return parsed
-    } catch {
-      // ignore malformed JSON
-    }
-  }
-  const configOptions = node.node_config?.options
-  if (Array.isArray(configOptions)) return configOptions
-  return []
 }
 
 function normalizePromptContent(content?: Record<string, any>) {
@@ -820,52 +623,50 @@ function normalizePromptContent(content?: Record<string, any>) {
   }
 }
 
-function ensureNodeConfig(
-  nodeType: string,
-  config: Record<string, any>,
-  choiceOptions: ChoiceOption[] | null = null,
-  correctAnswer?: string | null,
-) {
+function ensureNodeConfig(nodeType: string, config: Record<string, any>) {
+  const baseConfig = {
+    ...(config || {}),
+    training_goal: config?.training_goal || '',
+    standard_points: Array.isArray(config?.standard_points) ? config.standard_points : [],
+  }
   if (nodeType === 'choice') {
-    const options = choiceOptions?.length ? choiceOptions : normalizeChoiceOptions(config.options || [], 'choice') || []
     return {
-      ...withTrainingScriptConfig(config),
-      question: config.question || '',
-      options,
-      correct_index: normalizeCorrectIndex(config.correct_index, correctAnswer || config.correct_answer, options),
-      time_limit: config.time_limit ?? 30,
-      explanation: config.explanation || '',
+      ...baseConfig,
+      question: config?.question || '',
+      options: Array.isArray(config?.options) && config.options.length ? config.options : ['', ''],
+      correct_index: config?.correct_index ?? 0,
+      time_limit: config?.time_limit ?? 30,
+      explanation: config?.explanation || '',
       speech_rule: {
-        match_mode: config.speech_rule?.match_mode || 'any',
-        min_count: config.speech_rule?.min_count ?? 1,
-        min_length: config.speech_rule?.min_length ?? 0,
+        match_mode: config?.speech_rule?.match_mode || 'any',
+        min_count: config?.speech_rule?.min_count ?? 1,
+        min_length: config?.speech_rule?.min_length ?? 0,
       },
       pass_rule: {
-        mode: config.pass_rule?.mode || 'all',
+        mode: config?.pass_rule?.mode || 'all',
       },
     }
   }
 
   if (nodeType === 'judge') {
     return {
-      ...withTrainingScriptConfig(config),
-      question: config.question || '',
-      correct_answer: normalizeJudgeAnswer(config.correct_answer ?? correctAnswer),
-      explanation: config.explanation || '',
+      ...baseConfig,
+      question: config?.question || '',
+      correct_answer: config?.correct_answer ?? true,
+      explanation: config?.explanation || '',
       speech_rule: {
-        match_mode: config.speech_rule?.match_mode || 'any',
-        min_count: config.speech_rule?.min_count ?? 1,
-        min_length: config.speech_rule?.min_length ?? 0,
+        match_mode: config?.speech_rule?.match_mode || 'any',
+        min_count: config?.speech_rule?.min_count ?? 1,
+        min_length: config?.speech_rule?.min_length ?? 0,
       },
       pass_rule: {
-        mode: config.pass_rule?.mode || 'all',
+        mode: config?.pass_rule?.mode || 'all',
       },
     }
   }
 
   return {
-    ...(config || {}),
-    ...withTrainingScriptConfig(config),
+    ...baseConfig,
     speech_rule: {
       match_mode: config?.speech_rule?.match_mode || 'any',
       min_count: config?.speech_rule?.min_count ?? 1,
@@ -877,67 +678,113 @@ function ensureNodeConfig(
   }
 }
 
-function withTrainingScriptConfig(config: Record<string, any>) {
-  return {
-    training_objective: config?.training_objective || '',
-    decision_reason: config?.decision_reason || '',
-    scene_pressure: config?.scene_pressure || '',
-    standard_points: normalizeTextList(config?.standard_points),
-    acceptable_answers: normalizeTextList(config?.acceptable_answers),
-    common_mistakes: normalizeTextList(config?.common_mistakes),
-    score_rubric: isPlainObject(config?.score_rubric)
-      ? config.score_rubric
-      : { risk_awareness: 30, procedure: 25, communication: 20, lawfulness: 15, safety: 10 },
-    answer_appears_at: config?.answer_appears_at ?? null,
-  }
-}
-
-function isPlainObject(value: unknown): value is Record<string, any> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
-}
-
-function normalizeTextList(value: unknown) {
-  if (!Array.isArray(value)) return []
-  return value.map((item) => String(item).trim()).filter(Boolean)
-}
-
-function listToText(value: unknown) {
-  return normalizeTextList(value).join('\n')
-}
-
-function updateListField(field: 'standard_points' | 'acceptable_answers' | 'common_mistakes', value: string | number) {
-  if (!currentNode.value) return
-  currentNode.value.node_config[field] = String(value || '')
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
-
-function normalizeCorrectIndex(rawIndex: unknown, rawAnswer: unknown, options: ChoiceOption[]) {
-  if (typeof rawIndex === 'number' && rawIndex >= 0 && rawIndex < options.length) return rawIndex
-  const answer = String(rawAnswer || '').trim().toUpperCase()
-  if (answer.length === 1 && answer >= 'A' && answer <= 'Z') {
-    const index = answer.charCodeAt(0) - 65
-    if (index >= 0 && index < options.length) return index
-  }
-  const matchedIndex = options.findIndex((option) => option.label.toUpperCase() === answer)
-  return matchedIndex >= 0 ? matchedIndex : 0
-}
-
-function normalizeJudgeAnswer(rawAnswer: unknown) {
-  if (typeof rawAnswer === 'boolean') return rawAnswer
-  const answer = String(rawAnswer || '').trim()
-  if (['对', '正确', 'true', 'True', 'A'].includes(answer)) return true
-  if (['错', '错误', 'false', 'False', 'B'].includes(answer)) return false
-  return true
-}
-
 function syncKeywords() {
   if (!currentNode.value) return
   currentNode.value.required_keywords = keywordsInput.value
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean)
+}
+
+function defaultInteractionType(nodeType: string) {
+  return ({
+    action: 'action',
+    judge: 'judgment',
+    choice: 'choice',
+    voice_qa: 'voice_qa',
+  } as Record<string, string>)[nodeType] || 'voice_qa'
+}
+
+function normalizeChoiceOptions(options: unknown): Array<{ label: string; text: string }> {
+  if (!Array.isArray(options)) return []
+  return options
+    .map((option, index) => {
+      if (typeof option === 'string') {
+        return { label: String.fromCharCode(65 + index), text: option.trim() }
+      }
+      if (option && typeof option === 'object') {
+        const item = option as Record<string, unknown>
+        return {
+          label: String(item.label || String.fromCharCode(65 + index)).trim(),
+          text: String(item.text ?? item.content ?? item.description ?? '').trim(),
+        }
+      }
+      return { label: String.fromCharCode(65 + index), text: '' }
+    })
+    .filter((option) => option.text)
+}
+
+function normalizeConfigFromLegacy(
+  nodeType: string,
+  config: Record<string, any>,
+  choiceOptions: unknown,
+  correctAnswer: string | null,
+) {
+  if (nodeType !== 'choice') return config
+  const configOptions = normalizeChoiceOptions(config.options)
+  if (configOptions.length) return config
+
+  const legacyOptions = normalizeChoiceOptions(choiceOptions)
+  if (!legacyOptions.length) return config
+
+  const correctIndex = legacyOptions.findIndex((option) => option.label === correctAnswer)
+  return {
+    ...config,
+    options: legacyOptions.map((option) => option.text),
+    correct_index: correctIndex >= 0 ? correctIndex : config.correct_index ?? 0,
+  }
+}
+
+function normalizeNodeForSave(node: NodeItem): NodeItem {
+  const nodeConfig = ensureNodeConfig(node.node_type, node.node_config || {})
+  let choiceOptions = node.choice_options
+  let correctAnswer = node.correct_answer
+  let interactionType = node.node_interaction_type || defaultInteractionType(node.node_type)
+
+  if (node.node_type === 'choice') {
+    const options = normalizeChoiceOptions(nodeConfig.options)
+    const maxIndex = Math.max(options.length - 1, 0)
+    const correctIndex = Math.min(Math.max(Number(nodeConfig.correct_index ?? 0), 0), maxIndex)
+    nodeConfig.options = options.map((option) => option.text)
+    nodeConfig.correct_index = correctIndex
+    choiceOptions = options
+    correctAnswer = options[correctIndex]?.label || null
+    if (!['choice', 'prop_select'].includes(interactionType)) interactionType = 'choice'
+  } else if (node.node_type === 'judge') {
+    choiceOptions = [
+      { label: '对', text: '正确' },
+      { label: '错', text: '错误' },
+    ]
+    correctAnswer = nodeConfig.correct_answer ? '对' : '错'
+    interactionType = 'judgment'
+  } else {
+    choiceOptions = null
+    if (interactionType === 'choice' || interactionType === 'judgment' || interactionType === 'prop_select') {
+      interactionType = defaultInteractionType(node.node_type)
+    }
+  }
+
+  return {
+    ...node,
+    node_interaction_type: interactionType,
+    choice_options: choiceOptions,
+    correct_answer: correctAnswer,
+    node_config: nodeConfig,
+  }
+}
+
+function syncStandardPoints() {
+  if (!currentNode.value) return
+  currentNode.value.node_config.standard_points = standardPointsInput.value
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function onNodeTypeChange(nextType: string) {
+  if (!currentNode.value) return
+  currentNode.value.node_config = ensureNodeConfig(nextType, currentNode.value.node_config)
+  currentNode.value.node_interaction_type = defaultInteractionType(nextType)
 }
 
 function addNode() {
@@ -957,7 +804,7 @@ function addNode() {
     ai_instructor_hint: '',
     choice_options: null,
     correct_answer: null,
-    node_config: {},
+    node_config: ensureNodeConfig('action', {}),
     required_gesture: null,
     required_keywords: [],
     score_weight: 10,
@@ -1022,11 +869,12 @@ async function saveCurrentNode() {
   if (!currentNode.value) return
 
   syncKeywords()
+  syncStandardPoints()
   saving.value = true
   saveSuccess.value = false
 
   try {
-    const normalizedNode = prepareNodeForSave(currentNode.value)
+    const normalizedNode = normalizeNodeForSave(currentNode.value)
     const payload = {
       ...normalizedNode,
       prompt_content: normalizePromptContent(normalizedNode.prompt_content),
@@ -1034,11 +882,11 @@ async function saveCurrentNode() {
 
     if (currentNode.value._isNew || !currentNode.value.id) {
       const response: any = await request.post(`/videos/${props.video.id}/nodes`, payload)
-      currentNode.value.id = response.id
-      currentNode.value._isNew = false
+      Object.assign(currentNode.value, normalizeFetchedNode(response), { _isNew: false })
       ElMessage.success('节点已创建')
     } else {
       await request.patch(`/videos/${props.video.id}/nodes/${currentNode.value.id}`, payload)
+      Object.assign(currentNode.value, normalizedNode)
       ElMessage.success('节点已保存')
     }
 
@@ -1052,53 +900,6 @@ async function saveCurrentNode() {
   } finally {
     saving.value = false
   }
-}
-
-function prepareNodeForSave(node: NodeItem): NodeItem {
-  const nextNode = {
-    ...node,
-    prompt_content: normalizePromptContent(node.prompt_content),
-    node_config: ensureNodeConfig(node.node_type, node.node_config || {}, node.choice_options, node.correct_answer),
-    choice_options: node.choice_options,
-  }
-
-  if (nextNode.node_type === 'choice') {
-    const options = normalizeChoiceOptions(nextNode.choice_options || [], 'choice') || []
-    const correctIndex = normalizeCorrectIndex(nextNode.node_config.correct_index, nextNode.correct_answer, options)
-    nextNode.choice_options = options
-    nextNode.node_config.options = options
-    nextNode.node_config.correct_index = correctIndex
-    nextNode.correct_answer = options[correctIndex]?.label || String.fromCharCode(65 + correctIndex)
-    syncQuestionToPrompt(nextNode)
-    if (!['choice', 'prop_select'].includes(nextNode.node_interaction_type)) {
-      nextNode.node_interaction_type = 'choice'
-    }
-  }
-
-  if (nextNode.node_type === 'judge') {
-    nextNode.choice_options = normalizeChoiceOptions(nextNode.choice_options || [], 'judge') || []
-    nextNode.node_config.correct_answer = normalizeJudgeAnswer(nextNode.node_config.correct_answer)
-    nextNode.correct_answer = nextNode.node_config.correct_answer ? '对' : '错'
-    nextNode.node_interaction_type = 'judgment'
-    syncQuestionToPrompt(nextNode)
-  }
-
-  syncTrainingDesignToPrompt(nextNode)
-  return nextNode
-}
-
-function syncQuestionToPrompt(node: NodeItem) {
-  const question = String(node.node_config?.question || '').trim()
-  if (!question) return
-  node.prompt_content.instruction = question
-  if (node.prompt_content.police_question) node.prompt_content.police_question = question
-}
-
-function syncTrainingDesignToPrompt(node: NodeItem) {
-  const config = node.node_config || {}
-  node.prompt_content.training_objective = String(config.training_objective || '').trim()
-  node.prompt_content.decision_reason = String(config.decision_reason || '').trim()
-  node.prompt_content.scene_pressure = String(config.scene_pressure || '').trim()
 }
 
 async function onReorder() {
@@ -1116,24 +917,13 @@ async function onReorder() {
 
 function addOption() {
   if (!currentNode.value) return
-  const options = currentNode.value.choice_options || []
-  currentNode.value.choice_options = [
-    ...options,
-    { label: String.fromCharCode(65 + options.length), text: '' },
-  ]
-  currentNode.value.node_config.options = currentNode.value.choice_options
+  currentNode.value.node_config.options = [...(currentNode.value.node_config.options || []), '']
 }
 
 function removeOption(index: number) {
   if (!currentNode.value) return
-  const options = currentNode.value.choice_options || []
-  options.splice(index, 1)
-  currentNode.value.choice_options = options.map((option, optionIndex) => ({
-    ...option,
-    label: String.fromCharCode(65 + optionIndex),
-  }))
-  currentNode.value.node_config.options = currentNode.value.choice_options
-  if (currentNode.value.node_config.correct_index >= currentNode.value.choice_options.length) {
+  currentNode.value.node_config.options.splice(index, 1)
+  if (currentNode.value.node_config.correct_index >= currentNode.value.node_config.options.length) {
     currentNode.value.node_config.correct_index = 0
   }
 }

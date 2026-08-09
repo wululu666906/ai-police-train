@@ -151,20 +151,29 @@ const onSubmit = async () => {
 
 <style scoped>
 .login-shell {
+  --login-navy: #132b43;
+  --login-navy-panel: #2f526e;
+  --login-teal: #2f7798;
+  --login-blue: #1f65d8;
+  --login-blue-soft: #eef5ff;
+  --login-button: #174d76;
+  --login-button-hover: #123f61;
+  --login-bg: #eef5fb;
+  --login-card-border: #e3eaf3;
   position: relative;
   overflow: hidden;
   background:
-    radial-gradient(circle at top left, rgba(52, 116, 255, 0.2), transparent 34%),
-    radial-gradient(circle at bottom right, rgba(16, 185, 129, 0.14), transparent 28%),
-    linear-gradient(135deg, #f3f7fc 0%, #e8eef7 48%, #f8fbff 100%);
+    radial-gradient(circle at 0% 0%, rgba(195, 216, 255, 0.68), transparent 34%),
+    radial-gradient(circle at 100% 100%, rgba(208, 250, 238, 0.86), transparent 30%),
+    linear-gradient(180deg, #f7fbff 0%, var(--login-bg) 100%);
 }
 
 .login-backdrop {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(22, 50, 79, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(22, 50, 79, 0.04) 1px, transparent 1px);
+    linear-gradient(rgba(22, 50, 79, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(22, 50, 79, 0.035) 1px, transparent 1px);
   background-size: 22px 22px;
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.9), rgba(0, 0, 0, 0.35));
 }
@@ -176,8 +185,8 @@ const onSubmit = async () => {
   overflow: hidden;
   color: white;
   background:
-    linear-gradient(160deg, rgba(14, 36, 63, 0.98) 0%, rgba(22, 50, 79, 0.95) 48%, rgba(24, 95, 142, 0.92) 100%);
-  box-shadow: 0 32px 80px rgba(22, 50, 79, 0.24);
+    linear-gradient(160deg, var(--login-navy) 0%, #1c405d 52%, var(--login-teal) 100%);
+  box-shadow: 0 28px 70px rgba(19, 43, 67, 0.2);
 }
 
 .hero-panel::before {
@@ -188,7 +197,7 @@ const onSubmit = async () => {
   right: -70px;
   top: -80px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .hero-panel::after {
@@ -199,7 +208,7 @@ const onSubmit = async () => {
   left: -36px;
   bottom: -48px;
   border-radius: 999px;
-  background: rgba(125, 211, 252, 0.12);
+  background: rgba(92, 169, 205, 0.26);
 }
 
 .hero-badge {
@@ -208,8 +217,8 @@ const onSubmit = async () => {
   height: 34px;
   padding: 0 16px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(64, 89, 112, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.13);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.2em;
@@ -247,9 +256,8 @@ const onSubmit = async () => {
   align-items: start;
   padding: 16px 18px;
   border-radius: 22px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(10px);
+  background: rgba(64, 104, 132, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.09);
 }
 
 .hero-feature__icon {
@@ -259,7 +267,7 @@ const onSubmit = async () => {
   align-items: center;
   justify-content: center;
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(104, 141, 168, 0.48);
 }
 
 .hero-feature__title {
@@ -276,9 +284,9 @@ const onSubmit = async () => {
 
 .login-card {
   border-radius: 36px;
-  background: rgba(255, 255, 255, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--login-card-border);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.09);
   padding: 40px 36px;
   backdrop-filter: blur(18px);
 }
@@ -303,7 +311,7 @@ const onSubmit = async () => {
   margin: 12px 0 0;
   font-size: 32px;
   font-weight: 800;
-  color: #11263d;
+  color: #17213b;
 }
 
 .login-card__subtitle {
@@ -320,8 +328,8 @@ const onSubmit = async () => {
   justify-content: center;
   padding: 0 14px;
   border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: var(--login-blue-soft);
+  color: var(--login-blue);
   font-size: 12px;
   font-weight: 700;
 }
@@ -344,19 +352,19 @@ const onSubmit = async () => {
   min-height: 58px;
   padding: 0 16px;
   border-radius: 18px;
-  border: 1px solid #d7e3f4;
-  background: rgba(248, 251, 255, 0.95);
+  border: 1px solid var(--login-card-border);
+  background: #f8fafc;
   transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
 .field-shell:focus-within {
-  border-color: #7aa2ff;
+  border-color: var(--login-blue);
   background: #fff;
-  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.12);
+  box-shadow: 0 0 0 4px rgba(31, 101, 216, 0.1);
 }
 
 .field-icon {
-  color: #6b7b91;
+  color: #8b96aa;
   flex-shrink: 0;
 }
 
@@ -369,7 +377,7 @@ const onSubmit = async () => {
 .field-action {
   border: none;
   background: transparent;
-  color: #2563eb;
+  color: var(--login-blue);
   font-size: 13px;
   font-weight: 700;
 }
@@ -377,8 +385,8 @@ const onSubmit = async () => {
 .login-tip {
   padding: 14px 16px;
   border-radius: 18px;
-  background: #f8fafc;
-  color: #64748b;
+  background: #f7fafc;
+  color: #72849a;
   font-size: 13px;
   line-height: 1.8;
 }
@@ -386,10 +394,14 @@ const onSubmit = async () => {
 .login-submit {
   height: 52px !important;
   border: none !important;
-  background: linear-gradient(135deg, #16324f 0%, #1d4f7a 100%) !important;
-  box-shadow: 0 18px 36px rgba(22, 50, 79, 0.22);
+  background: var(--login-button) !important;
+  box-shadow: 0 18px 36px rgba(23, 77, 118, 0.24);
   font-weight: 700;
   letter-spacing: 0.06em;
+}
+
+.login-submit:hover {
+  background: var(--login-button-hover) !important;
 }
 
 :deep(.van-field__body),

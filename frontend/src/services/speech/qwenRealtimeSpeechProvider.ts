@@ -9,7 +9,7 @@ const TARGET_SAMPLE_RATE = 16000
 const CONNECT_TIMEOUT_MS = 8000
 
 const getApiBaseUrl = () =>
-  import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '/api')
+  import.meta.env.VITE_API_URL || '/api'
 
 const getRealtimeHttpBase = () => {
   const apiBase = getApiBaseUrl().replace(/\/$/, '')

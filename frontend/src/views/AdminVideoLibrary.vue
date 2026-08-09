@@ -70,7 +70,7 @@
     <section v-else class="video-list">
       <article v-for="video in displayedVideos" :key="video.id" class="video-item">
         <div class="video-item__cover" @click="openDetail(video)">
-          <img v-if="coverFor(video)" :src="coverFor(video)" :alt="video.title" />
+          <img v-if="coverFor(video)" :src="coverFor(video)" :alt="video.title" @error="markVideoCoverFailed(video)" />
           <div v-else class="cover-placeholder">
             <el-icon :size="28"><VideoPlay /></el-icon>
           </div>
@@ -182,7 +182,7 @@ const nodeEditorVideo = ref<VideoItem | null>(null)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-const { ensureVideoCovers, getVideoCover } = useVideoCover()
+const { ensureVideoCovers, getVideoCover, markVideoCoverFailed } = useVideoCover()
 
 const displayedVideos = computed(() => {
   return [...videoList.value].sort((a, b) => {

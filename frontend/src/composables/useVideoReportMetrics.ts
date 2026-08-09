@@ -8,27 +8,21 @@ export interface VideoReportNode {
   score_deducted: number
   speech_transcript?: string
   failure_reasons?: string[]
+  assessment_points?: {
+    id?: string
+    label?: string
+    content?: string
+    status?: string
+    evidence?: string[]
+    feedback?: string
+    weight?: number
+  }[]
+  evidence?: Record<string, any>
   manual_review?: {
     reviewer_username?: string
     reviewed_at?: string
     review_note?: string
   } | null
-}
-
-export interface VideoAssessmentCheck {
-  id?: string
-  label?: string
-  content?: string
-  stage_name?: string
-  dimension?: string
-  status?: 'hit' | 'partial' | 'missed' | string
-  score?: number
-  full_score?: number
-  weighted_score?: number
-  weight?: number
-  score_share?: number
-  evidence?: string[]
-  reason?: string
 }
 
 export interface VideoReportData {
@@ -40,8 +34,6 @@ export interface VideoReportData {
   full_score?: number
   percentage?: number
   grade?: string
-  grade_level?: string
-  summary?: string
   pass_count?: number
   skip_count?: number
   fail_count?: number
@@ -50,14 +42,14 @@ export interface VideoReportData {
   violation_count?: number
   violation_summary?: Record<string, number>
   failure_reason_summary?: Record<string, number>
-  artifacts?: {
-    id: number
-    artifact_type: string
-    file_url?: string
-    mime_type?: string
-    duration_seconds?: number | null
-    created_at?: string
-  }[]
+  overall_comment?: string
+  ability_evaluation?: {
+    grade?: string
+    comment?: string
+    risk?: string
+    strongest_dimension?: Record<string, any> | null
+    weakest_dimension?: Record<string, any> | null
+  }
   dimension_scores?: {
     key: string
     label: string
@@ -66,8 +58,6 @@ export interface VideoReportData {
     percentage: number
   }[]
   weakness_summary?: string[]
-  assessment_check_results?: VideoAssessmentCheck[]
-  assessment_point_results?: VideoAssessmentCheck[]
   ability_profile?: {
     enabled?: boolean
     semantic_average?: number
@@ -94,6 +84,7 @@ export function formatFailureReason(reason: string) {
     choice_incorrect: '选择题错误',
     prop_missed: '道具动作遗漏',
     manual_review_failed: '人工复核判定未通过',
+    training_finished_early: '主动结束训练，未完成节点按跳过处理',
   } as Record<string, string>)[reason] || reason
 }
 
@@ -105,33 +96,6 @@ export function formatViolationType(type: string) {
     device_lost: '设备中断',
     identity_lost: '身份校验中断',
   } as Record<string, string>)[type] || type
-}
-
-export function artifactLabel(type: string) {
-  return ({
-    camera_recording: '训练录屏',
-    microphone_recording: '语音留痕',
-  } as Record<string, string>)[type] || type
-}
-
-export function assessmentStatusLabel(status?: string) {
-  return ({
-    hit: '完成',
-    partial: '部分完成',
-    missed: '未完成',
-  } as Record<string, string>)[String(status || '')] || String(status || '未判定')
-}
-
-export function resolveMediaUrl(url?: string) {
-  if (!url) return ''
-  if (/^https?:\/\//i.test(url)) return url
-  if (!url.startsWith('/')) return url
-
-  const apiBase = String(import.meta.env.VITE_API_URL || '').trim()
-  if (apiBase && /^https?:\/\//i.test(apiBase)) {
-    return `${apiBase.replace(/\/$/, '')}${url}`
-  }
-  return `${window.location.origin}${url}`
 }
 
 export function formatDateTime(value?: string) {
@@ -164,10 +128,7 @@ export function useVideoReportMetrics(report: VideoReportData | null) {
   const reportNodes = report?.node_summaries || []
   const dimensionScores = report?.dimension_scores || []
   const weaknessSummary = report?.weakness_summary || []
-  const reportSummary = String(report?.summary || '').trim()
-  const assessmentChecks = report?.assessment_check_results || report?.assessment_point_results || []
   const abilityProfile = report?.ability_profile
-  const reportArtifacts = report?.artifacts || []
 
   const scoreHint = reportPercentage >= 90
     ? '训练表现稳定，动作、话术和流程控制较完整。'
@@ -209,10 +170,7 @@ export function useVideoReportMetrics(report: VideoReportData | null) {
     reportNodes,
     dimensionScores,
     weaknessSummary,
-    reportSummary,
-    assessmentChecks,
     abilityProfile,
-    reportArtifacts,
     scoreHint,
     failureReasonList,
     violationList,
