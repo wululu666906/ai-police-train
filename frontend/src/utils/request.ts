@@ -2,12 +2,13 @@ import axios from 'axios'
 import { showToast } from 'vant'
 import { redirectToLogin } from './auth'
 
-const getDevApiBaseUrl = () => {
-  return 'http://127.0.0.1:8000'
-}
+const configuredApiUrl = String(import.meta.env.VITE_API_URL || '').trim()
+const isLocalDevApiUrl =
+  import.meta.env.DEV && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(configuredApiUrl)
+const apiBaseUrl = isLocalDevApiUrl ? '' : configuredApiUrl || (import.meta.env.DEV ? '' : '/api')
 
 const service = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || (import.meta.env.DEV ? getDevApiBaseUrl() : '/api'),
+  baseURL: apiBaseUrl,
   timeout: 120000,
 })
 

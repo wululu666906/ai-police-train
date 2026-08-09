@@ -1,237 +1,161 @@
 <template>
-  <div class="space-y-8 pb-20">
-    <div v-if="loading" class="rounded-3xl border border-slate-200 bg-white py-24 text-center">
-      <van-loading color="#1D3557" size="24">正在加载总览数据...</van-loading>
+  <div class="admin-workbench">
+    <div v-if="loading" class="workbench-state">
+      <van-loading color="#1d4ed8" size="24">正在加载工作台数据...</van-loading>
     </div>
 
-    <div v-else-if="pageError" class="rounded-3xl border border-amber-200 bg-amber-50 px-6 py-16 text-center">
+    <div v-else-if="pageError" class="workbench-state workbench-state--warning">
       <van-icon name="warning-o" size="36" class="text-amber-500" />
       <p class="mt-4 text-base font-bold text-amber-800">{{ pageError }}</p>
-      <p class="mt-2 text-sm text-amber-700">当前无法获取管理端总览数据，你可以立即重试。</p>
+      <p class="mt-2 text-sm text-amber-700">当前无法获取工作台数据，你可以稍后重试。</p>
       <van-button plain type="primary" class="mt-6" @click="fetchStats">重新加载</van-button>
     </div>
 
     <template v-else>
-      <div
-        v-if="staleMessage"
-        class="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
-      >
+      <div v-if="staleMessage" class="workbench-notice">
         {{ staleMessage }}
       </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-      <div
-        v-for="item in stats"
-        :key="item.key"
-        class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center space-x-4"
-      >
-        <div class="w-12 h-12 flex items-center justify-center rounded-xl text-2xl" :class="item.badgeClass">
-          <van-icon :name="item.icon" />
-        </div>
-        <div class="min-w-0">
-          <div class="text-gray-400 text-[10px] font-black uppercase tracking-widest">{{ item.title }}</div>
-          <div class="text-2xl font-black text-gray-800">{{ item.val }}</div>
-          <div class="text-xs text-gray-400 mt-1">{{ item.note }}</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-      <div class="lg:col-span-2 bg-white rounded-3xl shadow-sm border border-gray-100 p-8">
-        <div class="flex items-center justify-between mb-8">
-          <div>
-            <h3 class="font-bold text-gray-800 text-lg flex items-center">
-              <span class="w-1.5 h-6 bg-[#1D3557] rounded-full mr-3"></span>
-              近 7 日训练活跃度
-            </h3>
-            <p class="text-xs text-gray-400 mt-2">按训练会话创建时间实时统计，每 30 秒自动刷新一次</p>
+      <section class="summary-grid">
+        <button
+          v-for="item in summaryCards"
+          :key="item.title"
+          type="button"
+          class="summary-card"
+          :class="item.tone"
+          @click="goTo(item.route)"
+        >
+          <div class="summary-icon">
+            <van-icon :name="item.icon" />
           </div>
-          <div class="text-right">
-            <div class="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400">Updated</div>
-            <div class="text-sm font-bold text-[#1D3557]">{{ updatedAtText }}</div>
+          <div class="summary-copy">
+            <span>{{ item.title }}</span>
+            <strong>{{ item.value }}</strong>
+            <small>{{ item.note }}</small>
           </div>
-        </div>
+        </button>
+      </section>
 
-        <div class="h-56 flex items-end justify-between px-4 space-x-4">
-          <div
-            v-for="item in trend"
-            :key="item.label"
-            class="flex-1 flex flex-col items-center group"
-          >
+      <section class="panel-grid panel-grid--top">
+        <article class="panel panel--wide">
+          <div class="panel-head">
+            <div>
+              <h3>近 7 日训练完成量</h3>
+              <p>普通训练 / 视频实训</p>
+            </div>
+            <van-button text type="primary" size="small" @click="goTo('/admin/video-sessions')">
+              查看会话
+            </van-button>
+          </div>
+
+          <div class="bar-chart">
             <div
-              class="w-full rounded-t-lg transition-all cursor-default relative bg-[#457B9D]/20 group-hover:bg-[#1D3557]"
-              :style="{ height: `${getBarHeight(item.count)}px` }"
+              v-for="item in trend"
+              :key="item.key"
+              class="bar-column"
             >
-              <div class="opacity-0 group-hover:opacity-100 absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-10 transition-opacity">
-                {{ item.count }} 次
+              <div
+                class="bar"
+                :style="{ height: `${getBarHeight(item.count)}px` }"
+                :title="`${item.count} 次`"
+              ></div>
+              <span>{{ item.label }}</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>平台内容状态</h3>
+              <p>按内容流转和训练状态汇总</p>
+            </div>
+          </div>
+
+          <div class="donut-layout">
+            <div class="donut" :style="contentRingStyle">
+              <div class="donut-core">
+                <strong>{{ completionRateText }}</strong>
+                <span>完成率</span>
               </div>
             </div>
-            <span class="text-[10px] text-gray-400 mt-3 font-medium">{{ item.label }}</span>
-          </div>
-        </div>
-      </div>
 
-      <div class="bg-white rounded-3xl shadow-sm border border-gray-100 p-8 flex flex-col">
-        <h3 class="font-bold text-gray-800 text-lg mb-6">训练运行状态</h3>
-        <div class="flex-1 flex flex-col justify-center space-y-8">
-          <div class="space-y-2">
-            <div class="flex justify-between text-xs font-bold">
-              <span class="text-gray-400">会话完成率</span>
-              <span class="text-[#1D3557]">{{ completionRateText }}</span>
+            <div class="legend-list">
+              <div
+                v-for="item in contentSegments"
+                :key="item.label"
+                class="legend-item"
+              >
+                <span class="legend-dot" :style="{ background: item.color }"></span>
+                <div class="legend-copy">
+                  <strong>{{ item.label }}</strong>
+                  <span>{{ formatNumber(item.value) }} 条</span>
+                </div>
+                <em>{{ item.percent }}%</em>
+              </div>
             </div>
-            <van-progress :percentage="completionRate" stroke-width="4" color="#1D3557" track-color="#f2f3f5" :show-pivot="false" />
           </div>
-          <div class="space-y-2">
-            <div class="flex justify-between text-xs font-bold">
-              <span class="text-gray-400">进行中占比</span>
-              <span class="text-green-500">{{ activeRateText }}</span>
-            </div>
-            <van-progress :percentage="activeRate" stroke-width="4" color="#10b981" track-color="#f2f3f5" :show-pivot="false" />
-          </div>
-          <div class="space-y-2">
-            <div class="flex justify-between text-xs font-bold">
-              <span class="text-gray-400">今日训练量 / 近 7 日峰值</span>
-              <span class="text-orange-500">{{ todaySessions }}/{{ peakDailySessions }}</span>
-            </div>
-            <van-progress :percentage="todayVsPeakRate" stroke-width="4" color="#f59e0b" track-color="#f2f3f5" :show-pivot="false" />
-          </div>
-        </div>
-      </div>
-    </div>
+        </article>
+      </section>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-      <div class="bg-[#1D3557] rounded-3xl shadow-xl p-8 text-white relative overflow-hidden group cursor-pointer" @click="router.push('/admin/knowledge')">
-        <div class="absolute right-[-20px] bottom-[-20px] opacity-10 group-hover:scale-110 transition-transform">
-          <van-icon name="cluster" size="180" />
-        </div>
-        <div class="relative z-10 space-y-4">
-          <h3 class="text-xl font-bold flex items-center">
-            <van-icon name="points" class="mr-3" /> 知识库实时概览
-          </h3>
-          <p class="text-sm text-blue-200/80 leading-loose max-w-[80%]">
-            当前已入库 {{ ragCount }} 条知识片段，可直接支撑案件训练、对话问询与评估辅助分析。
-          </p>
-          <div class="pt-4 flex items-center text-xs font-black uppercase tracking-widest text-blue-300">
-            前往管理 <van-icon name="arrow" class="ml-2" />
-          </div>
-        </div>
-      </div>
-
-      <div class="bg-white rounded-3xl shadow-sm p-8 border border-gray-100 flex flex-col justify-between group cursor-pointer hover:shadow-md transition-all">
-        <div>
-          <div class="w-14 h-14 bg-indigo-50 border border-indigo-100 rounded-2xl flex items-center justify-center mb-6">
-            <van-icon name="friends-o" class="text-2xl text-indigo-600" />
-          </div>
-          <h3 class="font-bold text-gray-800 text-lg mb-2">学员训练动态</h3>
-          <p class="text-sm text-gray-400 leading-relaxed">
-            当前学员总数 {{ studentCount }} 人，进行中会话 {{ activeSessions }} 个，近 7 日日均训练 {{ avgDailySessions }} 次。
-          </p>
-        </div>
-        <div class="pt-6 flex justify-end">
-          <van-button
-            plain
-            round
-            size="small"
-            class="!border-gray-200 !text-gray-600 px-6 hover:!bg-gray-50 transition-colors"
-            @click="router.push('/admin/students')"
-          >
-            查看学员表现
-          </van-button>
-        </div>
-      </div>
-    </div>
-
-    <div class="grid grid-cols-1 xl:grid-cols-2 gap-8">
-      <div class="bg-white rounded-3xl shadow-sm border border-gray-100 p-8">
-        <div class="flex items-center justify-between mb-6">
-          <div>
-            <h3 class="font-bold text-gray-800 text-lg">班级高频缺口</h3>
-            <p class="text-xs text-gray-400 mt-2">基于已完成训练报告里的阶段缺口摘要聚合</p>
-          </div>
-          <div class="text-right">
-            <div class="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400">Reports</div>
-            <div class="text-sm font-bold text-[#1D3557]">{{ stageGapReports }}</div>
-          </div>
-        </div>
-
-        <div v-if="topMissing.length" class="space-y-4">
-          <button
-            v-for="item in topMissing"
-            :key="item.label"
-            type="button"
-            class="block w-full space-y-2 rounded-2xl px-3 py-3 text-left transition-colors hover:bg-orange-50"
-            @click="router.push({ path: '/admin/students', query: { gap: item.label, sort: 'risk' } })"
-          >
-            <div class="flex items-center justify-between text-sm">
-              <span class="font-semibold text-gray-700">{{ item.label }}</span>
-              <span class="text-[#c2410c] font-bold">{{ item.count }} 次</span>
-            </div>
-            <van-progress
-              :percentage="getGapPercent(item.count, topMissing[0]?.count || 1)"
-              stroke-width="6"
-              color="#f97316"
-              track-color="#f5f5f5"
-              :show-pivot="false"
-            />
-          </button>
-        </div>
-        <div v-else class="text-sm text-gray-400">当前完成训练较少，暂未形成稳定缺口统计。</div>
-      </div>
-
-      <div class="bg-white rounded-3xl shadow-sm border border-gray-100 p-8">
-        <h3 class="font-bold text-gray-800 text-lg mb-2">高风险场景类型</h3>
-        <p class="text-xs text-gray-400 mb-6">出现阶段缺口次数最多的训练场景类型</p>
-        <div v-if="sceneRisk.length" class="grid gap-4">
-          <div
-            v-for="item in sceneRisk"
-            :key="item.scene_type"
-            class="rounded-2xl border border-gray-100 bg-[#f8fbff] px-4 py-4 flex items-center justify-between"
-          >
+      <section class="panel-grid panel-grid--bottom">
+        <article class="panel">
+          <div class="panel-head">
             <div>
-              <div class="text-sm font-bold text-gray-800">{{ item.scene_type }}</div>
-              <div class="text-xs text-gray-400 mt-1">更容易出现阶段关键项遗漏</div>
+              <h3>待处理事项</h3>
+              <p>按最近缺口和会话状态整理</p>
             </div>
-            <div class="text-right">
-              <div class="text-2xl font-black text-[#1D3557]">{{ item.count }}</div>
-              <div class="text-[10px] uppercase tracking-widest text-gray-400 font-black">Gap Cases</div>
+            <van-button text type="primary" size="small" @click="goTo('/admin/video-sessions')">
+              查看全部
+            </van-button>
+          </div>
+
+          <div class="task-list">
+            <div
+              v-for="item in pendingTasks"
+              :key="item.title"
+              class="task-row"
+            >
+              <span class="task-tag" :class="item.tone">{{ item.tag }}</span>
+              <div class="task-copy">
+                <strong>{{ item.title }}</strong>
+                <span>{{ item.meta }}</span>
+              </div>
+              <div class="task-count">{{ item.count }}</div>
+              <van-button plain type="primary" size="small" @click="goTo(item.route)">
+                {{ item.action }}
+              </van-button>
             </div>
           </div>
-        </div>
-        <div v-else class="text-sm text-gray-400">当前暂无场景缺口聚合数据。</div>
-      </div>
-    </div>
+        </article>
 
-    <section class="border-t border-gray-200 pt-8">
-      <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h3 class="text-lg font-bold text-gray-800">角色状态校准</h3>
-          <p class="mt-2 text-xs text-gray-400">最近 {{ calibrationData.session_count || 0 }} 次训练的表达稳定性与重复修复情况</p>
-        </div>
-        <div class="text-xs text-gray-500">待复核会话 {{ calibrationData.review_session_ids?.length || 0 }} 个</div>
-      </div>
-
-      <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <div v-for="item in calibrationSummary" :key="item.label" class="border-l-4 bg-white px-5 py-4 shadow-sm" :class="item.borderClass">
-          <div class="text-xs text-gray-400">{{ item.label }}</div>
-          <div class="mt-2 text-xl font-black text-gray-800">{{ item.value }}</div>
-        </div>
-      </div>
-
-      <div class="mt-6 overflow-hidden border border-gray-200 bg-white">
-        <div class="grid grid-cols-[minmax(120px,1fr)_90px_110px_110px] gap-3 border-b border-gray-100 bg-gray-50 px-5 py-3 text-xs font-bold text-gray-500">
-          <span>角色原型</span><span>对话轮次</span><span>重复修复率</span><span>契约一致率</span>
-        </div>
-        <div v-if="calibrationArchetypes.length">
-          <div v-for="item in calibrationArchetypes" :key="item.name" class="grid grid-cols-[minmax(120px,1fr)_90px_110px_110px] gap-3 border-b border-gray-100 px-5 py-4 text-sm last:border-b-0">
-            <span class="font-semibold text-gray-700">{{ item.name }}</span>
-            <span class="text-gray-500">{{ item.turn_count }}</span>
-            <span :class="item.repetition_repair_rate > 0.15 ? 'text-red-600 font-bold' : 'text-gray-600'">{{ toPercent(item.repetition_repair_rate) }}</span>
-            <span :class="item.consistency_rate < 0.85 ? 'text-amber-600 font-bold' : 'text-emerald-600'">{{ toPercent(item.consistency_rate) }}</span>
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>快捷入口</h3>
+              <p>常用管理页面一键跳转</p>
+            </div>
           </div>
-        </div>
-        <div v-else class="px-5 py-8 text-center text-sm text-gray-400">完成更多训练后将形成角色原型校准数据。</div>
-      </div>
-    </section>
+
+          <div class="quick-grid">
+            <button
+              v-for="item in quickActions"
+              :key="item.title"
+              type="button"
+              class="quick-card"
+              @click="goTo(item.route)"
+            >
+              <div class="quick-icon" :class="item.tone">
+                <van-icon :name="item.icon" />
+              </div>
+              <div class="quick-copy">
+                <strong>{{ item.title }}</strong>
+                <span>{{ item.desc }}</span>
+              </div>
+            </button>
+          </div>
+        </article>
+      </section>
     </template>
   </div>
 </template>
@@ -241,12 +165,72 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import request from '../utils/request'
 
+type TrendItem = {
+  label: string
+  count: number
+  key: string
+}
+
+type SummaryCard = {
+  title: string
+  value: string
+  note: string
+  icon: string
+  tone: string
+  route: string
+}
+
+type StatusSegment = {
+  label: string
+  value: number
+  color: string
+  percent: number
+}
+
+type TaskItem = {
+  tag: string
+  title: string
+  meta: string
+  count: string
+  action: string
+  route: string
+  tone: string
+}
+
+type QuickAction = {
+  title: string
+  desc: string
+  icon: string
+  route: string
+  tone: string
+}
+
+type DashboardStats = {
+  cases: number
+  roles: number
+  rag: number
+  sessions: number
+  students: number
+  today_sessions: number
+  active_sessions: number
+  finished_sessions: number
+  completion_rate: number
+  active_rate: number
+  peak_daily_sessions: number
+  avg_daily_sessions: number
+  stage_gap_reports: number
+  stage_gap_top_missing: Array<{ label: string; count: number }>
+  stage_gap_scene_risk: Array<{ scene_type: string; count: number }>
+  trend: Array<{ label: string; count: number }>
+  updated_at: string
+}
+
 const router = useRouter()
 const refreshTimer = ref<number | null>(null)
 const loading = ref(true)
 const pageError = ref('')
 const staleMessage = ref('')
-const statsData = ref<any>({
+const statsData = ref<DashboardStats>({
   cases: 0,
   roles: 0,
   rag: 0,
@@ -259,144 +243,225 @@ const statsData = ref<any>({
   active_rate: 0,
   peak_daily_sessions: 0,
   avg_daily_sessions: 0,
+  stage_gap_reports: 0,
+  stage_gap_top_missing: [],
+  stage_gap_scene_risk: [],
   trend: [],
   updated_at: '',
 })
-const calibrationData = ref<any>({
-  session_count: 0,
-  turn_count: 0,
-  consistency_rate: 0,
-  postcheck_adjustment_rate: 0,
-  repetition_repair_rate: 0,
-  high_arousal_clear_rate: 0,
-  by_archetype: {},
-  review_session_ids: [],
-})
 
-const stats = computed(() => [
-  {
-    title: '案件剧本',
-    key: 'cases',
-    val: statsData.value.cases,
-    note: '案件剧本总数',
-    icon: 'orders-o',
-    badgeClass: 'bg-[#1D3557]/10 text-[#1D3557]',
-  },
-  {
-    title: '角色',
-    key: 'roles',
-    val: statsData.value.roles,
-    note: 'AI 角色总数',
-    icon: 'friends-o',
-    badgeClass: 'bg-emerald-50 text-emerald-600',
-  },
-  {
-    title: 'RAG',
-    key: 'rag',
-    val: statsData.value.rag,
-    note: '知识片段数量',
-    icon: 'cluster-o',
-    badgeClass: 'bg-amber-50 text-amber-600',
-  },
-  {
-    title: '会话',
-    key: 'sessions',
-    val: statsData.value.sessions,
-    note: '训练会话总数',
-    icon: 'bar-chart-o',
-    badgeClass: 'bg-slate-100 text-slate-600',
-  },
-])
+const trend = computed<TrendItem[]>(() => {
+  const source = Array.isArray(statsData.value.trend) && statsData.value.trend.length
+    ? statsData.value.trend
+    : Array.from({ length: 7 }, (_, index) => ({
+      label: '--',
+      count: 0,
+      key: `empty-${index}`,
+    }))
 
-const trend = computed(() => {
-  const fallback = Array.from({ length: 7 }, (_, index) => ({ label: '--', count: 0, id: index }))
-  const source = Array.isArray(statsData.value.trend) && statsData.value.trend.length ? statsData.value.trend : fallback
-  return source.map((item: any, index: number) => ({
+  return source.map((item, index) => ({
     label: item.label || '--',
     count: Number(item.count || 0),
-    id: `${item.label || 'empty'}-${index}`,
+    key: `${item.label || 'empty'}-${index}`,
   }))
 })
 
-const peakDailySessions = computed(() => Number(statsData.value.peak_daily_sessions || 0))
-const todaySessions = computed(() => Number(statsData.value.today_sessions || 0))
+const trendMax = computed(() => Math.max(...trend.value.map((item) => item.count), 1))
+
+const finishedSessions = computed(() => Number(statsData.value.finished_sessions || 0))
 const activeSessions = computed(() => Number(statsData.value.active_sessions || 0))
-const ragCount = computed(() => Number(statsData.value.rag || 0))
+const sessionCount = computed(() => Number(statsData.value.sessions || 0))
 const studentCount = computed(() => Number(statsData.value.students || 0))
-const avgDailySessions = computed(() => Number(statsData.value.avg_daily_sessions || 0))
+const ragCount = computed(() => Number(statsData.value.rag || 0))
 const stageGapReports = computed(() => Number(statsData.value.stage_gap_reports || 0))
-const topMissing = computed(() => (Array.isArray(statsData.value.stage_gap_top_missing) ? statsData.value.stage_gap_top_missing : []))
-const sceneRisk = computed(() => (Array.isArray(statsData.value.stage_gap_scene_risk) ? statsData.value.stage_gap_scene_risk : []))
-const calibrationSummary = computed(() => [
-  { label: '契约一致率', value: toPercent(calibrationData.value.consistency_rate), borderClass: 'border-emerald-500' },
-  { label: '重复修复率', value: toPercent(calibrationData.value.repetition_repair_rate), borderClass: 'border-red-500' },
-  { label: '后处理调整率', value: toPercent(calibrationData.value.postcheck_adjustment_rate), borderClass: 'border-amber-500' },
-  { label: '高情绪清晰表达率', value: toPercent(calibrationData.value.high_arousal_clear_rate), borderClass: 'border-[#1D3557]' },
-])
-const calibrationArchetypes = computed(() =>
-  Object.entries(calibrationData.value.by_archetype || {})
-    .map(([name, metrics]: [string, any]) => ({ name, ...metrics }))
-    .filter((item: any) => item.name !== 'unknown')
-    .sort((left: any, right: any) => Number(right.turn_count || 0) - Number(left.turn_count || 0))
-    .slice(0, 8)
-)
-
+const topMissing = computed(() => statsData.value.stage_gap_top_missing || [])
+const sceneRisk = computed(() => statsData.value.stage_gap_scene_risk || [])
 const completionRate = computed(() => clampPercent(statsData.value.completion_rate))
-const activeRate = computed(() => clampPercent(statsData.value.active_rate))
-const todayVsPeakRate = computed(() => {
-  if (!peakDailySessions.value) return todaySessions.value > 0 ? 100 : 0
-  return clampPercent((todaySessions.value / peakDailySessions.value) * 100)
+const completionRateText = computed(() => `${completionRate.value.toFixed(0)}%`)
+
+const summaryCards = computed<SummaryCard[]>(() => [
+  {
+    title: '案件与场景',
+    value: formatNumber(statsData.value.cases),
+    note: `近 7 日缺口 ${formatNumber(stageGapReports.value)} 项`,
+    icon: 'orders-o',
+    tone: 'tone-blue',
+    route: '/admin/cases',
+  },
+  {
+    title: '在训学员',
+    value: formatNumber(studentCount.value),
+    note: `角色模板 ${formatNumber(statsData.value.roles)} 个`,
+    icon: 'friends-o',
+    tone: 'tone-green',
+    route: '/admin/students',
+  },
+  {
+    title: '普通训练会话',
+    value: formatNumber(sessionCount.value),
+    note: `今日完成 ${formatNumber(statsData.value.today_sessions)} 条`,
+    icon: 'todo-list-o',
+    tone: 'tone-amber',
+    route: '/admin/video-sessions',
+  },
+  {
+    title: '视频实训会话',
+    value: formatNumber(finishedSessions.value),
+    note: `进行中 ${formatNumber(activeSessions.value)} 条`,
+    icon: 'video-o',
+    tone: 'tone-purple',
+    route: '/admin/video-sessions',
+  },
+])
+
+const contentSegments = computed<StatusSegment[]>(() => {
+  const draftCount = Math.max(stageGapReports.value, 1)
+  const raw = [
+    { label: '已发布案例', value: Number(statsData.value.cases || 0), color: '#4f6cf7' },
+    { label: '已完成分析', value: finishedSessions.value, color: '#30b96c' },
+    { label: '分析中/待审核', value: activeSessions.value, color: '#f6ab48' },
+    { label: '草稿/待补充', value: draftCount, color: '#e2e8f0' },
+  ]
+  const total = raw.reduce((sum, item) => sum + item.value, 0) || 1
+
+  return raw.map((item) => ({
+    ...item,
+    percent: Math.round((item.value / total) * 100),
+  }))
 })
 
-const completionRateText = computed(() => `${completionRate.value.toFixed(1)}%`)
-const activeRateText = computed(() => `${activeRate.value.toFixed(1)}%`)
-const updatedAtText = computed(() => {
-  const raw = statsData.value.updated_at
-  if (!raw) return '--:--:--'
-  const date = new Date(raw)
-  return Number.isNaN(date.getTime()) ? '--:--:--' : date.toLocaleTimeString('zh-CN', { hour12: false })
+const contentRingStyle = computed(() => {
+  const total = contentSegments.value.reduce((sum, item) => sum + item.value, 0)
+  if (!total) {
+    return { background: 'conic-gradient(#e2e8f0 0deg 360deg)' }
+  }
+
+  let angle = 0
+  const parts = contentSegments.value.map((item) => {
+    const start = angle
+    const span = (item.value / total) * 360
+    angle += span
+    return `${item.color} ${start}deg ${angle}deg`
+  })
+
+  return {
+    background: `conic-gradient(${parts.join(', ')})`,
+  }
 })
 
-function clampPercent(value: any) {
-  const num = Number(value || 0)
-  if (!Number.isFinite(num)) return 0
-  return Math.max(0, Math.min(100, num))
+const pendingTasks = computed<TaskItem[]>(() => {
+  const topGap = topMissing.value[0]
+  const topScene = sceneRisk.value[0]
+
+  return [
+    {
+      tag: '内容',
+      title: topGap ? `案例解析候选人工确认：${topGap.label}` : '案例解析候选人工确认',
+      meta: topGap
+        ? `近 7 日出现 ${formatNumber(topGap.count)} 次`
+        : '暂时没有高频缺口，继续保持训练覆盖。',
+      count: topGap ? `${formatNumber(topGap.count)} 次` : `${formatNumber(stageGapReports.value)} 项`,
+      action: '处理',
+      route: '/admin/cases',
+      tone: 'tone-amber',
+    },
+    {
+      tag: '视频',
+      title: topScene ? `视频分析待复核：${topScene.scene_type}` : '视频训练报告待复核',
+      meta: topScene
+        ? `相关会话 ${formatNumber(topScene.count)} 条`
+        : `完成会话 ${formatNumber(finishedSessions.value)} 条`,
+      count: topScene ? `${formatNumber(topScene.count)} 条` : `${formatNumber(activeSessions.value)} 条`,
+      action: '处理',
+      route: '/admin/video-sessions',
+      tone: 'tone-blue',
+    },
+    {
+      tag: '学员',
+      title: '学员档案与验证检查',
+      meta: `在训学员 ${formatNumber(studentCount.value)} 人，建议检查基础信息完整性`,
+      count: `${formatNumber(studentCount.value)} 人`,
+      action: '处理',
+      route: '/admin/students',
+      tone: 'tone-green',
+    },
+    {
+      tag: '知识',
+      title: '知识片段补充整理',
+      meta: `RAG 片段 ${formatNumber(ragCount.value)} 条，可继续补充训练材料`,
+      count: `${formatNumber(ragCount.value)} 条`,
+      action: '处理',
+      route: '/admin/knowledge',
+      tone: 'tone-purple',
+    },
+  ]
+})
+
+const quickActions = computed<QuickAction[]>(() => [
+  {
+    title: '案件解析',
+    desc: '结构化导入材料',
+    icon: 'orders-o',
+    route: '/admin/cases',
+    tone: 'tone-blue',
+  },
+  {
+    title: '发布作业',
+    desc: '下发班级训练',
+    icon: 'todo-list-o',
+    route: '/admin/classes',
+    tone: 'tone-green',
+  },
+  {
+    title: '上传视频',
+    desc: '自动分析与节点生成',
+    icon: 'video-o',
+    route: '/admin/videos',
+    tone: 'tone-purple',
+  },
+  {
+    title: '训练统计',
+    desc: '查看完成率和平均值',
+    icon: 'bar-chart-o',
+    route: '/admin/video-sessions',
+    tone: 'tone-amber',
+  },
+])
+
+function goTo(path: string) {
+  router.push(path)
 }
 
-function toPercent(value: any) {
-  return `${(clampPercent(Number(value || 0) * 100)).toFixed(1)}%`
+function clampPercent(value: number) {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(100, Number(value)))
+}
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat('zh-CN').format(Number(value || 0))
 }
 
 function getBarHeight(count: number) {
-  const maxCount = Math.max(...trend.value.map((item: { count: number }) => item.count), 1)
-  return Math.max(24, (count / maxCount) * 160)
-}
-
-function getGapPercent(count: number, maxCount: number) {
-  if (!maxCount) return 0
-  return clampPercent((count / maxCount) * 100)
+  return Math.max(24, (count / trendMax.value) * 160)
 }
 
 async function fetchStats(options: { background?: boolean } = {}) {
   if (!options.background) {
     loading.value = true
   }
+
   try {
-    const [res, calibration]: any[] = await Promise.all([
-      request.get('/dashboard/stats'),
-      request.get('/dashboard/state-calibration?limit=100'),
-    ])
+    const res: any = await request.get('/dashboard/stats')
     statsData.value = {
       ...statsData.value,
-      ...res,
+      ...(res || {}),
     }
-    calibrationData.value = calibration || calibrationData.value
     pageError.value = ''
     staleMessage.value = ''
   } catch (error) {
     console.error('Dashboard stats error:', error)
     if (loading.value) {
-      pageError.value = '管理端总览加载失败'
+      pageError.value = '工作台数据加载失败'
     } else {
       staleMessage.value = '自动刷新失败，当前展示的是最近一次成功加载的数据。'
     }
@@ -419,3 +484,478 @@ onUnmounted(() => {
   }
 })
 </script>
+
+<style scoped>
+.admin-workbench {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 24px;
+}
+
+.workbench-state {
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  background: #fff;
+  border: 1px solid #e6ebf3;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(35, 56, 104, 0.06);
+}
+
+.workbench-state--warning {
+  background: #fffaf0;
+  border-color: #f6d99b;
+}
+
+.workbench-notice {
+  border: 1px solid #f6d99b;
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #8a5a11;
+  padding: 12px 14px;
+  font-size: 13px;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.summary-card {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  min-height: 104px;
+  padding: 18px 20px;
+  border: 1px solid #e6ebf3;
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+  box-shadow: 0 4px 16px rgba(35, 56, 104, 0.06);
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    border-color 0.18s ease;
+}
+
+.summary-card:hover {
+  transform: translateY(-1px);
+  border-color: #cfdaf1;
+  box-shadow: 0 8px 22px rgba(35, 56, 104, 0.08);
+}
+
+.summary-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  font-size: 22px;
+}
+
+.tone-blue .summary-icon,
+.tone-blue .quick-icon {
+  color: #4f6cf7;
+  background: #e8efff;
+}
+
+.tone-green .summary-icon,
+.tone-green .quick-icon {
+  color: #2fbf71;
+  background: #e8f8ef;
+}
+
+.tone-amber .summary-icon,
+.tone-amber .quick-icon {
+  color: #f59e0b;
+  background: #fff4df;
+}
+
+.tone-purple .summary-icon,
+.tone-purple .quick-icon {
+  color: #8b5cf6;
+  background: #f1e9ff;
+}
+
+.summary-copy {
+  min-width: 0;
+}
+
+.summary-copy span {
+  color: #8b96aa;
+  font-size: 12px;
+}
+
+.summary-copy strong {
+  display: block;
+  margin-top: 6px;
+  color: #17213b;
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.summary-copy small {
+  display: block;
+  margin-top: 8px;
+  color: #29b765;
+  font-size: 12px;
+}
+
+.panel-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.panel-grid--top {
+  grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+}
+
+.panel-grid--bottom {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.panel {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid #e6ebf3;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(35, 56, 104, 0.06);
+}
+
+.panel--wide {
+  min-height: 330px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.panel-head h3 {
+  margin: 0;
+  color: #17213b;
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.panel-head p {
+  margin: 8px 0 0;
+  color: #8b96aa;
+  font-size: 12px;
+}
+
+.bar-chart {
+  height: 220px;
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  padding: 22px 8px 0;
+  border-bottom: 1px solid #e5eaf1;
+}
+
+.bar-column {
+  height: 100%;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.bar {
+  width: 34px;
+  min-height: 8px;
+  border-radius: 7px 7px 0 0;
+  background: linear-gradient(180deg, #4f6cf7, #a7b6ff);
+}
+
+.bar-column span {
+  color: #8b96aa;
+  font-size: 12px;
+}
+
+.donut-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  min-height: 248px;
+}
+
+.donut {
+  position: relative;
+  width: 164px;
+  height: 164px;
+  margin: 0 auto;
+  border-radius: 50%;
+}
+
+.donut::after {
+  content: '';
+  position: absolute;
+  inset: 28px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.donut-core {
+  position: absolute;
+  inset: 28px;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.donut-core strong {
+  color: #17213b;
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.donut-core span {
+  margin-top: 6px;
+  color: #8b96aa;
+  font-size: 12px;
+}
+
+.legend-list {
+  display: grid;
+  gap: 14px;
+}
+
+.legend-item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.legend-copy {
+  min-width: 0;
+}
+
+.legend-copy strong,
+.legend-copy span {
+  display: block;
+}
+
+.legend-copy strong {
+  color: #253047;
+  font-size: 13px;
+}
+
+.legend-copy span {
+  margin-top: 4px;
+  color: #8b96aa;
+  font-size: 12px;
+}
+
+.legend-item em {
+  color: #4f6cf7;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.task-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.task-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 82px auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 58px;
+  padding: 12px 4px;
+  border-bottom: 1px solid #edf1f6;
+}
+
+.task-row:last-child {
+  border-bottom: 0;
+}
+
+.task-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.task-tag.tone-blue {
+  border-color: #cfdaf1;
+  color: #4f6cf7;
+  background: #eef3ff;
+}
+
+.task-tag.tone-green {
+  border-color: #cfeedd;
+  color: #30a768;
+  background: #eefaf4;
+}
+
+.task-tag.tone-amber {
+  border-color: #f8ddb4;
+  color: #f59e0b;
+  background: #fff8eb;
+}
+
+.task-tag.tone-purple {
+  border-color: #e2d4ff;
+  color: #8b5cf6;
+  background: #f6efff;
+}
+
+.task-copy {
+  min-width: 0;
+}
+
+.task-copy strong {
+  display: block;
+  color: #253047;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.task-copy span {
+  display: block;
+  margin-top: 5px;
+  color: #8b96aa;
+  font-size: 12px;
+}
+
+.task-count {
+  color: #253047;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.quick-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.quick-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 82px;
+  padding: 14px;
+  border: 1px solid #e6ebf3;
+  border-radius: 8px;
+  background: #fafbfd;
+  color: inherit;
+  font: inherit;
+  appearance: none;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    transform 0.18s ease,
+    border-color 0.18s ease,
+    background-color 0.18s ease;
+}
+
+.quick-card:hover {
+  transform: translateY(-1px);
+  border-color: #d0dbf0;
+  background: #f6f9ff;
+}
+
+.quick-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  font-size: 20px;
+}
+
+.quick-copy {
+  min-width: 0;
+}
+
+.quick-copy strong {
+  display: block;
+  color: #17213b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.quick-copy span {
+  display: block;
+  margin-top: 5px;
+  color: #8b96aa;
+  font-size: 12px;
+}
+
+@media (max-width: 1200px) {
+  .summary-grid,
+  .panel-grid--bottom {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .panel-grid--top {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .summary-grid,
+  .panel-grid--bottom,
+  .quick-grid,
+  .donut-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .summary-card {
+    min-height: 96px;
+  }
+
+  .task-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .task-count {
+    text-align: left;
+  }
+}
+</style>

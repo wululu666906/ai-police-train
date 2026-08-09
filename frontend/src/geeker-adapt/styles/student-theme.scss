@@ -1,16 +1,16 @@
 .student-app {
 
-  --student-accent: #0066ff;
+  --student-accent: #3566f6;
 
-  --student-accent-light: #e6f0ff;
+  --student-accent-light: #eef3ff;
 
-  --student-sidebar-bg: #001529;
+  --student-sidebar-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(246, 249, 255, 0.96) 100%);
 
-  --student-sidebar-active: #0066ff;
+  --student-sidebar-active: #eef3ff;
 
-  --student-page-bg: #f0f2f5;
+  --student-page-bg: linear-gradient(180deg, #f7faff 0%, #eef3fb 100%);
 
-  --student-card-radius: 6px;
+  --student-card-radius: 8px;
 
   --student-success: #52c41a;
 
@@ -20,19 +20,19 @@
 
 
 
-  --el-color-primary: #082a63;
+  --el-color-primary: #3566f6;
 
-  --el-color-primary-light-3: #3d5f9a;
+  --el-color-primary-light-3: #6e8bff;
 
-  --el-color-primary-light-5: #5a7db3;
+  --el-color-primary-light-5: #91a9ff;
 
-  --el-color-primary-light-7: #8aa3c9;
+  --el-color-primary-light-7: #b9c7ff;
 
-  --el-color-primary-light-8: #a8bbd6;
+  --el-color-primary-light-8: #d8e2ff;
 
-  --el-color-primary-light-9: #e8eef7;
+  --el-color-primary-light-9: #eef3ff;
 
-  --el-color-primary-dark-2: #05204a;
+  --el-color-primary-dark-2: #2453d8;
 
   --el-bg-color-page: var(--student-page-bg);
 

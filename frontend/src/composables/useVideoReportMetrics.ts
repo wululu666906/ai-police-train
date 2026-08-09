@@ -8,6 +8,16 @@ export interface VideoReportNode {
   score_deducted: number
   speech_transcript?: string
   failure_reasons?: string[]
+  assessment_points?: {
+    id?: string
+    label?: string
+    content?: string
+    status?: string
+    evidence?: string[]
+    feedback?: string
+    weight?: number
+  }[]
+  evidence?: Record<string, any>
   manual_review?: {
     reviewer_username?: string
     reviewed_at?: string
@@ -32,6 +42,14 @@ export interface VideoReportData {
   violation_count?: number
   violation_summary?: Record<string, number>
   failure_reason_summary?: Record<string, number>
+  overall_comment?: string
+  ability_evaluation?: {
+    grade?: string
+    comment?: string
+    risk?: string
+    strongest_dimension?: Record<string, any> | null
+    weakest_dimension?: Record<string, any> | null
+  }
   dimension_scores?: {
     key: string
     label: string
@@ -66,6 +84,7 @@ export function formatFailureReason(reason: string) {
     choice_incorrect: '选择题错误',
     prop_missed: '道具动作遗漏',
     manual_review_failed: '人工复核判定未通过',
+    training_finished_early: '主动结束训练，未完成节点按跳过处理',
   } as Record<string, string>)[reason] || reason
 }
 

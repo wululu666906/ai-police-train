@@ -4,15 +4,10 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import RoleCompactForm from '../components/RoleCompactForm.vue'
-import CaseStoryViewer from '../components/CaseStoryViewer.vue'
-import TextZoomField from '../components/cases/TextZoomField.vue'
-import SceneOpeningConfigForm from '../components/cases/SceneOpeningConfigForm.vue'
-import { saveWithCaseQualityGate } from '../utils/caseQuality'
 import {
   buildRoleCompactSummary,
   expandRoleCompactToPerson,
   inferTrainingFocus,
-  normalizeSceneOpeningConfig,
   personToRoleCompact,
   trainingFocusToBehaviorMode,
 } from '../utils/roleCompact'
@@ -31,13 +26,6 @@ import {
   PERSON_CANONICAL_FIELDS,
 } from '../utils/personaTemplate'
 import { sceneBucketLabel, SCENE_NAME_PLACEHOLDERS } from '../utils/sceneBucket'
-import {
-  normalizeCaseTags,
-  parseEngineIsFallback,
-  parseEngineLabel,
-  resolveParsedCaseTitle,
-  sceneGenerationIsFallback,
-} from '../utils/caseAnalysis'
 import request from '../utils/request'
 
 const router = useRouter()
@@ -66,6 +54,42 @@ type SceneEditTab = 'overview' | 'roles_copy' | 'flow'
 const activeReviewModule = ref<ReviewModule>('basic')
 const activeSceneIndex = ref(0)
 const activeSceneTab = ref<SceneEditTab>('overview')
+const showOriginalExpanded = ref(false)
+type LargeTextEditorTarget = {
+  source: Record<string, any>
+  key: string
+  title: string
+  fieldLabel: string
+  placeholder?: string
+}
+
+const largeTextEditor = ref<LargeTextEditorTarget | null>(null)
+const showLargeTextEditor = computed({
+  get: () => largeTextEditor.value !== null,
+  set: (value: boolean) => {
+    if (!value) largeTextEditor.value = null
+  },
+})
+const largeTextEditorValue = computed({
+  get: () => {
+    const target = largeTextEditor.value
+    return target ? String(target.source?.[target.key] || '') : ''
+  },
+  set: (value: string) => {
+    const target = largeTextEditor.value
+    if (target) target.source[target.key] = value
+  },
+})
+
+const openLargeTextEditor = (
+  source: Record<string, any>,
+  key: string,
+  title: string,
+  fieldLabel: string,
+  placeholder = ''
+) => {
+  largeTextEditor.value = { source, key, title, fieldLabel, placeholder }
+}
 
 // ── 角色审核工作台 ────────────────────────────────────────────────
 type RoleAuditTab = 'basic' | 'ai_review' | 'audit_log'
@@ -538,6 +562,7 @@ const resetReviewWorkspace = () => {
   activeReviewModule.value = 'basic'
   activeSceneIndex.value = 0
   activeSceneTab.value = 'overview'
+  showOriginalExpanded.value = false
   activePersonEditorId.value = null
   activeRoleAuditTab.value = 'basic'
 }
@@ -653,6 +678,26 @@ const getEditablePersonCardStyle = (_index: number, person: any) => {
   }
 }
 
+const parseEngineLabel = (payload: any) => {
+  const engine = String(payload?.parse_engine || '')
+  if (engine === 'ai_text_first') return 'AI 主叙事 + 程序提取'
+  if (engine === 'ai') return 'AI 结构化解析（旧版）'
+  if (engine === 'rule_text_first') return '程序提取（AI 主叙事未成功）'
+  return '规则兜底解析'
+}
+const parseEngineIsFallback = (payload: any) => {
+  if (typeof payload?.ai_workflow?.used_rule_fallback === 'boolean') return payload.ai_workflow.used_rule_fallback
+  return !String(payload?.parse_engine || '').startsWith('ai')
+}
+const sceneGenerationLabel = (payload: any) => {
+  const mode = String(payload?.scene_generation_mode || '')
+  if (mode === 'ai_template_first') return 'AI 模板优先场景生成'
+  if (mode === 'ai_case_driven' || mode === 'ai') return 'AI 案件驱动场景生成'
+  if (mode === 'fallback_template_first') return '模板优先兜底场景'
+  if (mode === 'fallback_case_driven' || mode === 'fallback_modules' || mode === 'fallback') return '案件驱动兜底场景'
+  return '场景生成'
+}
+const sceneGenerationIsFallback = (payload: any) => String(payload?.scene_generation_mode || '').startsWith('fallback')
 const parseWarnings = (payload: any) => Array.isArray(payload?.parse_warnings) ? payload.parse_warnings : []
 const sceneGenerationWarning = (payload: any) => String(payload?.scene_generation_warning || '').trim()
 
@@ -922,7 +967,7 @@ const serializePersonsForSave = (persons: any[]) => {
     delete cloned._ai_review_text
     delete cloned._ai_review_loading
     for (const field of [
-      'behavior_archetype', 'opening_preset', 'current_need', 'core_concern', 'weakness',
+      'behavior_archetype', 'opening_preset', 'current_goal', 'current_need', 'core_concern', 'weakness',
       'relationship_pressure', 'surface_stance', 'pressure_response', 'trigger_points', 'calming_points',
       'police_attitude', 'interaction_style', 'personality', 'speaking_style', 'authority_attitude',
       'stress_response', 'public_mask', 'private_drive', 'self_image', 'known_key_points',
@@ -1117,7 +1162,6 @@ const normalizeSceneEditors = (scenes: any, structuredData: any, persons: any[])
       stagesModel,
       stagesAdvanced: false,
       assessmentPointsModel: normalizeAssessmentPointsFromStages(stagesModel),
-      opening_config: normalizeSceneOpeningConfig(scene.opening_config),
       role_names: normalizedRoleNames,
       primary_role_name: normalizedRoleNames.includes(mappedPrimaryRoleName)
         ? mappedPrimaryRoleName
@@ -1270,11 +1314,9 @@ const normalizeEditableCase = (caseItem: any) => {
   const cloned = JSON.parse(JSON.stringify(caseItem))
   const normalizedPersons = normalizePersonEditors(structuredData.persons || [], { collapsed: true })
   return {
-    ...structuredData,
     ...cloned,
     original_content: resolveOriginalContent(cloned),
     ai_case_type_raw: structuredData.ai_case_type_raw || '',
-    case_tags: normalizeCaseTags(structuredData.case_tags),
     parse_engine: structuredData.parse_engine || '',
     parse_warnings: Array.isArray(structuredData.parse_warnings) ? structuredData.parse_warnings : [],
     scene_generation_mode: structuredData.scene_generation_mode || '',
@@ -1425,10 +1467,10 @@ const startParsing = async () => {
       aiParsedData.value = res || {}
       aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: true })
       if (parseEngineIsFallback(res)) {
-        showToast('AI 智能解析未完整完成，已切换规则兜底，请人工复核后再发布')
+        showToast('本次为规则兜底解析，请人工复核后再发布')
       }
       fileParseStatus.value = 'parsed'
-      form.title = resolveParsedCaseTitle(res, form.title)
+      if (!form.title) form.title = res.case_name || ''
       if (!form.caseType) form.caseType = res.case_type || ''
       form.caseTypeGroup = getCaseTypeGroup(form.caseType)
       fileMeta.name = res.file_meta?.name || fileMeta.name
@@ -1441,9 +1483,8 @@ const startParsing = async () => {
     aiParsedData.value = res || {}
     aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: true })
     if (parseEngineIsFallback(res)) {
-      showToast('AI 智能解析未完整完成，已切换规则兜底，请人工复核后再发布')
+      showToast('本次为规则兜底解析，请人工复核后再发布')
     }
-    form.title = resolveParsedCaseTitle(res, form.title)
     if (!form.caseType) form.caseType = res.case_type || ''
     form.caseTypeGroup = getCaseTypeGroup(form.caseType)
   } catch (error: any) {
@@ -1502,7 +1543,7 @@ const submitFinal = async () => {
   savingCreate.value = true
   try {
     const personsPayload = serializePersonsForSave(aiParsedData.value.persons || [])
-    const createdCase: any = await saveWithCaseQualityGate(qualityAcknowledgements => request.post('/cases/full-create', {
+    const createdCase: any = await request.post('/cases/full-create', {
       case: {
         ...aiParsedData.value,
         persons: personsPayload,
@@ -1519,8 +1560,7 @@ const submitFinal = async () => {
         extracted_text_preview: aiParsedData.value.extracted_text_preview || '',
       },
       scenes: generatedScenes.value,
-      quality_acknowledgements: qualityAcknowledgements,
-    }, { _skipErrorToast: true } as any))
+    }, { _skipErrorToast: true } as any)
     showToast({ type: 'success', message: '案件发布成功' })
     showAdd.value = false
     await refreshCasesPage()
@@ -1570,11 +1610,11 @@ const handlePublishedCaseNextStep = async (createdCase: any) => {
 const handleNext = async () => {
   if (currentStep.value === 0) {
     if (importMode.value === 'plain_case') {
-      if (!form.rawText.trim()) {
-        showToast('请填写案件原始文本')
+      if (!form.title || !form.rawText.trim()) {
+        showToast('请填写完整案件标题和原始文本')
         return
       }
-      if (form.title && shouldWarnOnTitle(form.title)) {
+      if (shouldWarnOnTitle(form.title)) {
         try {
           await showConfirmDialog({
             title: '标题提示',
@@ -1599,7 +1639,7 @@ const handleNext = async () => {
   }
 
   if (currentStep.value === 1) {
-    form.title = resolveParsedCaseTitle(aiParsedData.value, form.title)
+    if (!form.title) form.title = aiParsedData.value.case_name || ''
     if (!form.caseType) form.caseType = aiParsedData.value.case_type || ''
     currentStep.value = 2
     try {
@@ -1764,7 +1804,6 @@ const applyCaseCompletionPayload = (target: any, payload: any, rawText: string) 
     conflict_points: mergeListField('conflict_points'),
     key_facts: mergeListField('key_facts'),
     hidden_info: mergeListField('hidden_info'),
-    case_tags: normalizeCaseTags(parsed.case_tags || previousStructured.case_tags),
     evidence_points: mergeListField('evidence_points'),
     inconsistencies: mergeListField('inconsistencies'),
     scene_generation_mode: payload.scene_generation_mode || previousStructured.scene_generation_mode || '',
@@ -1900,11 +1939,6 @@ const saveCaseDetail = async () => {
       difficulty: scene.difficulty,
       dispatch_brief: scene.dispatch_brief,
       first_impression: scene.first_impression,
-      opening_config: normalizeSceneOpeningConfig(scene.opening_config),
-      scene_ref: scene.scene_ref || `db:${scene.id}`,
-      fact_ids: Array.isArray(scene.fact_ids) ? scene.fact_ids : [],
-      supplement_ids: Array.isArray(scene.supplement_ids) ? scene.supplement_ids : [],
-      training_entry_phase: scene.training_entry_phase || '',
       training_focus: sceneMeta.training_focus,
       behavior_mode: sceneMeta.behavior_mode,
       assessment_points: serializeAssessmentPointsForSave(scene.assessmentPointsModel || []),
@@ -1920,7 +1954,6 @@ const saveCaseDetail = async () => {
     const structuredData = {
       ...getStructuredData(editableCase.value),
       case_name: editableCase.value.title,
-      case_tags: normalizeCaseTags(editableCase.value.case_tags || getStructuredData(editableCase.value).case_tags),
       case_type: editableCase.value.case_type,
       case_background: editableCase.value.background,
       persons: personsPayload,
@@ -1930,7 +1963,7 @@ const saveCaseDetail = async () => {
       rawText: editableCase.value.original_content,
     }
 
-    const res: any = await saveWithCaseQualityGate(qualityAcknowledgements => request.put(`/cases/${editableCase.value.id}`, {
+    const res: any = await request.put(`/cases/${editableCase.value.id}`, {
       case: {
         title: editableCase.value.title,
         case_type: editableCase.value.case_type,
@@ -1939,8 +1972,7 @@ const saveCaseDetail = async () => {
         structured_data: structuredData,
       },
       scenes: scenesPayload,
-      quality_acknowledgements: qualityAcknowledgements,
-    }, { _skipErrorToast: true } as any))
+    }, { _skipErrorToast: true } as any)
 
     showToast({ type: 'success', message: '案件已更新' })
     selectedCase.value = res
@@ -2112,16 +2144,7 @@ const previewFormatDate = (dt: string | null | undefined) => {
                   </div>
                   <div class="wp-field wp-mt">
                     <label class="wp-label">案件背景</label>
-                    <TextZoomField
-                      v-model="editableCase.background"
-                      label="案件背景"
-                      title="案件信息 / 案件背景"
-                      :rows="5"
-                    />
-                  </div>
-                  <div class="wp-field wp-mt">
-                    <label class="wp-label">特征标签</label>
-                    <div class="wp-hint">{{ normalizeCaseTags(editableCase.case_tags).join('、') || '暂无标签' }}</div>
+                    <textarea v-model="editableCase.background" rows="3" class="wp-textarea"></textarea>
                   </div>
                 </div>
               </div>
@@ -2129,19 +2152,15 @@ const previewFormatDate = (dt: string | null | undefined) => {
                 <div class="wp-card__header">
                   <span class="wp-card__title">案件原始文本</span>
                   <span class="wp-card__meta">{{ String(editableCase.original_content || '').trim() ? `${String(editableCase.original_content || '').trim().length} 字` : '暂无内容' }}</span>
+                  <van-button size="mini" plain type="primary" @click="showOriginalExpanded = !showOriginalExpanded">
+                    {{ showOriginalExpanded ? '收起' : '展开全文' }}
+                  </van-button>
                 </div>
                 <div class="wp-card__body">
-                  <TextZoomField
-                    v-model="editableCase.original_content"
-                    label="案件原始文本"
-                    title="案件原始文本"
-                    placeholder="导入文件提取出的案件原文会保留在这里，支持继续人工整理。"
-                    :rows="7"
-                    mono
-                  />
+                  <p v-if="!showOriginalExpanded" class="wp-hint">原文已保留；需要校对或补全失败时再展开全文。</p>
+                  <textarea v-else v-model="editableCase.original_content" rows="10" class="wp-textarea wp-textarea--mono" placeholder="导入文件提取出的案件原文会保留在这里，支持继续人工整理。"></textarea>
                 </div>
               </div>
-              <CaseStoryViewer :case-data="editableCase" />
             </div>
           </section>
             <section v-show="activeReviewModule === 'roles'" class="wp">
@@ -2427,12 +2446,7 @@ const previewFormatDate = (dt: string | null | undefined) => {
                 </div>
                 <div class="mt-4">
                   <label class="form-label">场景描述</label>
-                  <TextZoomField
-                    v-model="scene.description"
-                    label="场景描述"
-                    :title="`场景 ${Number(idx) + 1} / 场景描述`"
-                    :rows="4"
-                  />
+                  <textarea v-model="scene.description" rows="2" class="form-textarea"></textarea>
                 </div>
               </div>
 
@@ -2482,23 +2496,12 @@ const previewFormatDate = (dt: string | null | undefined) => {
                   <div class="mt-3 grid grid-cols-1 gap-4">
                     <div>
                       <label class="form-label">接警简报</label>
-                      <TextZoomField
-                        v-model="scene.dispatch_brief"
-                        label="接警简报"
-                        :title="`场景 ${Number(idx) + 1} / 接警简报`"
-                        :rows="4"
-                      />
+                      <textarea v-model="scene.dispatch_brief" rows="3" class="form-textarea"></textarea>
                     </div>
                     <div>
                       <label class="form-label">现场第一印象</label>
-                      <TextZoomField
-                        v-model="scene.first_impression"
-                        label="现场第一印象"
-                        :title="`场景 ${Number(idx) + 1} / 现场第一印象`"
-                        :rows="4"
-                      />
+                      <textarea v-model="scene.first_impression" rows="3" class="form-textarea"></textarea>
                     </div>
-                    <SceneOpeningConfigForm v-model="scene.opening_config" :roles="editableCase?.persons || []" />
                   </div>
                 </div>
 
@@ -2541,14 +2544,12 @@ const previewFormatDate = (dt: string | null | undefined) => {
                   </div>
 
                   <div class="mt-3 flex flex-wrap items-end gap-2">
-                    <TextZoomField
+                    <textarea
                       v-model="scene._assessmentPaste"
-                      class="flex-1 min-w-[240px]"
-                      label="导入粘贴"
-                      :title="`场景 ${Number(idx) + 1} / 导入粘贴`"
-                      :rows="3"
+                      rows="2"
+                      class="form-textarea flex-1 min-w-[240px]"
                       placeholder="可选：粘贴本场景考察清单后点「导入粘贴」"
-                    />
+                    ></textarea>
                     <van-button
                       size="small"
                       plain
@@ -2592,14 +2593,30 @@ const previewFormatDate = (dt: string | null | undefined) => {
                           <input v-model="point.label" type="text" class="form-input" placeholder="如：压实双方陈述矛盾" />
                         </div>
                         <div class="scene-flow-stage__col">
-                          <label class="form-label form-label--muted">考察内容（具体训练题目）</label>
-                          <TextZoomField
+                          <div class="form-field-head">
+                            <label class="form-label form-label--muted">考察内容（具体训练题目）</label>
+                            <van-button
+                              plain
+                              size="mini"
+                              icon="expand-o"
+                              class="textarea-expand-button"
+                              @click.stop="openLargeTextEditor(
+                                point,
+                                'content',
+                                `考察点 ${Number(pointIndex) + 1}`,
+                                '考察内容（具体训练题目）',
+                                '建议三段：①学员应做到什么；②具体要求（怎么问/怎么做）；③怎样算完成（回放记录时能听出什么算达标）。不要只重复上面的名称。'
+                              )"
+                            >
+                              放大
+                            </van-button>
+                          </div>
+                          <textarea
                             v-model="point.content"
-                            label="考察内容（具体训练题目）"
-                            :title="`考察点 ${Number(pointIndex) + 1} / 考察内容`"
-                            :rows="5"
+                            rows="4"
+                            class="form-textarea"
                             placeholder="建议三段：①学员应做到什么；②具体要求（怎么问/怎么做）；③怎样算完成（回放记录时能听出什么算达标）。不要只重复上面的名称。"
-                          />
+                          ></textarea>
                         </div>
                       </div>
                     </div>
@@ -2623,6 +2640,28 @@ const previewFormatDate = (dt: string | null | undefined) => {
           </section>
     </div>
 </div>
+  <van-popup
+    v-model:show="showLargeTextEditor"
+    position="center"
+    round
+    teleport="body"
+    class="large-text-editor-popup"
+  >
+    <div class="large-text-editor">
+      <div class="large-text-editor__head">
+        <div>
+          <div class="large-text-editor__eyebrow">{{ largeTextEditor?.fieldLabel || '长文本编辑' }}</div>
+          <h3>{{ largeTextEditor?.title || '放大编辑' }}</h3>
+        </div>
+        <van-button plain size="small" icon="cross" @click="showLargeTextEditor = false">关闭</van-button>
+      </div>
+      <textarea
+        v-model="largeTextEditorValue"
+        class="large-text-editor__textarea"
+        :placeholder="largeTextEditor?.placeholder"
+      ></textarea>
+    </div>
+  </van-popup>
 </template>
 
 <style scoped>
@@ -3039,6 +3078,14 @@ const previewFormatDate = (dt: string | null | undefined) => {
   margin-bottom: 0;
 }
 
+.textarea-expand-button {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 8px;
+  color: #1d3557;
+  border-color: #cbd5e1;
+}
+
 .form-input,
 .form-textarea {
   width: 100%;
@@ -3061,6 +3108,55 @@ const previewFormatDate = (dt: string | null | undefined) => {
 .form-textarea {
   resize: vertical;
   min-height: 2.75rem;
+}
+
+.large-text-editor-popup {
+  width: min(920px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+}
+
+.large-text-editor {
+  display: flex;
+  flex-direction: column;
+  height: min(720px, calc(100vh - 48px));
+  background: #fff;
+}
+
+.large-text-editor__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.large-text-editor__head h3 {
+  margin: 2px 0 0;
+  font-size: 18px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.large-text-editor__eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.large-text-editor__textarea {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  padding: 18px 20px;
+  border: 0;
+  outline: none;
+  resize: none;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f172a;
 }
 
 .cases-compact .space-y-6 > :not([hidden]) ~ :not([hidden]) {
@@ -5658,105 +5754,6 @@ const previewFormatDate = (dt: string | null | undefined) => {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-}
-
-/* ── 紧凑放大工作台 ──────────────────────────────── */
-.ce-content {
-  padding: 10px 14px 0;
-}
-
-.ce-content .wp__body {
-  padding: 10px;
-  gap: 10px;
-}
-
-.ce-content .review-module-nav {
-  margin-bottom: 8px;
-}
-
-.review-module-nav__item {
-  padding: 10px 14px;
-}
-
-.review-module-nav__hint,
-.wp__sub,
-.role-audit-sidebar__note,
-.role-audit-main__empty-icon,
-.role-audit-main__empty-desc,
-.scene-editor-card__helper,
-.scene-stage-toolbar__hint,
-.scene-flow-panel__empty {
-  display: none;
-}
-
-.wp-card__header {
-  padding: 8px 12px;
-}
-
-.wp-card__body {
-  padding: 10px 12px;
-}
-
-.wp-grid {
-  gap: 10px;
-}
-
-.wp-mt {
-  margin-top: 10px;
-}
-
-.scene-studio__layout {
-  grid-template-columns: 148px minmax(0, 1fr);
-  gap: 12px;
-}
-
-.scene-studio__nav {
-  gap: 6px;
-}
-
-.scene-studio__nav-item {
-  padding: 9px 10px;
-}
-
-.scene-studio__main {
-  min-width: 0;
-}
-
-.scene-studio__tabs {
-  margin-bottom: 8px;
-}
-
-.scene-editor-card__panel {
-  padding: 12px 14px;
-}
-
-.scene-editor-card__panel + .scene-editor-card__panel {
-  margin-top: 8px;
-}
-
-.scene-flow-panel__toolbar {
-  margin-bottom: 8px;
-}
-
-.scene-flow-stage {
-  padding: 10px 12px;
-  margin-bottom: 8px;
-}
-
-.role-audit-workspace {
-  grid-template-columns: 240px minmax(0, 1fr);
-}
-
-.role-audit-sidebar__header,
-.role-audit-sidebar__footer,
-.role-audit-header,
-.role-audit-tabs {
-  padding-top: 10px;
-  padding-bottom: 10px;
-}
-
-.role-audit-tab-content {
-  min-height: 0;
 }
 
 

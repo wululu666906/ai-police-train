@@ -1,4 +1,4 @@
-import { createApp } from 'vue'
+﻿import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import { createRouter, createWebHistory } from 'vue-router'
 import { Button, NavBar, Icon, Toast, ConfigProvider, Field, CellGroup, Form, Cell, Tabbar, TabbarItem, Loading, Circle, Progress, Popup, Dialog, Tag, Step, Steps, Slider, Divider, Image, Switch } from 'vant'
@@ -36,6 +36,7 @@ const routes = [
     meta: { requiresAuth: true, roles: ['admin'], title: '管理端' },
     children: [
       { path: 'dashboard', component: () => import('./views/Dashboard.vue'), meta: { title: '数据总览' } },
+      { path: 'stats', redirect: '/admin/dashboard' },
       { path: 'cases', component: () => import('./views/Cases.vue'), meta: { title: '案件脚本库' } },
       { path: 'cases/:id', component: () => import('./views/CaseDetail.vue'), meta: { title: '案件详情' } },
       { path: 'cases/:id/edit', component: () => import('./views/CaseEdit.vue'), meta: { title: '案件编辑' } },
@@ -49,26 +50,29 @@ const routes = [
       { path: 'video-sessions/:sessionId/report', component: () => import('./views/VideoTrainingReportPage.vue'), meta: { reportRole: 'admin', title: '训练评估报告' } },
       { path: 'students', component: () => import('./views/Students.vue'), meta: { title: '学员账号' } },
       { path: 'students/:id', component: () => import('./views/StudentProfile.vue'), meta: { title: '学员档案' } },
-      { path: 'face-demo', component: () => import('./views/FaceRecognitionDemo.vue'), meta: { title: '人脸识别' } },
-      { path: 'profile', component: () => import('./views/Profile.vue'), meta: { title: '个人中心' } }
+      { path: 'profile', component: () => import('./views/Profile.vue'), meta: { title: '个人中心' } },
+      { path: 'settings', component: () => import('./views/Profile.vue'), meta: { title: '系统设置' } },
     ]
   },
   { path: '/', redirect: () => {
     if (window.location.port === '6670') return getStoredRole() === 'maintainer' ? '/ops/overview' : '/login'
-    return getStoredRole() === 'student' ? '/student/hall' : '/admin/dashboard'
+    return getStoredRole() === 'student' ? '/student/home' : '/admin/dashboard'
   } },
   {
     path: '/student',
     component: () => import('./views/StudentLayout.vue'),
-    redirect: '/student/hall',
+    redirect: '/student/home',
     meta: { requiresAuth: true, roles: ['student', 'admin'], title: '学生控制台' },
     children: [
-      { path: 'hall', component: () => import('./views/StudentHall.vue'), meta: { title: '训练大厅' } },
+      { path: 'home', component: () => import('./views/StudentPracticeHome.vue'), meta: { title: '训练首页' } },
+      { path: 'training-center', component: () => import('./views/StudentTrainingCenter.vue'), meta: { title: '训练中心' } },
+      { path: 'hall', redirect: '/student/training-center?tab=free', meta: { title: '训练中心' } },
       { path: 'videos', component: () => import('./views/StudentVideoHall.vue'), meta: { title: '视频实训' } },
       { path: 'video-history', component: () => import('./views/StudentVideoHistory.vue'), meta: { title: '实训记录' } },
       { path: 'video-report/:sessionId', component: () => import('./views/StudentEvaluation.vue'), meta: { reportKind: 'video', title: '训练评估报告' } },
-      { path: 'classes', component: () => import('./views/StudentClasses.vue'), meta: { title: '班级作业' } },
-      { path: 'history', component: () => import('./views/StudentHistory.vue'), meta: { title: '训练历史' } },
+      { path: 'classes', component: () => import('./views/StudentClasses.vue'), meta: { title: '我的班级' } },
+      { path: 'history', component: () => import('./views/StudentPracticeHistory.vue'), meta: { title: '练习记录' } },
+      { path: 'text-history', component: () => import('./views/StudentHistory.vue'), meta: { title: '文字训练记录' } },
       { path: 'evaluation', component: () => import('./views/StudentEvaluation.vue'), meta: { title: '训练评估报告' } },
       { path: 'settings', component: () => import('./views/StudentSettings.vue'), meta: { title: '个人设置' } }
     ]
@@ -115,7 +119,7 @@ router.beforeEach((to) => {
 
   if (to.meta.guestOnly && token) {
     if (role === 'maintainer') return '/ops/overview'
-    return role === 'student' ? '/student/hall' : '/admin/dashboard'
+    return role === 'student' ? '/student/home' : '/admin/dashboard'
   }
 
   if (to.meta.requiresAuth && !isLoggedIn()) {
@@ -124,10 +128,10 @@ router.beforeEach((to) => {
 
   if (requiredRoles && role && !requiredRoles.includes(role)) {
     if (requiredRoles.includes('maintainer')) {
-      return role === 'student' ? '/student/hall' : '/admin/dashboard'
+      return role === 'student' ? '/student/home' : '/admin/dashboard'
     }
     if (role === 'maintainer') return '/ops/overview'
-    return role === 'student' ? '/student/hall' : '/admin/dashboard'
+    return role === 'student' ? '/student/home' : '/admin/dashboard'
   }
 
   if (requiredRoles && !role && token) {
@@ -158,3 +162,5 @@ app.use(createPinia())
 app.use(router)
 
 app.mount('#app')
+
+

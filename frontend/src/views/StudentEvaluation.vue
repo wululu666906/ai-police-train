@@ -9,8 +9,7 @@
     @print="printReport"
   >
     <template #actions>
-      <el-button plain size="small" :icon="Printer" @click="printReport">打印报告</el-button>
-      <el-button type="primary" size="small" :icon="Download" @click="printReport">下载报告</el-button>
+      <el-button type="primary" size="small" :icon="Printer" @click="printReport">打印 / 保存 PDF</el-button>
       <el-button
         v-if="isVideoReport && videoReport?.video_id"
         plain
@@ -232,10 +231,9 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Download, Printer } from '@element-plus/icons-vue'
+import { ArrowLeft, Printer } from '@element-plus/icons-vue'
 import { showToast } from 'vant'
 import request from '../utils/request'
-import { isInternalPromptMessage, isInternalPromptText } from '../utils/dialogueMessage'
 import ECharts from '../geeker-adapt/components/ECharts/index.vue'
 import TrainingReportShell from '../components/training-report/TrainingReportShell.vue'
 import VideoReportPaper from '../components/training-report/VideoReportPaper.vue'
@@ -257,7 +255,6 @@ const emptyState = ref({
 let evaluationPollTimer: number | null = null
 const assignmentContext = computed(() => sessionDetail.value?.assignment_context || null)
 const isAssignmentReport = computed(() => !isVideoReport.value && Boolean(assignmentContext.value || route.query.source === 'assignment'))
-const isGeneratingReport = computed(() => route.query.generating === '1')
 const isVideoReport = computed(() => {
   if (route.meta.reportKind === 'video') return true
   if (route.path.includes('/video-report/')) return true
@@ -586,7 +583,6 @@ const weakAssessmentItems = computed(() =>
 
 const studentMessages = computed(() =>
   (Array.isArray(sessionDetail.value?.messages) ? sessionDetail.value.messages : [])
-    .filter((message: any) => !isInternalPromptMessage(message))
     .filter((message: any) => message?.role === 'user' && String(message?.content || '').trim())
     .map((message: any) => String(message.content || '').trim()),
 )
@@ -748,7 +744,7 @@ const normalizeDialogueText = (value: string) =>
 const findUtteranceFromEvidence = (evidence: any[]) => {
   const candidates = (Array.isArray(evidence) ? evidence : [])
     .map((item) => stripSpeakerPrefix(String(item || '')))
-    .filter((item) => Boolean(item) && !isInternalPromptText(item))
+    .filter(Boolean)
   for (const candidate of candidates) {
     const matched = studentMessages.value.find((message: string) => message.includes(candidate) || candidate.includes(message))
     if (matched) return matched
@@ -809,12 +805,11 @@ const normalizeEvidenceItems = (value: any) => {
       const text = String(item || '').trim()
       return { kind: 'text', text, label: text }
     })
-    .filter((item) => item.text && !isInternalPromptText(item.text))
+    .filter((item) => item.text)
 }
 
 const dialogueMessages = computed(() =>
   (Array.isArray(sessionDetail.value?.messages) ? sessionDetail.value.messages : [])
-    .filter((message: any) => !isInternalPromptMessage(message))
     .filter((message: any) => ['user', 'assistant'].includes(String(message?.role || '')) && String(message?.content || '').trim())
     .map((message: any, index: number) => ({
       index,
@@ -876,7 +871,6 @@ const pushChatRecord = (
   key: string,
   speakerName = '',
 ) => {
-  if (isInternalPromptText(text)) return
   const clean = chatRecordText(text)
   if (!clean) return
   const dedupeKey = `${role}:${normalizeDialogueText(clean)}`
@@ -1147,9 +1141,7 @@ const fetchEvaluation = async (options: { silent?: boolean; attempt?: number } =
     } as any)
     sessionDetail.value = res || null
     if (!res.evaluation_result) {
-      const shouldKeepPolling = res.status === 'evaluating' || isGeneratingReport.value
-      const maxAttempts = isGeneratingReport.value ? 100 : 12
-      if (shouldKeepPolling && (options.attempt || 0) < maxAttempts) {
+      if (res.status === 'evaluating' && (options.attempt || 0) < 12) {
         pollingReport.value = true
         setEmptyState('评估报告生成中', '系统正在生成评估报告，请稍候。')
         loading.value = false

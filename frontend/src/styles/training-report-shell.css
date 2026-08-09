@@ -27,6 +27,8 @@
 .insight-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 38px; margin-top: 26px; padding-top: 24px; border-top: 1px solid #e6ebf3; }
 .insight-grid article { min-width: 0; }
 .insight-grid strong { display: block; margin: 8px 0; color: #2f6df6; font-size: 17px; font-weight: 900; overflow-wrap: anywhere; }
+.comment-panel { display: grid; gap: 8px; margin-top: 18px; padding: 14px 16px; border: 1px solid #d8e4f6; border-radius: 8px; background: #f8fbff; color: #344054; }
+.comment-panel p { margin: 0; }
 .overview-table { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 13px; column-gap: 72px; }
 .overview-table div { min-width: 0; display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: baseline; gap: 12px; }
 .overview-table span { color: #7b879c; }
@@ -57,6 +59,17 @@
 .node-item__meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; color: #667085; font-size: 13px; }
 .node-item__speech, .node-item__issues { margin-top: 8px; color: #344054; line-height: 1.65; }
 .node-item__actions { margin-top: 12px; }
+.node-detail { display: grid; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed #d8e0ec; }
+.node-detail__title { color: #15213b; font-size: 13px; font-weight: 900; }
+.point-row { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 10px; align-items: start; }
+.point-row strong { display: block; color: #24324a; font-size: 13px; }
+.point-row p { margin: 3px 0 0; color: #667085; font-size: 12px; line-height: 1.55; }
+.point-row__status { display: inline-flex; justify-content: center; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 900; }
+.point-row__status--hit { background: #ecfdf3; color: #067647; }
+.point-row__status--partial { background: #fff6e8; color: #9a5b13; }
+.point-row__status--missed { background: #fef3f2; color: #b42318; }
+.node-evidence { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.node-evidence span { padding: 4px 8px; border-radius: 6px; background: #f1f5f9; color: #475467; font-size: 12px; }
 .loading-state, .empty-state, .legacy-state { min-height: 420px; width: min(1160px, calc(100% - 72px)); margin: 36px auto 0; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 32px; border: 1px solid #e2e8f2; }
 .empty-state span { color: #667085; }
 :deep(.el-button) { border-radius: 4px; font-weight: 700; }

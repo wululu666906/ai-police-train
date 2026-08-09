@@ -69,7 +69,7 @@
           <el-empty :description="loadError">
             <div class="error-actions">
               <el-button @click="fetchHistory">重新加载</el-button>
-              <el-button type="primary" @click="router.push('/student/hall')">前往训练大厅</el-button>
+                <el-button type="primary" @click="router.push('/student/home')">前往训练首页</el-button>
             </div>
           </el-empty>
         </div>
@@ -81,7 +81,7 @@
               <span v-if="searchKeyword || hasDateRange">可以清空筛选条件后再查看。</span>
               <span v-else>{{ emptyDescription }}</span>
             </template>
-            <el-button type="primary" @click="router.push('/student/hall')">前往训练大厅</el-button>
+            <el-button type="primary" @click="router.push('/student/home')">前往训练首页</el-button>
           </el-empty>
         </div>
 

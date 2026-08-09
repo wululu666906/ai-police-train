@@ -24,6 +24,7 @@
         round
         teleport="body"
         class="briefing-popup"
+        :z-index="4001"
         :overlay-style="{ backgroundColor: 'rgba(0,0,0,0.85)' }"
         @opened="onBriefingOpened"
       >
@@ -169,7 +170,7 @@
         </div>
       </van-popup>
       <!-- ========== 沉浸式全屏布局（考核模式） ========== -->
-      <div v-if="immersiveMode" class="imm-shell" @keydown.space.prevent="toggleFullscreen" @keydown.esc="confirmExit">
+      <div v-if="immersiveMode" ref="immersiveShellRef" class="imm-shell" @keydown.space.prevent="toggleFullscreen" @keydown.esc="confirmExit">
         <!-- Top Header (overlay on top of video) -->
         <header class="imm-header">
           <div class="imm-header__left">
@@ -185,8 +186,8 @@
               <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
               {{ trainingMode === 'exam' ? '考核剩余时间' : (nodeActive ? '本节点剩余' : '训练进度') }} {{ topbarTimerText }}
             </span>
+            <button class="imm-header__end-btn" :disabled="finishingTraining" @click="confirmFinishTraining">结束训练</button>
             <button class="imm-header__fullscreen-btn" @click="toggleFullscreen" title="全屏">⛶</button>
-            <button class="imm-header__end-btn" @click="confirmExit">结束训练</button>
           </div>
         </header>
 
@@ -1175,7 +1176,6 @@ import {
   Microphone, Check,
 } from '@element-plus/icons-vue'
 import request from '../utils/request'
-import { resolveMediaUrl } from '../utils/media'
 import { usePresenceMonitor } from '../composables/usePresenceMonitor'
 import { useFaceIdentityVerify } from '../composables/useFaceIdentityVerify'
 import { useGestureDetector } from '../composables/useGestureDetector'
@@ -1281,6 +1281,7 @@ const immDeducted = ref(0)
 const immWaveLevel = ref(0)
 const immNodeReviewVisible = ref(false)
 const immReviewNode = ref<number | null>(null)
+const immersiveShellRef = ref<HTMLElement | null>(null)
 const immProgressTrackRef = ref<HTMLElement | null>(null)
 let immWaveTimer: ReturnType<typeof setInterval> | null = null
 
@@ -1327,6 +1328,8 @@ function normalizeChoiceOption(opt: unknown, index: number): ChoiceOption {
 
 function readRawChoiceOptions(node: VideoNode | null | undefined): unknown[] {
   if (!node) return []
+  const configOptions = node.node_config?.options
+  if (Array.isArray(configOptions) && configOptions.length) return configOptions
   const direct = (node as VideoNode & { choice_options?: unknown }).choice_options
   if (Array.isArray(direct) && direct.length) return direct
   if (typeof direct === 'string' && direct.trim()) {
@@ -1337,8 +1340,6 @@ function readRawChoiceOptions(node: VideoNode | null | undefined): unknown[] {
       // ignore malformed JSON
     }
   }
-  const configOptions = node.node_config?.options
-  if (Array.isArray(configOptions)) return configOptions
   return []
 }
 
@@ -1440,7 +1441,7 @@ function scrollProgressTrack() {
 
 function toggleFullscreen() {
   if (!document.fullscreenElement) {
-    document.documentElement.requestFullscreen?.()
+    ;(immersiveShellRef.value || document.documentElement).requestFullscreen?.()
   } else {
     document.exitFullscreen?.()
   }
@@ -1788,7 +1789,7 @@ const resolvedChoiceOptions = computed(() => {
   if (!node) return []
   return readRawChoiceOptions(node)
     .map((opt, index) => normalizeChoiceOption(opt, index))
-    .filter((item) => item.text || item.label)
+    .filter((item) => item.text)
 })
 const resolvedJudgmentOptions = computed(() => {
   const options = resolvedChoiceOptions.value
@@ -1931,11 +1932,29 @@ function isPoliceTrainingNode(node?: VideoNode | null) {
   return Boolean(node?.node_config?.police_node_type || node?.prompt_content?.police_question)
 }
 
+let previousBodyOverflow = ''
+let previousHtmlOverflow = ''
+
+function lockPageScroll() {
+  previousBodyOverflow = document.body.style.overflow
+  previousHtmlOverflow = document.documentElement.style.overflow
+  document.body.style.overflow = 'hidden'
+  document.documentElement.style.overflow = 'hidden'
+}
+
+function unlockPageScroll() {
+  document.body.style.overflow = previousBodyOverflow
+  document.documentElement.style.overflow = previousHtmlOverflow
+}
+
 // 鈹€鈹€ 鐢熷懡鍛ㄦ湡 鈹€鈹€
 onMounted(async () => {
+  lockPageScroll()
   await fetchVideo()
   await fetchProfileStatus()
   if (video.value) {
+    briefingStep.value = 1
+    briefingIdentityPassed.value = false
     showBriefing.value = true
     void preloadPresenceMonitor()
     await nextTick()
@@ -2028,6 +2047,7 @@ onBeforeRouteLeave((_to, _from, next) => {
 })
 
 onUnmounted(() => {
+  unlockPageScroll()
   stopCamera()
   stopPresenceMonitor()
   stopFaceIdentityVerify()
@@ -2047,7 +2067,7 @@ async function fetchVideo() {
     const res: any = await request.get(`/videos/${videoId}`)
     video.value = res
     await nextTick()
-    playbackPreparePromise = attachPlayback(videoId, resolveMediaUrl(res.video_url))
+    playbackPreparePromise = attachPlayback(videoId, String(res.video_url || ''))
   } catch (error: any) {
     ElMessage.error('加载视频失败')
     video.value = null
@@ -3142,6 +3162,21 @@ function restartTraining() {
   router.replace(`/student/video-training/${videoId}`)
 }
 
+async function confirmFinishTraining() {
+  if (!sessionId.value) {
+    router.back()
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      '结束后未完成的训练节点将按跳过处理，并立即生成本次评估报告。确认结束训练？',
+      '结束训练',
+      { confirmButtonText: '确认结束', cancelButtonText: '继续训练', type: 'warning' },
+    )
+    await finishTrainingSession()
+  } catch {}
+}
+
 // 鈹€鈹€ 閫€鍑虹‘璁?鈹€鈹€
 async function confirmExit() {
   if (!sessionId.value && !nodeActive.value && completedCount.value === 0) { router.back(); return }
@@ -3186,9 +3221,14 @@ function resultLabel(r: string) {
 <style scoped lang="scss">
 /* 鈹€鈹€ 鏁翠綋甯冨眬 鈹€鈹€ */
 .video-training-page {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
   display: flex;
   flex-direction: column;
+  width: 100vw;
   height: 100vh;
+  height: 100dvh;
   background: #0a0f1a;
   color: #fff;
   overflow: hidden;
@@ -5848,10 +5888,14 @@ function resultLabel(r: string) {
 
 /* ========== 沉浸式全屏布局样式 ========== */
 .imm-shell {
-  position: relative;
+  position: fixed;
+  inset: 0;
   display: flex;
   flex-direction: column;
-  flex: 1;
+  flex: 1 1 auto;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
   min-height: 0;
   background: #000;
   overflow: hidden;
@@ -5859,22 +5903,22 @@ function resultLabel(r: string) {
 }
 
 .imm-header {
-  position: absolute;
+  position: fixed;
   top: 0;
   left: 0;
   right: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 48px;
-  padding: 0 20px;
+  height: 60px;
+  padding: 0 28px;
   background: linear-gradient(180deg, rgba(0, 0, 0, 0.7) 0%, transparent 100%);
   z-index: 20;
 }
 
 /* Video fills entire shell */
 .imm-video-layer {
-  position: absolute;
+  position: fixed;
   inset: 0;
   z-index: 0;
 }
@@ -5888,9 +5932,10 @@ function resultLabel(r: string) {
 
 /* All overlays sit on top of video */
 .imm-overlays {
-  position: absolute;
+  position: fixed;
   inset: 0;
   z-index: 10;
+  overflow: hidden;
   pointer-events: none;
 
   > * {
@@ -5922,7 +5967,7 @@ function resultLabel(r: string) {
 .imm-header__left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .imm-header__rec {
@@ -5937,7 +5982,7 @@ function resultLabel(r: string) {
 }
 
 .imm-header__title {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   letter-spacing: 0.3px;
 }
@@ -5945,8 +5990,8 @@ function resultLabel(r: string) {
 .imm-header__center {
   display: flex;
   align-items: center;
-  gap: 12px;
-  font-size: 14px;
+  gap: 16px;
+  font-size: 16px;
 }
 
 .imm-header__node {
@@ -5961,7 +6006,7 @@ function resultLabel(r: string) {
 .imm-header__right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
   flex: 0 1 auto;
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -5972,21 +6017,21 @@ function resultLabel(r: string) {
 .imm-header__timer {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
+  gap: 8px;
+  font-size: 15px;
   color: #94a3b8;
 
   svg { color: #60a5fa; }
 }
 
 .imm-header__fullscreen-btn {
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.04);
   color: #94a3b8;
-  font-size: 16px;
+  font-size: 20px;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -6000,12 +6045,13 @@ function resultLabel(r: string) {
 }
 
 .imm-header__end-btn {
-  padding: 6px 16px;
+  min-height: 40px;
+  padding: 8px 22px;
   border-radius: 6px;
   border: 1px solid #3b82f6;
   background: transparent;
   color: #60a5fa;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
@@ -6042,14 +6088,14 @@ function resultLabel(r: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 10px;
-  font-size: 11px;
+  padding: 7px 12px;
+  font-size: 14px;
   color: rgba(255, 255, 255, 0.8);
   background: rgba(0, 0, 0, 0.7);
 }
 
 .imm-pip__drag-hint { color: #60a5fa; }
-.imm-pip__check { color: #22c55e; font-size: 14px; font-weight: bold; }
+.imm-pip__check { color: #22c55e; font-size: 18px; font-weight: bold; }
 
 .imm-pip__video-wrap {
   position: relative;
@@ -6089,7 +6135,7 @@ function resultLabel(r: string) {
 }
 
 .imm-pip__retry-hint {
-  font-size: 11px;
+  font-size: 13px;
   color: #64748b;
 }
 
@@ -6664,16 +6710,16 @@ function resultLabel(r: string) {
 
 /* Virtual Props */
 .imm-props {
-  position: absolute;
-  top: 60px;
-  right: 0;
-  bottom: 120px;
+  position: fixed;
+  top: 76px;
+  right: max(24px, env(safe-area-inset-right));
+  bottom: 148px;
   z-index: 12;
-  width: 120px;
+  width: 210px;
   background: rgba(15, 23, 42, 0.85);
   backdrop-filter: blur(12px);
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px 0 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -6688,12 +6734,12 @@ function resultLabel(r: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
+  padding: 16px 18px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .imm-props__title {
-  font-size: 13px;
+  font-size: 18px;
   font-weight: 600;
   color: #60a5fa;
 }
@@ -6702,7 +6748,8 @@ function resultLabel(r: string) {
   background: none;
   border: none;
   color: #94a3b8;
-  font-size: 12px;
+  font-size: 15px;
+  padding: 4px 0;
   cursor: pointer;
 
   &:hover {
@@ -6713,16 +6760,16 @@ function resultLabel(r: string) {
 .imm-props__list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px;
+  gap: 8px;
+  padding: 12px;
 }
 
 .imm-props__item {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
-  padding: 10px 8px;
+  gap: 8px;
+  padding: 14px 10px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(30, 41, 59, 0.6);
@@ -6743,28 +6790,28 @@ function resultLabel(r: string) {
 }
 
 .imm-props__item-icon {
-  width: 38px;
-  height: 38px;
+  width: 56px;
+  height: 56px;
   border-radius: 6px;
   background: rgba(30, 41, 59, 0.8);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 28px;
 }
 
 .imm-props__item-name {
-  font-size: 11px;
+  font-size: 16px;
   color: #e2e8f0;
 }
 
 .imm-props__item-badge {
-  font-size: 10px;
+  font-size: 13px;
   color: #22c55e;
 }
 
 .imm-props__footer {
-  padding: 8px 10px;
+  padding: 12px 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   font-size: 11px;
   color: #64748b;
@@ -6773,14 +6820,14 @@ function resultLabel(r: string) {
 
 /* Bottom Progress - overlay at bottom of video */
 .imm-progress {
-  position: absolute;
-  bottom: 44px;
-  left: 0;
-  right: 0;
+  position: fixed;
+  bottom: calc(max(12px, env(safe-area-inset-bottom)) + 60px);
+  left: max(28px, env(safe-area-inset-left));
+  right: calc(max(24px, env(safe-area-inset-right)) + 234px);
   display: flex;
   align-items: center;
-  height: 72px;
-  padding: 0 20px;
+  height: 88px;
+  padding: 0 28px;
   background: linear-gradient(0deg, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0.5) 70%, transparent 100%);
   z-index: 12;
 }
@@ -6798,9 +6845,9 @@ function resultLabel(r: string) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  min-width: 120px;
-  padding: 8px 14px;
+  gap: 5px;
+  min-width: 150px;
+  padding: 8px 12px;
   position: relative;
   cursor: pointer;
   transition: opacity 0.2s;
@@ -6810,9 +6857,9 @@ function resultLabel(r: string) {
 
 .imm-progress__line {
   position: absolute;
-  top: 22px;
-  left: -24px;
-  width: 44px;
+  top: 18px;
+  left: -20px;
+  width: 36px;
   height: 2px;
   background: #334155;
   transition: background 0.6s ease;
@@ -6854,8 +6901,8 @@ function resultLabel(r: string) {
 }
 
 .imm-progress__icon {
-  width: 36px;
-  height: 36px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
   border: 2px solid #475569;
   display: flex;
@@ -6865,34 +6912,34 @@ function resultLabel(r: string) {
 }
 
 .imm-progress__num {
-  font-size: 13px;
+  font-size: 16px;
   font-weight: 700;
   color: #60a5fa;
 }
 
 .imm-progress__label {
-  font-size: 12px;
+  font-size: 14px;
   color: #94a3b8;
   white-space: nowrap;
   text-align: center;
-  max-width: 100px;
+  max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .imm-progress__status {
-  font-size: 10px;
+  font-size: 12px;
   color: #64748b;
 }
 
 .imm-progress__arrow {
-  width: 32px;
-  height: 32px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
   border: 1px solid #334155;
   background: rgba(30, 41, 59, 0.8);
   color: #94a3b8;
-  font-size: 20px;
+  font-size: 28px;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -6910,17 +6957,19 @@ function resultLabel(r: string) {
 
 /* Bottom Status Bar - overlay at very bottom */
 .imm-status-bar {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
+  position: fixed;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: max(28px, env(safe-area-inset-left));
+  right: calc(max(24px, env(safe-area-inset-right)) + 234px);
   display: flex;
   align-items: center;
-  height: 44px;
-  padding: 0 20px;
+  min-height: 60px;
+  height: auto;
+  padding: 0 28px;
   background: rgba(0, 0, 0, 0.8);
   backdrop-filter: blur(8px);
   z-index: 12;
+  border-radius: 12px;
 }
 
 .imm-status-bar__left {
@@ -6930,28 +6979,29 @@ function resultLabel(r: string) {
 }
 
 .imm-status-bar__label {
-  font-size: 13px;
+  font-size: 16px;
   color: #e2e8f0;
   font-weight: 600;
 }
 
 .imm-status-bar__tag {
-  font-size: 12px;
+  font-size: 14px;
   color: #64748b;
 }
 
 .imm-status-bar__indicators {
   display: flex;
   align-items: center;
-  gap: 24px;
-  margin-left: 28px;
+  gap: 30px;
+  margin-left: 36px;
+  min-width: 0;
 }
 
 .imm-status-bar__indicator {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
+  gap: 8px;
+  font-size: 15px;
   color: #cbd5e1;
 }
 
@@ -6966,15 +7016,17 @@ function resultLabel(r: string) {
   align-items: center;
   gap: 12px;
   margin-left: auto;
+  flex-shrink: 0;
 }
 
 .imm-status-bar__btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 16px;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 20px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 15px;
   cursor: pointer;
   transition: all 0.2s;
 
@@ -7518,6 +7570,145 @@ function resultLabel(r: string) {
   display: flex;
   gap: 10px;
   justify-content: center;
+}
+
+@media (max-width: 1600px), (max-height: 820px) {
+  .imm-header {
+    height: 52px;
+    padding: 0 20px;
+  }
+
+  .imm-header__title,
+  .imm-header__center,
+  .imm-header__timer,
+  .imm-header__end-btn {
+    font-size: 13px;
+  }
+
+  .imm-header__fullscreen-btn {
+    width: 34px;
+    height: 34px;
+    font-size: 18px;
+  }
+
+  .imm-header__end-btn {
+    min-height: 34px;
+    padding: 6px 14px;
+  }
+
+  .imm-props {
+    top: 64px;
+    right: max(16px, env(safe-area-inset-right));
+    bottom: 128px;
+    width: 176px;
+  }
+
+  .imm-props__header {
+    padding: 12px 14px;
+  }
+
+  .imm-props__title {
+    font-size: 15px;
+  }
+
+  .imm-props__toggle {
+    font-size: 13px;
+  }
+
+  .imm-props__list {
+    gap: 6px;
+    padding: 10px;
+  }
+
+  .imm-props__item {
+    padding: 10px 8px;
+  }
+
+  .imm-props__item-icon {
+    width: 44px;
+    height: 44px;
+    font-size: 22px;
+  }
+
+  .imm-props__item-name {
+    font-size: 13px;
+  }
+
+  .imm-props__item-badge,
+  .imm-props__footer {
+    font-size: 11px;
+  }
+
+  .imm-progress {
+    bottom: calc(max(10px, env(safe-area-inset-bottom)) + 48px);
+    left: max(20px, env(safe-area-inset-left));
+    right: calc(max(16px, env(safe-area-inset-right)) + 196px);
+    height: 72px;
+    padding: 0 20px;
+  }
+
+  .imm-progress__step {
+    min-width: 118px;
+    padding: 6px 10px;
+    gap: 4px;
+  }
+
+  .imm-progress__icon {
+    width: 36px;
+    height: 36px;
+  }
+
+  .imm-progress__num,
+  .imm-progress__label {
+    font-size: 12px;
+  }
+
+  .imm-progress__label {
+    max-width: 110px;
+  }
+
+  .imm-progress__status {
+    font-size: 10px;
+  }
+
+  .imm-progress__arrow {
+    width: 34px;
+    height: 34px;
+    font-size: 22px;
+  }
+
+  .imm-status-bar {
+    height: 48px;
+    min-height: 48px;
+    bottom: max(10px, env(safe-area-inset-bottom));
+    left: max(20px, env(safe-area-inset-left));
+    right: calc(max(16px, env(safe-area-inset-right)) + 196px);
+    padding: 0 20px;
+  }
+
+  .imm-status-bar__label {
+    font-size: 13px;
+  }
+
+  .imm-status-bar__tag,
+  .imm-status-bar__indicator,
+  .imm-status-bar__btn {
+    font-size: 12px;
+  }
+
+  .imm-status-bar__indicators {
+    gap: 16px;
+    margin-left: 20px;
+  }
+
+  .imm-status-bar__actions {
+    gap: 8px;
+  }
+
+  .imm-status-bar__btn {
+    min-height: 34px;
+    padding: 6px 12px;
+  }
 }
 </style>
 

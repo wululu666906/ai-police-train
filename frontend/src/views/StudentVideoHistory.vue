@@ -4,7 +4,7 @@
       <div class="filter-grid">
         <div class="filter-item">
           <label>实训类型</label>
-          <el-select v-model="typeFilter" placeholder="全部类型">
+          <el-select v-model="typeFilter" placeholder="全部类型" :teleported="false">
             <el-option label="全部类型" value="all" />
             <el-option v-for="item in availableTypes" :key="item" :label="item" :value="item" />
           </el-select>
@@ -12,7 +12,7 @@
 
         <div class="filter-item">
           <label>训练模式</label>
-          <el-select v-model="modeFilter" placeholder="全部模式">
+          <el-select v-model="modeFilter" placeholder="全部模式" :teleported="false">
             <el-option label="全部模式" value="all" />
             <el-option label="练习模式" value="practice" />
             <el-option label="正式考核" value="exam" />
@@ -21,7 +21,7 @@
 
         <div class="filter-item">
           <label>完成状态</label>
-          <el-select v-model="statusFilter" placeholder="全部状态">
+          <el-select v-model="statusFilter" placeholder="全部状态" :teleported="false">
             <el-option label="全部状态" value="all" />
             <el-option label="已完成" value="finished" />
             <el-option label="进行中" value="active" />

@@ -240,10 +240,18 @@ const fillProfileForm = (user: SettingsUser) => {
 const normalizeFaceProfile = (payload: any): FaceProfile => {
   const imageUrl = String(payload?.face_image_url || '')
   const apiBase = String((request as any).defaults?.baseURL || '').replace(/\/$/, '')
+  const normalizedImageUrl = imageUrl.startsWith('/api/static/')
+    ? imageUrl.replace(/^\/api/, '')
+    : imageUrl
   return {
     registered: Boolean(payload?.registered),
     student_id: payload?.student_id,
-    face_image_url: imageUrl && imageUrl.startsWith('/') && apiBase ? `${apiBase}${imageUrl}` : imageUrl,
+    face_image_url:
+      normalizedImageUrl && normalizedImageUrl.startsWith('/static/')
+        ? normalizedImageUrl
+        : normalizedImageUrl && normalizedImageUrl.startsWith('/') && apiBase
+          ? `${apiBase}${normalizedImageUrl}`
+          : normalizedImageUrl,
     embedding_model: payload?.embedding_model,
     updated_at: payload?.updated_at,
   }

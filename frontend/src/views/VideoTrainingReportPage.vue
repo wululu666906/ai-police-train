@@ -9,6 +9,7 @@
     @print="printReport"
   >
     <template #actions>
+      <el-button type="primary" size="small" @click="printReport">打印 / 保存 PDF</el-button>
       <el-button plain size="small" @click="goBack">返回</el-button>
       <el-button v-if="!isAdminReport && report?.video_id" type="primary" plain @click="restartTraining">重新训练</el-button>
     </template>

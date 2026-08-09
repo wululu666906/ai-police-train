@@ -47,6 +47,11 @@
           <p>{{ weaknessNote }}</p>
         </article>
       </div>
+      <div v-if="overallComment || abilityEvaluation?.comment || abilityEvaluation?.risk" class="comment-panel">
+        <p v-if="overallComment">{{ overallComment }}</p>
+        <p v-if="abilityEvaluation?.comment">{{ abilityEvaluation.comment }}</p>
+        <p v-if="abilityEvaluation?.risk">{{ abilityEvaluation.risk }}</p>
+      </div>
     </section>
 
     <section class="report-section">
@@ -127,6 +132,20 @@
           <div v-if="item.failure_reasons?.length" class="node-item__issues">
             失分原因：{{ item.failure_reasons.map(formatFailureReason).join('、') }}
           </div>
+          <div v-if="visibleAssessmentPoints(item).length" class="node-detail">
+            <div class="node-detail__title">考察点与证据</div>
+            <div v-for="point in visibleAssessmentPoints(item)" :key="point.id || point.label" class="point-row">
+              <span class="point-row__status" :class="`point-row__status--${point.status || 'missed'}`">{{ pointStatusLabel(point.status) }}</span>
+              <div>
+                <strong>{{ point.label || point.content || '未命名考察点' }}</strong>
+                <p v-if="point.evidence?.length">{{ point.evidence.join('；') }}</p>
+                <p v-else-if="point.feedback">{{ point.feedback }}</p>
+              </div>
+            </div>
+          </div>
+          <div v-if="summarizeEvidence(item).length" class="node-evidence">
+            <span v-for="line in summarizeEvidence(item)" :key="line">{{ line }}</span>
+          </div>
           <div v-if="item.manual_review?.review_note" class="node-item__speech">
             复核说明：{{ item.manual_review.review_note }}
           </div>
@@ -187,6 +206,33 @@ const strengthTitle = computed(() => metrics.value.strengthTitle)
 const strengthNote = computed(() => metrics.value.strengthNote)
 const weaknessTitle = computed(() => metrics.value.weaknessTitle)
 const weaknessNote = computed(() => metrics.value.weaknessNote)
+const overallComment = computed(() => props.report?.overall_comment || '')
+const abilityEvaluation = computed(() => props.report?.ability_evaluation)
+
+function pointStatusLabel(status?: string) {
+  return ({ hit: '达标', partial: '部分', missed: '未达标' } as Record<string, string>)[status || ''] || '未达标'
+}
+
+function visibleAssessmentPoints(item: VideoReportNode) {
+  return (item.assessment_points || []).slice(0, 6)
+}
+
+function summarizeEvidence(item: VideoReportNode) {
+  const evidence = item.evidence || {}
+  const lines: string[] = []
+  const speech = evidence.speech || {}
+  const gesture = evidence.gesture || {}
+  const identity = evidence.identity || {}
+  const prop = evidence.prop || {}
+  const semantic = evidence.police_semantic || {}
+  if (speech.transcript) lines.push(`语音：${speech.transcript}`)
+  if (Array.isArray(speech.keyword_hits) && speech.keyword_hits.length) lines.push(`关键词：${speech.keyword_hits.join('、')}`)
+  if (gesture.expected) lines.push(`动作：${gesture.matched ? '已匹配' : '未匹配'}${gesture.confidence ? `，置信度 ${Math.round(Number(gesture.confidence) * 100)}%` : ''}`)
+  if (identity.required) lines.push(`身份：${identity.verified ? '通过' : '未通过'}`)
+  if (prop.label) lines.push(`道具：${prop.ready ? '已完成' : '未完成'} ${prop.label}`)
+  if (semantic.enabled) lines.push(`处置要点覆盖：${semantic.semantic_score || 0}%`)
+  return lines.slice(0, 4)
+}
 </script>
 
 <style scoped src="../../styles/training-report-shell.css"></style>

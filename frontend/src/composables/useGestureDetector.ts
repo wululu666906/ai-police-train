@@ -40,7 +40,7 @@ const REMOTE_POSE_MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task'
 
 const LOCAL_TASKS_VISION_URL = import.meta.env.VITE_MEDIAPIPE_TASKS_VISION_URL || '/mediapipe/tasks-vision/index.js'
-const LOCAL_TASKS_VISION_WASM_URL = import.meta.env.VITE_MEDIAPIPE_TASKS_VISION_WASM_URL || '/mediapipe/models/wasm'
+const LOCAL_TASKS_VISION_WASM_URL = import.meta.env.VITE_MEDIAPIPE_TASKS_VISION_WASM_URL || '/mediapipe/tasks-vision/wasm'
 const LOCAL_POSE_MODEL_URL = import.meta.env.VITE_MEDIAPIPE_POSE_MODEL_URL || '/mediapipe/models/pose_landmarker_lite.task'
 
 const DEFAULT_REQUIRED_STREAK = 5

@@ -698,7 +698,6 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { showToast } from 'vant'
 import * as XLSX from 'xlsx'
 import request from '../utils/request'
-import { isInternalPromptMessage } from '../utils/dialogueMessage'
 
 const classes = ref<any[]>([])
 const cases = ref<any[]>([])
@@ -1752,7 +1751,6 @@ const commentHasMore = computed(() => {
 const submissionMessages = computed(() => {
   const messages = Array.isArray(submissionDetail.value?.messages) ? submissionDetail.value.messages : []
   return messages
-    .filter((message: any) => !isInternalPromptMessage(message))
     .map((message: any, index: number) => {
       const content = String(message?.content || '').trim()
       if (!content) return null

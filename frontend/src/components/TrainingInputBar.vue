@@ -236,7 +236,10 @@ const emitSend = () => {
 }
 
 const getApiBaseUrl = () => {
-  return import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '/api')
+  const configuredApiUrl = String(import.meta.env.VITE_API_URL || '').trim()
+  const isLocalDevApiUrl =
+    import.meta.env.DEV && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(configuredApiUrl)
+  return isLocalDevApiUrl ? '' : configuredApiUrl || (import.meta.env.DEV ? '' : '/api')
 }
 
 const getRealtimeHttpBase = () => {

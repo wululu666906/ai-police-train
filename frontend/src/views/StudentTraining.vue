@@ -17,7 +17,10 @@
     <template v-else>
     <header class="training-header">
       <div class="training-header__case">
-        <span class="training-header__label">{{ trainingSourceLabel }}</span>
+        <button type="button" class="training-header__back-link" :disabled="isReturningToHall" @click="handleBriefReturnToHall">
+          <van-icon name="arrow-left" />
+          {{ isReturningToHall ? '正在返回...' : `返回${trainingReturnLabel}` }}
+        </button>
         <div class="training-header__title-row">
           <span class="training-header__title">{{ caseInfo.title }}</span>
           <span class="training-header__badge">{{ normalizeDifficulty(caseInfo.difficulty) }}难度</span>
@@ -96,7 +99,7 @@
                   'scene-role-card--selected': targetRoleName === role.name,
                   'scene-role-card--thinking': isRoleAvatarThinking(role.name),
                 }"
-                :disabled="!role.speakable || isLoading || isOpeningLoading"
+                :disabled="!role.speakable || isLoading"
                 @click="toggleTargetRole(role)"
               >
                 <RoleSpeakingAvatar
@@ -240,7 +243,7 @@
           </div>
         </div>
 
-        <div v-if="isLoading || isOpeningLoading" class="msg-row msg-ai">
+        <div v-if="isLoading" class="msg-row msg-ai">
           <div class="avatar avatar-ai">
             <van-icon name="contact" size="20" />
           </div>
@@ -270,7 +273,7 @@
               :key="`${index}-${item.text}`"
               type="button"
               class="suggested-question-chip"
-              :disabled="isLoading || isOpeningLoading"
+              :disabled="isLoading"
               @click="applySuggestedQuestion(item)"
             >
               <span class="suggested-question-chip__cat">{{ item.category || '追问' }}</span>
@@ -280,8 +283,8 @@
         </div>
         <TrainingInputBar
           v-model="inputMessage"
-          :loading="isLoading || isOpeningLoading"
-          :disabled="!canUseConversation || isOpeningLoading"
+          :loading="isLoading"
+          :disabled="!canUseConversation"
           @send="sendMessage()"
           @voice-send="sendMessage"
           @voice-event="handleVoiceEvent"
@@ -335,14 +338,6 @@
                 </div>
               </section>
 
-              <section v-if="!isIntakeScene" class="brief-info-section">
-                <h2>当前处置任务</h2>
-                <div class="brief-text-box brief-text-box--plain">
-                  <p>{{ caseInfo.currentStageGoal || '先控制即时风险，再核实人员身份和事件经过。' }}</p>
-                  <p v-if="caseInfo.caseBackground">已知背景：{{ caseInfo.caseBackground }}</p>
-                </div>
-              </section>
-
               <section v-if="showBriefTips" class="brief-info-section">
                 <h2>执法提示</h2>
                 <div class="brief-text-box">
@@ -383,7 +378,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { showLoadingToast, showToast } from 'vant'
 import request from '../utils/request'
 import { resolveMediaUrl } from '../utils/media'
-import { SCENE_OPENING_EVENT_MARKER, isInternalPromptMessage } from '../utils/dialogueMessage'
 import TrainingInputBar from '../components/TrainingInputBar.vue'
 import RoleSpeakingAvatar from '../components/RoleSpeakingAvatar.vue'
 import TrainingFaceGuard from '../components/TrainingFaceGuard.vue'
@@ -418,16 +412,9 @@ const markAvatarFailed = (value: unknown) => {
 const route = useRoute()
 const router = useRouter()
 
-const isSceneOpeningEventMessage = (message: any) => (
-  message?.role === 'user'
-  && isInternalPromptMessage(message)
-)
-
 const sessionId = ref(String(route.params.id || ''))
 const inputMessage = ref('')
 const isLoading = ref(false)
-const isOpeningLoading = ref(false)
-const openingRequested = ref(false)
 const isSessionBooting = ref(true)
 const trainingLoadError = ref('')
 const showCaseBrief = ref(false)
@@ -451,7 +438,6 @@ const showTrainingHints = computed(() => !isAssignmentAssessmentMode.value)
 const showBriefTips = computed(() => !isAssignmentAssessmentMode.value)
 const showStageGoal = computed(() => !isAssignmentAssessmentMode.value)
 const showRevealedInfo = computed(() => true)
-const trainingSourceLabel = computed(() => isAssignmentAssessmentMode.value ? '班级作业考察' : '自主案件训练')
 const trainingReturnPath = computed(() => isAssignmentAssessmentMode.value ? '/student/classes' : '/student/hall')
 const trainingReturnLabel = computed(() => isAssignmentAssessmentMode.value ? '班级作业' : '训练大厅')
 const finishButtonText = computed(() => isAssignmentAssessmentMode.value ? '提交作业并生成评估' : '结束训练并生成评估')
@@ -754,7 +740,7 @@ const guessThinkingRoleName = () => {
 const thinkingRoleLabel = computed(() => guessThinkingRoleName())
 
 const isRoleAvatarThinking = (roleName: string) => {
-  if (!isLoading.value && !isOpeningLoading.value) return false
+  if (!isLoading.value) return false
   return roleName === thinkingRoleLabel.value
 }
 
@@ -764,7 +750,6 @@ const collectAssistantReplyTurns = (res: any) => {
     return turns
       .filter((item: any) => String(item?.content || '').trim())
       .map((item: any) => ({
-        id: item.id ?? item.message_id,
         content: String(item.content),
         speakerName: String(item.speaker_name || item.speakerName || roleInfo.name).trim() || roleInfo.name,
       }))
@@ -776,7 +761,6 @@ const collectAssistantReplyTurns = (res: any) => {
   return sequence
     .filter((item: string) => String(item || '').trim())
     .map((content: string) => ({
-      id: undefined,
       content: String(content),
       speakerName: roleInfo.name,
     }))
@@ -808,85 +792,15 @@ const parseSseBlock = (block: string) => {
   }
 }
 
-const consumeAssistantEventStream = async (response: Response) => {
-  if (!response.ok || !response.body) {
-    const error: any = new Error(`stream failed: ${response.status}`)
-    error.status = response.status
-    throw error
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder('utf-8')
-  let buffer = ''
-  let streamError = ''
-  const streamResult: any = {}
-  const assistantRows: Array<{ id: number; role: string; content: string; speakerName?: string; avatarUrl?: string; avatarId?: number }> = []
-
-  const consumeBlock = async (block: string) => {
-    const parsed = parseSseBlock(block)
-    if (!parsed) return
-    if (parsed.event === 'error') {
-      streamError = String(parsed.data?.message || 'AI 响应异常，请稍后重试')
-      return
-    }
-    if (parsed.event === 'done') {
-      Object.assign(streamResult, parsed.data || {})
-      return
-    }
-    if (parsed.event !== 'chunk') return
-
-    const chunk = parsed.data || {}
-    const persistedId = Number(chunk.message_id)
-    const rowId = Number.isFinite(persistedId) && persistedId > 0
-      ? persistedId
-      : Date.now() + Number(chunk.index || 0) + assistantRows.length
-    if (chatHistory.value.some((row: any) => String(row.id) === String(rowId))) return
-    const speakerName = String(chunk.speaker_name || roleInfo.name).trim() || roleInfo.name
-    const speakerRole = sceneRoles.value.find((role) => role.name === speakerName)
-    const row = {
-      id: rowId,
-      role: 'assistant',
-      content: String(chunk.content || ''),
-      speakerName,
-      avatarUrl: speakerRole?.avatar_url,
-      avatarId: speakerRole?.avatar_id,
-    }
-    if (!row.content.trim()) return
-    assistantRows.push(row)
-    chatHistory.value.push(row)
-    await nextTick()
-    scrollToBottom()
-  }
-
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    let boundaryIndex = buffer.indexOf('\n\n')
-    while (boundaryIndex !== -1) {
-      await consumeBlock(buffer.slice(0, boundaryIndex))
-      buffer = buffer.slice(boundaryIndex + 2)
-      boundaryIndex = buffer.indexOf('\n\n')
-    }
-  }
-  buffer += decoder.decode()
-  if (buffer.trim()) await consumeBlock(buffer)
-  if (streamError) throw new Error(streamError)
-  return { streamResult, assistantRows }
-}
-
 const playAssistantReplies = async (res: any, baseId: number) => {
   const items = collectAssistantReplyTurns(res)
   if (!items.length) return false
 
-  let rendered = false
   for (let index = 0; index < items.length; index += 1) {
       const item = items[index]
-      const messageId = item.id ?? (baseId + index)
-      if (chatHistory.value.some((row: any) => String(row.id) === String(messageId))) continue
       const speakerRole = sceneRoles.value.find((r) => r.name === item.speakerName)
       const message = {
-        id: messageId,
+        id: baseId + index,
         role: 'assistant',
         content: '',
         speakerName: item.speakerName,
@@ -894,13 +808,12 @@ const playAssistantReplies = async (res: any, baseId: number) => {
         avatarId: speakerRole?.avatar_id,
       }
       chatHistory.value.push(message)
-      rendered = true
       await streamTextIntoMessage(message, item.content)
       if (index < items.length - 1) {
         await sleep(180)
       }
   }
-  return rendered
+  return true
 }
 
 const buildSystemIntro = (sceneName: string, roleName: string, roles: SceneRoleBrief[] = []) => {
@@ -956,7 +869,6 @@ const fetchSessionData = async () => {
     return
   }
   isSessionBooting.value = true
-  openingRequested.value = false
   trainingLoadError.value = ''
   try {
     const res: any = await request.get(`/training/session/${sessionId.value}`, { _skipErrorToast: true } as any)
@@ -981,15 +893,13 @@ const fetchSessionData = async () => {
     applyGuidancePayload(res)
     revealedInfo.value = safeParse<string[]>(res.revealed_info, [])
 
-    const persistedMessages = Array.isArray(res.messages) ? res.messages : []
-    openingRequested.value = persistedMessages.length > 0
     chatHistory.value = [
       {
         id: 0,
         role: 'system',
         content: buildSystemIntro(res.scene_name, res.role_name, sceneRoles.value),
       },
-      ...persistedMessages.filter((message: any) => !isSceneOpeningEventMessage(message)).map((message: any) => {
+      ...(res.messages || []).map((message: any) => {
         const speaker = message.role === 'assistant' ? sceneRoles.value.find((r) => r.name === (message.speaker_name || '')) : null
         return {
           id: message.id,
@@ -1003,11 +913,9 @@ const fetchSessionData = async () => {
     ]
     scrollToBottom()
 
-    // 进入对话即展示案件信息（学员若选择“本次不再提示”则本会话内不再自动弹出）
+    // 简报保留为手动查看入口，避免进入训练时被大弹窗打断。
     suppressedBriefThisSession.value = isBriefSuppressedInSession()
-    if (!suppressedBriefThisSession.value) {
-      showCaseBrief.value = true
-    }
+    showCaseBrief.value = false
   } catch (error: any) {
     const message = resolveRequestErrorMessage(error, '获取训练数据失败')
     trainingLoadError.value = error?.response?.status === 404
@@ -1060,117 +968,6 @@ const handleBriefStartTraining = () => {
   showCaseBrief.value = false
 }
 
-const mergePersistedMessages = (messages: any[]) => {
-  const knownIds = new Set(chatHistory.value.map((item: any) => String(item.id)))
-  let appended = 0
-  for (const message of Array.isArray(messages) ? messages : []) {
-    if (isSceneOpeningEventMessage(message)) continue
-    if (!message?.id || knownIds.has(String(message.id))) continue
-    const role = message.role === 'user' ? 'human' : message.role === 'system' ? 'system' : 'assistant'
-    const speaker = role === 'assistant'
-      ? sceneRoles.value.find((item) => item.name === String(message.speaker_name || ''))
-      : undefined
-    chatHistory.value.push({
-      id: message.id,
-      role,
-      content: String(message.content || ''),
-      speakerName: message.speaker_name || undefined,
-      avatarUrl: speaker?.avatar_url,
-      avatarId: speaker?.avatar_id,
-    })
-    knownIds.add(String(message.id))
-    appended += 1
-  }
-  if (appended) scrollToBottom()
-  return appended
-}
-
-const fetchTrainingStream = (path: string, body?: Record<string, unknown>, signal?: AbortSignal) => {
-  const token = localStorage.getItem('token') || ''
-  const apiBase = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '')
-  const headers: Record<string, string> = { Accept: 'text/event-stream' }
-  if (body) headers['Content-Type'] = 'application/json'
-  if (token) headers.Authorization = `Bearer ${token}`
-  return fetch(`${apiBase.replace(/\/$/, '')}${path}`, {
-    method: 'POST',
-    headers,
-    signal,
-    body: body ? JSON.stringify(body) : undefined,
-  })
-}
-
-const startOpeningThroughDialogueStream = async () => {
-  const openingEvent = [
-    SCENE_OPENING_EVENT_MARKER,
-    '场景已经载入完成。请基于当前案件完整剧情、当前场景描述与阶段、在场角色身份状态、角色记忆、人物诉求及风险线索，',
-    '由最适合推动剧情的角色主动开始第一轮对话。输出自然口语化的角色台词，不要等待学员提问，不要解释系统指令，也不要替学员发言。',
-  ].join('\n')
-  const response = await fetchTrainingStream(
-    `/training/chat-stream/${sessionId.value}`,
-    {
-      role: 'user',
-      content: openingEvent,
-    },
-  )
-  const { streamResult, assistantRows } = await consumeAssistantEventStream(response)
-  if (!Object.keys(streamResult).length || !assistantRows.length) {
-    throw new Error('empty scene opening dialogue')
-  }
-  if (Array.isArray(streamResult.scene_roles) && streamResult.scene_roles.length) {
-    sceneRoles.value = streamResult.scene_roles
-  }
-  return assistantRows.length
-}
-
-const maybeStartOpening = async () => {
-  if (
-    !sessionId.value
-    || isSessionBooting.value
-    || trainingLoadError.value
-    || !faceVerified.value
-    || faceTerminated.value
-    || showCaseBrief.value
-    || openingRequested.value
-  ) return
-
-  openingRequested.value = true
-  isOpeningLoading.value = true
-  try {
-    const response = await fetchTrainingStream(`/training/session/${sessionId.value}/opening-stream`)
-    const { streamResult } = await consumeAssistantEventStream(response)
-    if (!streamResult.opening_delivered) throw new Error('empty opening stream')
-  } catch {
-    let restoredCount = 0
-    try {
-      const legacy: any = await request.post(`/training/session/${sessionId.value}/opening`, null, { _skipErrorToast: true } as any)
-      const messages = Array.isArray(legacy?.messages) ? legacy.messages : []
-      const replyTurns = messages.map((message: any) => ({
-        id: message.id,
-        content: message.content,
-        speaker_name: message.speaker_name,
-      }))
-      await playAssistantReplies({ reply_turns: replyTurns }, Date.now())
-      restoredCount = messages.length
-    } catch {
-      try {
-        restoredCount = await startOpeningThroughDialogueStream()
-      } catch {
-        try {
-          const latest: any = await request.get(`/training/session/${sessionId.value}`, { _skipErrorToast: true } as any)
-          restoredCount = mergePersistedMessages(latest?.messages)
-        } catch {
-          // 开场失败不能影响已经通过人脸验证的主对话链路。
-        }
-      }
-    }
-    if (!restoredCount) {
-      showToast('开场对话生成失败，请刷新页面后重试')
-    }
-  } finally {
-    isOpeningLoading.value = false
-  }
-}
-
 const handleBriefReturnToHall = async () => {
   if (isReturningToHall.value) return
   isReturningToHall.value = true
@@ -1193,10 +990,6 @@ const sendMessage = async (content?: string) => {
   const msg = String(content ?? inputMessage.value).trim()
   if (!msg) return
   if (isLoading.value) return
-  if (isOpeningLoading.value) {
-    showToast('角色正在准备开场发言，请稍候')
-    return
-  }
   if (faceTerminated.value) {
     showToast('人脸异常次数已达上限，本次训练已中断')
     return
@@ -1218,16 +1011,76 @@ const sendMessage = async (content?: string) => {
   scrollToBottom()
 
   try {
-    const response = await fetchTrainingStream(
-      `/training/chat-stream/${sessionId.value}`,
-      {
+    const token = localStorage.getItem('token') || ''
+    const configuredApiUrl = String(import.meta.env.VITE_API_URL || '').trim()
+    const isLocalDevApiUrl =
+      import.meta.env.DEV && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(configuredApiUrl)
+    const apiBase = isLocalDevApiUrl ? '' : configuredApiUrl
+    const streamUrl = `${apiBase.replace(/\/$/, '')}/training/chat-stream/${sessionId.value}`
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    }
+    if (token) {
+      headers.Authorization = `Bearer ${token}`
+    }
+
+    const response = await fetch(streamUrl, {
+      method: 'POST',
+      headers,
+      signal: abortController.signal,
+      body: JSON.stringify({
         role: 'user',
         content: msg,
         target_role_name: targetRoleName.value || undefined,
-      },
-      abortController.signal,
-    )
-    const { streamResult: res, assistantRows } = await consumeAssistantEventStream(response)
+      }),
+    })
+
+    if (!response.ok || !response.body) {
+      throw new Error(`stream failed: ${response.status}`)
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buffer = ''
+    const streamResult: any = {}
+    const assistantRows: Array<{ id: number; role: string; content: string; speakerName?: string; avatarUrl?: string; avatarId?: number }> = []
+
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let boundaryIndex = buffer.indexOf('\n\n')
+      while (boundaryIndex !== -1) {
+        const block = buffer.slice(0, boundaryIndex)
+        buffer = buffer.slice(boundaryIndex + 2)
+        const parsed = parseSseBlock(block)
+        if (parsed) {
+          if (parsed.event === 'chunk') {
+            const chunk = parsed.data
+            const speakerName = String(chunk.speaker_name || roleInfo.name).trim() || roleInfo.name
+            const speakerRole = sceneRoles.value.find((r) => r.name === speakerName)
+            const row = {
+              id: Date.now() + Number(chunk.index || 0) + assistantRows.length,
+              role: 'assistant',
+              content: String(chunk.content || ''),
+              speakerName,
+              avatarUrl: speakerRole?.avatar_url,
+              avatarId: speakerRole?.avatar_id,
+            }
+            assistantRows.push(row)
+            chatHistory.value.push(row)
+            await nextTick()
+            scrollToBottom()
+          } else if (parsed.event === 'done') {
+            Object.assign(streamResult, parsed.data || {})
+          }
+        }
+        boundaryIndex = buffer.indexOf('\n\n')
+      }
+    }
+
+    const res: any = streamResult
     if (!Object.keys(res).length) {
       throw new Error('empty stream result')
     }
@@ -1320,14 +1173,19 @@ const finishTraining = async () => {
   if (isFinishingTraining.value || !sessionId.value) return
   isFinishingTraining.value = true
   faceGuardRef.value?.stopCamera?.()
-  const currentSessionId = sessionId.value
-  const sourceQuery = isAssignmentAssessmentMode.value
-    ? `&source=assignment${currentAssignmentId.value ? `&assignment_id=${currentAssignmentId.value}` : ''}`
-    : ''
-  void request.post(`/training/finish/${currentSessionId}`, null, { _skipErrorToast: true } as any).catch(() => {
+  const loader = showLoadingToast({ message: '正在生成评估报告...', forbidClick: true })
+  try {
+    await request.post(`/training/finish/${sessionId.value}`)
+    loader.close()
+    const sourceQuery = isAssignmentAssessmentMode.value
+      ? `&source=assignment${currentAssignmentId.value ? `&assignment_id=${currentAssignmentId.value}` : ''}`
+      : ''
+    router.push(`/student/evaluation?session_id=${sessionId.value}${sourceQuery}`)
+  } catch (error) {
+    loader.close()
+    isFinishingTraining.value = false
     showToast('评估报告生成失败')
-  })
-  router.push(`/student/evaluation?session_id=${currentSessionId}&generating=1${sourceQuery}`)
+  }
 }
 
 const waitForEvaluationReport = async (targetSessionId: string, timeoutMs = 15000) => {
@@ -1365,7 +1223,6 @@ const handleFaceVerified = () => {
   }
   faceVerified.value = true
   faceTerminated.value = false
-  void maybeStartOpening()
 }
 
 const handleFaceFailed = (message: string) => {
@@ -1408,10 +1265,6 @@ const scrollToBottom = () => {
     }
   })
 }
-
-watch([faceVerified, showCaseBrief, isSessionBooting], () => {
-  void maybeStartOpening()
-})
 
 onMounted(fetchSessionData)
 </script>
@@ -2000,7 +1853,7 @@ onMounted(fetchSessionData)
   min-height: 0;
   overflow: hidden;
   font-family: 'PingFang SC', 'Microsoft YaHei', 'Inter', sans-serif;
-  background: var(--police-bg);
+  background: linear-gradient(180deg, #f7f9fd 0%, #f1f5fb 100%);
 }
 
 /* Compensate for the platform-wide desktop display scale so this fixed
@@ -2012,30 +1865,49 @@ onMounted(fetchSessionData)
 }
 
 .training-header {
-  min-height: 48px;
+  min-height: 64px;
   background: #fff;
-  border-bottom: 1px solid #e2e8f0;
-  box-shadow: none;
+  border-bottom: 1px solid #e7ebf1;
+  box-shadow: 0 4px 16px rgba(35, 56, 104, 0.04);
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 6px 20px;
+  padding: 10px 22px;
   flex-shrink: 0;
   min-width: 0;
   overflow: hidden;
 }
 
 .training-header__case {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
 }
 
-.training-header__label {
-  display: block;
-  font-size: 10px;
+.training-header__back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 14px;
   line-height: 1.2;
-  color: var(--police-text-muted);
+  padding: 0;
+}
+
+.training-header__back-link:hover:not(:disabled) {
+  color: #3566f6;
+}
+
+.training-header__back-link:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .training-header__title-row {
@@ -2052,19 +1924,19 @@ onMounted(fetchSessionData)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 16px;
-  font-weight: 700;
-  color: #1e293b;
+  font-size: 18px;
+  font-weight: 800;
+  color: #17213b;
 }
 
 .training-header__badge {
   flex-shrink: 0;
-  padding: 2px 8px;
-  border-radius: 4px;
-  background: #dcfce7;
-  color: #16a34a;
-  font-size: 11px;
-  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 7px;
+  background: #eef3ff;
+  color: #3566f6;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .training-header__assignment {
@@ -2074,15 +1946,15 @@ onMounted(fetchSessionData)
   min-width: 0;
   max-width: 100%;
   margin-top: 2px;
-  color: #64748b;
-  font-size: 11px;
-  font-weight: 700;
+  color: #6e7888;
+  font-size: 12px;
+  font-weight: 600;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
 .training-header__assignment span {
-  color: #1d4ed8;
+  color: #3566f6;
 }
 
 .training-header__right {
@@ -2094,7 +1966,7 @@ onMounted(fetchSessionData)
   flex: 0 1 auto;
   min-width: 0;
   max-width: 42%;
-  color: var(--police-text-muted);
+  color: #8b96aa;
   font-size: 12px;
 }
 
@@ -2104,11 +1976,11 @@ onMounted(fetchSessionData)
   overflow-wrap: anywhere;
   white-space: normal;
   line-height: 1.25;
-  padding: 3px 12px;
-  border: 1px solid #bfdbfe;
-  border-radius: 20px;
-  background: #eff6ff;
-  color: #2563eb;
+  padding: 4px 12px;
+  border: 1px solid #dbe5ff;
+  border-radius: 999px;
+  background: #eef3ff;
+  color: #3566f6;
   font-weight: 700;
 }
 
@@ -2128,7 +2000,7 @@ onMounted(fetchSessionData)
   display: flex;
   flex-direction: column;
   background: #fff;
-  border-right: 1px solid #e2e8f0;
+  border-right: 1px solid #e7ebf1;
   overflow: hidden;
   min-height: 0;
   flex-shrink: 0;
@@ -2145,10 +2017,10 @@ onMounted(fetchSessionData)
 .panel-section {
   margin: 10px 12px 0;
   padding: 14px 16px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  border: 1px solid #e8edf5;
+  border-radius: 8px;
   background: #fff;
-  box-shadow: 0 0 12px rgb(0 0 0 / 4%);
+  box-shadow: 0 2px 10px rgba(35, 56, 104, 0.05);
 }
 
 .panel-section:last-child {
@@ -2160,11 +2032,11 @@ onMounted(fetchSessionData)
 }
 
 .panel-section--secondary {
-  background: #fafbfc;
+  background: #fafbfd;
 }
 
 .panel-section--tertiary {
-  background: #f8fafc;
+  background: #f7f9fd;
 }
 
 .panel-title {
@@ -2172,52 +2044,52 @@ onMounted(fetchSessionData)
   align-items: center;
   gap: 6px;
   margin: 0 0 10px;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 700;
   line-height: 1.3;
-  color: #64748b;
+  color: #465062;
 }
 
 .stage-hero {
-  border-left: 3px solid #082a63;
-  border-radius: 0 10px 10px 0;
-  background: #e8eef7;
-  padding: 12px 14px;
+  border-left: 3px solid #3566f6;
+  border-radius: 0 8px 8px 0;
+  background: #eef3ff;
+  padding: 14px 14px;
 }
 
 .stage-tag {
   display: inline-block;
   padding: 3px 10px;
   border-radius: 999px;
-  background: #e8eef7;
-  color: #082a63;
+  background: #dfe7ff;
+  color: #3566f6;
   font-size: 12px;
   font-weight: 600;
 }
 
 .stage-name-text {
   margin-top: 8px;
-  font-size: 15px;
-  font-weight: 700;
+  font-size: 16px;
+  font-weight: 800;
   line-height: 1.4;
-  color: #1e293b;
+  color: #17213b;
 }
 
 .goal-label {
   margin-top: 12px;
   font-size: 12px;
-  color: #94a3b8;
+  color: #8b96aa;
 }
 
 .goal-text {
   margin-top: 4px;
   font-size: 13px;
   line-height: 1.6;
-  color: #475569;
+  color: #4a5467;
 }
 
 .stage-section--assessment .stage-hero {
-  border-left-color: #b45309;
+  border-left-color: #d78018;
   background: #fff7ed;
 }
 
@@ -2504,7 +2376,7 @@ onMounted(fetchSessionData)
 
 .case-ref-card {
   padding: 10px 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #e8edf5;
   border-radius: 8px;
   background: #fff;
 }
@@ -2523,13 +2395,13 @@ onMounted(fetchSessionData)
 }
 
 .info-label {
-  color: #94a3b8;
+  color: #8b96aa;
   flex-shrink: 0;
 }
 
 .info-value {
-  color: #1e293b;
-  font-weight: 600;
+  color: #17213b;
+  font-weight: 700;
   text-align: right;
 }
 
@@ -2543,28 +2415,28 @@ onMounted(fetchSessionData)
   border: none;
   border-top: 1px solid #eef2f7;
   background: transparent;
-  color: #2563eb;
+  color: #3566f6;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
 }
 
 .brief-link:hover {
-  color: #1d4ed8;
+  color: #2453d8;
 }
 
 .panel-actions {
   flex-shrink: 0;
   padding: 12px 16px;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid #e7ebf1;
   background: #fff;
 }
 
 .finish-btn {
   height: 36px;
   border-radius: 8px;
-  background: #0f1e3c !important;
-  border-color: #0f1e3c !important;
+  background: #031c50 !important;
+  border-color: #031c50 !important;
   font-size: 13px;
 }
 
@@ -3094,7 +2966,7 @@ onMounted(fetchSessionData)
   position: relative;
   flex: 1;
   min-width: 0;
-  background: #f0f4f8;
+  background: linear-gradient(180deg, #f4f7fc 0%, #eef3fb 100%);
 }
 
 .training-face-guard {
@@ -3103,6 +2975,10 @@ onMounted(fetchSessionData)
 }
 
 .training-face-guard.face-guard--monitor {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  z-index: 5;
   width: 260px;
   height: 112px;
   margin: 0;
@@ -3112,7 +2988,7 @@ onMounted(fetchSessionData)
 .scene-session-bar {
   padding: 6px 18px;
   background: #f8fafc;
-  border-bottom-color: #e2e8f0;
+  border-bottom-color: #e7ebf1;
 }
 
 .chat-messages {
@@ -3172,19 +3048,19 @@ onMounted(fetchSessionData)
 .msg-bubble {
   padding: 12px 17px;
   border-radius: 12px;
-  font-size: 17px;
+  font-size: 16px;
   line-height: 1.7;
 }
 
 .bubble-ai {
   background: #fff;
-  color: #1e293b;
+  color: #17213b;
   border-radius: 12px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 2px 10px rgba(35, 56, 104, 0.06);
 }
 
 .bubble-human {
-  background: #2563eb;
+  background: #3566f6;
   color: #fff;
   border-radius: 12px;
 }
@@ -3192,7 +3068,7 @@ onMounted(fetchSessionData)
 .chat-input-area {
   padding: 7px 16px 8px;
   background: #fff;
-  border-top-color: #e2e8f0;
+  border-top-color: #e7ebf1;
   flex: 0 0 auto;
 }
 

@@ -148,8 +148,6 @@ const normalizeRoleMemories = (person: any) => {
         certainty: String(item.certainty || 'source_supported'),
         source_refs: Array.isArray(item.source_refs) ? item.source_refs : [],
         event_id: String(item.event_id || ''),
-        is_scoring_fact: item.is_scoring_fact !== false,
-        disclosure_policy: String(item.disclosure_policy || 'answer_when_asked'),
       }))
   }
   return normalizeKnowledgeLedger(person).map((item: any, index: number) => ({
@@ -166,10 +164,6 @@ export const personToRoleCompact = (person: any, sceneBehaviorMode = '核查取�
   name: String(person?.name || '').trim(),
   role_type: String(person?.role_type || person?.role || '相关人员').trim() || '相关人员',
   status: String(person?.status || '正常').trim() || '正常',
-  init_emotion: person?.init_emotion,
-  init_trust: person?.init_trust,
-  init_risk: person?.init_risk,
-  init_expression_clarity: person?.init_expression_clarity,
   source_verification: String(person?.source_verification || '').trim(),
   source_refs: Array.isArray(person?.source_refs) ? person.source_refs : [],
   role_memories: normalizeRoleMemories(person),
@@ -198,7 +192,6 @@ export const expandRoleCompactToPerson = (compact: any, sceneBehaviorMode = '核
   const withheld = dedupeStringList(contents(['withheld']))
   const unknown = dedupeStringList(contents(['unknown', 'unresolved']))
   return {
-    ...compact,
     name: String(compact?.name || '').trim(),
     role_type: String(compact?.role_type || '相关人员').trim() || '相关人员',
     status: String(compact?.status || '正常').trim() || '正常',
@@ -216,15 +209,8 @@ export const expandRoleCompactToPerson = (compact: any, sceneBehaviorMode = '核
     cannot_answer: unknown,
     scene_behavior_mode: String(compact?.scene_behavior_mode || sceneBehaviorMode || '核查取证型').trim(),
     persona_autofill: false,
-    persona_source: String(compact?.persona_source || 'source_grounded_role_memory'),
-    persona_contract_version: String(compact?.persona_contract_version || 'role_memory_v2'),
-    soul_profile: compact?.soul_profile && typeof compact.soul_profile === 'object' ? compact.soul_profile : undefined,
-    persona_generation: compact?.persona_generation && typeof compact.persona_generation === 'object' ? compact.persona_generation : undefined,
-    current_goal: String(compact?.current_goal || compact?.soul_profile?.primary_need || '').trim(),
-    init_emotion: compact?.init_emotion,
-    init_trust: compact?.init_trust,
-    init_risk: compact?.init_risk,
-    init_expression_clarity: compact?.init_expression_clarity,
+    persona_source: 'source_grounded_role_memory',
+    persona_contract_version: 'role_memory_v2',
   }
 }
 
@@ -233,21 +219,6 @@ export const buildRoleCompactSummary = (compact: any) => {
   const known = ledger.filter((item: any) => !['unknown', 'unresolved'].includes(item.knowledge_mode)).length
   const unknown = ledger.filter((item: any) => ['unknown', 'unresolved'].includes(item.knowledge_mode)).length
   return [`认知条目 ${ledger.length}`, `可回答 ${known}`, `未知/未决 ${unknown}`]
-}
-
-export const normalizeSceneOpeningConfig = (value: any) => {
-  let source = value
-  if (typeof source === 'string') {
-    try { source = JSON.parse(source) } catch { source = {} }
-  }
-  source = source && typeof source === 'object' ? source : {}
-  return {
-    enabled: source.enabled !== false,
-    mode: source.mode === 'preset' ? 'preset' : 'dynamic',
-    speaker_role_ids: Array.isArray(source.speaker_role_ids) ? source.speaker_role_ids.slice(0, 3) : [],
-    director_note: String(source.director_note || ''),
-    preset_turns: Array.isArray(source.preset_turns) ? source.preset_turns : [],
-  }
 }
 
 export const listToTextarea = (value: any) => stringifyTextList(value)
