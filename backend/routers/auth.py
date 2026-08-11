@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import os
 import json
-import uuid
 from collections import Counter
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -13,7 +12,9 @@ from sqlalchemy.orm import Session
 import database
 import models
 import schemas
-from services.object_storage_service import MEDIA_BUCKET, build_object_key, guess_content_type, object_storage, upsert_media_asset, delete_media_assets
+from services.face_service import apply_prepared_profile, prepare_profile
+from services.object_storage_service import delete_media_assets
+from services.profile_image_service import MAX_AVATAR_BYTES, prepare_profile_image, store_user_avatar
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -26,8 +27,6 @@ SECRET_KEY = (
 )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "720"))
-PROFILE_AVATAR_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "profile_avatars")
-ALLOWED_PROFILE_AVATAR_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
 
 def write_account_audit(
@@ -570,46 +569,45 @@ async def upload_my_avatar(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    suffix = ALLOWED_PROFILE_AVATAR_TYPES.get(file.content_type or "")
-    if not suffix:
-        raise HTTPException(status_code=400, detail="头像仅支持 JPG、PNG 或 WebP 图片")
-
     content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="请选择头像图片")
-    if len(content) > 3 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="头像图片不能超过 3MB")
-
-    os.makedirs(PROFILE_AVATAR_DIR, exist_ok=True)
-    filename = f"user-{current_user.id}-{uuid.uuid4().hex}{suffix}"
-    file_path = os.path.join(PROFILE_AVATAR_DIR, filename)
-    with open(file_path, "wb") as avatar_file:
-        avatar_file.write(content)
-    stored = object_storage.put_file(
-        bucket=MEDIA_BUCKET,
-        object_key=build_object_key(f"avatars/{current_user.id}", filename),
-        source_path=file_path,
-        content_type=guess_content_type(filename, file.content_type),
-    )
-    upsert_media_asset(
-        db,
-        owner_type="user",
-        owner_key=current_user.id,
-        asset_kind="avatar",
-        stored=stored,
-        original_filename=file.filename or filename,
-        content_type=guess_content_type(filename, file.content_type),
-    )
-    try:
-        os.remove(file_path)
-    except FileNotFoundError:
-        pass
-    current_user.avatar_url = object_storage.url_for(stored)
-    current_user.updated_at = datetime.utcnow()
-    db.add(current_user)
+    prepared = prepare_profile_image(content, max_bytes=MAX_AVATAR_BYTES)
+    store_user_avatar(db, current_user, prepared, original_filename=file.filename or "avatar.jpg")
     db.commit()
     db.refresh(current_user)
     return current_user
+
+
+@router.post("/students/{student_id}/avatar", response_model=schemas.User)
+async def upload_student_avatar(
+    student_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_admin_user),
+):
+    student = db.query(models.User).filter(models.User.id == student_id, models.User.role == "student").first()
+    if not student:
+        raise HTTPException(status_code=404, detail="学员不存在")
+    prepared = prepare_profile_image(await file.read(), max_bytes=MAX_AVATAR_BYTES)
+    extraction = prepare_profile(prepared.content)
+    apply_prepared_profile(
+        db,
+        student,
+        prepared.content,
+        embedding=extraction.embedding,
+        quality=extraction.quality,
+        commit=False,
+    )
+    store_user_avatar(db, student, prepared, original_filename=file.filename or f"{student.username}.jpg")
+    write_account_audit(
+        db,
+        actor=current_user,
+        action="admin_update_student_avatar",
+        target_user=student,
+        detail={"username": student.username, "face_profile_synced": True},
+    )
+    db.commit()
+    db.refresh(student)
+    return student
 
 
 @router.post("/me/password")

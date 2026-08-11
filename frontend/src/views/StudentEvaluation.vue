@@ -25,6 +25,7 @@
       <el-button v-if="isVideoReport" plain size="small" :loading="loading" @click="refreshVideoReport">刷新报告</el-button>
       <el-button v-if="canResumeTraining" plain size="small" @click="resumeTraining">继续训练</el-button>
       <el-button v-if="isVideoReport" plain size="small" @click="router.push('/student/video-history')">实训记录</el-button>
+      <el-button v-else-if="isAdminTextReport" plain size="small" @click="router.push('/admin/text-sessions')">普通训练</el-button>
       <el-button v-else plain size="small" @click="router.push('/student/history')">训练历史</el-button>
       <el-button type="primary" size="small" @click="handleReportBack">{{ evaluationReturnLabel }}</el-button>
     </template>
@@ -256,6 +257,7 @@ const emptyState = ref({
 let evaluationPollTimer: number | null = null
 const assignmentContext = computed(() => sessionDetail.value?.assignment_context || null)
 const isAssignmentReport = computed(() => !isVideoReport.value && Boolean(assignmentContext.value || route.query.source === 'assignment'))
+const isAdminTextReport = computed(() => route.path.includes('/admin/text-sessions'))
 const isVideoReport = computed(() => {
   if (route.meta.reportKind === 'video') return true
   if (route.path.includes('/video-report/')) return true
@@ -263,14 +265,17 @@ const isVideoReport = computed(() => {
 })
 const isGeneratingReportRoute = computed(() => route.query.generating === '1')
 const evaluationReturnPath = computed(() => {
+  if (isAdminTextReport.value) return '/admin/text-sessions'
   if (isVideoReport.value) return '/student/video-history'
   return isAssignmentReport.value ? '/student/classes' : '/student/hall'
 })
 const evaluationReturnLabel = computed(() => {
+  if (isAdminTextReport.value) return '普通训练'
   if (isVideoReport.value) return '实训记录'
   return isAssignmentReport.value ? '班级作业' : '训练大厅'
 })
 const evaluationBreadcrumb = computed(() => {
+  if (isAdminTextReport.value) return '训练管理 / 普通训练 / 训练评估报告'
   if (isVideoReport.value) return '视频实训 / 训练评估报告 / 详情'
   return isAssignmentReport.value ? '班级作业 / 训练评估报告' : '训练历史 / 训练评估报告'
 })
@@ -387,7 +392,7 @@ const assessmentStats = computed(() => {
   const missed = items.filter((item: any) => item.status !== 'hit' && item.status !== 'partial').length
   return { total: items.length, hit, partial, missed }
 })
-const canResumeTraining = computed(() => !isVideoReport.value && sessionDetail.value?.status === 'active' && Number(sessionDetail.value?.id) > 0)
+const canResumeTraining = computed(() => !isAdminTextReport.value && !isVideoReport.value && sessionDetail.value?.status === 'active' && Number(sessionDetail.value?.id) > 0)
 const weighting = computed(() => report.value?.evaluation_meta?.weighting || {})
 const assessmentCompletion = computed(() => report.value?.evaluation_meta?.assessment_completion || {})
 const scoreCaps = computed(() => Array.isArray(report.value?.evaluation_meta?.score_caps?.caps) ? report.value.evaluation_meta.score_caps.caps : [])

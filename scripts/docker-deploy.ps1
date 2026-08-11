@@ -6,6 +6,7 @@ $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $Root
 
 . (Join-Path $Root "scripts\fix-terminal-env.ps1")
+. (Join-Path $Root "scripts\windows-process-utils.ps1")
 
 function Test-CommandExists {
     param([string]$Name)
@@ -23,18 +24,6 @@ function Read-DotEnvValue {
         }
     }
     return $Default
-}
-
-function Stop-PortListener {
-    param([int]$Port)
-    $procIds = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty OwningProcess -Unique
-    foreach ($procId in $procIds) {
-        if ($procId -and $procId -ne 0) {
-            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-            Write-Host "已释放端口 $Port（PID $procId）" -ForegroundColor DarkYellow
-        }
-    }
 }
 
 if (-not (Test-CommandExists "docker")) {

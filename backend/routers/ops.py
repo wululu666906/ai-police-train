@@ -17,6 +17,7 @@ import models
 import schemas
 from routers.auth import build_username_range, hash_password, require_maintainer_user
 from services.object_storage_service import delete_media_assets
+from services.tabular_import_service import ExcelImportError, parse_excel_table
 
 router = APIRouter(prefix="/ops", tags=["Ops"])
 
@@ -127,42 +128,20 @@ def parse_csv_like(content: bytes, delimiter: str | None = None) -> list[dict]:
     raise HTTPException(status_code=400, detail=f"无法解析文本表格文件：{last_error}")
 
 
-def xlsx_cell_value(cell: ET.Element, shared_strings: list[str], namespaces: dict[str, str]) -> str:
-    cell_type = cell.attrib.get("t")
-    if cell_type == "inlineStr":
-        return "".join(node.text or "" for node in cell.findall(".//main:t", namespaces))
-    value_node = cell.find("main:v", namespaces)
-    value = value_node.text if value_node is not None else ""
-    if cell_type == "s" and value:
-        try:
-            return shared_strings[int(value)]
-        except (ValueError, IndexError):
-            return ""
-    return value or ""
-
-
 def parse_xlsx(content: bytes) -> list[dict]:
-    namespaces = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
     try:
-        with zipfile.ZipFile(io.BytesIO(content)) as archive:
-            shared_strings: list[str] = []
-            if "xl/sharedStrings.xml" in archive.namelist():
-                root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
-                for item in root.findall("main:si", namespaces):
-                    shared_strings.append("".join(node.text or "" for node in item.findall(".//main:t", namespaces)))
-            sheet_name = next((name for name in archive.namelist() if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")), None)
-            if not sheet_name:
-                raise HTTPException(status_code=400, detail="Excel 文件中没有可读取的工作表")
-            sheet_root = ET.fromstring(archive.read(sheet_name))
-            rows: list[list[str]] = []
-            for row in sheet_root.findall(".//main:row", namespaces):
-                values = []
-                for cell in row.findall("main:c", namespaces):
-                    values.append(xlsx_cell_value(cell, shared_strings, namespaces))
-                rows.append(values)
-            return table_to_records(rows)
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="Excel 文件格式无效")
+        parsed = parse_excel_table(
+            content,
+            aliases=IMPORT_HEADER_ALIASES,
+            required_field="username",
+            allowed_fields=IMPORT_FIELDS,
+        )
+        return [
+            {key: value for key, value in record.items() if key != "sheet_name"}
+            for record in parsed.records
+        ]
+    except ExcelImportError as error:
+        raise HTTPException(status_code=400, detail=str(error))
 
 
 def parse_ods(content: bytes) -> list[dict]:

@@ -26,16 +26,28 @@
         <div class="grid gap-4" style="grid-template-columns: 110px 1fr auto auto;">
 
           <!-- 头像 -->
-          <div class="w-[110px] h-[110px] rounded-xl overflow-hidden flex-shrink-0 relative self-center"
-               style="background:linear-gradient(155deg,#0f2d6b 0%,#1a4fa0 50%,#2563eb 100%)">
-            <div class="absolute inset-0 flex items-center justify-center select-none">
+          <button
+            type="button"
+            class="student-avatar-editor w-[110px] h-[110px] rounded-xl overflow-hidden flex-shrink-0 relative self-center"
+            :disabled="uploadingAvatar"
+            title="更换学员头像"
+            @click="avatarInputRef?.click()"
+          >
+            <img v-if="studentAvatarUrl" :src="studentAvatarUrl" alt="学员头像" class="absolute inset-0 h-full w-full object-cover" />
+            <div v-else class="absolute inset-0 flex items-center justify-center select-none">
               <span class="text-white text-[38px] font-black" style="text-shadow:0 2px 10px rgba(0,0,0,.4)">
                 {{ studentInitials }}
               </span>
             </div>
             <div class="absolute inset-x-0 bottom-0 h-8"
                  style="background:linear-gradient(0deg,rgba(255,255,255,.15) 0%,transparent 100%)"></div>
-          </div>
+            <span class="student-avatar-editor__overlay">
+              <van-loading v-if="uploadingAvatar" size="18" color="#fff" />
+              <van-icon v-else name="photograph" size="18" />
+              <span>{{ uploadingAvatar ? '上传中' : '更换头像' }}</span>
+            </span>
+          </button>
+          <input ref="avatarInputRef" type="file" accept="image/jpeg,image/png,image/webp" hidden @change="handleStudentAvatarChange" />
 
           <!-- 姓名 + 描述 + 标签 -->
           <div class="min-w-0 self-center">
@@ -448,15 +460,21 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { showToast } from 'vant'
 import request from '../utils/request'
+import { resolveMediaUrl } from '../utils/media'
 
 // ─── 类型 ─────────────────────────────────────────────────────
 type SceneItem = {
   label: string; session_count: number; average_score: number | null
   status: string; latest_at?: string; scene_type?: string; score_delta?: number | null
 }
+type StudentUser = {
+  id: number; username: string; avatar_url?: string | null; real_name?: string | null
+  gender?: string | null; unit?: string | null; department?: string | null
+}
 type ProfileResponse = {
-  student: { id: number; username: string }
+  student: StudentUser
   summary: {
     level: string; summary_text: string
     total_sessions: number; finished_sessions: number
@@ -480,6 +498,9 @@ const setMainScrollable = inject<(v: boolean) => void>('setMainScrollable')
 const loading = ref(false)
 const pageError = ref('')
 const profile = ref<ProfileResponse | null>(null)
+const uploadingAvatar = ref(false)
+const avatarInputRef = ref<HTMLInputElement | null>(null)
+const avatarPreviewUrl = ref('')
 
 // ─── 工具 ─────────────────────────────────────────────────────
 const studentId = computed(() => Number(route.params.id || 0))
@@ -525,7 +546,47 @@ function sceneSubLabel(title: string): string {
 // ─── 学员基础信息 ─────────────────────────────────────────────
 const scoreDisplay = computed(() => fmt(profile.value?.summary?.average_score))
 const studentInitials = computed(() => String(profile.value?.student?.username || 'ST').trim().slice(0, 2).toUpperCase())
+const studentAvatarUrl = computed(() => avatarPreviewUrl.value || resolveMediaUrl(profile.value?.student?.avatar_url))
 const primarySceneLabel = computed(() => profile.value?.scene_performance?.[0]?.label || '综合训练单元')
+
+const clearAvatarPreview = () => {
+  if (avatarPreviewUrl.value) URL.revokeObjectURL(avatarPreviewUrl.value)
+  avatarPreviewUrl.value = ''
+}
+
+const handleStudentAvatarChange = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !studentId.value || !profile.value) return
+  const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
+  if (!allowedTypes.has(file.type)) {
+    showToast('仅支持 JPG、JPEG、PNG 或 WebP 图片')
+    return
+  }
+  if (file.size > 3 * 1024 * 1024) {
+    showToast('头像图片不能超过 3MB')
+    return
+  }
+  clearAvatarPreview()
+  avatarPreviewUrl.value = URL.createObjectURL(file)
+  uploadingAvatar.value = true
+  try {
+    const form = new FormData()
+    form.append('file', file)
+    const student = await request.post(`/auth/students/${studentId.value}/avatar`, form, {
+      timeout: 120000,
+      _skipErrorToast: true,
+    } as any) as StudentUser
+    profile.value.student = student
+    showToast({ type: 'success', message: '头像与人脸档案已同步更新' })
+  } catch (error: any) {
+    showToast(error?.response?.data?.detail || '头像上传失败')
+  } finally {
+    uploadingAvatar.value = false
+    clearAvatarPreview()
+  }
+}
 
 const sortedDims = computed(() =>
   [...(profile.value?.dimensions || [])].sort((a, b) => Number(b.score||0) - Number(a.score||0)))
@@ -654,7 +715,7 @@ const fetchProfile = async () => {
 }
 
 onMounted(()=>{ setMainScrollable?.(false); fetchProfile() })
-onUnmounted(()=>{ setMainScrollable?.(false) })
+onUnmounted(()=>{ setMainScrollable?.(false); clearAvatarPreview() })
 watch(()=>route.params.id, fetchProfile)
 </script>
 
@@ -663,6 +724,34 @@ watch(()=>route.params.id, fetchProfile)
   min-height: 100%;
   overflow: visible;
   padding-right: 4px;
+}
+
+.student-avatar-editor {
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  background: linear-gradient(155deg, #0f2d6b 0%, #1a4fa0 50%, #2563eb 100%);
+}
+
+.student-avatar-editor__overlay {
+  position: absolute;
+  inset: auto 0 0;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: #fff;
+  background: rgba(15, 35, 68, 0.78);
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.student-avatar-editor:hover .student-avatar-editor__overlay,
+.student-avatar-editor:focus-visible .student-avatar-editor__overlay,
+.student-avatar-editor:disabled .student-avatar-editor__overlay {
+  opacity: 1;
 }
 
 .student-profile-backbar {

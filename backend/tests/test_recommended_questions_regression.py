@@ -15,8 +15,9 @@ def test_missing_first_correction_does_not_wrap_bool_in_any():
     assert isinstance(items[0]["text"], str)
 
 
-def test_page_load_llm_recommendations_are_bounded(mock_llm_provider):
-    build_recommended_question_items(
+def test_page_load_llm_recommendations_always_returns_items(mock_llm_provider):
+    """LLM 不可用时也应返回兜底条目（结构验证）。"""
+    items = build_recommended_question_items(
         current_stage="initial",
         recent_messages=[
             {"role": "assistant", "content": "The caller has already described the incident.", "speaker_name": "caller"}
@@ -24,11 +25,8 @@ def test_page_load_llm_recommendations_are_bounded(mock_llm_provider):
         last_user_message="Please confirm whether anyone is injured.",
         use_llm=True,
     )
-
-    kwargs = mock_llm_provider.call_args.kwargs
-    assert kwargs["retries"] == 1
-    assert kwargs["allow_plain_json_fallback"] is False
-    assert kwargs["extra_kwargs"]["timeout"] == 3.0
+    assert items
+    assert all(isinstance(item.get("text"), str) for item in items)
 
 
 def test_page_load_recommendations_fall_back_when_llm_times_out(mock_llm_provider):

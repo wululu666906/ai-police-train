@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from .llm_provider import create_json_chat_completion, extract_json_payload, get_chat_model
-from .prompts.case_pipeline import ASSESSMENT_POINT_PROMPT
+from .prompts.assessment_point import ASSESSMENT_POINT_PROMPT
 from .scene_bucket_service import (
     BUCKET_LABELS,
     SCENE_BUCKETS,

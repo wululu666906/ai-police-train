@@ -1,7 +1,7 @@
 """Shared prompt modules, guardrails, and case-pipeline prompts."""
 
+from .assessment_point import ASSESSMENT_POINT_PROMPT
 from .case_pipeline import (
-    ASSESSMENT_POINT_PROMPT,
     COMPLETE_CASE_STORY_PROMPT,
     FACTS_ROLES_MEMORIES_PROMPT,
     OPENING_DIALOGUE_ADDENDUM,

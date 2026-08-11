@@ -16,7 +16,7 @@ from sqlalchemy import inspect, text
 import database
 import models
 from env_loader import load_backend_env
-from routers import auth, cases, classes, dashboard, face, knowledge, ops, speech, student, training, videos, video_training
+from routers import auth, cases, classes, dashboard, face, knowledge, ops, speech, student, student_imports, training, videos, video_training
 from services.face_service import warmup_face_engine_async
 from services.object_storage_service import LOCAL_OBJECT_ROOT
 from services.video_playback_service import schedule_existing_videos
@@ -155,6 +155,7 @@ def ensure_user_schema_compatibility():
             "avatar_url": "VARCHAR(300)",
             "display_name": "VARCHAR(80)",
             "real_name": "VARCHAR(80)",
+            "gender": "VARCHAR(20)",
             "phone": "VARCHAR(30)",
             "email": "VARCHAR(120)",
             "unit": "VARCHAR(120)",
@@ -544,6 +545,7 @@ app.include_router(video_training.router)
 app.include_router(face.router)
 app.include_router(speech.router)
 app.include_router(ops.router)
+app.include_router(student_imports.router)
 
 # 兼容 Docker 静态前端的 /api 前缀调用（frontend/.env.production 默认 VITE_API_URL=/api）
 app.include_router(auth.router, prefix="/api")
@@ -558,6 +560,7 @@ app.include_router(video_training.router, prefix="/api")
 app.include_router(face.router, prefix="/api")
 app.include_router(speech.router, prefix="/api")
 app.include_router(ops.router, prefix="/api")
+app.include_router(student_imports.router, prefix="/api")
 
 
 @app.get("/healthz")
@@ -726,6 +729,7 @@ def serve_vue_app(catchall: str):
         "face",
         "speech",
         "ops",
+        "student-imports",
         "static",
     }
     if first_segment in api_like_prefixes:

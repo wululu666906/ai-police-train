@@ -9,12 +9,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 import database
 import models
 import schemas
-from routers.auth import get_current_user
+from routers.auth import get_current_user, require_admin_user
 from services.ai_service import (
     _build_available_actions,
     _build_feedback,
@@ -167,17 +168,50 @@ def _serialize_artifact(db: Session, artifact: models.TrainingSessionArtifact) -
 
 
 def _get_accessible_training_session(db: Session, session_id: int, current_user: models.User) -> models.TrainingSession:
-    session = (
-        db.query(models.TrainingSession)
+    return _get_readable_training_session(db, session_id, current_user)
+
+
+def _managed_student_ids_subquery(db: Session, admin_id: int):
+    return (
+        db.query(models.ClassMembership.user_id)
+        .join(models.TrainingClass, models.TrainingClass.id == models.ClassMembership.class_id)
         .filter(
-            models.TrainingSession.id == session_id,
-            models.TrainingSession.user_id == current_user.id,
+            models.TrainingClass.created_by == admin_id,
+            models.ClassMembership.role == "student",
+            models.ClassMembership.status == "active",
         )
-        .first()
+        .distinct()
     )
+
+
+def _is_managed_student(db: Session, admin_id: int, student_id: int) -> bool:
+    return (
+        _managed_student_ids_subquery(db, admin_id)
+        .filter(models.ClassMembership.user_id == student_id)
+        .first()
+        is not None
+    )
+
+
+def _format_utc_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, str):
+        return value
+    if getattr(value, "tzinfo", None):
+        return value.isoformat()
+    return f"{value.isoformat()}+00:00"
+
+
+def _get_readable_training_session(db: Session, session_id: int, current_user: models.User) -> models.TrainingSession:
+    session = db.query(models.TrainingSession).filter(models.TrainingSession.id == session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found or not accessible")
-    return session
+    if session.user_id == current_user.id:
+        return session
+    if current_user.role == "admin" and _is_managed_student(db, current_user.id, session.user_id):
+        return session
+    raise HTTPException(status_code=404, detail="Session not found or not accessible")
 
 
 def _clamp_score(value, fallback):
@@ -814,18 +848,20 @@ def get_session(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    session = get_owned_session(db, session_id, current_user.id)
+    session = _get_readable_training_session(db, session_id, current_user)
     if assignment_id is not None:
         linked_submission = (
             db.query(models.AssignmentSubmission)
             .filter(
                 models.AssignmentSubmission.assignment_id == assignment_id,
                 models.AssignmentSubmission.training_session_id == session.id,
-                models.AssignmentSubmission.user_id == current_user.id,
+                models.AssignmentSubmission.user_id == session.user_id,
             )
             .first()
         )
         if not linked_submission:
+            raise HTTPException(status_code=404, detail="该报告不属于当前班级作业")
+        if current_user.role != "admin" and linked_submission.user_id != current_user.id:
             raise HTTPException(status_code=404, detail="该报告不属于当前班级作业")
 
     scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
@@ -864,7 +900,7 @@ def get_session(
     repaired_revealed_info = json.dumps(runtime_state.get("revealed_info") or [], ensure_ascii=False)
 
     if not for_report and session.status == "finished" and session.evaluation_result:
-        refreshed_report = evaluate_session(db, session.id, current_user.id)
+        refreshed_report = evaluate_session(db, session.id, session.user_id)
         if isinstance(refreshed_report, dict) and not refreshed_report.get("error"):
             session.evaluation_result = json.dumps(refreshed_report, ensure_ascii=False)
             db.commit()
@@ -874,7 +910,7 @@ def get_session(
         try:
             repaired_payload = repair_payload(json.loads(repaired_evaluation_result))
             if for_report and not is_current_evaluation_report(repaired_payload):
-                refreshed_report = evaluate_session(db, session.id, current_user.id, force_recompute=True)
+                refreshed_report = evaluate_session(db, session.id, session.user_id, force_recompute=True)
                 if isinstance(refreshed_report, dict) and not refreshed_report.get("error"):
                     repaired_payload = refreshed_report
                     session.evaluation_result = json.dumps(refreshed_report, ensure_ascii=False)
@@ -1189,4 +1225,161 @@ def delete_active_training_sessions(
         "message": "进行中的训练记录已删除",
         "deleted_count": len(session_ids),
         "session_ids": session_ids,
+    }
+
+
+@router.get("/admin/sessions")
+def admin_list_text_sessions(
+    username: str | None = None,
+    status: str | None = None,
+    keyword: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_admin_user),
+):
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 50)
+    offset = (page - 1) * page_size
+    normalized_status = (status or "").strip().lower()
+    if normalized_status and normalized_status not in {"active", "evaluating", "finished"}:
+        raise HTTPException(status_code=400, detail="Unsupported status filter")
+
+    managed_student_ids = [row[0] for row in _managed_student_ids_subquery(db, current_user.id).all()]
+    if not managed_student_ids:
+        return {
+            "items": [],
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+            "active_count": 0,
+            "evaluating_count": 0,
+            "finished_count": 0,
+        }
+
+    activity_subquery = (
+        db.query(
+            models.Message.session_id.label("session_id"),
+            func.sum(case((models.Message.role == "user", 1), else_=0)).label("user_message_count"),
+            func.count(models.Message.id).label("message_count"),
+        )
+        .group_by(models.Message.session_id)
+        .subquery()
+    )
+
+    base_query = (
+        db.query(
+            models.TrainingSession.id.label("id"),
+            models.TrainingSession.user_id.label("user_id"),
+            models.User.username.label("username"),
+            models.TrainingSession.status.label("status"),
+            models.TrainingSession.evaluation_result.label("evaluation_result"),
+            models.TrainingSession.created_at.label("created_at"),
+            models.TrainingSession.training_started_at.label("training_started_at"),
+            models.TrainingSession.training_finished_at.label("training_finished_at"),
+            models.Scene.name.label("scene_name"),
+            models.Scene.difficulty.label("difficulty"),
+            models.Case.title.label("case_title"),
+            models.Case.case_type.label("case_type"),
+            func.coalesce(activity_subquery.c.message_count, 0).label("message_count"),
+            func.coalesce(activity_subquery.c.user_message_count, 0).label("user_message_count"),
+        )
+        .join(models.User, models.User.id == models.TrainingSession.user_id)
+        .outerjoin(activity_subquery, activity_subquery.c.session_id == models.TrainingSession.id)
+        .outerjoin(models.Scene, models.Scene.id == models.TrainingSession.scene_id)
+        .outerjoin(models.Case, models.Case.id == models.Scene.case_id)
+        .filter(models.TrainingSession.user_id.in_(managed_student_ids))
+    )
+
+    if username:
+        username_keyword = username.strip()
+        if username_keyword:
+            base_query = base_query.filter(models.User.username.contains(username_keyword))
+
+    if keyword:
+        content_keyword = keyword.strip()
+        if content_keyword:
+            base_query = base_query.filter(
+                or_(
+                    models.Case.title.contains(content_keyword),
+                    models.Scene.name.contains(content_keyword),
+                    models.Case.case_type.contains(content_keyword),
+                )
+            )
+
+    start_dt = None
+    end_dt = None
+    if start_date:
+        try:
+            start_dt = datetime.strptime(start_date.strip(), "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid start_date") from exc
+    if end_date:
+        try:
+            end_dt = datetime.strptime(end_date.strip(), "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid end_date") from exc
+    if start_dt is not None:
+        base_query = base_query.filter(models.TrainingSession.created_at >= start_dt)
+    if end_dt is not None:
+        base_query = base_query.filter(models.TrainingSession.created_at <= end_dt)
+
+    status_counts = {
+        "active": base_query.filter(models.TrainingSession.status == "active").count(),
+        "evaluating": base_query.filter(models.TrainingSession.status == "evaluating").count(),
+        "finished": base_query.filter(models.TrainingSession.status == "finished").count(),
+    }
+
+    filtered_query = base_query
+    if normalized_status:
+        filtered_query = base_query.filter(models.TrainingSession.status == normalized_status)
+
+    total = filtered_query.count()
+    rows = (
+        filtered_query
+        .order_by(models.TrainingSession.created_at.desc(), models.TrainingSession.id.desc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+
+    items = []
+    for row in rows:
+        evaluation_result = safe_json_loads(row.evaluation_result, {})
+        total_score = evaluation_result.get("total_score") if isinstance(evaluation_result, dict) else None
+        display_time = (
+            row.training_finished_at
+            if row.status == "finished" and row.training_finished_at
+            else row.training_started_at or row.created_at
+        )
+        items.append(
+            {
+                "id": row.id,
+                "user_id": row.user_id,
+                "username": row.username or "",
+                "case_title": repair_text(row.case_title) if row.case_title else "未知案件",
+                "case_type": repair_text(row.case_type) if row.case_type else "未分类",
+                "scene_name": repair_text(row.scene_name) if row.scene_name else "未知场景",
+                "difficulty": repair_text(row.difficulty) if row.difficulty else "中等",
+                "status": row.status,
+                "message_count": int(row.message_count or 0),
+                "user_message_count": int(row.user_message_count or 0),
+                "total_score": total_score,
+                "created_at": _format_utc_datetime(row.created_at),
+                "training_started_at": _format_utc_datetime(row.training_started_at),
+                "training_finished_at": _format_utc_datetime(row.training_finished_at),
+                "display_time": _format_utc_datetime(display_time),
+            }
+        )
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "active_count": status_counts["active"],
+        "evaluating_count": status_counts["evaluating"],
+        "finished_count": status_counts["finished"],
     }

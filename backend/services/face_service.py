@@ -573,26 +573,52 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     return float(np.dot(a, b) / denom)
 
 
-def register_profile(db: Session, student: models.User, raw: bytes) -> models.FaceProfile:
+def prepare_profile(raw: bytes) -> FaceExtraction:
     extraction = extract_face(raw)
     quality_payload = _merge_client_quality(extraction.quality, None)
     quality_reason = _quality_reason(quality_payload)
     if quality_reason:
         raise HTTPException(status_code=422, detail=quality_reason[1])
+    return extraction
+
+
+def register_profile(db: Session, student: models.User, raw: bytes) -> models.FaceProfile:
+    extraction = prepare_profile(raw)
+    return apply_prepared_profile(
+        db,
+        student,
+        raw,
+        embedding=extraction.embedding,
+        quality=extraction.quality,
+        commit=True,
+    )
+
+
+def apply_prepared_profile(
+    db: Session,
+    student: models.User,
+    raw: bytes,
+    *,
+    embedding: list[float],
+    quality: dict[str, Any],
+    commit: bool = False,
+) -> models.FaceProfile:
+    """Persist a previously validated face while letting batch callers own the transaction."""
     image_url, stored = save_profile_image(raw, student.id)
     profile = db.query(models.FaceProfile).filter(models.FaceProfile.student_id == student.id).first()
     if not profile:
         profile = models.FaceProfile(student_id=student.id)
-    profile.face_embedding = json.dumps(extraction.embedding)
+    profile.face_embedding = json.dumps(embedding)
     profile.face_image_url = image_url
-    profile.embeddings_json = json.dumps([extraction.embedding], ensure_ascii=False)
+    profile.embeddings_json = json.dumps([embedding], ensure_ascii=False)
     profile.sample_images_json = json.dumps([image_url], ensure_ascii=False)
-    profile.quality_json = json.dumps([extraction.quality], ensure_ascii=False)
+    profile.quality_json = json.dumps([quality], ensure_ascii=False)
     profile.embedding_model = f"insightface:{EMBEDDING_MODEL}"
     profile.updated_at = datetime.utcnow()
+    student.avatar_url = image_url
+    student.updated_at = datetime.utcnow()
+    db.add(student)
     db.add(profile)
-    db.commit()
-    db.refresh(profile)
     upsert_media_asset(
         db,
         owner_type="face_profile",
@@ -602,6 +628,11 @@ def register_profile(db: Session, student: models.User, raw: bytes) -> models.Fa
         original_filename=f"student_{student.id}.jpg",
         content_type="image/jpeg",
     )
+    if commit:
+        db.commit()
+        db.refresh(profile)
+    else:
+        db.flush()
     return profile
 
 

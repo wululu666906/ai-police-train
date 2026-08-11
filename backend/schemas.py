@@ -267,6 +267,7 @@ class UserBase(BaseModel):
     avatar_url: Optional[str] = None
     display_name: Optional[str] = None
     real_name: Optional[str] = None
+    gender: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     unit: Optional[str] = None
@@ -397,6 +398,51 @@ class BatchStudentDeleteResponse(BaseModel):
 class StudentImportCreateRequest(BaseModel):
     usernames: List[str]
     password: str
+
+
+class StudentImportItemUpdate(BaseModel):
+    student_no: Optional[str] = None
+    real_name: Optional[str] = None
+    gender: Optional[str] = None
+    unit: Optional[str] = None
+    department: Optional[str] = None
+    class_name: Optional[str] = None
+    replace_face: bool = True
+    replace_class: bool = True
+
+
+class StudentImportItemPreview(BaseModel):
+    id: int
+    row_number: int
+    student_no: str = ""
+    matched_user_id: Optional[int] = None
+    is_new: bool = False
+    data: Dict[str, Any] = {}
+    source_kind: str = "roster"
+    errors: List[str] = []
+    warnings: List[str] = []
+    has_photo: bool = False
+    photo_url: Optional[str] = None
+    replace_face: bool = True
+    replace_class: bool = True
+    status: str = "pending"
+    result: Optional[Dict[str, Any]] = None
+
+
+class StudentImportPreviewResponse(BaseModel):
+    batch_id: str
+    source_mode: str
+    source_name: Optional[str] = None
+    status: str
+    summary: Dict[str, int] = {}
+    items: List[StudentImportItemPreview] = []
+
+
+class StudentImportCommitResponse(BaseModel):
+    batch_id: str
+    status: str
+    summary: Dict[str, int] = {}
+    items: List[StudentImportItemPreview] = []
 
 
 class OpsAccountCreate(BaseModel):

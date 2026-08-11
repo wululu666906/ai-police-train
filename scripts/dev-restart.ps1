@@ -19,33 +19,10 @@ $OpsFrontendLog = Join-Path $LogsRoot "dev-ops-frontend.log"
 $OpsFrontendErrLog = Join-Path $LogsRoot "dev-ops-frontend.err.log"
 
 . (Join-Path $Root "scripts\fix-terminal-env.ps1")
+. (Join-Path $Root "scripts\windows-process-utils.ps1")
 
 foreach ($name in @("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")) {
     Remove-Item "Env:$name" -ErrorAction SilentlyContinue
-}
-
-function Stop-PortListener {
-    param([int]$Port)
-    $procIds = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty OwningProcess -Unique
-    foreach ($procId in $procIds) {
-        if ($procId -and $procId -ne 0) {
-            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-            Write-Host "已停止端口 $Port 上的进程 PID $procId" -ForegroundColor DarkYellow
-        }
-    }
-}
-
-function Wait-PortReleased {
-    param([int]$Port, [int]$Seconds = 15)
-    for ($i = 0; $i -lt $Seconds; $i++) {
-        $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-        if (-not $listener) {
-            return $true
-        }
-        Start-Sleep -Seconds 1
-    }
-    return $false
 }
 
 function Wait-HttpOk {
@@ -82,20 +59,22 @@ function Start-HiddenNativeProcess {
 }
 
 function Stop-BackendDevProcesses {
-    try {
-        $processes = Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
-            $_.CommandLine -like "*uvicorn main:app*" -and
-            $_.CommandLine -like "*--port 8000*" -and
-            $_.CommandLine -notlike "*Get-CimInstance*"
-        }
-    } catch {
-        Write-Host "无权限枚举后端开发进程，已跳过精确清理；端口清理仍会继续。" -ForegroundColor Yellow
-        return
+    $snapshot = Get-WindowsProcessSnapshot
+    $processes = $snapshot | Where-Object {
+        ($_.CommandLine -like "*uvicorn main:app*" -and $_.CommandLine -like "*--port 8000*") -or
+        ($_.CommandLine -like "*$PythonExe*" -and $_.CommandLine -like "*multiprocessing.spawn*")
+    } | Where-Object {
+        $_.CommandLine -notlike "*Get-CimInstance*"
     }
     foreach ($proc in $processes) {
         if ($proc.ProcessId -and $proc.ProcessId -ne $PID) {
-            Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
-            Write-Host "已停止后端开发进程 PID $($proc.ProcessId)" -ForegroundColor DarkYellow
+            $result = Stop-WindowsProcessTree -RootProcessId $proc.ProcessId -ProcessSnapshot $snapshot
+            if ($result.StoppedIds.Count -gt 0) {
+                Write-Host "已停止后端开发进程树 PID $($result.StoppedIds -join ', ')" -ForegroundColor DarkYellow
+            }
+            foreach ($failure in $result.Failures) {
+                Write-Host "停止后端开发进程 PID $($failure.ProcessId) 失败: $($failure.Message)" -ForegroundColor Red
+            }
         }
     }
 }
@@ -118,17 +97,18 @@ if (-not $HasBundledNode) {
     exit 1
 }
 
+Stop-BackendDevProcesses
 Stop-PortListener 8000
 Stop-PortListener 5556
 Stop-PortListener 6666
 Stop-PortListener 6670
 Stop-PortListener 5175
-Stop-BackendDevProcesses
 foreach ($port in @(8000, 5556, 6666, 6670, 5175)) {
     if (-not (Wait-PortReleased -Port $port)) {
         $ownerIds = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
             Select-Object -ExpandProperty OwningProcess -Unique
         Write-Host "端口 $port 未释放，残留 PID: $($ownerIds -join ', ')" -ForegroundColor Red
+        Write-PortListenerDiagnostics -Port $port
         exit 1
     }
 }

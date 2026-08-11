@@ -211,7 +211,7 @@ const navGroups: AdminNavGroup[] = [
     label: '训练管理',
     icon: 'todo-list-o',
     children: [
-      { name: 'cases', label: '普通训练', shortLabel: '普通训练' },
+      { name: 'text-sessions', label: '普通训练', shortLabel: '普通训练' },
       { name: 'video-sessions', label: '视频训练记录', shortLabel: '视频记录' },
     ],
   },
@@ -259,6 +259,7 @@ watch(
     menuOpen.value = false
 
     if (val.includes('/dashboard')) active.value = 'dashboard'
+    else if (val.includes('/text-sessions')) active.value = 'text-sessions'
     else if (val.includes('/cases')) active.value = 'cases'
     else if (val.includes('/videos')) active.value = 'videos'
     else if (val.includes('/video-sessions')) active.value = 'video-sessions'

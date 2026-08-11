@@ -1,4 +1,7 @@
-"""Prompts aligned with the platform case-generation flowchart."""
+"""Prompts aligned with the platform case-generation flowchart.
+
+考察点提示词已独立到 prompts/assessment_point.py。
+"""
 
 from .guardrails import ADMIN_JSON_GUARDRAILS, DIALOGUE_ROLE_GUARDRAILS
 
@@ -50,16 +53,6 @@ dispatch_brief（接警可知）、first_impression（80-160字入场第一眼�
 
 {ADMIN_JSON_GUARDRAILS}
 输出 JSON：{{"blueprints":[{{"scene_name":"","training_goal":"","start_state":"","completion_criteria":[],"end_prompt":"","dispatch_brief":"","first_impression":"","roles":[],"fact_ids":[],"stages":[{{"stage_name":"","stage_goal":""}}]}}]}}
-"""
-
-# 考察点生成（二合一：直接按场景目标 + 完整剧情生成，不分桶编排）
-ASSESSMENT_POINT_PROMPT = f"""你是公安教官。根据【完整案件剧情】和【本场景训练目标】直接生成 4-6 条考察点。
-
-字段：label≤20字；content 80-200字，末尾「怎样算完成：」；category 仅 procedure|risk|evidence。
-紧扣本案与本场景环节；禁止无难度表层题；不得要求材料不存在的情节。
-
-{ADMIN_JSON_GUARDRAILS}
-输出 JSON：{{"assessment_points":[{{"label":"","content":"","category":"procedure","required":true,"weight":12,"keywords":[],"knowledge_refs":[]}}]}}
 """
 
 # G → H: 角色读取信息来源后回复（训练对话角色开场/对话共用）

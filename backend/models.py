@@ -16,6 +16,7 @@ class User(Base):
     avatar_url = Column(String(300), nullable=True)
     display_name = Column(String(80), nullable=True)
     real_name = Column(String(80), nullable=True)
+    gender = Column(String(20), nullable=True)
     phone = Column(String(30), nullable=True)
     email = Column(String(120), nullable=True)
     unit = Column(String(120), nullable=True)
@@ -400,6 +401,49 @@ class ClassMembership(Base):
 
     classroom = relationship("TrainingClass", back_populates="members")
     user = relationship("User")
+
+
+class StudentImportBatch(Base):
+    __tablename__ = "student_import_batches"
+
+    id = Column(String(64), primary_key=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    source_mode = Column(String(20), nullable=False)
+    source_name = Column(String(255), nullable=True)
+    status = Column(String(20), nullable=False, default="preview", index=True)
+    summary_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    items = relationship("StudentImportItem", back_populates="batch", cascade="all, delete-orphan")
+
+
+class StudentImportItem(Base):
+    __tablename__ = "student_import_items"
+    __table_args__ = (UniqueConstraint("batch_id", "row_number", name="uq_student_import_batch_row"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    batch_id = Column(String(64), ForeignKey("student_import_batches.id"), nullable=False, index=True)
+    row_number = Column(Integer, nullable=False)
+    student_no = Column(String(50), nullable=True, index=True)
+    matched_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    data_json = Column(Text, nullable=False, default="{}")
+    errors_json = Column(Text, nullable=False, default="[]")
+    warnings_json = Column(Text, nullable=False, default="[]")
+    photo_path = Column(String(500), nullable=True)
+    photo_filename = Column(String(255), nullable=True)
+    face_embedding_json = Column(Text, nullable=True)
+    face_quality_json = Column(Text, nullable=True)
+    replace_face = Column(Boolean, nullable=False, default=True)
+    replace_class = Column(Boolean, nullable=False, default=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    result_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    batch = relationship("StudentImportBatch", back_populates="items")
+    matched_user = relationship("User")
 
 
 class TrainingAssignment(Base):

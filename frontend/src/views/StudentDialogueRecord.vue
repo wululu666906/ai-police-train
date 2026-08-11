@@ -1,9 +1,9 @@
 <template>
-  <div class="dialogue-record-page">
+  <div class="dialogue-record-page" :class="{ 'dialogue-record-page--admin': isAdminView }">
     <header class="record-topbar">
       <button type="button" class="back-button" @click="goBack">
         <van-icon name="arrow-left" />
-        返回训练历史
+        {{ isAdminView ? '返回普通训练' : '返回训练历史' }}
       </button>
 
       <div class="record-heading">
@@ -17,12 +17,12 @@
           v-if="sessionDetail?.status === 'finished'"
           type="button"
           class="action-button action-button--primary"
-          @click="router.push(`/student/evaluation?session_id=${sessionId}`)"
+          @click="openReport"
         >
           查看报告
         </button>
         <button
-          v-else-if="sessionDetail?.status === 'active'"
+          v-else-if="sessionDetail?.status === 'active' && !isAdminView"
           type="button"
           class="action-button action-button--primary"
           @click="router.push(`/student/training/${sessionId}`)"
@@ -147,8 +147,10 @@ const sessionDetail = ref<any>(null)
 const scrollContainer = ref<HTMLElement | null>(null)
 const failedAvatarUrls = ref<Set<string>>(new Set())
 
+const isAdminView = computed(() => route.path.includes('/admin/text-sessions'))
+
 const sessionId = computed(() => {
-  const raw = route.params.id
+  const raw = route.params.sessionId ?? route.params.id
   const value = Number(Array.isArray(raw) ? raw[0] : raw)
   return Number.isFinite(value) && value > 0 ? value : null
 })
@@ -236,7 +238,16 @@ const fetchSessionDetail = async () => {
 }
 
 const goBack = () => {
-  router.push('/student/history')
+  router.push(isAdminView.value ? '/admin/text-sessions' : '/student/history')
+}
+
+const openReport = () => {
+  if (!sessionId.value) return
+  if (isAdminView.value) {
+    router.push(`/admin/text-sessions/${sessionId.value}/report`)
+    return
+  }
+  router.push(`/student/evaluation?session_id=${sessionId.value}`)
 }
 
 const getInitial = (name: string) => {
@@ -311,6 +322,15 @@ onMounted(fetchSessionDetail)
   overflow: hidden;
   background: #f1f5f9;
   color: #0f172a;
+}
+
+.dialogue-record-page--admin {
+  width: 100%;
+  height: 100%;
+  min-height: calc(100vh - 140px);
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
 }
 
 .record-topbar {

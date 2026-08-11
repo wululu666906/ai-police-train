@@ -301,71 +301,11 @@
       </div>
     </van-popup>
 
-    <!-- 弹窗：名单导入 -->
-    <van-popup
-      v-model:show="showImportPopup"
-      teleport="body"
-      :style="{ width: 'min(520px, 96vw)', borderRadius: '16px', overflow: 'hidden' }"
-      class="flex flex-col"
-    >
-      <div class="flex h-14 items-center justify-between border-b border-slate-100 px-5">
-        <h3 class="font-bold text-slate-800">名单导入开户</h3>
-        <van-icon name="cross" class="cursor-pointer text-slate-400" @click="showImportPopup = false" />
-      </div>
-      <div class="overflow-y-auto p-5 space-y-4" style="max-height: 80vh">
-        <div class="rounded-xl bg-slate-50 border border-slate-100 p-4 text-sm text-slate-500 leading-7">
-          支持 <code>xlsx / csv</code>，优先识别 <code>学号</code>、<code>username</code>、<code>账号</code>、<code>account</code> 列；若无表头则读取第一列。
-        </div>
-
-        <div class="flex items-center gap-3">
-          <input ref="fileInputRef" type="file" accept=".xlsx,.csv" class="hidden" @change="handleFileChange" />
-          <van-button plain class="!rounded-[6px] !border-slate-200 !text-slate-600 flex-1" icon="description" @click="chooseFile">
-            {{ importFileName || '选择名单文件' }}
-          </van-button>
-          <van-button plain size="small" class="!rounded-[6px] !border-slate-200 !text-slate-500 shrink-0" @click="downloadImportTemplate">
-            下载模板
-          </van-button>
-          <van-button v-if="importFileName" plain size="small" class="!rounded-[6px] !border-slate-200 !text-slate-400 shrink-0" @click="clearImportFile">
-            清空
-          </van-button>
-        </div>
-
-        <div class="field-block">
-          <label class="field-label">导入初始密码</label>
-          <input v-model.trim="importForm.password" type="text" class="field-input" placeholder="请输入导入账号统一初始密码" />
-        </div>
-
-        <div class="rounded-xl bg-slate-50 border border-slate-100 p-4">
-          <div class="flex items-center justify-between gap-3">
-            <div class="text-sm font-bold text-slate-700">名单预览</div>
-            <div v-if="importPreviewList.length" class="text-xs text-slate-400">
-              有效 {{ importSummary.validCount }} 条，去重 {{ importSummary.duplicateCount }} 条
-            </div>
-          </div>
-          <div class="mt-2 text-sm text-slate-500 leading-7">
-            <template v-if="importError">{{ importError }}</template>
-            <template v-else-if="importPreviewList.length">
-              <div>识别到 {{ importPreviewList.length }} 个账号：</div>
-              <div class="mt-2 flex flex-wrap gap-2">
-                <span v-for="item in importPreviewVisibleList" :key="item" class="preview-chip">{{ item }}</span>
-              </div>
-              <div v-if="importPreviewHiddenCount > 0" class="mt-2 text-xs text-slate-400">
-                还有 {{ importPreviewHiddenCount }} 个已识别，可直接导入。
-              </div>
-            </template>
-            <template v-else>请选择名单文件后查看预览。</template>
-          </div>
-        </div>
-
-        <div v-if="lastImportSummary.totalRows > 0" class="rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs text-slate-500">
-          上次导入：原始 {{ lastImportSummary.totalRows }} 行，识别 {{ lastImportSummary.validCount }} 个，去重 {{ lastImportSummary.duplicateCount }} 个，创建 {{ lastCreateResult.created_count }} 个，跳过 {{ lastCreateResult.skipped_count }} 个。
-        </div>
-
-        <van-button type="primary" class="!bg-[#1D3557] !border-none !rounded-[6px] w-full" :loading="importing" @click="importStudents">
-          导入并开通账号
-        </van-button>
-      </div>
-    </van-popup>
+    <StudentImportDialog
+      v-if="showImportPopup"
+      @close="showImportPopup = false"
+      @synced="handleImportSynced"
+    />
 
     <van-popup
       v-model:show="showClassManager"
@@ -430,8 +370,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import * as XLSX from 'xlsx'
 import { showConfirmDialog, showToast } from 'vant'
+import StudentImportDialog from '../components/students/StudentImportDialog.vue'
 import request from '../utils/request'
 
 const route = useRoute()
@@ -439,7 +379,6 @@ const router = useRouter()
 const loading = ref(false)
 const creating = ref(false)
 const deleting = ref(false)
-const importing = ref(false)
 const classSyncing = ref(false)
 const searchText = ref('')
 const selectedGap = ref('')
@@ -449,10 +388,6 @@ const students = ref<any[]>([])
 const classroomList = ref<any[]>([])
 const selectedClassFilter = ref<'all' | 'unassigned' | number>('all')
 const lastCreatePassword = ref('')
-const fileInputRef = ref<HTMLInputElement | null>(null)
-const importFileName = ref('')
-const importedUsernames = ref<string[]>([])
-const importError = ref('')
 const pageError = ref('')
 const previewLimit = 12
 const showBatchPopup = ref(false)
@@ -468,10 +403,6 @@ const form = reactive({
   password: '123456',
 })
 
-const importForm = reactive({
-  password: '123456',
-})
-
 const lastCreateResult = reactive({
   created_count: 0,
   skipped_count: 0,
@@ -484,18 +415,6 @@ const lastDeleteResult = reactive({
   skipped_count: 0,
   deleted_usernames: [] as string[],
   skipped_usernames: [] as string[],
-})
-
-const importSummary = reactive({
-  totalRows: 0,
-  validCount: 0,
-  duplicateCount: 0,
-})
-
-const lastImportSummary = reactive({
-  totalRows: 0,
-  validCount: 0,
-  duplicateCount: 0,
 })
 
 const buildUsername = (template: string, seqNo: number) => {
@@ -535,11 +454,8 @@ const previewList = computed(() => {
   return list
 })
 
-const importPreviewList = computed(() => importedUsernames.value)
 const previewVisibleList = computed(() => previewList.value.slice(0, previewLimit))
 const previewHiddenCount = computed(() => Math.max(previewList.value.length - previewVisibleList.value.length, 0))
-const importPreviewVisibleList = computed(() => importPreviewList.value.slice(0, previewLimit))
-const importPreviewHiddenCount = computed(() => Math.max(importPreviewList.value.length - importPreviewVisibleList.value.length, 0))
 
 const studentInClass = (student: any, classId: number) =>
   Array.isArray(student?.classes) && student.classes.some((item: any) => Number(item.id) === Number(classId) && item.status !== 'inactive')
@@ -814,125 +730,9 @@ const deleteStudents = async () => {
   }
 }
 
-const chooseFile = () => {
-  fileInputRef.value?.click()
-}
-
-const downloadImportTemplate = () => {
-  const rows = [
-    ['学号'],
-    ['25104080101'],
-    ['25104080102'],
-  ]
-  const csv = rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n')
-  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = 'student-import-template.csv'
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
-}
-
-const normalizeImportedUsernames = (rows: any[][]) => {
-  if (!rows.length) {
-    importSummary.totalRows = 0
-    importSummary.validCount = 0
-    importSummary.duplicateCount = 0
-    return []
-  }
-
-  const firstRow = rows[0].map((cell) => String(cell ?? '').trim())
-  const normalizedHeaderRow = firstRow.map((item) => item.toLowerCase())
-  const headerIndex = normalizedHeaderRow.findIndex((item) => ['学号', 'username', '账号', 'account'].includes(item))
-  const dataRows = headerIndex >= 0 ? rows.slice(1) : rows
-  const targetIndex = headerIndex >= 0 ? headerIndex : 0
-
-  const usernames = dataRows.map((row) => String(row?.[targetIndex] ?? '').trim()).filter(Boolean)
-  const uniqueUsernames = Array.from(new Set(usernames))
-
-  importSummary.totalRows = dataRows.length
-  importSummary.validCount = usernames.length
-  importSummary.duplicateCount = usernames.length - uniqueUsernames.length
-
-  return uniqueUsernames
-}
-
-const handleFileChange = async (event: Event) => {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-
-  importFileName.value = file.name
-  importError.value = ''
-
-  try {
-    const buffer = await file.arrayBuffer()
-    const workbook = XLSX.read(buffer, { type: 'array' })
-    const firstSheetName = workbook.SheetNames[0]
-    const firstSheet = workbook.Sheets[firstSheetName]
-    const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, raw: false }) as any[][]
-    const uniqueUsernames = normalizeImportedUsernames(rows)
-
-    if (!uniqueUsernames.length) {
-      importError.value = '未从文件中识别到有效学号，请检查表头或第一列内容。'
-      importedUsernames.value = []
-      return
-    }
-
-    importedUsernames.value = uniqueUsernames
-  } catch {
-    importError.value = '文件解析失败，请使用 xlsx 或 csv 格式，并检查文件内容。'
-    importedUsernames.value = []
-    importSummary.totalRows = 0
-    importSummary.validCount = 0
-    importSummary.duplicateCount = 0
-  } finally {
-    input.value = ''
-  }
-}
-
-const clearImportFile = () => {
-  importFileName.value = ''
-  importedUsernames.value = []
-  importError.value = ''
-  importSummary.totalRows = 0
-  importSummary.validCount = 0
-  importSummary.duplicateCount = 0
-}
-
-const importStudents = async () => {
-  if (!importedUsernames.value.length) {
-    showToast('请先选择并解析名单文件')
-    return
-  }
-  if (!importForm.password.trim()) {
-    showToast('请输入导入初始密码')
-    return
-  }
-
-  importing.value = true
-  try {
-    const res: any = await request.post('/auth/students/import', {
-      usernames: importedUsernames.value,
-      password: importForm.password.trim(),
-    })
-    await applyCreateResult(res, importForm.password.trim())
-    lastImportSummary.totalRows = importSummary.totalRows
-    lastImportSummary.validCount = importSummary.validCount
-    lastImportSummary.duplicateCount = importSummary.duplicateCount
-    const message = lastCreateResult.created_count
-      ? `已导入创建 ${lastCreateResult.created_count} 个账号${lastCreateResult.skipped_count ? `，跳过 ${lastCreateResult.skipped_count} 个已有账号` : ''}`
-      : `名单中账号均已存在，本次没有新建`
-    showToast({ type: lastCreateResult.created_count ? 'success' : 'fail', message })
-    if (lastCreateResult.created_count > 0) showImportPopup.value = false
-  } catch {
-    showToast('名单导入失败')
-  } finally {
-    importing.value = false
-  }
+const handleImportSynced = async () => {
+  showImportPopup.value = false
+  await refreshPage()
 }
 
 const exportCreatedAccounts = () => {

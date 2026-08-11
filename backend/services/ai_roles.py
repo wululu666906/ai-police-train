@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .prompts.assessment_point import ASSESSMENT_POINT_PROMPT
 from .prompts.case_pipeline import (
-    ASSESSMENT_POINT_PROMPT,
     COMPLETE_CASE_STORY_PROMPT,
     FACTS_ROLES_MEMORIES_PROMPT,
     SCENE_BLUEPRINT_PROMPT,
@@ -67,14 +67,6 @@ AI_ROLES: dict[str, dict[str, Any]] = {
         "guardrails": "prompts.guardrails.DIALOGUE_ROLE_GUARDRAILS",
         "consumer": "POST /training/chat 与开场轮",
     },
-    "multi_role_actor": {
-        "id": "multi_role_actor",
-        "role_name": "多角色演员",
-        "duty": "多角色场景下为单个现场人物生成自然台词。",
-        "prompt_module": "multi_role_actor.ROLE_ACTOR_PROMPT",
-        "guardrails": "prompts.guardrails.DIALOGUE_ROLE_GUARDRAILS",
-        "consumer": "训练多角色链路",
-    },
     "multi_role_director": {
         "id": "multi_role_director",
         "role_name": "多角色导演",
@@ -87,7 +79,7 @@ AI_ROLES: dict[str, dict[str, Any]] = {
         "id": "assessment_point_generator",
         "role_name": "考察点生成",
         "duty": "根据完整剧情与本场景训练目标直接生成考察点（不分桶编排）。",
-        "prompt_module": "prompts.case_pipeline.ASSESSMENT_POINT_PROMPT",
+        "prompt_module": "prompts.assessment_point.ASSESSMENT_POINT_PROMPT",
         "system_prompt": ASSESSMENT_POINT_PROMPT,
         "guardrails": "prompts.guardrails.ADMIN_JSON_GUARDRAILS",
         "consumer": "POST /cases/assessment-points/generate",
@@ -104,7 +96,7 @@ AI_ROLES: dict[str, dict[str, Any]] = {
         "id": "recommended_questions_coach",
         "role_name": "追问话术教练",
         "duty": "为学员生成可直接说出口的追问句。",
-        "prompt_module": "recommended_questions_service（内联）",
+        "prompt_module": "prompts.recommended_questions.RECOMMENDED_QUESTIONS_PROMPT",
         "guardrails": "prompts.guardrails.COACH_SPEECH_GUARDRAILS",
         "consumer": "训练页推荐追问",
     },

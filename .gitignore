@@ -21,6 +21,7 @@ chroma_db/
 data/
 backend/chroma_db/
 backend/data/object_storage/
+backend/data/student_imports/
 !data/
 data/*
 !data/face_models/
