@@ -337,6 +337,7 @@ import request from '../utils/request'
 import { useVideoCover } from '../composables/useVideoCover'
 import { useSegmentedVideoPlayback } from '../composables/useSegmentedVideoPlayback'
 import { clearPlaybackPrefetchQueue, prefetchPlayback } from '../services/videoPlayback'
+import { resolveMediaUrl } from '../utils/media'
 
 interface VideoItem {
   id: number
@@ -566,7 +567,7 @@ function openVideo(video: VideoItem) {
 
   if (video.video_type === 'teaching') {
     showTeachingPlayer.value = true
-    void nextTick().then(() => attachTeachingPlayback(video.id, String(video.video_url || '')))
+    void nextTick().then(() => attachTeachingPlayback(video.id, resolveMediaUrl(video.video_url)))
   } else {
     entryStep.value = 1
     entryMode.value = 'practice'

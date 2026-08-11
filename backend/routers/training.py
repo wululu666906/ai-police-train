@@ -35,7 +35,6 @@ from services.classroom_service import (
     sync_assignment_submission_for_session,
     validate_assignment_training_access,
 )
-from services.case_knowledge_service import try_sync_case_to_knowledge
 from services.face_service import has_successful_session_verification
 from services.dialogue_sanitize_service import filter_internal_prompt_messages
 from services.role_state_service import resolve_role_initial_state
@@ -363,7 +362,9 @@ def _build_session_guidance(
         last_user_message=last_user_message,
         recent_messages=recent_message_payload,
         custom_prompts=custom_prompts,
-        use_llm=bool(last_user_message or any(message.role == "assistant" for message in messages)),
+        # Session reads must remain deterministic and fast. Model-backed
+        # recommendations are generated only as part of an explicit chat turn.
+        use_llm=False,
     )
     recommended_questions = [item["text"] for item in recommended_question_items]
     communication_feedback = _build_feedback(
@@ -503,8 +504,6 @@ def start_training(
                 .first()
             )
         case = db.query(models.Case).filter(models.Case.id == scene.case_id).first()
-        if case:
-            try_sync_case_to_knowledge(case)
         role = resolve_scene_role(db, scene, case)
         if latest_session and latest_session.status == "active":
             if latest_session.training_started_at is None:
@@ -580,24 +579,18 @@ def start_session_opening(
     return _ensure_opening_payload(db, session, scene, case, role)
 
 
-@router.post("/session/{session_id}/opening-stream")
-def stream_session_opening(
-    session_id: int,
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(get_current_user),
+def _opening_stream_response(
+    db: Session,
+    session: models.TrainingSession,
+    scene: models.Scene | None,
+    case: models.Case | None,
+    role: models.Role | None,
+    *,
+    phase: str,
+    log_context: str,
 ):
-    session = get_owned_session(db, session_id, current_user.id)
-    if session.status != "active":
-        raise HTTPException(status_code=409, detail="训练会话已结束，不能生成开场对话")
-    if not has_successful_session_verification(db, session.id):
-        raise HTTPException(status_code=409, detail="请先完成人脸身份验证")
-
-    scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
-    case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
-    role = resolve_scene_role(db, scene, case) if scene else None
-
     def _stream():
-        yield _sse_event("meta", {"session_id": session.id, "phase": "generating"})
+        yield _sse_event("meta", {"session_id": session.id, "phase": phase})
         try:
             payload = _ensure_opening_payload(db, session, scene, case, role)
             messages = payload.get("messages") or []
@@ -614,13 +607,39 @@ def stream_session_opening(
             yield _sse_event("done", payload)
         except Exception:
             db.rollback()
-            logger.exception("Failed to generate opening stream for session %s", session.id)
-            yield _sse_event("error", {"message": "开场对话生成失败，请稍后重试"})
+            logger.exception("Failed to generate %s for session %s", log_context, session.id)
+            yield _sse_event("error", {"message": "\u5f00\u573a\u5bf9\u8bdd\u751f\u6210\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5"})
 
     return StreamingResponse(
         _stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/session/{session_id}/opening-stream")
+def stream_session_opening(
+    session_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    session = get_owned_session(db, session_id, current_user.id)
+    if session.status != "active":
+        raise HTTPException(status_code=409, detail="训练会话已结束，不能生成开场对话")
+    if not has_successful_session_verification(db, session.id):
+        raise HTTPException(status_code=409, detail="请先完成人脸身份验证")
+
+    scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
+    case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
+    role = resolve_scene_role(db, scene, case) if scene else None
+    return _opening_stream_response(
+        db,
+        session,
+        scene,
+        case,
+        role,
+        phase="generating",
+        log_context="opening stream",
     )
 
 
@@ -636,7 +655,6 @@ def training_chat(
         raise HTTPException(status_code=400, detail="Training session has already been finished")
     if not message.content or not message.content.strip():
         raise HTTPException(status_code=400, detail="Message content cannot be empty")
-
     result = generate_dialogue(
         db,
         session_id,
@@ -673,7 +691,6 @@ def training_chat_stream(
         raise HTTPException(status_code=400, detail="Training session has already been finished")
     if not message.content or not message.content.strip():
         raise HTTPException(status_code=400, detail="Message content cannot be empty")
-
     result = generate_dialogue(
         db,
         session_id,
@@ -949,6 +966,7 @@ def get_session(
         completed_action_ids=guidance_payload["completed_action_ids"],
         auto_finish_ready=guidance_payload["auto_finish_ready"],
         closure_summary=guidance_payload["closure_summary"],
+        opening_delivered=bool(runtime_state.get("opening_delivered")) or bool(messages),
         assignment_context=get_session_assignment_context(db, session.id, current_user.id),
         artifacts=[_serialize_artifact(db, item) for item in (session.artifacts or [])],
         messages=repaired_messages,

@@ -32,8 +32,16 @@ Write-Host "API docs: http://127.0.0.1:8000/docs" -ForegroundColor Green
 Write-Host "Press Ctrl+C to stop." -ForegroundColor DarkGray
 Write-Host ""
 
+$listeners = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
+if ($listeners) {
+    $ownerIds = $listeners | Select-Object -ExpandProperty OwningProcess -Unique
+    Write-Host "Port 8000 is already served by PID(s): $($ownerIds -join ', ')." -ForegroundColor Red
+    Write-Host "Run scripts\dev-restart.ps1 to replace the stale backend and verify opening routes." -ForegroundColor Yellow
+    exit 1
+}
+
 Clear-PythonEnv
-$uvicornArgs = @("-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000")
+$uvicornArgs = @("-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", ".")
 if ($args.Count -gt 0) { $uvicornArgs += $args }
 
 & $python @uvicornArgs

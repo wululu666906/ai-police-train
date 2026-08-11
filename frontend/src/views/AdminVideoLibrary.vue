@@ -138,6 +138,7 @@ import { RefreshRight, Search, SetUp, UploadFilled, VideoPlay } from '@element-p
 import request from '../utils/request'
 import VideoNodeEditor from '../components/VideoNodeEditor.vue'
 import { useVideoCover } from '../composables/useVideoCover'
+import { resolveMediaUrl } from '../utils/media'
 
 interface VideoItem {
   id: number
@@ -393,7 +394,8 @@ async function onNodesUpdated() {
 }
 
 function openDetail(video: VideoItem) {
-  if (video.video_url) window.open(video.video_url, '_blank')
+  const url = resolveMediaUrl(video.video_url)
+  if (url) window.open(url, '_blank')
 }
 
 function difficultyLabel(level?: string) {

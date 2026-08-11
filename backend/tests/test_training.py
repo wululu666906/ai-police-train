@@ -1,8 +1,45 @@
 import json
+from types import SimpleNamespace
 import models
 import routers.training as training_router
 import services.ai_service as ai_service
 from services.training_runtime_service import dump_runtime_state, load_runtime_state
+from services.dialogue_sanitize_service import limit_role_reply_turns_with_remainders
+
+
+def test_plain_text_dialogue_fallback_preserves_complete_content():
+    raw_content = "这是一段必须完整保留的角色台词。" * 40
+    session = SimpleNamespace(
+        current_trust=30,
+        current_emotion=50,
+        current_stage="初始接触",
+        revealed_info=dump_runtime_state(load_runtime_state([])),
+    )
+
+    result = ai_service._build_plain_text_result(
+        raw_content,
+        session,
+        "核实现场情况",
+        None,
+        {"cooperation": 30, "risk": 50, "clarity": 50},
+    )
+
+    assert len(raw_content) > 420
+    assert result["response"] == raw_content
+
+
+def test_targeted_role_continues_persisted_reply_before_new_answer():
+    stored = {"7": {"role_name": "王某", "content": "上轮未展示的第二句事实。"}}
+    turns = [{"speaker_role_id": 7, "speaker_name": "王某", "content": "这是本轮新回答。"}]
+
+    combined, consumed_key = ai_service._prepend_targeted_pending_reply(turns, stored, "王某")
+    visible, generated_pending = limit_role_reply_turns_with_remainders(combined)
+    merged = ai_service._merge_pending_role_replies(stored, generated_pending, consumed_key)
+    restored = load_runtime_state(dump_runtime_state({"pending_role_replies": merged}))
+
+    assert consumed_key == "7"
+    assert [item["content"] for item in visible] == ["上轮未展示的第二句事实。", "这是本轮新回答。"]
+    assert restored["pending_role_replies"] == {}
 
 
 class TestStartTraining:
@@ -147,7 +184,7 @@ class TestChat:
                 ]
             }
 
-        monkeypatch.setattr(ai_service, "create_json_chat_completion", fake_chat_completion)
+        monkeypatch.setattr(ai_service, "create_roleplay_json_completion", fake_chat_completion)
 
         response = client.post(
             f"/training/chat/{session_id}",
@@ -165,7 +202,14 @@ class TestChat:
 
 
 class TestIntakeOpening:
-    def test_verified_session_generates_caller_opening(self, client, student_headers, db_session):
+    def test_start_intake_session_waits_for_face_verified_opening_request(self, client, student_headers, db_session):
+        student = db_session.query(models.User).filter(models.User.role == "student").first()
+        db_session.query(models.TrainingSession).filter(
+            models.TrainingSession.user_id == student.id,
+            models.TrainingSession.scene_id == 1,
+            models.TrainingSession.status == "active",
+        ).update({"status": "finished"}, synchronize_session=False)
+        db_session.commit()
         start_response = client.post("/training/start/1", headers=student_headers)
         session_id = start_response.json()["id"]
         detail = client.get(f"/training/session/{session_id}", headers=student_headers)
@@ -175,33 +219,47 @@ class TestIntakeOpening:
         assert data["dialogue_mode"] == "caller_first"
         assert data["dispatch_brief"] == "110 有新报警来电，等待接听。"
         assert data["first_impression"] in (None, "")
-        assert not (data.get("messages") or [])
+        assert data["opening_delivered"] is False
+        messages = data.get("messages") or []
+        assert messages == []
 
-        blocked = client.post(f"/training/session/{session_id}/opening", headers=student_headers)
-        assert blocked.status_code == 409
+        opening_response = client.post(f"/training/session/{session_id}/opening", headers=student_headers)
+        assert opening_response.status_code == 409
+        assert opening_response.json()["detail"] == "请先完成人脸身份验证"
 
-        db_session.add(models.FaceVerificationEvent(
-            session_id=session_id,
-            student_id=data["user_id"],
-            event_type="verify",
-            status="passed",
-        ))
+        db_session.add(
+            models.FaceVerificationEvent(
+                session_id=session_id,
+                student_id=student.id,
+                event_type="verify",
+                status="passed",
+            )
+        )
         db_session.commit()
-        opening = client.post(f"/training/session/{session_id}/opening-stream", headers=student_headers)
-        assert opening.status_code == 200
-        assert "event: meta" in opening.text
-        assert "event: chunk" in opening.text
-        assert "event: done" in opening.text
 
-        persisted = client.post(f"/training/session/{session_id}/opening", headers=student_headers)
-        assert persisted.status_code == 200
-        messages = persisted.json().get("messages") or []
-        assert messages
-        assert messages[0]["role"] == "assistant"
-        assert messages[0].get("speaker_name") == "张某"
+        delivered = client.post(f"/training/session/{session_id}/opening", headers=student_headers)
+        assert delivered.status_code == 200
+        delivered_data = delivered.json()
+        assert delivered_data["opening_delivered"] is True
+        assert delivered_data["messages"]
+        first_message_ids = [item["id"] for item in delivered_data["messages"]]
 
         repeated = client.post(f"/training/session/{session_id}/opening", headers=student_headers)
-        assert [item["id"] for item in repeated.json().get("messages") or []] == [item["id"] for item in messages]
+        assert repeated.status_code == 200
+        assert [item["id"] for item in repeated.json()["messages"]] == first_message_ids
+
+        streamed = client.post(f"/training/session/{session_id}/opening-stream", headers=student_headers)
+        assert streamed.status_code == 200
+        assert "event: meta" in streamed.text
+        assert "event: chunk" in streamed.text
+        assert "event: done" in streamed.text
+
+        after_stream = client.get(f"/training/session/{session_id}", headers=student_headers)
+        assert [item["id"] for item in after_stream.json()["messages"]] == first_message_ids
+
+        resumed = client.get(f"/training/session/{session_id}", headers=student_headers)
+        assert resumed.status_code == 200
+        assert resumed.json()["opening_delivered"] is True
 
     def test_intake_premature_question_feedback(self, client, student_headers):
         start_response = client.post("/training/start/1", headers=student_headers)
@@ -260,6 +318,23 @@ class TestGetSession:
         assert isinstance(data["recommended_questions"], list)
         assert isinstance(data["communication_feedback"], dict)
         assert "message" in data["communication_feedback"]
+
+    def test_get_session_never_enables_model_backed_guidance(self, client, student_headers, monkeypatch):
+        start_response = client.post("/training/start/1", headers=student_headers)
+        session_id = start_response.json()["id"]
+        calls = []
+        original = training_router.build_recommended_question_items
+
+        def capture_guidance_call(**kwargs):
+            calls.append(kwargs)
+            return original(**kwargs)
+
+        monkeypatch.setattr(training_router, "build_recommended_question_items", capture_guidance_call)
+        response = client.get(f"/training/session/{session_id}", headers=student_headers)
+
+        assert response.status_code == 200
+        assert calls
+        assert all(call.get("use_llm") is False for call in calls)
 
 
 class TestFinishTraining:

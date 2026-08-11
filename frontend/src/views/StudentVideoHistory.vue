@@ -161,6 +161,7 @@
                   <button
                     type="button"
                     class="more-btn"
+                    :class="{ 'more-btn--open': openActionMenuId === item.id }"
                     :aria-expanded="openActionMenuId === item.id"
                     aria-haspopup="menu"
                     @click.stop="toggleActionMenu(item.id, $event)"
@@ -225,7 +226,6 @@
         </div>
       </template>
     </section>
-
   </div>
 </template>
 
@@ -306,12 +306,14 @@ onMounted(() => {
   void fetchHistory()
   document.addEventListener('click', closeFloatingMenus)
   window.addEventListener('resize', closeFloatingMenus)
+  document.querySelector('.student-main')?.addEventListener('scroll', closeFloatingMenus, { passive: true })
 })
 
 onUnmounted(() => {
   setMainScrollable?.(false)
   document.removeEventListener('click', closeFloatingMenus)
   window.removeEventListener('resize', closeFloatingMenus)
+  document.querySelector('.student-main')?.removeEventListener('scroll', closeFloatingMenus)
   if (debounceTimer) clearTimeout(debounceTimer)
 })
 
@@ -432,10 +434,11 @@ async function handleAction(command: string, session: SessionItem) {
 function toggleActionMenu(sessionId: number, event: MouseEvent) {
   showPageSizeMenu.value = false
   if (openActionMenuId.value === sessionId) {
-    openActionMenuId.value = null
+    closeFloatingMenus()
     return
   }
-  positionActionMenu(event.currentTarget as HTMLElement)
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  actionMenuPlacement.value = window.innerHeight - rect.bottom < 140 && rect.top > 140 ? 'up' : 'down'
   openActionMenuId.value = sessionId
 }
 
@@ -461,17 +464,6 @@ function selectPageSize(size: number) {
 function closeFloatingMenus() {
   openActionMenuId.value = null
   showPageSizeMenu.value = false
-}
-
-function positionActionMenu(trigger: HTMLElement) {
-  const rect = trigger.getBoundingClientRect()
-  const panelWidth = 118
-  const panelHeight = 128
-  const margin = 8
-  const containerBottom = document.querySelector('.student-main')?.getBoundingClientRect().bottom || window.innerHeight
-  const opensUp = containerBottom - rect.bottom < panelHeight + margin * 2
-
-  actionMenuPlacement.value = opensUp ? 'up' : 'down'
 }
 
 function calcProgress(session: SessionItem): number {
@@ -780,7 +772,7 @@ function resetFilters() {
 .action-cell {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 8px;
   overflow: visible;
 }
@@ -841,9 +833,11 @@ function resetFilters() {
   border-radius: 10px;
 }
 
-.more-btn:hover {
+.more-btn:hover,
+.more-btn--open {
   color: #2563eb;
   border-color: #93c5fd;
+  background: #eff6ff;
 }
 
 .more-menu {
@@ -877,7 +871,7 @@ function resetFilters() {
 .more-menu__panel--up::after {
   content: '';
   position: absolute;
-  right: 17px;
+  right: 12px;
   width: 9px;
   height: 9px;
   background: #fff;

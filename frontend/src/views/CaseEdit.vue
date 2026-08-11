@@ -4,6 +4,14 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import RoleCompactForm from '../components/RoleCompactForm.vue'
+import SceneOpeningConfigForm from '../components/cases/SceneOpeningConfigForm.vue'
+import { saveWithCaseQualityGate } from '../utils/caseQuality'
+import { normalizeCasePipelineResult, useCasePipeline } from '../composables/useCasePipeline'
+import {
+  parseEngineIsFallback,
+  parseEngineLabel,
+  sceneGenerationIsFallback,
+} from '../utils/caseAnalysis'
 import {
   buildRoleCompactSummary,
   expandRoleCompactToPerson,
@@ -48,6 +56,7 @@ const generating = ref(false)
 const savingCreate = ref(false)
 const savingDetail = ref(false)
 const supplementingAi = ref(false)
+const { job: pipelineJob, isRunning: pipelineIsRunning, startText: startTextPipeline, startFile: startFilePipeline, resume: resumeCasePipeline, clear: clearCasePipeline } = useCasePipeline()
 type ReviewModule = 'basic' | 'roles' | 'scenes'
 type SceneEditTab = 'overview' | 'roles_copy' | 'flow'
 
@@ -678,26 +687,6 @@ const getEditablePersonCardStyle = (_index: number, person: any) => {
   }
 }
 
-const parseEngineLabel = (payload: any) => {
-  const engine = String(payload?.parse_engine || '')
-  if (engine === 'ai_text_first') return 'AI 主叙事 + 程序提取'
-  if (engine === 'ai') return 'AI 结构化解析（旧版）'
-  if (engine === 'rule_text_first') return '程序提取（AI 主叙事未成功）'
-  return '规则兜底解析'
-}
-const parseEngineIsFallback = (payload: any) => {
-  if (typeof payload?.ai_workflow?.used_rule_fallback === 'boolean') return payload.ai_workflow.used_rule_fallback
-  return !String(payload?.parse_engine || '').startsWith('ai')
-}
-const sceneGenerationLabel = (payload: any) => {
-  const mode = String(payload?.scene_generation_mode || '')
-  if (mode === 'ai_template_first') return 'AI 模板优先场景生成'
-  if (mode === 'ai_case_driven' || mode === 'ai') return 'AI 案件驱动场景生成'
-  if (mode === 'fallback_template_first') return '模板优先兜底场景'
-  if (mode === 'fallback_case_driven' || mode === 'fallback_modules' || mode === 'fallback') return '案件驱动兜底场景'
-  return '场景生成'
-}
-const sceneGenerationIsFallback = (payload: any) => String(payload?.scene_generation_mode || '').startsWith('fallback')
 const parseWarnings = (payload: any) => Array.isArray(payload?.parse_warnings) ? payload.parse_warnings : []
 const sceneGenerationWarning = (payload: any) => String(payload?.scene_generation_warning || '').trim()
 
@@ -1404,6 +1393,11 @@ const resetCreateState = () => {
 }
 
 const openAddModal = () => {
+  if (pipelineIsRunning.value || pipelineJob.value) {
+    currentStep.value = 1
+    showAdd.value = true
+    return
+  }
   resetCreateState()
   showAdd.value = true
 }
@@ -1452,20 +1446,60 @@ const handleFileChange = (event: Event) => {
   fileMeta.size = file.size
 }
 
+const normalizeGeneratedScenesFromPipeline = (scenes: any[], persons: any[]) => {
+  return (Array.isArray(scenes) ? scenes : []).map((scene: any) => {
+    const baseRoleNames = Array.isArray(scene?.roles)
+      ? scene.roles
+      : Array.isArray(scene?.role_names)
+        ? scene.role_names
+        : []
+    const presentRoleNames = Array.isArray(scene?.present_roles) ? scene.present_roles : []
+    const isOnsiteScene = String(scene?.training_entry_phase || scene?.scene_kind || scene?.scene_name || '').includes('现场')
+      || String(scene?.training_entry_phase || '') === 'post_incident_onsite'
+    const roleNames = Array.from(new Set((isOnsiteScene ? [...presentRoleNames, ...baseRoleNames] : baseRoleNames).filter(Boolean)))
+    return {
+      ...scene,
+      roles: roleNames,
+      role_names: roleNames,
+      present_roles: presentRoleNames.length ? presentRoleNames : roleNames,
+      opening_config: scene.opening_config || {
+        enabled: true,
+        mode: 'dynamic',
+        speaker_role_ids: [],
+        speaker_names: roleNames.slice(0, 3),
+        director_note: '',
+        preset_turns: [],
+      },
+      primary_role_name: scene.primary_role_name || pickRecommendedPrimaryRoleName(persons || [], roleNames) || roleNames[0] || '',
+    }
+  })
+}
+
+const applyPipelineJobResult = (rawResult: any) => {
+  const normalized = normalizeCasePipelineResult(rawResult)
+  const res: any = normalized.caseInfo || {}
+  aiParsedData.value = {
+    ...res,
+    scene_ai_workflow: normalized.sceneAiWorkflow,
+    ai_workflows: normalized.aiWorkflows,
+  }
+  aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: true })
+  generatedScenes.value = normalizeGeneratedScenesFromPipeline(normalized.scenes, aiParsedData.value.persons || [])
+  return res
+}
+
 const startParsing = async () => {
   parsing.value = true
   try {
+    clearCasePipeline()
+    generatedScenes.value = []
     if (importMode.value === 'transcript_file') {
       if (!uploadedFile.value) {
         showToast('请先上传笔录文件')
         return
       }
-      const payload = new FormData()
-      payload.append('file', uploadedFile.value)
-      payload.append('source_mode', 'transcript_file')
-      const res: any = await request.post('/cases/parse-file', payload, { timeout: 600000, _skipErrorToast: true } as any)
-      aiParsedData.value = res || {}
-      aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: true })
+      const job = await startFilePipeline(uploadedFile.value)
+      const res: any = applyPipelineJobResult(job.result || {})
       if (parseEngineIsFallback(res)) {
         showToast('本次为规则兜底解析，请人工复核后再发布')
       }
@@ -1479,9 +1513,8 @@ const startParsing = async () => {
       return
     }
 
-    const res: any = await request.post('/cases/parse', { text: form.rawText, source_mode: 'plain_case' }, { timeout: 600000, _skipErrorToast: true } as any)
-    aiParsedData.value = res || {}
-    aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: true })
+    const job = await startTextPipeline(form.rawText)
+    const res: any = applyPipelineJobResult(job.result || {})
     if (parseEngineIsFallback(res)) {
       showToast('本次为规则兜底解析，请人工复核后再发布')
     }
@@ -1499,6 +1532,16 @@ const startParsing = async () => {
 const startGenerating = async () => {
   generating.value = true
   try {
+    if (generatedScenes.value.length) {
+      aiParsedData.value = {
+        ...aiParsedData.value,
+        scene_ai_workflow: aiParsedData.value.scene_ai_workflow || aiParsedData.value.ai_workflow || null,
+      }
+      if (sceneGenerationIsFallback(aiParsedData.value)) {
+        showToast('本次为规则兜底场景，请人工复核场景与角色分配')
+      }
+      return
+    }
     const caseInfo = {
       ...aiParsedData.value,
       case_name: form.title || aiParsedData.value.case_name,
@@ -1510,13 +1553,11 @@ const startGenerating = async () => {
       { case_info: caseInfo, scene_generation_strategy: 'case_driven' },
       { timeout: 600000, _skipErrorToast: true } as any,
     )
-    generatedScenes.value = (res.scenes || []).map((scene: any) => {
-      const roleNames = Array.isArray(scene?.roles) ? scene.roles : []
-      return {
-        ...scene,
-        primary_role_name: pickRecommendedPrimaryRoleName(aiParsedData.value.persons || [], roleNames) || roleNames[0] || '',
-      }
-    })
+    generatedScenes.value = normalizeGeneratedScenesFromPipeline(res.scenes || [], aiParsedData.value.persons || [])
+    if (!generatedScenes.value.length) {
+      showToast('场景生成未产生可发布场景，请返回检查案件内容后重试')
+      throw new Error('empty-scenes')
+    }
     aiParsedData.value = {
       ...aiParsedData.value,
       scene_generation_mode: res.scene_generation_mode || '',
@@ -1540,10 +1581,14 @@ const startGenerating = async () => {
 
 const submitFinal = async () => {
   if (!validatePersonsBeforeSave(aiParsedData.value?.persons || [], aiParsedData.value)) return
+  if (!generatedScenes.value.length) {
+    showToast('请先生成至少一个训练场景')
+    return
+  }
   savingCreate.value = true
   try {
     const personsPayload = serializePersonsForSave(aiParsedData.value.persons || [])
-    const createdCase: any = await request.post('/cases/full-create', {
+    const createdCase: any = await saveWithCaseQualityGate((qualityAcknowledgements) => request.post('/cases/full-create', {
       case: {
         ...aiParsedData.value,
         persons: personsPayload,
@@ -1560,7 +1605,8 @@ const submitFinal = async () => {
         extracted_text_preview: aiParsedData.value.extracted_text_preview || '',
       },
       scenes: generatedScenes.value,
-    }, { _skipErrorToast: true } as any)
+      quality_acknowledgements: qualityAcknowledgements,
+    }, { _skipErrorToast: true } as any))
     showToast({ type: 'success', message: '案件发布成功' })
     showAdd.value = false
     await refreshCasesPage()
@@ -1770,6 +1816,7 @@ const applyCaseCompletionPayload = (target: any, payload: any, rawText: string) 
       description: pickFilled(scene.description, aiScene.scene_description),
       dispatch_brief: pickFilled(scene.dispatch_brief, aiScene.dispatch_brief),
       first_impression: pickFilled(scene.first_impression, aiScene.first_impression),
+      opening_config: scene.opening_config || aiScene.opening_config || null,
       difficulty: pickFilled(scene.difficulty, aiScene.difficulty),
       stagesModel: nextStages ? normalizeStageEditors(nextStages) : scene.stagesModel,
       stagesText: nextStages ? stringifyStages(nextStages) : scene.stagesText,
@@ -1939,6 +1986,7 @@ const saveCaseDetail = async () => {
       difficulty: scene.difficulty,
       dispatch_brief: scene.dispatch_brief,
       first_impression: scene.first_impression,
+      opening_config: scene.opening_config || null,
       training_focus: sceneMeta.training_focus,
       behavior_mode: sceneMeta.behavior_mode,
       assessment_points: serializeAssessmentPointsForSave(scene.assessmentPointsModel || []),
@@ -2041,7 +2089,28 @@ const _saveCaseDetailAndBack = async () => {
   // if save succeeded, editableCase still valid but navigate back
 }
 
-onMounted(loadCaseForEdit)
+onMounted(async () => {
+  await loadCaseForEdit()
+  if (localStorage.getItem('case_pipeline_job_id')) {
+    currentStep.value = 1
+    showAdd.value = true
+    parsing.value = true
+    try {
+      const resumed = await resumeCasePipeline()
+      if (resumed?.status === 'completed') {
+        const res: any = applyPipelineJobResult(resumed.result || {})
+        if (!form.title) form.title = res.case_name || ''
+        if (!form.caseType) form.caseType = res.case_type || ''
+        form.caseTypeGroup = getCaseTypeGroup(form.caseType)
+        showToast({ type: 'success', message: '案件整理任务已恢复完成' })
+      }
+    } catch (error: any) {
+      showToast(getApiErrorDetail(error, '案件整理任务恢复失败'))
+    } finally {
+      parsing.value = false
+    }
+  }
+})
 
 // ── 案件预览弹窗辅助 ────────────────────────────────────────────────
 const previewStructuredData = computed(() => {
@@ -2102,16 +2171,13 @@ const previewFormatDate = (dt: string | null | undefined) => {
                   <div class="wp__sub">审核并调整案件基本信息</div>
                 </div>
               </div>
-              <van-button size="small" type="primary" class="!border-none !bg-[#1D3557]" :loading="supplementingAi" :disabled="!canRunAiSupplement" @click="runAiSupplement">
-                AI 补全
-              </van-button>
             </div>
             <div class="wp__body">
               <div v-if="showTypeNormalizationHint(editableCase)" class="wp-alert wp-alert--blue">
                 AI 原始识别为「{{ editableCase.ai_case_type_raw || '未识别' }}」，当前标准化类型为「{{ editableCase.case_type || '其他' }}」。
               </div>
               <div v-if="parseWarnings(editableCase).length || sceneGenerationWarning(editableCase)" class="wp-alert wp-alert--amber">
-                <div class="wp-alert__title">AI 补全复核提醒</div>
+                <div class="wp-alert__title">AI 解析复核提醒</div>
                 <div class="wp-alert__row">解析来源：{{ parseEngineLabel(editableCase) }}</div>
                 <div v-for="warning in parseWarnings(editableCase)" :key="warning" class="wp-alert__row">{{ warning }}</div>
                 <div v-if="sceneGenerationWarning(editableCase)" class="wp-alert__row">{{ sceneGenerationWarning(editableCase) }}</div>
@@ -2504,6 +2570,10 @@ const previewFormatDate = (dt: string | null | undefined) => {
                     </div>
                   </div>
                 </div>
+                <SceneOpeningConfigForm
+                  v-model="scene.opening_config"
+                  :roles="editableCase.persons || []"
+                />
 
                 <div class="scene-flow-panel">
                   <div class="scene-flow-panel__toolbar">

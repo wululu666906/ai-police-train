@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .case_story_reconstruction_service import strip_document_artifacts
+from .case_text_utils import strip_document_artifacts
 from .role_information_management_service import compile_person_role_information
 
 

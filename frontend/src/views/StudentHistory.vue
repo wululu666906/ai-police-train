@@ -139,13 +139,18 @@
                     :disabled="isActionLocked(record.id)"
                     :aria-expanded="openActionMenuId === record.id"
                     aria-haspopup="menu"
-                    @click="toggleActionMenu(record.id)"
+                    @click="toggleActionMenu(record.id, $event)"
                   >
                     <span>操作</span>
                     <span v-if="isActionLocked(record.id)" class="action-loading-dot" aria-hidden="true"></span>
                     <el-icon v-else><ArrowDown /></el-icon>
                   </button>
-                  <div v-if="openActionMenuId === record.id" class="action-menu__panel" role="menu">
+                  <div
+                    v-if="openActionMenuId === record.id"
+                    class="action-menu__panel"
+                    :class="`action-menu__panel--${actionMenuPlacement}`"
+                    role="menu"
+                  >
                     <button type="button" class="action-menu__item" role="menuitem" @click="handleRecordAction('dialogue', record)">
                       <el-icon><ChatLineRound /></el-icon>
                       <span>查看对话</span>
@@ -210,6 +215,7 @@ const hiddenEmptyCount = ref(0)
 const reEvaluatingId = ref<number | null>(null)
 const deletingId = ref<number | null>(null)
 const openActionMenuId = ref<number | null>(null)
+const actionMenuPlacement = ref<'down' | 'up'>('down')
 const loadError = ref('')
 const statusFilter = ref<'all' | 'active' | 'finished'>('all')
 const activeCount = ref(0)
@@ -352,13 +358,19 @@ const openDialogue = (sessionId: number) => {
 
 const isActionLocked = (sessionId: number) => deletingId.value === sessionId || reEvaluatingId.value === sessionId
 
-const toggleActionMenu = (sessionId: number) => {
-  if (isActionLocked(sessionId)) return
-  openActionMenuId.value = openActionMenuId.value === sessionId ? null : sessionId
-}
-
 const closeActionMenu = () => {
   openActionMenuId.value = null
+}
+
+const toggleActionMenu = (sessionId: number, event: MouseEvent) => {
+  if (isActionLocked(sessionId)) return
+  if (openActionMenuId.value === sessionId) {
+    closeActionMenu()
+    return
+  }
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  actionMenuPlacement.value = window.innerHeight - rect.bottom < 220 && rect.top > 220 ? 'up' : 'down'
+  openActionMenuId.value = sessionId
 }
 
 const handleRecordAction = async (rawCommand: string | number | object, record: any) => {
@@ -472,6 +484,7 @@ onMounted(() => {
 onUnmounted(() => {
   setMainScrollable?.(false)
   document.removeEventListener('click', closeActionMenu)
+  closeActionMenu()
 })
 </script>
 
@@ -866,30 +879,49 @@ onUnmounted(() => {
 
 .action-menu__panel {
   position: absolute;
+  left: 50%;
   z-index: 30;
-  top: calc(100% + 8px);
-  right: 50%;
   display: grid;
-  width: 132px;
+  width: 148px;
   gap: 2px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   background: #fff;
   padding: 8px;
   box-shadow: 0 18px 42px rgba(15, 23, 42, 0.13);
-  transform: translateX(50%);
+  transform: translateX(-50%);
 }
 
-.action-menu__panel::before {
+.action-menu__panel--down {
+  top: calc(100% + 8px);
+}
+
+.action-menu__panel--up {
+  bottom: calc(100% + 8px);
+}
+
+.action-menu__panel--down::before,
+.action-menu__panel--up::after {
   content: '';
   position: absolute;
-  top: -5px;
-  right: calc(50% - 4px);
+  left: 50%;
   width: 9px;
   height: 9px;
-  border-left: 1px solid #e5e7eb;
-  border-top: 1px solid #e5e7eb;
+  margin-left: -4.5px;
   background: #fff;
+}
+
+.action-menu__panel--down::before {
+  top: -5px;
+  border-top: 1px solid #e5e7eb;
+  border-left: 1px solid #e5e7eb;
+  transform: rotate(45deg);
+}
+
+.action-menu__panel--up::after {
+  bottom: -5px;
+  border-right: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
   transform: rotate(45deg);
 }
 

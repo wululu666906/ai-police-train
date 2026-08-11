@@ -99,7 +99,7 @@
                   'scene-role-card--selected': targetRoleName === role.name,
                   'scene-role-card--thinking': isRoleAvatarThinking(role.name),
                 }"
-                :disabled="!role.speakable || isLoading"
+                :disabled="!role.speakable || isAssistantBusy"
                 @click="toggleTargetRole(role)"
               >
                 <RoleSpeakingAvatar
@@ -243,7 +243,7 @@
           </div>
         </div>
 
-        <div v-if="isLoading" class="msg-row msg-ai">
+        <div v-if="isAssistantBusy" class="msg-row msg-ai">
           <div class="avatar avatar-ai">
             <van-icon name="contact" size="20" />
           </div>
@@ -273,7 +273,7 @@
               :key="`${index}-${item.text}`"
               type="button"
               class="suggested-question-chip"
-              :disabled="isLoading"
+              :disabled="isAssistantBusy"
               @click="applySuggestedQuestion(item)"
             >
               <span class="suggested-question-chip__cat">{{ item.category || '追问' }}</span>
@@ -283,8 +283,8 @@
         </div>
         <TrainingInputBar
           v-model="inputMessage"
-          :loading="isLoading"
-          :disabled="!canUseConversation"
+          :loading="isAssistantBusy"
+          :disabled="!canUseConversation || isOpeningLoading"
           @send="sendMessage()"
           @voice-send="sendMessage"
           @voice-event="handleVoiceEvent"
@@ -378,6 +378,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { showLoadingToast, showToast } from 'vant'
 import request from '../utils/request'
 import { resolveMediaUrl } from '../utils/media'
+import { isInternalPromptMessage } from '../utils/dialogueMessage'
 import TrainingInputBar from '../components/TrainingInputBar.vue'
 import RoleSpeakingAvatar from '../components/RoleSpeakingAvatar.vue'
 import TrainingFaceGuard from '../components/TrainingFaceGuard.vue'
@@ -415,10 +416,14 @@ const router = useRouter()
 const sessionId = ref(String(route.params.id || ''))
 const inputMessage = ref('')
 const isLoading = ref(false)
+const isOpeningLoading = ref(false)
 const isSessionBooting = ref(true)
 const trainingLoadError = ref('')
 const showCaseBrief = ref(false)
 const suppressedBriefThisSession = ref(false)
+const briefAcknowledged = ref(false)
+const openingRequested = ref(false)
+const openingCompleted = ref(false)
 const isReturningToHall = ref(false)
 const faceVerified = ref(false)
 const faceTerminated = ref(false)
@@ -427,6 +432,16 @@ const assignmentContext = ref<any | null>(null)
 const faceGuardRef = ref<InstanceType<typeof TrainingFaceGuard> | null>(null)
 const failedAvatarUrls = ref<Set<string>>(new Set())
 const canUseConversation = computed(() => faceVerified.value && !faceTerminated.value)
+const isAssistantBusy = computed(() => isLoading.value || isOpeningLoading.value)
+const sceneReadyForOpening = computed(() => (
+  Boolean(sessionId.value)
+  && !isSessionBooting.value
+  && !trainingLoadError.value
+  && briefAcknowledged.value
+  && !showCaseBrief.value
+  && faceVerified.value
+  && !faceTerminated.value
+))
 const routeMarksAssignment = computed(() => route.query.source === 'assignment' || Boolean(route.query.assignment_id))
 const isAssignmentAssessmentMode = computed(() => Boolean(assignmentContext.value) || routeMarksAssignment.value)
 const currentAssignmentId = computed(() => {
@@ -670,7 +685,7 @@ const applySuggestedQuestions = (items: unknown, fallbackTexts?: unknown) => {
 const applySuggestedQuestion = (item: SuggestedQuestionItem | string) => {
   const payload = typeof item === 'string' ? { text: item } : item
   const text = String(payload?.text || '').trim()
-  if (!text || isLoading.value) return
+  if (!text || isAssistantBusy.value) return
   inputMessage.value = text
   const roleName = String(payload?.target_role_name || '').trim()
   if (roleName) {
@@ -740,7 +755,7 @@ const guessThinkingRoleName = () => {
 const thinkingRoleLabel = computed(() => guessThinkingRoleName())
 
 const isRoleAvatarThinking = (roleName: string) => {
-  if (!isLoading.value) return false
+  if (!isAssistantBusy.value) return false
   return roleName === thinkingRoleLabel.value
 }
 
@@ -789,6 +804,113 @@ const parseSseBlock = (block: string) => {
     return { event, data: JSON.parse(dataRaw) }
   } catch {
     return null
+  }
+}
+
+type AssistantStreamRow = {
+  id: number
+  role: string
+  content: string
+  speakerName?: string
+  avatarUrl?: string
+  avatarId?: number
+}
+
+const consumeAssistantStream = async (response: Response) => {
+  if (response.status === 405) {
+    throw new Error('后端训练服务版本未更新，请使用项目重启脚本后重试')
+  }
+  if (!response.ok || !response.body) throw new Error(`AI 对话请求失败：${response.status}`)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  const result: any = {}
+  const assistantRows: AssistantStreamRow[] = []
+  let buffer = ''
+
+  const consumeBlock = async (block: string) => {
+    const parsed = parseSseBlock(block)
+    if (!parsed) return
+    if (parsed.event === 'error') throw new Error(String(parsed.data?.message || 'AI 对话生成失败'))
+    if (parsed.event === 'done') {
+      Object.assign(result, parsed.data || {})
+      return
+    }
+    if (parsed.event !== 'chunk') return
+    const chunk = parsed.data || {}
+    const speakerName = String(chunk.speaker_name || roleInfo.name).trim() || roleInfo.name
+    const speakerRole = sceneRoles.value.find((role) => role.name === speakerName)
+    const row: AssistantStreamRow = {
+      id: Number(chunk.message_id) || Date.now() + Number(chunk.index || 0) + assistantRows.length,
+      role: 'assistant',
+      content: String(chunk.content || ''),
+      speakerName,
+      avatarUrl: speakerRole?.avatar_url,
+      avatarId: speakerRole?.avatar_id,
+    }
+    if (!row.content.trim() || chatHistory.value.some((message) => message.id === row.id)) return
+    assistantRows.push(row)
+    chatHistory.value.push(row)
+    await nextTick()
+    scrollToBottom()
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let boundaryIndex = buffer.indexOf('\n\n')
+    while (boundaryIndex !== -1) {
+      await consumeBlock(buffer.slice(0, boundaryIndex))
+      buffer = buffer.slice(boundaryIndex + 2)
+      boundaryIndex = buffer.indexOf('\n\n')
+    }
+  }
+  buffer += decoder.decode()
+  if (buffer.trim()) await consumeBlock(buffer)
+  return { result, assistantRows }
+}
+
+const requestOpeningStream = () => {
+  const token = localStorage.getItem('token') || ''
+  const configuredApiUrl = String(import.meta.env.VITE_API_URL || '').trim()
+  const isLocalDevApiUrl = import.meta.env.DEV && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(configuredApiUrl)
+  const apiBase = isLocalDevApiUrl ? '' : configuredApiUrl
+  const headers: Record<string, string> = { Accept: 'text/event-stream' }
+  if (token) headers.Authorization = `Bearer ${token}`
+  return fetch(`${apiBase.replace(/\/$/, '')}/training/session/${sessionId.value}/opening-stream`, {
+    method: 'POST',
+    headers,
+  })
+}
+
+const maybeStartOpening = async () => {
+  if (
+    openingRequested.value
+    || openingCompleted.value
+    || !briefAcknowledged.value
+    || showCaseBrief.value
+    || !faceVerified.value
+    || faceTerminated.value
+  ) return
+
+  openingRequested.value = true
+  isOpeningLoading.value = true
+  try {
+    await nextTick()
+    scrollToBottom()
+    const response = await requestOpeningStream()
+    const { result, assistantRows } = await consumeAssistantStream(response)
+    if (!result.opening_delivered) throw new Error('开场对话未生成')
+    if (!assistantRows.length && !chatHistory.value.some((message) => message.role === 'assistant')) {
+      throw new Error('开场对话内容为空')
+    }
+    openingCompleted.value = true
+  } catch (error: any) {
+    openingRequested.value = false
+    showToast(String(error?.message || '开场对话生成失败，请稍后重试'))
+  } finally {
+    isOpeningLoading.value = false
+    scrollToBottom()
   }
 }
 
@@ -870,6 +992,9 @@ const fetchSessionData = async () => {
   }
   isSessionBooting.value = true
   trainingLoadError.value = ''
+  openingRequested.value = false
+  openingCompleted.value = false
+  isOpeningLoading.value = false
   try {
     const res: any = await request.get(`/training/session/${sessionId.value}`, { _skipErrorToast: true } as any)
     caseInfo.title = res.case_title
@@ -893,13 +1018,16 @@ const fetchSessionData = async () => {
     applyGuidancePayload(res)
     revealedInfo.value = safeParse<string[]>(res.revealed_info, [])
 
+    const persistedMessages = (Array.isArray(res.messages) ? res.messages : []).filter((message: any) => !isInternalPromptMessage(message))
+    openingCompleted.value = Boolean(res.opening_delivered)
+    openingRequested.value = openingCompleted.value
     chatHistory.value = [
       {
         id: 0,
         role: 'system',
         content: buildSystemIntro(res.scene_name, res.role_name, sceneRoles.value),
       },
-      ...(res.messages || []).map((message: any) => {
+      ...persistedMessages.map((message: any) => {
         const speaker = message.role === 'assistant' ? sceneRoles.value.find((r) => r.name === (message.speaker_name || '')) : null
         return {
           id: message.id,
@@ -913,9 +1041,9 @@ const fetchSessionData = async () => {
     ]
     scrollToBottom()
 
-    // 简报保留为手动查看入口，避免进入训练时被大弹窗打断。
     suppressedBriefThisSession.value = isBriefSuppressedInSession()
-    showCaseBrief.value = false
+    briefAcknowledged.value = suppressedBriefThisSession.value
+    showCaseBrief.value = !briefAcknowledged.value
   } catch (error: any) {
     const message = resolveRequestErrorMessage(error, '获取训练数据失败')
     trainingLoadError.value = error?.response?.status === 404
@@ -965,6 +1093,7 @@ const onSuppressCheckboxChange = (event: Event) => {
 }
 
 const handleBriefStartTraining = () => {
+  briefAcknowledged.value = true
   showCaseBrief.value = false
 }
 
@@ -989,7 +1118,7 @@ const handleBriefReturnToHall = async () => {
 const sendMessage = async (content?: string) => {
   const msg = String(content ?? inputMessage.value).trim()
   if (!msg) return
-  if (isLoading.value) return
+  if (isAssistantBusy.value) return
   if (faceTerminated.value) {
     showToast('人脸异常次数已达上限，本次训练已中断')
     return
@@ -1036,51 +1165,7 @@ const sendMessage = async (content?: string) => {
       }),
     })
 
-    if (!response.ok || !response.body) {
-      throw new Error(`stream failed: ${response.status}`)
-    }
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder('utf-8')
-    let buffer = ''
-    const streamResult: any = {}
-    const assistantRows: Array<{ id: number; role: string; content: string; speakerName?: string; avatarUrl?: string; avatarId?: number }> = []
-
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let boundaryIndex = buffer.indexOf('\n\n')
-      while (boundaryIndex !== -1) {
-        const block = buffer.slice(0, boundaryIndex)
-        buffer = buffer.slice(boundaryIndex + 2)
-        const parsed = parseSseBlock(block)
-        if (parsed) {
-          if (parsed.event === 'chunk') {
-            const chunk = parsed.data
-            const speakerName = String(chunk.speaker_name || roleInfo.name).trim() || roleInfo.name
-            const speakerRole = sceneRoles.value.find((r) => r.name === speakerName)
-            const row = {
-              id: Date.now() + Number(chunk.index || 0) + assistantRows.length,
-              role: 'assistant',
-              content: String(chunk.content || ''),
-              speakerName,
-              avatarUrl: speakerRole?.avatar_url,
-              avatarId: speakerRole?.avatar_id,
-            }
-            assistantRows.push(row)
-            chatHistory.value.push(row)
-            await nextTick()
-            scrollToBottom()
-          } else if (parsed.event === 'done') {
-            Object.assign(streamResult, parsed.data || {})
-          }
-        }
-        boundaryIndex = buffer.indexOf('\n\n')
-      }
-    }
-
-    const res: any = streamResult
+    const { result: res, assistantRows } = await consumeAssistantStream(response)
     if (!Object.keys(res).length) {
       throw new Error('empty stream result')
     }
@@ -1173,36 +1258,15 @@ const finishTraining = async () => {
   if (isFinishingTraining.value || !sessionId.value) return
   isFinishingTraining.value = true
   faceGuardRef.value?.stopCamera?.()
-  const loader = showLoadingToast({ message: '正在生成评估报告...', forbidClick: true })
-  try {
-    await request.post(`/training/finish/${sessionId.value}`)
-    loader.close()
-    const sourceQuery = isAssignmentAssessmentMode.value
-      ? `&source=assignment${currentAssignmentId.value ? `&assignment_id=${currentAssignmentId.value}` : ''}`
-      : ''
-    router.push(`/student/evaluation?session_id=${sessionId.value}${sourceQuery}`)
-  } catch (error) {
-    loader.close()
+  const targetSessionId = sessionId.value
+  const sourceQuery = isAssignmentAssessmentMode.value
+    ? `&source=assignment${currentAssignmentId.value ? `&assignment_id=${currentAssignmentId.value}` : ''}`
+    : ''
+  void request.post(`/training/finish/${targetSessionId}`, null, { _skipErrorToast: true } as any).catch(() => {
     isFinishingTraining.value = false
     showToast('评估报告生成失败')
-  }
-}
-
-const waitForEvaluationReport = async (targetSessionId: string, timeoutMs = 15000) => {
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < timeoutMs) {
-    try {
-      const res: any = await request.get(`/training/session/${targetSessionId}`, {
-        params: { for_report: 1 },
-        _skipErrorToast: true,
-      } as any)
-      if (res?.evaluation_result || res?.status === 'finished') return true
-    } catch {
-      // Keep waiting; the evaluation worker may still be committing the result.
-    }
-    await new Promise((resolve) => window.setTimeout(resolve, 800))
-  }
-  return false
+  })
+  router.push(`/student/evaluation?session_id=${targetSessionId}&generating=1${sourceQuery}`)
 }
 
 const interruptAssistantReply = () => {
@@ -1265,6 +1329,10 @@ const scrollToBottom = () => {
     }
   })
 }
+
+watch(sceneReadyForOpening, (ready) => {
+  if (ready) void maybeStartOpening()
+}, { flush: 'post' })
 
 onMounted(fetchSessionData)
 </script>

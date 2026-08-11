@@ -50,6 +50,41 @@ def _story_context(name: str, story: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _seed_identity_memories(person: dict[str, Any]) -> list[dict[str, Any]]:
+    """Keep source-verified people even when event memory extraction is sparse."""
+    name = _text(person.get("name"))
+    role = _text(person.get("role_type") or person.get("role") or "相关人员")
+    seeds: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in [*_items(person.get("knows_facts")), *_items(person.get("known_key_points"))]:
+        statement = _text(raw)
+        if not statement or statement in seen:
+            continue
+        seen.add(statement)
+        seeds.append({
+            "memory_id": f"{name}-ID{len(seeds) + 1}",
+            "memory_type": "source_identity",
+            "statement": statement[:500],
+            "time_hint": "未明确",
+            "place_hint": "未明确",
+            "actors": [name] if name else [],
+            "certainty": "source_supported",
+            "quote": statement[:180],
+        })
+    if not seeds and name:
+        seeds.append({
+            "memory_id": f"{name}-ID1",
+            "memory_type": "source_identity",
+            "statement": f"{name}在原文中作为{role}出现，身份已核对，经历细节待结合原文补全。",
+            "time_hint": "未明确",
+            "place_hint": "未明确",
+            "actors": [name],
+            "certainty": "source_supported",
+            "quote": name,
+        })
+    return seeds
+
+
 def _merge_person(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key in ("role", "role_type", "status", "role_basis", "source_verification", "persona_source"):
@@ -62,6 +97,11 @@ def _merge_person(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, A
         values = [item for item in _items(merged.get(key)) if item]
         values.extend(item for item in _items(incoming.get(key)) if item and item not in values)
         merged[key] = values
+    for key in ("knows_facts", "known_key_points"):
+        values = [_text(item) for item in _items(merged.get(key)) if _text(item)]
+        values.extend(_text(item) for item in _items(incoming.get(key)) if _text(item) and _text(item) not in values)
+        if values:
+            merged[key] = values
     merged.setdefault("status", "正常")
     merged.setdefault("source_verification", "source_matched")
     merged.setdefault("persona_source", "source_role_reconciliation")
@@ -92,6 +132,8 @@ def reconcile_case_roles(
         if name not in people_by_name:
             people_by_name[name] = person
             recovered_names.append(name)
+        else:
+            people_by_name[name] = _merge_person(people_by_name[name], person)
 
     candidates = list(people_by_name.values())
     cards = workflow_service._programmatic_claim_cards(source)
@@ -102,6 +144,7 @@ def reconcile_case_roles(
 
     final_people: list[dict[str, Any]] = []
     excluded_unusable_names: list[str] = []
+    identity_seeded_names: list[str] = []
     for person in candidates:
         name = _text(person.get("name"))
         source_memory_person = {
@@ -111,6 +154,12 @@ def reconcile_case_roles(
         }
         merged = _merge_person(person, source_memory_person)
         merged["narrative_context"] = _story_context(name, complete_story)
+        if not _items(merged.get("role_memories")):
+            seeded = _seed_identity_memories(merged)
+            if seeded:
+                merged["role_memories"] = seeded
+                identity_seeded_names.append(name)
+                merged = compile_person_role_information(merged)
         if not _items(merged.get("role_memories")) and not _items(merged.get("narrative_context")):
             excluded_unusable_names.append(name)
             continue
@@ -121,7 +170,11 @@ def reconcile_case_roles(
     final_names = {_text(person.get("name")) for person in final_people}
     retained_recovered_names = [name for name in recovered_names if name in final_names]
     memory_count = sum(len(_items(person.get("role_memories"))) for person in final_people)
-    zero_memory_names = [_text(person.get("name")) for person in final_people if not _items(person.get("role_memories"))]
+    zero_memory_names = [
+        _text(person.get("name"))
+        for person in final_people
+        if not _items(person.get("role_memories"))
+    ]
     stats = {
         "source_candidate_count": len(set(source_names)),
         "story_candidate_count": len(set(story_names)),
@@ -131,6 +184,7 @@ def reconcile_case_roles(
         "recovered_person_count": len(retained_recovered_names),
         "recovered_person_names": retained_recovered_names,
         "excluded_unusable_person_names": excluded_unusable_names,
+        "identity_seeded_person_names": identity_seeded_names,
         "zero_memory_person_names": zero_memory_names,
         "status": "completed",
     }
@@ -145,6 +199,8 @@ def reconcile_case_roles(
     if final_people and memory_count == 0:
         warnings.append("人物对账后仍未形成来源事件记忆，请人工复核原文结构。")
         stats["status"] = "memory_warning"
+    elif identity_seeded_names:
+        warnings.append("部分人物仅保留来源身份记忆，建议复核补齐亲历经历：" + "、".join(identity_seeded_names[:12]))
     elif zero_memory_names:
         warnings.append("部分人物仅有来源身份、暂无可核对经历：" + "、".join(zero_memory_names[:12]))
     result["parse_warnings"] = list(dict.fromkeys(warnings))

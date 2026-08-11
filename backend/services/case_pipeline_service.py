@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -12,14 +13,12 @@ from typing import Any
 
 import database
 import models
-from .persona_soul_service import enrich_personas
 from .scene_design_service import compile_scene_lifecycles
 from .case_scene_contract_service import build_case_quality_report, compile_case_scene_artifacts
 from .workflow_job_service import update_job
 from .workflow_service import workflow_service
 from .case_source_compaction_service import compact_case_source, compact_role_memories
 from .case_role_reconciliation_service import reconcile_case_roles
-from .case_story_reconstruction_service import generate_case_narrative, reconstruct_story_document
 from .case_knowledge_repository import store_case_knowledge, upsert_node
 
 
@@ -32,11 +31,87 @@ _LOCK = threading.Lock()
 
 
 def _pipeline_version() -> str:
-    configured = os.getenv("CASE_PIPELINE_VERSION", "case-pipeline-v7-role-reconciliation")
+    configured = os.getenv("CASE_PIPELINE_VERSION", "case-pipeline-v9-flowchart")
     story_provider = os.getenv("CASE_STORY_PROVIDER", "deepseek")
     story_model = os.getenv("CASE_STORY_MODEL", "")
     fallback = os.getenv("CASE_STORY_ALLOW_PROVIDER_FALLBACK", "0")
     return f"{configured}|story={story_provider}:{story_model}|fallback={fallback}|cache-v2"
+
+
+def _items(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _fact_cards_from_case(case_info: dict[str, Any]) -> list[dict[str, Any]]:
+    story_world = case_info.get("story_world") if isinstance(case_info.get("story_world"), dict) else {}
+    source_cards = [item for item in _items(story_world.get("fact_cards") or story_world.get("facts")) if isinstance(item, dict)]
+    if not source_cards:
+        for index, fact in enumerate(_items(case_info.get("key_facts")), start=1):
+            content = _text(fact)
+            if content:
+                source_cards.append({"id": f"F{index}", "content": content, "fact_type": "事实", "status": "claimed"})
+    if not source_cards:
+        claims = ((case_info.get("case_intelligence") or {}).get("claims") or []) if isinstance(case_info.get("case_intelligence"), dict) else []
+        for index, claim in enumerate(claims, start=1):
+            if not isinstance(claim, dict):
+                continue
+            content = _text(claim.get("statement"))
+            if content:
+                source_cards.append({
+                    "id": _text(claim.get("claim_id")) or f"F{index}",
+                    "content": content,
+                    "fact_type": _text(claim.get("claim_type")) or "事实",
+                    "status": _text(claim.get("verification_status")) or "claimed",
+                    "source_refs": claim.get("source_refs") or [],
+                })
+
+    cards: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(source_cards, start=1):
+        content = _text(item.get("content"))
+        if not content or content in seen:
+            continue
+        seen.add(content)
+        cards.append({
+            "id": _text(item.get("id")) or f"F{len(cards) + 1}",
+            "content": content,
+            "fact_type": _text(item.get("fact_type")) or "事实",
+            "status": _text(item.get("status")) or "claimed",
+            "source_refs": item.get("source_refs") if isinstance(item.get("source_refs"), list) else [],
+        })
+    return cards
+
+
+def _build_story_world_payload(case_info: dict[str, Any], story_graph: dict[str, Any]) -> dict[str, Any]:
+    """Worldview is a carrier for storage/rendering, not a business processor."""
+    return {
+        "schema_version": "story_world_v8_carrier",
+        "role": "storage_metrics_rendering_only",
+        "processing_policy": "business_logic_uses_complete_story_structured_facts_and_role_memories",
+        "complete_story": story_graph.get("complete_story") or case_info.get("complete_story") or "",
+        "facts": _fact_cards_from_case(case_info),
+        "fact_cards": _fact_cards_from_case(case_info),
+        "roles": [
+            {
+                "name": person.get("name"),
+                "role_type": person.get("role_type") or person.get("role"),
+                "status": person.get("status"),
+                "role_memories": person.get("role_memories") if isinstance(person.get("role_memories"), list) else [],
+                "knowledge_ledger": person.get("knowledge_ledger") if isinstance(person.get("knowledge_ledger"), list) else [],
+            }
+            for person in _items(case_info.get("persons"))
+            if isinstance(person, dict) and _text(person.get("name"))
+        ],
+        "metrics": {
+            "fact_count": len(_fact_cards_from_case(case_info)),
+            "role_count": len([person for person in _items(case_info.get("persons")) if isinstance(person, dict) and _text(person.get("name"))]),
+            "memory_count": sum(len(_items(person.get("role_memories"))) for person in _items(case_info.get("persons")) if isinstance(person, dict)),
+        },
+    }
 
 
 def _hash_payload(source_text: str, source_mode: str) -> str:
@@ -68,6 +143,18 @@ def _result_is_reusable(result_json: str | None) -> bool:
 
 
 def _run(job_id: str) -> None:
+    pipeline_started = time.perf_counter()
+    stage_started = pipeline_started
+    stage_timings_ms: dict[str, int] = {}
+
+    def finish_stage(stage: str) -> None:
+        nonlocal stage_started
+        now = time.perf_counter()
+        elapsed_ms = round((now - stage_started) * 1000)
+        stage_timings_ms[stage] = elapsed_ms
+        stage_started = now
+        print(f"[case-pipeline-timing] job_id={job_id} stage={stage} elapsed_ms={elapsed_ms}")
+
     db = database.SessionLocal()
     try:
         job = db.query(models.CasePipelineJob).filter(models.CasePipelineJob.id == job_id).first()
@@ -78,65 +165,58 @@ def _run(job_id: str) -> None:
         db.close()
 
     try:
-        update_job(job_id, status="running", stage="extracting", progress=8, status_message="正在读取案件内容", started_at=datetime.utcnow(), error_message=None)
+        update_job(job_id, status="running", stage="cleaning", progress=10, status_message="正在清洗案件原文", started_at=datetime.utcnow(), error_message=None)
         text = str(request.get("source_text") or "").strip()
         if not text:
             raise ValueError("案件内容为空")
 
         compacted_source = compact_case_source(text)
         namespace = f"case-source:{job.input_hash}"
-        update_job(job_id, stage="facts", progress=18, status_message="正在并行整理人物来源与创作完整剧情")
+        finish_stage("source_compaction")
 
-        def build_case_state() -> dict[str, Any]:
-            return workflow_service.parse_case_for_training(
-                compacted_source["training_text"],
-                source_mode=str(request.get("source_mode") or "plain_case"),
-                source_meta=request.get("source_meta") if isinstance(request.get("source_meta"), dict) else None,
-            )
+        update_job(job_id, stage="story", progress=25, status_message="正在生成完整案件剧情")
+        try:
+            complete_story, story_trace = workflow_service.generate_complete_case_story(compacted_source["training_text"])
+        except Exception as exc:
+            complete_story = compacted_source["training_text"]
+            story_trace = {"attempts": getattr(exc, "trace", []), "error": str(exc)[:500], "used_source_fallback": True}
+        story_metadata = story_trace.get("story_metadata") if isinstance(story_trace.get("story_metadata"), dict) else {}
+        finish_stage("complete_story_generation")
 
-        def build_story_draft() -> tuple[str, dict[str, Any]]:
-            try:
-                return generate_case_narrative(compacted_source["training_text"])
-            except Exception as exc:
-                return "", {"attempts": getattr(exc, "trace", []), "error": str(exc)[:500]}
-
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="case-import-core") as executor:
-            case_future = executor.submit(build_case_state)
-            story_future = executor.submit(build_story_draft)
-            case_info = case_future.result()
-            story_draft, story_trace = story_future.result()
-        if not story_draft and story_trace.get("error"):
-            warnings = case_info.get("parse_warnings") if isinstance(case_info.get("parse_warnings"), list) else []
-            warnings.append(f"完整剧情专家模型不可用，已保留来源事件版本：{story_trace['error']}")
-            case_info["parse_warnings"] = list(dict.fromkeys(warnings))
-        update_job(job_id, stage="story", progress=38, status_message="正在核对故事覆盖并生成完整事件明细")
-        story_graph = reconstruct_story_document(
-            case_info.get("case_reconstruction") or {},
-            case_info.get("persons") or [],
-            source_text=compacted_source["training_text"],
-            use_model=False,
-            narrative_override=story_draft,
-            generation_trace=story_trace,
+        update_job(job_id, stage="facts", progress=45, status_message="正在解析事实、提取人物并生成角色记忆")
+        case_info = workflow_service.parse_case_for_training(
+            complete_story,
+            source_mode=str(request.get("source_mode") or "plain_case"),
+            source_meta=request.get("source_meta") if isinstance(request.get("source_meta"), dict) else None,
         )
-        case_info["complete_story"] = story_graph["complete_story"]
-        case_info["full_narrative"] = story_graph["complete_story"]
+        if story_metadata.get("case_name"):
+            case_info["case_name"] = story_metadata["case_name"]
+        if story_metadata.get("case_type"):
+            case_info["case_type"] = story_metadata["case_type"]
+        if story_metadata.get("case_background"):
+            case_info["case_background"] = story_metadata["case_background"]
+        if story_trace.get("error"):
+            warnings = case_info.get("parse_warnings") if isinstance(case_info.get("parse_warnings"), list) else []
+            warnings.append(f"完整剧情模型不可用，已使用清洗后的案件正文继续抽取：{story_trace['error']}")
+            case_info["parse_warnings"] = list(dict.fromkeys(warnings))
+        finish_stage("structured_facts_roles_memories")
+
+        update_job(job_id, stage="world", progress=58, status_message="正在构建案件故事世界")
+        case_info["complete_story"] = complete_story
+        case_info["full_narrative"] = complete_story
         case_info["narrative_document"] = {
-            "schema_version": 5,
+            "schema_version": 6,
             "format": "word",
-            "content": story_graph["complete_story"],
-            "role": "deepseek_expert_case_narrative",
-            "policy": "canonical_outcome_with_rich_main_and_side_branches",
+            "content": complete_story,
+            "role": "complete_case_story",
+            "policy": "flowchart_step_c",
         }
-        case_info["story_documents"] = story_graph["story_documents"]
-        case_info["event_story"] = story_graph["event_document"]
-        case_info["story_world"] = {
-            **(case_info.get("story_world") or {}),
-            "complete_story": story_graph["complete_story"],
-            "nodes": story_graph["nodes"],
-            "coverage": story_graph["coverage"],
-            "event_entries": story_graph["event_entries"],
-            "story_generation": story_graph["generation_trace"],
+        case_info["story_documents"] = {
+            "narrative": {"title": "案件完整故事剧情", "format": "word", "content": complete_story}
         }
+        case_info.pop("event_story", None)
+        case_info.pop("case_reconstruction", None)
+        story_graph = {"complete_story": complete_story}
         case_info["original_content"] = text
         case_info["rawText"] = text
         upsert_node(namespace, "excluded-appendix", "source_appendix", compacted_source["excluded_appendix"])
@@ -144,27 +224,35 @@ def _run(job_id: str) -> None:
             key: value for key, value in compacted_source.items()
             if key not in {"training_text", "excluded_appendix"}
         }
+        original_chars = int(compacted_source.get("original_chars") or len(text))
+        training_chars = int(compacted_source.get("training_chars") or len(compacted_source["training_text"]))
+        case_info["story_material_audit"] = {
+            "original_chars": original_chars,
+            "training_chars": training_chars,
+            "excluded_appendix_count": len(compacted_source.get("excluded_appendix") or []),
+            "compaction_ratio": round(training_chars / max(original_chars, 1), 4),
+            "large_document": original_chars >= int(os.getenv("CASE_LARGE_DOCUMENT_CHARS", "50000")),
+            "possible_truncation": training_chars < original_chars * 0.65 and original_chars >= int(os.getenv("CASE_TRUNCATION_AUDIT_CHARS", "20000")),
+        }
         case_info["knowledge_namespace"] = namespace
+        case_info["story_world"] = _build_story_world_payload(case_info, story_graph)
+        finish_stage("story_world_carrier")
 
-        update_job(job_id, stage="roles", progress=48, status_message="正在核对完整剧情中的人物与来源记忆")
+        update_job(job_id, stage="roles", progress=68, status_message="正在核对角色记忆与信息来源")
         case_info = reconcile_case_roles(
             case_info,
-            source_text=compacted_source["training_text"],
-            complete_story=story_graph["complete_story"],
+            source_text=complete_story,
+            complete_story=complete_story,
         )
         case_info["persons"] = compact_role_memories(case_info.get("persons") or [])
+        case_info["story_world"] = _build_story_world_payload(case_info, story_graph)
         case_info["knowledge_manifest"] = store_case_knowledge(namespace, case_info)
+        finish_stage("role_reconciliation")
+        parse_ai_workflow = case_info.get("parse_ai_workflow") or case_info.get("ai_workflow") or {}
 
-        update_job(job_id, stage="personas", progress=55, status_message="正在形成角色行为画像")
-        case_info = enrich_personas(case_info, use_model=True)
-        case_info["knowledge_manifest"] = store_case_knowledge(namespace, case_info)
-
-        update_job(job_id, stage="scenes", progress=70, status_message="正在按时间、空间和在场人物设计训练场景")
+        update_job(job_id, stage="scenes", progress=82, status_message="正在生成场景蓝图")
         scene_context = dict(case_info)
-        scene_context["story_world"] = {
-            key: value for key, value in (case_info.get("story_world") or {}).items()
-            if key not in {"person_cards", "complete_story", "source_sections"}
-        }
+        scene_context["story_world"] = case_info.get("story_world") or {}
         scene_context["persons"] = [
             {
                 "name": person.get("name"),
@@ -185,26 +273,42 @@ def _run(job_id: str) -> None:
         ]
         scene_result = workflow_service.generate_scenes(scene_context, scene_generation_strategy="case_driven")
         scenes = compile_scene_lifecycles(case_info, scene_result.get("scenes") or [])
+        finish_stage("scene_blueprints_and_scripts")
 
         update_job(job_id, stage="validating", progress=92, status_message="正在检查角色边界和训练闭环")
         case_info["scene_generation_mode"] = scene_result.get("scene_generation_mode") or ""
-        case_info["ai_workflow"] = scene_result.get("ai_workflow") or {}
+        case_info["scene_generation_warning"] = scene_result.get("scene_generation_warning") or ""
+        case_info["parse_ai_workflow"] = parse_ai_workflow
+        case_info["scene_ai_workflow"] = scene_result.get("ai_workflow") or {}
+        case_info["ai_workflows"] = [
+            item for item in (parse_ai_workflow, scene_result.get("ai_workflow") or {})
+            if isinstance(item, dict) and item
+        ]
         derived = compile_case_scene_artifacts(case_info, scenes)
         scenes = derived["scenes"]
         quality_report = build_case_quality_report(case_info, scenes)
+        finish_stage("boundary_validation")
+        stage_timings_ms["total"] = round((time.perf_counter() - pipeline_started) * 1000)
+        print(
+            f"[case-pipeline-timing] job_id={job_id} stage=total "
+            f"elapsed_ms={stage_timings_ms['total']}"
+        )
         persisted_case_info = dict(case_info)
         persisted_case_info.pop("source_sections", None)
         if persisted_case_info.get("full_narrative") == persisted_case_info.get("complete_story"):
             persisted_case_info.pop("full_narrative", None)
-        persisted_case_info["story_world"] = {
-            key: value for key, value in (persisted_case_info.get("story_world") or {}).items()
-            if key not in {"person_cards", "complete_story", "source_sections"}
-        }
+        persisted_case_info["story_world"] = _build_story_world_payload(case_info, story_graph)
         result = {
             "case_info": {
                 **persisted_case_info,
                 "scene_generation_mode": scene_result.get("scene_generation_mode") or "",
                 "scene_generation_warning": scene_result.get("scene_generation_warning") or "",
+                "parse_ai_workflow": parse_ai_workflow,
+                "scene_ai_workflow": scene_result.get("ai_workflow") or {},
+                "ai_workflows": [
+                    item for item in (parse_ai_workflow, scene_result.get("ai_workflow") or {})
+                    if isinstance(item, dict) and item
+                ],
             },
             "scenes": scenes,
             "scene_generation_mode": scene_result.get("scene_generation_mode") or "",
@@ -219,7 +323,14 @@ def _run(job_id: str) -> None:
             "derived_revision": derived["derived_revision"],
             "scene_contract_schema_version": derived["scene_contract_schema_version"],
             "quality_report": quality_report,
+            "pipeline_timings_ms": stage_timings_ms,
+            "parse_ai_workflow": parse_ai_workflow,
+            "scene_ai_workflow": scene_result.get("ai_workflow") or {},
             "ai_workflow": scene_result.get("ai_workflow") or {},
+            "ai_workflows": [
+                item for item in (parse_ai_workflow, scene_result.get("ai_workflow") or {})
+                if isinstance(item, dict) and item
+            ],
         }
         update_job(
             job_id,
@@ -231,6 +342,11 @@ def _run(job_id: str) -> None:
             completed_at=datetime.utcnow(),
         )
     except Exception as exc:
+        total_elapsed_ms = round((time.perf_counter() - pipeline_started) * 1000)
+        print(
+            f"[case-pipeline-timing] job_id={job_id} stage=failed "
+            f"elapsed_ms={total_elapsed_ms} error={str(exc)[:240]}"
+        )
         update_job(
             job_id,
             status="failed",

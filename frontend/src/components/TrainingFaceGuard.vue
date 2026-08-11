@@ -1,5 +1,6 @@
 <template>
-  <section class="face-guard" :class="[`face-guard--${mode}`, { 'face-guard--passed': verified }]">
+  <Teleport to="body" :disabled="mode !== 'monitor'">
+  <section ref="guardRef" class="face-guard" :class="[`face-guard--${mode}`, { 'face-guard--passed': verified }]" :style="monitorPositionStyle">
     <div class="face-guard__camera">
       <video ref="videoRef" autoplay muted playsinline></video>
       <canvas ref="canvasRef" class="face-guard__canvas"></canvas>
@@ -9,9 +10,10 @@
     </div>
 
     <div class="face-guard__body">
-      <div class="face-guard__title-row">
+      <div class="face-guard__title-row" :class="{ 'face-guard__drag-handle': mode === 'monitor' }" @pointerdown="startDrag">
         <strong>人脸验证</strong>
         <span class="face-guard__badge">{{ badgeText }}</span>
+        <van-icon v-if="mode === 'monitor'" name="exchange" class="face-guard__drag-icon" title="拖动面板" />
       </div>
       <div class="face-guard__meta">
         <span>连续异常次数 {{ failureCount }}/{{ maxFailures }}</span>
@@ -55,10 +57,11 @@
       </div>
     </van-dialog>
   </section>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { showToast } from 'vant'
 import request from '../utils/request'
 import { FACE_HEARTBEAT_RETRY_MS, FACE_VERIFY_RETRY_MS, localizeFaceMessage } from '../utils/faceVerification'
@@ -93,6 +96,10 @@ const verifyStatusText = ref('等待启动人脸识别模型')
 const verifyAttemptCount = ref(0)
 const lastSimilarityText = ref('')
 const lastSimilarityScore = ref(0)
+const guardRef = ref<HTMLElement | null>(null)
+const MONITOR_MARGIN = 16
+const monitorPosition = ref({ left: MONITOR_MARGIN, top: MONITOR_MARGIN })
+let dragState: { pointerId: number; offsetX: number; offsetY: number } | null = null
 
 const targetCameraLabel = 'HK 5M CAM 200W'
 const builtInCameraLabel = 'ASUS FHD webcam'
@@ -100,6 +107,41 @@ const verifyRetryMs = FACE_VERIFY_RETRY_MS
 const heartbeatRetryMs = FACE_HEARTBEAT_RETRY_MS
 
 const mode = computed(() => props.mode || (verified.value ? 'monitor' : 'gate'))
+const monitorPositionStyle = computed(() => mode.value === 'monitor' ? { left: `${monitorPosition.value.left}px`, top: `${monitorPosition.value.top}px` } : undefined)
+
+const clampMonitorPosition = () => {
+  const element = guardRef.value
+  if (!element || mode.value !== 'monitor') return
+  monitorPosition.value = {
+    left: Math.max(0, Math.min(monitorPosition.value.left, window.innerWidth - element.offsetWidth)),
+    top: Math.max(0, Math.min(monitorPosition.value.top, window.innerHeight - element.offsetHeight)),
+  }
+}
+const moveDrag = (event: PointerEvent) => {
+  if (!dragState || event.pointerId !== dragState.pointerId) return
+  monitorPosition.value = { left: event.clientX - dragState.offsetX, top: event.clientY - dragState.offsetY }
+  clampMonitorPosition()
+}
+const endDrag = (event: PointerEvent) => {
+  if (!dragState || event.pointerId !== dragState.pointerId) return
+  dragState = null
+  window.removeEventListener('pointermove', moveDrag)
+  window.removeEventListener('pointerup', endDrag)
+  window.removeEventListener('pointercancel', endDrag)
+}
+const startDrag = (event: PointerEvent) => {
+  if (mode.value !== 'monitor' || !guardRef.value) return
+  const rect = guardRef.value.getBoundingClientRect()
+  dragState = { pointerId: event.pointerId, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top }
+  guardRef.value.setPointerCapture?.(event.pointerId)
+  window.addEventListener('pointermove', moveDrag)
+  window.addEventListener('pointerup', endDrag)
+  window.addEventListener('pointercancel', endDrag)
+}
+const resetMonitorPosition = () => {
+  monitorPosition.value = { left: MONITOR_MARGIN, top: MONITOR_MARGIN }
+  nextTick(clampMonitorPosition)
+}
 const badgeText = computed(() => {
   if (failureCount.value >= maxFailures.value) return '已中断'
   if (verified.value) return '已通过'
@@ -396,6 +438,11 @@ const fetchStatus = async () => {
     const result: any = await request.get(`/face/session/${props.sessionId}/status`, { _skipErrorToast: true } as any)
     failureCount.value = Number(result.monitor_failure_count ?? result.failure_count ?? 0)
     maxFailures.value = Number(result.max_failures || 5)
+    if (result.verified && !verified.value) {
+      verified.value = true
+      emit('verified')
+      startHeartbeat()
+    }
     if (!result.registered) verifyHint.value = '当前账号尚未注册人脸档案'
     if (result.terminated) emit('terminated', result)
   } catch {
@@ -406,11 +453,23 @@ const fetchStatus = async () => {
 defineExpose({ runVerify, stopCamera })
 
 onMounted(async () => {
+  resetMonitorPosition()
+  window.addEventListener('resize', clampMonitorPosition)
   await fetchStatus()
   await startCamera()
 })
 
-onBeforeUnmount(stopCamera)
+watch(mode, (nextMode, previousMode) => {
+  if (nextMode === 'monitor' && previousMode !== 'monitor') resetMonitorPosition()
+  else nextTick(clampMonitorPosition)
+})
+onBeforeUnmount(() => {
+  stopCamera()
+  window.removeEventListener('resize', clampMonitorPosition)
+  window.removeEventListener('pointermove', moveDrag)
+  window.removeEventListener('pointerup', endDrag)
+  window.removeEventListener('pointercancel', endDrag)
+})
 </script>
 
 <style scoped>
@@ -427,6 +486,8 @@ onBeforeUnmount(stopCamera)
 }
 
 .face-guard--monitor {
+  position: fixed;
+  z-index: 2147483000;
   grid-template-columns: 72px minmax(0, 1fr);
   width: 260px;
   height: 112px;
@@ -471,6 +532,8 @@ onBeforeUnmount(stopCamera)
   flex-wrap: wrap;
   row-gap: 4px;
 }
+.face-guard__drag-handle { cursor: move; touch-action: none; user-select: none; }
+.face-guard__drag-icon { margin-left: auto; color: #64748b; }
 
 .face-guard--monitor .face-guard__meta span,
 .face-guard--monitor .face-guard__body p {

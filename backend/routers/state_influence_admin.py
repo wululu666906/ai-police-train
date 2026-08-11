@@ -7,7 +7,7 @@ import database
 import models
 from routers.auth import require_admin_user
 from services.training_runtime_service import load_runtime_state
-from services.state_contract_postcheck import validate_response_against_contract
+from services.state_contract_validation import validate_response_against_contract
 from services.state_influence_config import export_tables_for_admin, save_overrides
 from services.state_influence_metrics import (
     build_calibration_report,

@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from .llm_provider import create_json_chat_completion, extract_json_payload, get_chat_model
-from .ai_roles import get_assessment_point_officer_prompts
+from .prompts.case_pipeline import ASSESSMENT_POINT_PROMPT
 from .scene_bucket_service import (
     BUCKET_LABELS,
     SCENE_BUCKETS,
@@ -174,48 +174,32 @@ def apply_template_to_points(
 
 
 def _build_case_context(case_info: dict[str, Any], scene_info: dict[str, Any]) -> str:
+    complete_story = str(
+        case_info.get("complete_story")
+        or case_info.get("full_narrative")
+        or case_info.get("case_background")
+        or case_info.get("background")
+        or ""
+    ).strip()
+    training_goal = str(
+        scene_info.get("training_goal")
+        or scene_info.get("stage_goal")
+        or scene_info.get("description")
+        or ""
+    ).strip()
     parts = [
+        f"完整案件剧情：{complete_story[:6000]}",
+        f"本场景训练目标：{training_goal}",
         f"案件标题：{case_info.get('title') or case_info.get('case_name') or ''}",
         f"案件类型：{case_info.get('case_type') or ''}",
-        f"案情摘要：{case_info.get('case_background') or case_info.get('background') or ''}",
         f"场景名称：{scene_info.get('name') or scene_info.get('scene_name') or ''}",
-        f"场景说明：{scene_info.get('description') or ''}",
         f"接警简报：{scene_info.get('dispatch_brief') or ''}",
-        f"现场印象：{scene_info.get('first_impression') or ''}",
+        f"现场第一印象：{scene_info.get('first_impression') or ''}",
     ]
     return "\n".join(part for part in parts if str(part).split("：", 1)[-1].strip())
 
 
-ASSESSMENT_GEN_PROMPT = """你是公安教官，负责为本场景设计「考察点」——用于衡量学员在模拟对话/现场处置中是否具备相应警务能力。
-
-## 字段含义（严禁混写）
-- label（考察点名称）：≤20字的**核心能力要求**，如「压实矛盾点时间线」「识别并处置持续风险」。
-- content（考察内容）：80–200字的**具体题目与操作说明**，写清学员在训练中必须完成什么、怎么问/怎么做、达到什么标准。禁止把 label 原样复读成「学员应完成：XXX」。
-
-## 出题原则（教官视角）
-1. 紧扣本案案情与当前场景环节，从材料中提取可训练的能力缺口，不要出与本案无关的通用题。
-2. 禁止只考「问姓名、问电话、问地址」等无难度表层信息；若涉及身份地点，须结合本案争议点（关系、经过、风险、证据）设问。
-3. 每个场景 4–6 条（不得超过 6 条），覆盖本环节最关键的能力：风险识别、程序规范、取证固定、矛盾压实、处置路径等（按场景取舍，不要六条同质化）。
-4. 每条必须可观察、可评分：content 末尾用「怎样算完成：」写通俗说明（回放训练记录时能听/看到学员做了什么），不要用「对话关键词或执法动作核查」等技术用语。
-5. keywords 2–5 个；required 对关键项 true；weight 必考 12–15、选考 8–10；category 仅用 procedure|risk|evidence，并根据场景类型侧重：接警场景偏 risk（风险筛查与派警判断），现场场景偏 evidence + procedure（现场控制与取证），询问场景偏 procedure（矛盾压实与时间线核查）。
-6. 如有法律法规依据可绑定考察点，在 knowledge_refs 数组中填入参考内容标题或编号（可选，不编造）。
-
-## content 写作结构（每条须包含）
-- 学员应发起的具体问询/指令/动作（可多条，用分号或序号）；
-- 须追问的细节维度（时间线、矛盾点、动机、证据、风险等，结合本案）；
-- 怎样算完成（用大白话写：回放训练记录时能听出什么、看到什么算达标，什么算没做到）。
-
-## 反例（禁止）
-- label=问清现场经过，content=学员应完成：问清现场经过。
-- 六条全是「核实某某信息」且无本案针对性。
-- category 全部相同（如六条全用 procedure 或全用 risk），应混合 risk/evidence/procedure。
-- label 全部以「确认」「核实」开头，内容同质。
-
-## 正例（风格参考，勿照抄）
-- label：压实双方陈述矛盾
-  content：学员在训练对话或现场处置中应做到：压实双方陈述矛盾。具体要求：分别听取双方对「谁先动手、有无持械、受伤情况」的陈述，针对不一致处当场追问至少 2 处。怎样算完成：回放记录时能听出你在对比双方说法并追问矛盾，而不是只听一方说完就结束。
-
-只输出 JSON：{{"assessment_points":[{{"label":"","content":"","category":"procedure","required":true,"weight":12,"keywords":[],"knowledge_refs":[]}}]}}"""
+ASSESSMENT_GEN_PROMPT = ASSESSMENT_POINT_PROMPT
 
 
 def generate_assessment_points_with_llm(
@@ -427,27 +411,19 @@ def generate_bucketed_assessment_points_with_officer(
     source_text: str = "",
     extra_hint: str = "",
 ) -> dict[str, Any]:
-    """LLM: dedicated assessment point officer → three scene buckets."""
-    officer = get_assessment_point_officer_prompts()
-    user_prompt = build_officer_user_prompt(
-        case_info,
-        scenes,
-        source_text=source_text,
-        extra_hint=extra_hint,
-    )
-    response = create_json_chat_completion(
-        messages=[
-            {"role": "system", "content": officer["system_prompt"]},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.3,
-        model=get_chat_model(),
-        max_tokens=3200,
-    )
-    payload = extract_json_payload(response) or {}
-    if not isinstance(payload, dict):
-        raise ValueError("考察点专员返回格式无效")
-    return payload
+    """Deprecated: generate per scene directly without bucket orchestration."""
+    scene_results: list[dict[str, Any]] = []
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        points = generate_assessment_points_with_llm(
+            case_info,
+            scene,
+            source_text=source_text,
+            extra_hint=extra_hint,
+        )
+        scene_results.append({"scene_name": scene.get("name") or scene.get("scene_name"), "assessment_points": points})
+    return {"scenes": scene_results, "warnings": []}
 
 
 def _extract_points_from_bucket_payload(bucket_data: Any) -> list[dict[str, Any]]:
@@ -535,22 +511,25 @@ def distribute_assessment_points_to_scenes(
         llm_reference = pasted
     if use_llm and not any(bucket_points.values()):
         try:
-            officer_payload = generate_bucketed_assessment_points_with_officer(
-                case_info,
-                normalized_scenes,
-                source_text=llm_reference,
-                extra_hint=extra_hint,
-            )
-            raw_buckets = officer_payload.get("buckets") if isinstance(officer_payload.get("buckets"), dict) else {}
-            for bucket in SCENE_BUCKETS:
-                bucket_points[bucket] = _extract_points_from_bucket_payload(raw_buckets.get(bucket))
-            name_suggestions = officer_payload.get("scene_name_suggestions") if isinstance(
-                officer_payload.get("scene_name_suggestions"), dict
-            ) else {}
-            _extend_warnings(warnings, officer_payload.get("warnings"))
-            source = "officer_llm"
+            for index, scene in enumerate(normalized_scenes):
+                points = generate_assessment_points_with_llm(
+                    case_info,
+                    scene,
+                    source_text=llm_reference,
+                    extra_hint=extra_hint,
+                )
+                if not points:
+                    continue
+                bucket = resolve_scene_bucket(
+                    str(scene.get("name") or ""),
+                    scene_index=index,
+                    scene_count=len(normalized_scenes),
+                )
+                bucket_points[bucket] = points
+            if any(bucket_points.values()):
+                source = "scene_llm"
         except Exception as exc:
-            warnings.append(f"AI 分场景失败，已用内置模板：{exc}")
+            warnings.append(f"AI 考察点生成失败，已用内置模板：{exc}")
             _fill_builtin_bucket_points(bucket_points, case_type=case_type, name_suggestions=name_suggestions)
 
     if not any(bucket_points.values()):

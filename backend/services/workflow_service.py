@@ -16,7 +16,6 @@ from .training_compiler_service import build_observable_scoring_rules, build_tra
 from .stage_config_service import normalize_stages
 from .case_scene_module_service import build_case_frequency_prompt, build_scene_module_prompt
 from .scene_story_planner_service import (
-    bind_blueprints_to_story,
     bind_scenes_to_story,
     build_scene_portfolio_plan,
     complete_scene_blueprint_portfolio,
@@ -375,12 +374,12 @@ story_segment 必须按自然段写：①发生时间、地点和在场人员；
 WORLDVIEW_PROMPT = """你是公安警情训练案件状态编辑。输出一个 JSON 对象，字段为：
 case_name, case_type, case_background, fact_sheet, persons, key_facts, evidence_points, inconsistencies, transcript_summary,
 story_world。
-story_world 必须包含 complete_story、fact_cards、timeline、relationship_graph、person_cards、open_questions、simulation_supplements。complete_story 要把输入 story_segments 合并为忠于原文、时间和因果连贯的完整案件故事，不得丢失冲突陈述。
-每个 fact_card 使用 id、content、status、source_refs；source_refs 是 source_id/start/end/summary。person_card 必须写明 timeline_actions、known_fact_ids、cannot_answer_fact_ids、conflict_fact_ids。
-confirmed 只能是有原文引用的事实；单方说法写 claimed；互相矛盾写 conflicted；无法确认写 unknown。允许 simulation_supplements，但每项必须有 id、content、purpose、applicable_scene_types、is_scoring_fact:false。不得把补写写入 confirmed 或人物已知事实。"""
+story_world 只作为承载结构，包含 complete_story、facts、roles、metrics；不得在 story_world 中生成事件账本、时间线/空间线、人物关系图或业务决策规则。
+facts 每项使用 id、content、fact_type、status、source_refs；roles 每项只保留 name、role_type、status、role_memories、knowledge_ledger。
+confirmed 只能是有原文引用的事实；单方说法写 claimed；互相矛盾写 conflicted；无法确认写 unknown。不得把模拟补写写入 confirmed 或人物已知事实。"""
 
-SCENE_BLUEPRINT_PROMPT = """你是警务训练场景规划师。基于案件完整故事图和 candidate_scene_slots 生成必要的训练场景蓝图，只输出 JSON：
-{"blueprints":[{"scene_id":"S1","portfolio_role":"intake|primary|investigation|followup","is_primary":false,"scene_name":"","scene_kind":"接警|案发后现场处置|案发后调查询问|案发后复盘回访|其他","scene_purpose":"为什么训练该场景","training_goal":"学员完成什么","start_state":"训练开始时的状态","completion_criteria":["可观察的完成条件"],"end_prompt":"达标后的结束提示","training_entry_phase":"intake|post_incident_onsite|post_incident_inquiry|post_incident_followup","entry_time_policy":"dispatch_intake|after_canonical_event","canonical_outcome_locked":true,"student_role":"民警","story_node_ids":["N1"],"time":"","place":"","roles":["可交互人物名"],"present_roles":["在场人物名"],"mentioned_roles":["被提及人物名"],"fact_ids":["F1"],"open_question_ids":[],"supplement_ids":[],"stages":[{"stage_name":"","stage_goal":""}]}]}。
+SCENE_BLUEPRINT_PROMPT = """你是警务训练场景规划师。基于案件完整剧情、程序化事实卡、角色记忆和 candidate_scene_slots 生成必要的训练场景蓝图，只输出 JSON：
+{"blueprints":[{"scene_id":"S1","portfolio_role":"intake|primary|investigation|followup","is_primary":false,"scene_name":"","scene_kind":"接警|案发后现场处置|案发后调查询问|案发后复盘回访|其他","scene_purpose":"为什么训练该场景","training_goal":"学员完成什么","start_state":"训练开始时的状态","completion_criteria":["可观察的完成条件"],"end_prompt":"达标后的结束提示","training_entry_phase":"intake|post_incident_onsite|post_incident_inquiry|post_incident_followup","entry_time_policy":"dispatch_intake|after_canonical_event","canonical_outcome_locked":true,"student_role":"民警","time":"","place":"","roles":["可交互人物名"],"present_roles":["在场人物名"],"mentioned_roles":["被提及人物名"],"fact_ids":["F1"],"open_question_ids":[],"supplement_ids":[],"stages":[{"stage_name":"","stage_goal":""}]}]}。
 
 规则：
 1. 必要性原则优先：输出 1-4 个场景。单一场景可以完成训练目标时，必须只输出 1 个；禁止按案件难易、事实数量或模板槽位凑多场景。
@@ -391,7 +390,7 @@ SCENE_BLUEPRINT_PROMPT = """你是警务训练场景规划师。基于案件完�
 6. 每个场景必须写清：学员当前面对谁、当前矛盾或信息缺口是什么、需要完成哪些处置动作、系统通过什么行为判断训练目标完成。
 7. 场景按不同警务目标拆分，不能把同一段事实换标题重复生成。相同地点但工作对象、矛盾焦点或线索任务不同，才可以形成独立场景。
 8. roles 应列出该处置阶段可接触且可交流的相关人物；死亡、昏迷或无法交流者除外。历史节点的在场名单仅作人物相关性参考。
-9. 每个场景引用 1-24 条真正用于该场景的事实，不得把全案所有事实平均分给每个场景。
+9. 每个场景引用 1-24 条真正用于该场景的事实，不得把全案所有事实平均分给每个场景；不得依赖事件账本、时间线/空间线或人物关系图生成业务决策。
 10. 每个场景必须写清 scene_purpose、training_goal、start_state、completion_criteria 和 end_prompt；完成条件必须是学员可执行、系统可观察的行为。"""
 
 SCENE_BLUEPRINT_COMPLETION_PROMPT = """你是警务训练场景组合补全器。输入中包含已经生成的场景和 missing_scene_slots。
@@ -602,34 +601,42 @@ class WorkflowService:
         people: dict[str, dict[str, Any]] = {}
 
         def add(name: str, role_type: str, evidence: str, *, strong_action_context: bool = False):
-            clean = self._normalize_person_name(name)
-            for suffix in ("称其", "表示", "反映", "报警", "报案", "搬走", "拿走", "打伤", "推倒", "离开", "进入"):
-                if clean.endswith(suffix) and len(clean) - len(suffix) >= 2:
-                    clean = clean[: -len(suffix)]
-                    break
-            valid_name = (
-                self._is_contextual_person_name(clean)
-                if strong_action_context
-                else self._is_programmatic_person_name(clean)
-            )
-            if not valid_name:
+            raw_candidates = [name]
+            normalized = self._normalize_person_name(name)
+            # Action clauses often greedily capture a leading adverb/time word
+            # (“上午李平赶到”). Retry surname-aligned suffixes so real names survive.
+            if strong_action_context and len(normalized) >= 3:
+                raw_candidates.extend([normalized[-3:], normalized[-2:]])
+            for raw in raw_candidates:
+                clean = self._normalize_person_name(raw)
+                for suffix in ("称其", "表示", "反映", "报警", "报案", "搬走", "拿走", "打伤", "推倒", "离开", "进入"):
+                    if clean.endswith(suffix) and len(clean) - len(suffix) >= 2:
+                        clean = clean[: -len(suffix)]
+                        break
+                valid_name = (
+                    self._is_contextual_person_name(clean)
+                    if strong_action_context
+                    else self._is_programmatic_person_name(clean)
+                )
+                if not valid_name:
+                    continue
+                item = people.setdefault(clean, {
+                    "name": clean,
+                    "role": role_type,
+                    "role_type": self._guess_role_type(role_type),
+                    "status": "正常",
+                    "knows_facts": [],
+                    "known_key_points": [],
+                    "source_verification": "source_matched",
+                    "persona_source": "programmatic_identity_only",
+                    "persona_autofill": False,
+                    "role_template_version": "source_memory_v2",
+                })
+                fact = str(evidence or "").strip()[:120]
+                if fact and fact not in item["knows_facts"]:
+                    item["knows_facts"].append(fact)
+                    item["known_key_points"].append(fact)
                 return
-            item = people.setdefault(clean, {
-                "name": clean,
-                "role": role_type,
-                "role_type": self._guess_role_type(role_type),
-                "status": "正常",
-                "knows_facts": [],
-                "known_key_points": [],
-                "source_verification": "source_matched",
-                "persona_source": "programmatic_identity_only",
-                "persona_autofill": False,
-                "role_template_version": "source_memory_v2",
-            })
-            fact = str(evidence or "").strip()[:120]
-            if fact and fact not in item["knows_facts"]:
-                item["knows_facts"].append(fact)
-                item["known_key_points"].append(fact)
 
         role_labels = "报警人|报案人|证人|目击者|嫌疑人|犯罪嫌疑人|被告人|上诉人|原审被告人|同案人|被害人|受害人"
         for match in re.finditer(
@@ -711,6 +718,21 @@ class WorkflowService:
         # Register the speaker so the source-block pass can attach their memory.
         for match in re.finditer(
             r"(?:^|[\n。])\s*(?:第?\d+[.、．]?\s*)?([\u4e00-\u9fff]{2,4}(?:\d{1,2})?)(?:的)?(?:证言|陈述|供述|辩解|询问笔录|讯问笔录)",
+            text,
+        ):
+            add(match.group(1), "相关人员", match.group(0))
+        # Transcript / interview headers: 被询问人：李平 / 询问对象彭某乙
+        for match in re.finditer(
+            r"(?:被询问人|被讯问人|询问对象|谈话对象|陈述人|受访人)[：:\s]{0,4}"
+            r"([\u4e00-\u9fff]{2,4}(?:某[甲乙丙丁戊己庚辛壬癸]?\d{0,2}|\d{0,2})?)"
+            r"(?=称|说|表示|反映|陈述|证言|供述|辩解|报警|报案|在|于|与|和|及|均|、|，|。|；|:|：|\s|$)",
+            text,
+        ):
+            add(match.group(1), "相关人员", match.group(0))
+        for match in re.finditer(
+            r"(?:报警人|报案人|被害人|受害人|证人)(?:姓名)?[：:\s]{0,4}"
+            r"([\u4e00-\u9fff]{2,4}(?:某[甲乙丙丁戊己庚辛壬癸]?\d{0,2}|\d{0,2})?)"
+            r"(?=称|说|表示|反映|陈述|证言|供述|辩解|报警|报案|在|于|与|和|及|均|、|，|。|；|:|：|\s|$)",
             text,
         ):
             add(match.group(1), "相关人员", match.group(0))
@@ -1186,6 +1208,8 @@ class WorkflowService:
                 # The names of people mentioned inside a witness statement are
                 # not speakers. Its raw block is already assigned to the
                 # heading owner above, so do not leak it into other templates.
+                # Multi-role coverage for those aliases is preserved later by
+                # identity seeding / source knows_facts during reconciliation.
                 if any(range_start <= start < range_end for range_start, range_end, _speaker in explicit_testimony_ranges):
                     continue
                 section_label = self._section_for_position(sections, max(0, start))
@@ -1643,10 +1667,6 @@ class WorkflowService:
                 "start": source["start"],
                 "end": source["end"],
                 "story_segment": str(payload.get("story_segment") or "").strip(),
-                "simulation_supplements": (
-                    (payload.get("story_world") or {}).get("simulation_supplements")
-                    if isinstance(payload.get("story_world"), dict) else []
-                ),
                 "person_lines": (
                     payload.get("person_lines") if isinstance(payload.get("person_lines"), list)
                     else (payload.get("persons") if isinstance(payload.get("persons"), list) else [])
@@ -1678,8 +1698,6 @@ class WorkflowService:
             if isinstance(item, dict) and str(item.get("story_segment") or "").strip()
         )
         story_people: list[dict[str, Any]] = []
-        person_cards: list[dict[str, Any]] = []
-        supplements: list[dict[str, Any]] = []
         for segment in story_segments:
             if not isinstance(segment, dict):
                 continue
@@ -1707,8 +1725,6 @@ class WorkflowService:
                     "case_memory": {"experienced": list(line.get("experienced") or []), "observed": list(line.get("observed") or []), "heard": list(line.get("heard") or [])},
                     "role_thread_id": f"case:pending:role:{name}",
                 })
-                person_cards.append({"name": name, "timeline_actions": list(line.get("timeline_actions") or []), "known_fact_ids": [], "cannot_answer_fact_ids": [], "conflict_fact_ids": []})
-            supplements.extend(item for item in (segment.get("simulation_supplements") or []) if isinstance(item, dict))
         return {
             "case_name": self._extract_case_name(text),
             "case_type": self.normalize_case_type(text=text),
@@ -1717,7 +1733,17 @@ class WorkflowService:
             "persons": [*evidence_people, *story_people],
             "key_facts": [str(card.get("content") or "").strip() for card in evidence_cards if str(card.get("content") or "").strip()][:20],
             "evidence_points": [str(card.get("content") or "").strip() for card in evidence_cards if str(card.get("fact_type") or "") == "证据"][:12],
-            "story_world": {"complete_story": complete_story, "person_cards": person_cards, "simulation_supplements": supplements},
+            "story_world": {
+                "complete_story": complete_story,
+                "facts": evidence_cards,
+                "fact_cards": evidence_cards,
+                "roles": [*evidence_people, *story_people],
+                "metrics": {
+                    "fact_count": len(evidence_cards),
+                    "role_count": len([*evidence_people, *story_people]),
+                },
+                "processing_policy": "storage_metrics_rendering_only",
+            },
         }
 
     def _build_story_world(
@@ -1754,36 +1780,28 @@ class WorkflowService:
                     "source_refs": ([{"source_id": "source-1", "start": position, "end": position + len(fact_text), "summary": fact_text[:180]}] if position >= 0 else []),
                 })
         persons = persons if isinstance(persons, list) else (parsed.get("persons") if isinstance(parsed.get("persons"), list) else [])
-        raw_person_cards = raw_world.get("person_cards") if isinstance(raw_world.get("person_cards"), list) else []
-        person_cards_by_name = {
-            str(item.get("name") or "").strip(): item
-            for item in raw_person_cards
+        roles = [
+            {
+                "name": item.get("name"),
+                "role_type": item.get("role") or item.get("role_type"),
+                "status": item.get("status"),
+                "role_memories": item.get("role_memories") if isinstance(item.get("role_memories"), list) else [],
+                "knowledge_ledger": item.get("knowledge_ledger") if isinstance(item.get("knowledge_ledger"), list) else [],
+            }
+            for item in persons
             if isinstance(item, dict) and str(item.get("name") or "").strip()
-        }
-        person_cards = []
-        for person in persons:
-            if not isinstance(person, dict) or not person.get("name"):
-                continue
-            name = str(person.get("name")).strip()
-            existing = person_cards_by_name.get(name, {})
-            person_cards.append({
-                "name": name,
-                "role": existing.get("role") or person.get("role"),
-                "timeline_actions": existing.get("timeline_actions") if isinstance(existing.get("timeline_actions"), list) else [],
-                "known_fact_ids": existing.get("known_fact_ids") if isinstance(existing.get("known_fact_ids"), list) else [],
-                "cannot_answer_fact_ids": existing.get("cannot_answer_fact_ids") if isinstance(existing.get("cannot_answer_fact_ids"), list) else [],
-                "conflict_fact_ids": existing.get("conflict_fact_ids") if isinstance(existing.get("conflict_fact_ids"), list) else [],
-                "source_refs": person.get("source_refs") if isinstance(person.get("source_refs"), list) else [],
-            })
+        ]
         return {
             "source_index": [{key: value for key, value in source.items() if key != "text"} for source in source_chunks],
-            "fact_cards": [item for item in normalized_cards if item["content"]],
             "complete_story": str(raw_world.get("complete_story") or parsed.get("complete_story") or parsed.get("full_narrative") or "").strip(),
-            "timeline": raw_world.get("timeline") if isinstance(raw_world.get("timeline"), list) else (parsed.get("fact_sheet") or {}).get("timeline", []),
-            "relationship_graph": raw_world.get("relationship_graph") if isinstance(raw_world.get("relationship_graph"), list) else (parsed.get("fact_sheet") or {}).get("relationships", []),
-            "person_cards": person_cards,
-            "open_questions": raw_world.get("open_questions") if isinstance(raw_world.get("open_questions"), list) else list(parsed.get("inconsistencies") or []),
-            "simulation_supplements": [item for item in (raw_world.get("simulation_supplements") or []) if isinstance(item, dict) and item.get("is_scoring_fact") is False],
+            "facts": [item for item in normalized_cards if item["content"]],
+            "fact_cards": [item for item in normalized_cards if item["content"]],
+            "roles": roles,
+            "metrics": {
+                "fact_count": len([item for item in normalized_cards if item["content"]]),
+                "role_count": len(roles),
+            },
+            "processing_policy": "storage_metrics_rendering_only",
         }
 
     @staticmethod
@@ -2131,6 +2149,7 @@ class WorkflowService:
             "role_thread_id", "role_confidence", "role_basis", "knowledge_ledger", "role_memories",
             "unresolved_claims", "response_constraints", "role_template_version",
             "persona_contract_version", "persona_source", "persona_autofill",
+            "knows_facts", "does_not_know", "hidden_truths",
         ):
             if key in person:
                 canonical_cleaned[key] = person[key]
@@ -2304,12 +2323,17 @@ class WorkflowService:
         clean = WorkflowService._normalize_person_name(name)
         if not clean:
             return False
-        # Court records commonly anonymise parties as “黎某18”“王某甲2”.
+        # Court records commonly anonymise parties as “黎某18”“王某甲2”“彭某乙”.
         # These are stable source identifiers, not incomplete names, and must
         # remain usable as role keys throughout the role-line checkpoint.
-        legal_alias = re.fullmatch(r"([\u4e00-\u9fa5])某(?:甲|乙|丙|丁)?\d{1,2}", clean)
+        legal_alias = re.fullmatch(
+            r"([\u4e00-\u9fa5])某(?:[甲乙丙丁戊己庚辛壬癸]\d{0,2}|\d{1,2})",
+            clean,
+        )
         if legal_alias:
             return legal_alias.group(1) in WorkflowService.COMMON_SURNAMES
+        if re.fullmatch(r"([\u4e00-\u9fa5])某", clean):
+            return clean[0] in WorkflowService.COMMON_SURNAMES
         if not re.fullmatch(r"[\u4e00-\u9fa5]{2,4}", clean):
             return False
         # Reject known non-person tokens
@@ -3040,6 +3064,12 @@ class WorkflowService:
             result["extracted_text_preview"] = str(text or "")[:500]
         self._apply_case_identity(text, result)
         migrated_result, _ = migrate_structured_data_payload(result)
+        for person in migrated_result.get("persons") or []:
+            if not isinstance(person, dict):
+                continue
+            person["knows_facts"] = person.get("knows_facts") or person.get("known_key_points") or []
+            person["hidden_truths"] = person.get("hidden_truths") or person.get("withheld_key_points") or []
+            person["does_not_know"] = person.get("does_not_know") or person.get("cannot_answer") or []
         return migrated_result
 
     def _heuristic_parse_case(
@@ -3259,7 +3289,6 @@ class WorkflowService:
             self._append_warning(base, f"AI 完整剧情生成失败，人物名册与人物线已保留，仅剧情切换为事件账本规则组装：{exc}")
         base["case_intelligence"] = intelligence
         base["ai_narrative"] = narrative
-        base["case_reconstruction"] = reconstruction
         base["complete_story"] = narrative or reconstruction["complete_story"]
         base["full_narrative"] = base["complete_story"]
         base["source_sections"] = source_sections
@@ -3269,8 +3298,19 @@ class WorkflowService:
             "section_count": len(source_sections),
             "traces": document_label_traces,
         }
-        base["narrative_document"] = {"schema_version": 3, "format": "word", "content": base["complete_story"], "source_mode": source_mode, "role": "source_grounded_case_reconstruction", "policy": "event_ledger_source_grounded", "sections": source_sections}
-        base["story_world"] = {"complete_story": base["complete_story"], "fact_cards": cards, "person_cards": base.get("persons") or [], "events": reconstruction["event_ledger"], "timeline": reconstruction["timeline"], "spatial_timeline": reconstruction["spatial_timeline"], "open_questions": intelligence["unresolved_questions"], "source_sections": source_sections, "simulation_supplements": []}
+        base["narrative_document"] = {"schema_version": 3, "format": "word", "content": base["complete_story"], "source_mode": source_mode, "role": "source_grounded_case_reconstruction", "policy": "story_first_source_grounded", "sections": source_sections}
+        base["story_world"] = {
+            "complete_story": base["complete_story"],
+            "facts": cards,
+            "fact_cards": cards,
+            "roles": base.get("persons") or [],
+            "metrics": {
+                "fact_count": len(cards),
+                "role_count": len(base.get("persons") or []),
+                "memory_count": sum(len(person.get("role_memories") or []) for person in base.get("persons") or [] if isinstance(person, dict)),
+            },
+            "processing_policy": "storage_metrics_rendering_only",
+        }
         base["source_quality"] = assess_source_quality(text)
         ai_narrative_used = bool(trace.get("attempts"))
         base["parse_engine"] = "ai_text_first" if ai_narrative_used else "rule_text_first"
@@ -3382,23 +3422,19 @@ class WorkflowService:
         complete_story = self._render_complete_story(reconstruction, base["persons"])
         base.update({
             "case_intelligence": intelligence,
-            "case_reconstruction": {
-                "event_ledger": reconstruction.get("event_ledger") or [],
-                "timeline": reconstruction.get("timeline") or [],
-                "spatial_timeline": reconstruction.get("spatial_timeline") or [],
-            },
             "complete_story": complete_story,
             "full_narrative": complete_story,
             "story_world": {
                 "complete_story": complete_story,
+                "facts": cards,
                 "fact_cards": cards,
-                "person_cards": base["persons"],
-                "events": reconstruction.get("event_ledger") or [],
-                "timeline": reconstruction.get("timeline") or [],
-                "spatial_timeline": reconstruction.get("spatial_timeline") or [],
-                "open_questions": intelligence.get("unresolved_questions") or [],
-                "source_sections": source_sections,
-                "simulation_supplements": [],
+                "roles": base["persons"],
+                "metrics": {
+                    "fact_count": len(cards),
+                    "role_count": len(base["persons"]),
+                    "memory_count": sum(len(person.get("role_memories") or []) for person in base["persons"] if isinstance(person, dict)),
+                },
+                "processing_policy": "storage_metrics_rendering_only",
             },
             "source_sections": source_sections,
             "source_quality": assess_source_quality(text),
@@ -3508,7 +3544,14 @@ class WorkflowService:
                     card["content"] for card in evidence_cards
                     if any(word in card["content"] for word in ("不清楚", "没看清", "不确定", "不详", "可能", "称", "但"))
                 ][:12],
-                "story_world": {"complete_story": narrative, "person_cards": [], "simulation_supplements": []},
+                "story_world": {
+                    "complete_story": narrative,
+                    "facts": evidence_cards,
+                    "fact_cards": evidence_cards,
+                    "roles": evidence_people,
+                    "metrics": {"fact_count": len(evidence_cards), "role_count": len(evidence_people)},
+                    "processing_policy": "storage_metrics_rendering_only",
+                },
             })
             result = self._normalize_parsed_case(
                 text, payload, source_mode, source_meta,
@@ -3654,16 +3697,11 @@ class WorkflowService:
         """
         selected_fact_ids = {str(value) for value in fact_ids if str(value).strip()}
         fact_texts: list[str] = [str(scene_context or "")]
-        for card in story_world.get("fact_cards") or []:
+        for card in story_world.get("fact_cards") or story_world.get("facts") or []:
             if not isinstance(card, dict) or str(card.get("id")) not in selected_fact_ids:
                 continue
             fact_texts.append(str(card.get("content") or ""))
             fact_texts.extend(str(ref.get("summary") or "") for ref in card.get("source_refs") or [] if isinstance(ref, dict))
-        person_cards = {
-            str(card.get("name") or "").strip(): card
-            for card in story_world.get("person_cards") or []
-            if isinstance(card, dict) and str(card.get("name") or "").strip()
-        }
         context = "\n".join(fact_texts)
         relevant: list[str] = []
         for person in case_info.get("persons") or []:
@@ -3673,10 +3711,12 @@ class WorkflowService:
             if not name:
                 continue
             aliases = [str(alias).strip() for alias in person.get("aliases") or [] if str(alias).strip()]
-            card = person_cards.get(name, {})
-            known_ids = {str(value) for value in card.get("known_fact_ids") or []} if isinstance(card, dict) else set()
-            actions = " ".join(str(value) for value in card.get("timeline_actions") or []) if isinstance(card, dict) else ""
-            if name in context or any(alias in context for alias in aliases) or known_ids.intersection(selected_fact_ids) or (actions and name in context):
+            memories = " ".join(
+                str((memory or {}).get("content") or (memory or {}).get("statement") or "")
+                for memory in person.get("role_memories") or []
+                if isinstance(memory, dict)
+            )
+            if name in context or any(alias in context for alias in aliases) or any(fact_id in memories for fact_id in selected_fact_ids):
                 relevant.append(name)
         return list(dict.fromkeys(relevant))
 
@@ -3835,20 +3875,20 @@ class WorkflowService:
         story_world: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         scenes = payload.get("scenes") if isinstance(payload.get("scenes"), list) else []
+        persons = case_info.get("persons") or []
         valid_names = {
             str(person.get("name") or "").strip()
-            for person in case_info.get("persons") or []
-            if self._is_speakable_status(person.get("status"))
+            for person in persons
+            if self._is_speakable_status(person.get("status")) or str(person.get("status") or "").strip() in {"正常", "受伤可交流", ""}
         }
         normalized = []
         for index, scene in enumerate(scenes, start=1):
             if not isinstance(scene, dict):
                 continue
-            roles = []
-            for role_name in scene.get("roles") or []:
-                clean_name = str(role_name or "").strip()
-                if clean_name in valid_names and clean_name not in roles:
-                    roles.append(clean_name)
+            roles = [name for name in self.canonicalize_role_names(scene.get("roles") or scene.get("role_names") or [], persons) if name in valid_names]
+            present_roles = [name for name in self.canonicalize_role_names(scene.get("present_roles") or [], persons) if name in valid_names]
+            if str(scene.get("training_entry_phase") or "").strip() == "post_incident_onsite":
+                roles = list(dict.fromkeys([*present_roles, *roles]))
             fact_ids = [str(value) for value in scene.get("fact_ids") or [] if str(value).strip()]
             stages = []
             for stage_index, stage in enumerate(scene.get("stages") or [], start=1):
@@ -3882,9 +3922,7 @@ class WorkflowService:
                     "dispatch_brief": dispatch_brief,
                     "first_impression": first_impression,
                     "roles": roles,
-                    "present_roles": [
-                        str(value).strip() for value in scene.get("present_roles") or [] if str(value).strip()
-                    ],
+                    "present_roles": present_roles,
                     "mentioned_roles": [
                         str(value).strip() for value in scene.get("mentioned_roles") or [] if str(value).strip()
                     ],
@@ -3920,7 +3958,7 @@ class WorkflowService:
 
     def _story_world_for_case(self, case_info: dict[str, Any]) -> dict[str, Any]:
         existing = case_info.get("story_world")
-        if isinstance(existing, dict) and existing.get("fact_cards"):
+        if isinstance(existing, dict) and (existing.get("fact_cards") or existing.get("facts")):
             return existing
         return self._build_story_world(
             str(case_info.get("original_content") or case_info.get("rawText") or case_info.get("full_narrative") or ""),
@@ -3964,8 +4002,8 @@ class WorkflowService:
         story_world: dict[str, Any],
         persons: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        fact_ids = {str(item.get("id")) for item in story_world.get("fact_cards") or [] if isinstance(item, dict)}
-        supplement_ids = {str(item.get("id")) for item in story_world.get("simulation_supplements") or [] if isinstance(item, dict)}
+        fact_ids = {str(item.get("id")) for item in story_world.get("fact_cards") or story_world.get("facts") or [] if isinstance(item, dict)}
+        supplement_ids: set[str] = set()
         person_by_name = {
             str(item.get("name")): item for item in persons if isinstance(item, dict) and str(item.get("name") or "").strip()
         }
@@ -4033,16 +4071,12 @@ class WorkflowService:
         case_info: dict[str, Any],
         story_world: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        """Keep the model's local fact scope, then bind it to story nodes.
-
-        The old implementation distributed every case fact across every scene.
-        That made each scene an all-case summary and produced near duplicates.
-        """
+        """Keep the model's local fact scope without using worldview graphs as logic."""
         if not blueprints:
             return []
         valid_fact_ids = {
             str(item.get("id"))
-            for item in story_world.get("fact_cards") or []
+            for item in story_world.get("fact_cards") or story_world.get("facts") or []
             if isinstance(item, dict) and str(item.get("id") or "").strip()
         }
         scoped: list[dict[str, Any]] = []
@@ -4055,8 +4089,26 @@ class WorkflowService:
             ))[:max(24, int(os.getenv("CASE_SCENE_FACT_LIMIT", "80")))]
             if not item["fact_ids"]:
                 continue
+            item["canonical_outcome_locked"] = True
+            item["student_role"] = "民警"
+            item["training_entry_phase"] = str(item.get("training_entry_phase") or "").strip() or "post_incident_onsite"
+            item["entry_time_policy"] = "dispatch_intake" if item["training_entry_phase"] == "intake" else "after_canonical_event"
+            person_names = {
+                str(person.get("name") or "").strip()
+                for person in case_info.get("persons") or []
+                if isinstance(person, dict) and str(person.get("name") or "").strip()
+            }
+            item["roles"] = list(dict.fromkeys(
+                str(name).strip() for name in item.get("roles") or [] if str(name).strip() in person_names
+            ))
+            item["present_roles"] = list(dict.fromkeys(
+                str(name).strip() for name in item.get("present_roles") or item["roles"] if str(name).strip() in person_names
+            ))
+            item["mentioned_roles"] = list(dict.fromkeys(
+                str(name).strip() for name in item.get("mentioned_roles") or [] if str(name).strip() in person_names
+            ))
             scoped.append(item)
-        return bind_blueprints_to_story(scoped, story_world, case_info.get("persons") or [])
+        return scoped
 
     @staticmethod
     def _validate_first_impression_text(value: Any) -> tuple[bool, str]:
@@ -4153,7 +4205,7 @@ class WorkflowService:
                 "fact_type": item.get("fact_type"),
                 "status": item.get("status"),
             }
-            for item in story_world.get("fact_cards") or []
+            for item in story_world.get("fact_cards") or story_world.get("facts") or []
             if isinstance(item, dict) and item.get("id") and item.get("content")
         ]
         compact_people = [
@@ -4172,29 +4224,12 @@ class WorkflowService:
             for person in persons
             if isinstance(person, dict) and person.get("name")
         ]
-        compact_story_nodes = [
-            {
-                "node_id": node.get("node_id"),
-                "start_condition": node.get("start_condition"),
-                "end_condition": node.get("ending_state") or node.get("end_condition"),
-                "time": node.get("time"),
-                "place": node.get("place"),
-                "present_roles": node.get("present_roles") or [],
-                "environment": str(node.get("environment") or ""),
-                "story_segment": str(node.get("story_segment") or ""),
-                "fact_ids": [
-                    event.get("fact_id") for event in node.get("events") or [] if isinstance(event, dict) and event.get("fact_id")
-                ],
-            }
-            for node in story_world.get("nodes") or []
-            if isinstance(node, dict) and node.get("node_id")
-        ]
         generation_context = {
             "case_name": case_info.get("case_name"),
             "case_type": case_info.get("case_type"),
+            "complete_story": story_world.get("complete_story") or case_info.get("complete_story") or case_info.get("full_narrative") or "",
             "fact_cards": compact_fact_cards,
             "persons": compact_people,
-            "story_nodes": compact_story_nodes,
             "scene_generation_strategy": scene_generation_strategy,
             "reference": build_case_frequency_prompt(),
             "scene_module_reference": build_scene_module_prompt(case_info),
@@ -4235,7 +4270,7 @@ class WorkflowService:
                         "fact_type": item.get("fact_type"),
                         "status": item.get("status"),
                     }
-                    for item in story_world.get("fact_cards") or []
+                    for item in story_world.get("fact_cards") or story_world.get("facts") or []
                     if isinstance(item, dict) and item.get("id") in blueprint["fact_ids"]
                 ][:max(24, int(os.getenv("CASE_SCENE_FACT_LIMIT", "80")))]
                 script_people = [item for item in compact_people if item.get("name") in blueprint.get("roles", [])]
@@ -4361,13 +4396,13 @@ class WorkflowService:
             except Exception as text_exc:
                 failure_reason = f"{failure_reason}；AI 纯文本场景模板也失败：{text_exc}"
         fallback = self._fallback_scenes(case_info, scene_generation_strategy=scene_generation_strategy)
-        fallback_blueprints = bind_blueprints_to_story(
+        fallback_blueprints = self._scope_scene_blueprints(
             self._scene_blueprint_candidates(
                 fallback.get("scenes") or [],
                 [str(item.get("id")) for item in compact_fact_cards[:8] if item.get("id")],
             ),
+            case_info,
             story_world,
-            persons,
         )
         fallback["scenes"] = bind_scenes_to_story((fallback.get("scenes") or [])[:len(fallback_blueprints)], fallback_blueprints)
         fallback["scenes"] = compile_scene_lifecycles(case_info, fallback["scenes"])
@@ -4389,6 +4424,43 @@ class WorkflowService:
         )
         record_issue(category="rule_fallback", severity="warning", title="场景生成已使用规则兜底", detail=failure_reason, workflow_run_id=run_id, metadata=fallback["ai_workflow"])
         return fallback
+
+    def generate_complete_case_story(self, source_text: str) -> tuple[str, dict[str, Any]]:
+        """Step C: generate complete case narrative and basic metadata from cleaned source."""
+        from .case_text_utils import strip_document_artifacts
+        from .prompts.case_pipeline import COMPLETE_CASE_STORY_PROMPT
+        from .llm_provider import get_story_generation_binding, get_story_generation_kwargs
+
+        clean = strip_document_artifacts(source_text)
+        if not clean:
+            raise ValueError("案件正文为空，无法生成完整剧情")
+
+        llm_client, model, provider, _ = get_story_generation_binding()
+        response, trace = create_json_chat_completion(
+            messages=[
+                {"role": "system", "content": COMPLETE_CASE_STORY_PROMPT},
+                {"role": "user", "content": clean[:28000]},
+            ],
+            model=model,
+            llm_client=llm_client,
+            temperature=0.2,
+            max_tokens=max(8000, int(os.getenv("CASE_STORY_MAX_TOKENS", "16000"))),
+            return_trace=True,
+            extra_kwargs=get_story_generation_kwargs(),
+            allow_provider_fallback=os.getenv("CASE_STORY_ALLOW_PROVIDER_FALLBACK", "0").strip() == "1",
+        )
+        payload = extract_json_payload(extract_message_text(response)) or {}
+        story = strip_document_artifacts(payload.get("complete_story") or clean)
+        if story and not story.startswith("#"):
+            story = "# 案件完整剧情\n\n" + story.lstrip("# ")
+        trace["story_metadata"] = {
+            "case_name": str(payload.get("case_name") or "").strip(),
+            "case_type": str(payload.get("case_type") or "").strip(),
+            "case_background": str(payload.get("case_background") or "").strip(),
+            "provider": provider,
+            "model": model,
+        }
+        return story or clean, trace
 
 
 workflow_service = WorkflowService()

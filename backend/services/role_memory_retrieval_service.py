@@ -23,7 +23,7 @@ def _terms(text: Any) -> set[str]:
 def _eligible(view: dict[str, Any]) -> list[dict[str, Any]]:
     allowed_modes = {
         "known", "withheld", "direct_statement", "personal_statement", "personal_experience",
-        "direct_observation", "hearsay", "later_learned", "source_mention",
+        "direct_observation", "hearsay", "later_learned", "source_mention", "unknown",
     }
     result = []
     for index, raw in enumerate(view.get("ledger") or [], start=1):
@@ -78,7 +78,9 @@ def _rank(items: list[dict[str, Any]], query: str, phases: list[str], history_co
         overlap = len(query_terms & content_terms)
         phase = _text(item.get("event_phase")) or "unknown"
         phase_bonus = 18 if phases and phase in phases else 0
-        source_bonus = 4 if _text(item.get("knowledge_mode")) in {"personal_experience", "direct_observation", "direct_statement"} else 1
+        source_bonus = 10 if _text(item.get("knowledge_mode")) in {"personal_experience", "direct_observation", "direct_statement", "personal_statement"} else 3
+        if _text(item.get("knowledge_mode")) == "unknown":
+            source_bonus = 2
         covered_penalty = 14 if _was_covered(item, history_contents) else 0
         ranked.append((overlap * 8 + phase_bonus + source_bonus - covered_penalty, -index, item))
     ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
@@ -169,7 +171,7 @@ def format_retrieved_memories(
     if not context["matched"]:
         return "本人信息中没有与当前问题相符的内容。具体说明自己不能确认哪一部分，不得拿无关记忆代替回答。"
 
-    lines = [f"回答意图：{context['intent']}。以下信息已按本轮需要排序："]
+    lines = [f"回答意图：{context['intent']}。以下角色记忆、角色信息、事实与上下文已按本轮需要排序："]
     used = len(lines[0])
     for item in context["items"]:
         line = (
@@ -182,7 +184,7 @@ def format_retrieved_memories(
         lines.append(line)
         used += len(line)
     lines.extend((
-        "先直接回答学员当前问题，只说本人知道的内容。",
+        "先直接回答学员当前问题，优先使用本人亲历、目击、本人陈述或明确听闻的具体事实。",
         "完整经过要自然连贯地从最早缘由讲到本人所知的最后情况，不要念出后台阶段标签。",
         "没有对应信息时具体说明不知道哪一部分。",
     ))

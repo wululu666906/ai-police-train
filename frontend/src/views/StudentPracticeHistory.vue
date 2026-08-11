@@ -51,9 +51,14 @@
             <span>进度</span>
             <span>成绩</span>
             <span>时间</span>
-            <span>操作</span>
+            <span class="col-actions">操作</span>
           </div>
-          <article v-for="record in filteredRecords" :key="record.key" class="history-row">
+          <article
+            v-for="record in filteredRecords"
+            :key="record.key"
+            class="history-row"
+            :class="{ 'history-row--menu-open': openMenuKey === record.key }"
+          >
             <div class="record-title">
               <strong>{{ record.title }}</strong>
               <small>{{ record.category }} · {{ record.subtitle }}</small>
@@ -75,21 +80,66 @@
               <strong>{{ formatTime(record.time) }}</strong>
               <small>{{ record.kind === 'text' ? '对话训练' : '节点训练' }}</small>
             </div>
-            <div class="record-actions">
+            <div class="record-actions" @click.stop>
               <el-button v-if="record.status === 'active'" type="primary" size="small" @click="continueRecord(record)">继续</el-button>
               <el-button v-else-if="record.status === 'finished'" type="primary" plain size="small" @click="viewReport(record)">查看报告</el-button>
               <el-button v-else type="warning" plain size="small" @click="continueRecord(record)">重新训练</el-button>
-              <el-dropdown trigger="click" @command="(command: string) => handleCommand(command, record)">
-                <el-button circle size="small" title="更多操作"><el-icon><MoreFilled /></el-icon></el-button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item v-if="record.kind === 'text'" command="dialogue">查看对话</el-dropdown-item>
-                    <el-dropdown-item v-if="record.status === 'finished'" command="report">查看报告</el-dropdown-item>
-                    <el-dropdown-item command="continue">{{ record.status === 'active' ? '继续训练' : '重新训练' }}</el-dropdown-item>
-                    <el-dropdown-item v-if="record.kind === 'text'" command="delete" divided>删除记录</el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
+              <div class="more-menu">
+                <button
+                  type="button"
+                  class="more-btn"
+                  :class="{ 'more-btn--open': openMenuKey === record.key }"
+                  title="更多操作"
+                  :aria-expanded="openMenuKey === record.key"
+                  aria-haspopup="menu"
+                  @click="toggleMoreMenu(record, $event)"
+                >
+                  <el-icon><MoreFilled /></el-icon>
+                </button>
+                <div
+                  v-if="openMenuKey === record.key"
+                  class="more-menu__panel"
+                  :class="`more-menu__panel--${menuPlacement}`"
+                  role="menu"
+                  @click.stop
+                >
+                  <button
+                    v-if="record.kind === 'text'"
+                    type="button"
+                    class="more-menu__item"
+                    role="menuitem"
+                    @click="handleCommand('dialogue', record)"
+                  >
+                    查看对话
+                  </button>
+                  <button
+                    v-if="record.status === 'finished'"
+                    type="button"
+                    class="more-menu__item"
+                    role="menuitem"
+                    @click="handleCommand('report', record)"
+                  >
+                    查看报告
+                  </button>
+                  <button
+                    type="button"
+                    class="more-menu__item"
+                    role="menuitem"
+                    @click="handleCommand('continue', record)"
+                  >
+                    {{ record.status === 'active' ? '继续训练' : '重新训练' }}
+                  </button>
+                  <button
+                    v-if="record.kind === 'text'"
+                    type="button"
+                    class="more-menu__item more-menu__item--danger"
+                    role="menuitem"
+                    @click="handleCommand('delete', record)"
+                  >
+                    删除记录
+                  </button>
+                </div>
+              </div>
             </div>
           </article>
         </div>
@@ -111,7 +161,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, watch } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { showConfirmDialog, showToast } from 'vant'
@@ -144,6 +194,8 @@ const keyword = ref('')
 const dateRange = ref<[string, string] | []>([])
 const currentPage = ref(1)
 const pageSize = ref(10)
+const openMenuKey = ref<string | null>(null)
+const menuPlacement = ref<'down' | 'up'>('down')
 const activeTab = ref<'all' | 'text' | 'video' | 'abandoned'>(
   route.query.tab === 'video' ? 'video' : route.query.tab === 'abandoned' ? 'abandoned' : 'all',
 )
@@ -189,16 +241,45 @@ const filteredTotal = computed(() => {
   }).length
 })
 
-const summaryCards = computed(() => [
-  { label: '全部记录', value: records.value.length, tone: 'blue' },
-  { label: '进行中', value: records.value.filter((item) => item.status === 'active').length, tone: 'indigo' },
-  { label: '已完成', value: records.value.filter((item) => item.status === 'finished').length, tone: 'green' },
-  { label: '已放弃', value: records.value.filter((item) => item.status === 'abandoned').length, tone: 'orange' },
-])
-
 watch([activeTab, keyword, dateRange], () => {
   currentPage.value = 1
+  closeMoreMenu()
 })
+
+watch(currentPage, () => {
+  closeMoreMenu()
+})
+
+function closeMoreMenu() {
+  openMenuKey.value = null
+}
+
+function resolveMenuPlacement(trigger: HTMLElement) {
+  const rect = trigger.getBoundingClientRect()
+  const spaceBelow = window.innerHeight - rect.bottom
+  menuPlacement.value = spaceBelow < 180 && rect.top > 180 ? 'up' : 'down'
+}
+
+function toggleMoreMenu(record: UnifiedRecord, event: MouseEvent) {
+  if (openMenuKey.value === record.key) {
+    closeMoreMenu()
+    return
+  }
+  resolveMenuPlacement(event.currentTarget as HTMLElement)
+  openMenuKey.value = record.key
+}
+
+function onDocumentPointerDown(event: MouseEvent) {
+  const target = event.target as HTMLElement | null
+  if (!target) return
+  if (target.closest('.more-menu')) return
+  closeMoreMenu()
+}
+
+function onViewportChange() {
+  if (!openMenuKey.value) return
+  closeMoreMenu()
+}
 
 async function fetchHistory() {
   loading.value = true
@@ -273,6 +354,7 @@ function viewReport(record: UnifiedRecord) {
 }
 
 async function handleCommand(command: string, record: UnifiedRecord) {
+  closeMoreMenu()
   if (command === 'report') {
     viewReport(record)
     return
@@ -323,6 +405,16 @@ function resetFilters() {
 onMounted(() => {
   setMainScrollable?.(true)
   fetchHistory()
+  document.addEventListener('pointerdown', onDocumentPointerDown)
+  window.addEventListener('resize', onViewportChange)
+  document.querySelector('.student-main')?.addEventListener('scroll', onViewportChange, { passive: true })
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocumentPointerDown)
+  window.removeEventListener('resize', onViewportChange)
+  document.querySelector('.student-main')?.removeEventListener('scroll', onViewportChange)
+  closeMoreMenu()
 })
 </script>
 
@@ -338,7 +430,7 @@ onMounted(() => {
 }
 
 .history-panel {
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fff;
@@ -395,17 +487,18 @@ onMounted(() => {
 }
 
 .history-table-wrap {
-  overflow-x: auto;
+  overflow: visible;
 }
 
 .history-table {
-  min-width: 1080px;
+  width: 100%;
+  min-width: 0;
 }
 
 .history-table__head,
 .history-row {
   display: grid;
-  grid-template-columns: minmax(240px, 1.45fr) 100px 100px 150px 80px 150px 180px;
+  grid-template-columns: minmax(180px, 1.45fr) 96px 88px 140px 72px 148px minmax(168px, 188px);
   align-items: center;
   gap: 12px;
   padding: 14px 16px;
@@ -419,11 +512,19 @@ onMounted(() => {
   font-weight: 800;
 }
 
+.col-actions,
+.record-actions {
+  justify-self: start;
+  text-align: left;
+}
+
 .history-row {
+  position: relative;
   min-height: 78px;
   color: #334155;
   border-bottom: 1px solid #edf1f6;
   font-size: 12px;
+  overflow: visible;
 }
 
 .history-row:last-child {
@@ -431,6 +532,11 @@ onMounted(() => {
 }
 
 .history-row:hover {
+  background: #fbfcff;
+}
+
+.history-row--menu-open {
+  z-index: 20;
   background: #fbfcff;
 }
 
@@ -522,7 +628,120 @@ onMounted(() => {
 }
 
 .record-actions {
-  gap: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: auto;
+  max-width: 100%;
+}
+
+.more-menu {
+  position: relative;
+  flex: 0 0 auto;
+  z-index: 1;
+}
+
+.more-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #dbe4f0;
+  border-radius: 999px;
+  background: #fff;
+  color: #64748b;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.more-btn:hover,
+.more-btn--open {
+  color: #2563eb;
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.more-menu__panel {
+  position: absolute;
+  right: 0;
+  z-index: 30;
+  box-sizing: border-box;
+  width: 132px;
+  padding: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+}
+
+.more-menu__panel--down {
+  top: calc(100% + 8px);
+}
+
+.more-menu__panel--up {
+  bottom: calc(100% + 8px);
+}
+
+.more-menu__panel--down::before,
+.more-menu__panel--up::after {
+  content: '';
+  position: absolute;
+  right: 10px;
+  width: 9px;
+  height: 9px;
+  background: #fff;
+}
+
+.more-menu__panel--down::before {
+  top: -5px;
+  border-top: 1px solid #e5e7eb;
+  border-left: 1px solid #e5e7eb;
+  transform: rotate(45deg);
+}
+
+.more-menu__panel--up::after {
+  bottom: -5px;
+  border-right: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  transform: rotate(45deg);
+}
+
+.more-menu__item {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.more-menu__item:hover {
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.more-menu__item--danger {
+  margin-top: 4px;
+  border-top: 1px solid #e5e7eb;
+  border-radius: 0 0 6px 6px;
+  color: #dc2626;
+}
+
+.more-menu__item--danger:hover {
+  background: #fff1f2;
+  color: #b91c1c;
 }
 
 .history-footer {
@@ -535,15 +754,23 @@ onMounted(() => {
   padding: 54px 24px;
 }
 
+@media (max-width: 1100px) {
+  .history-table-wrap {
+    overflow-x: auto;
+  }
+
+  .history-table {
+    min-width: 980px;
+  }
+}
+
 @media (max-width: 960px) {
   .practice-history-page {
     padding: 14px;
   }
-
 }
 
 @media (max-width: 620px) {
-
   .history-toolbar {
     align-items: stretch;
     flex-direction: column;
@@ -568,8 +795,3 @@ onMounted(() => {
   }
 }
 </style>
-
-
-
-
-

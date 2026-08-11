@@ -2,7 +2,6 @@
   <van-popup
     v-model:show="popupVisible"
     :close-on-click-overlay="false"
-    round
     teleport="body"
     class="training-brief-popup"
     :overlay-style="{ backgroundColor: 'rgba(0,0,0,0.82)' }"
@@ -60,15 +59,7 @@
           </div>
         </section>
 
-        <section v-if="stats.length" class="training-brief-section">
-          <h3>本次训练概览</h3>
-          <div class="training-brief-stats">
-            <div v-for="item in stats" :key="item.label" class="training-brief-stat">
-              <strong>{{ item.value }}</strong>
-              <span>{{ item.label }}</span>
-            </div>
-          </div>
-        </section>
+        <slot />
       </div>
 
       <div class="training-brief-card__foot">
@@ -88,11 +79,6 @@ interface BriefNotice {
   level?: 'info' | 'warn' | 'danger'
 }
 
-interface BriefStat {
-  label: string
-  value: string | number
-}
-
 const props = withDefaults(defineProps<{
   show: boolean
   title: string
@@ -104,7 +90,6 @@ const props = withDefaults(defineProps<{
   briefing?: string
   fallbackBriefing?: string
   notices?: BriefNotice[]
-  stats?: BriefStat[]
   allowModeSwitch?: boolean
   modelValue?: 'practice' | 'exam'
   cancelText?: string
@@ -117,7 +102,6 @@ const props = withDefaults(defineProps<{
   summaryTitle: '案情背景',
   fallbackBriefing: '本次训练将按预设节点推进，系统会在关键时刻给出识别和判定。',
   notices: () => [],
-  stats: () => [],
   allowModeSwitch: false,
   modelValue: 'practice',
   cancelText: '取消',
@@ -139,17 +123,29 @@ const popupVisible = computed({
 
 <style scoped lang="scss">
 .training-brief-popup {
-  width: min(680px, calc(100vw - 24px));
-  background: transparent;
+  width: min(680px, calc(100vw - 48px));
+  max-width: calc(100vw - 48px);
+  height: min(760px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
+  /* 覆盖全局 .van-popup 的浅色描边/阴影，避免透明外壳在深色遮罩上显出白边 */
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  overflow: visible;
+  scrollbar-gutter: auto;
 }
 
 .training-brief-card {
-  background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100%;
+  min-height: 0;
+  background: #fff;
   border-radius: 18px;
-  border: 1px solid rgba(255,255,255,0.1);
-  color: #e2e8f0;
+  border: 1px solid #e5e7eb;
+  color: #1f2937;
   overflow: hidden;
-  box-shadow: 0 24px 56px rgba(0,0,0,0.4);
+  box-shadow: 0 24px 56px rgb(15 23 42 / 18%);
 }
 
 .training-brief-card__head,
@@ -162,7 +158,8 @@ const popupVisible = computed({
 }
 
 .training-brief-card__head {
-  border-bottom: 1px solid rgba(255,255,255,0.08);
+  border-bottom: 1px solid #eef2f7;
+  background: #fff;
 }
 
 .training-brief-card__title {
@@ -170,27 +167,32 @@ const popupVisible = computed({
   min-width: 0;
   font-size: 16px;
   font-weight: 800;
-  color: #f8fafc;
+  color: #111827;
 }
 
 .training-brief-card__body {
   padding: 18px;
   display: grid;
+  align-content: start;
   gap: 18px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .training-brief-hero {
   padding: 18px;
   border-radius: 16px;
-  background: radial-gradient(circle at top left, rgba(59,130,246,0.28), rgba(15,23,42,0.4));
-  border: 1px solid rgba(96,165,250,0.18);
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
 }
 
 .training-brief-hero__type {
   display: inline-flex;
   padding: 4px 10px;
   border-radius: 999px;
-  background: rgba(255,255,255,0.08);
+  background: #eef2ff;
+  color: #1d4ed8;
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -199,32 +201,32 @@ const popupVisible = computed({
 .training-brief-hero h2 {
   margin: 10px 0 6px;
   font-size: 24px;
-  color: #fff;
+  color: #111827;
 }
 
 .training-brief-hero p {
   margin: 0;
   font-size: 13px;
   line-height: 1.7;
-  color: #cbd5e1;
+  color: #475569;
 }
 
 .training-brief-section h3 {
   margin: 0 0 10px;
   font-size: 14px;
   font-weight: 800;
-  color: #f8fafc;
+  color: #111827;
 }
 
 .training-brief-text {
   white-space: pre-wrap;
   line-height: 1.85;
   font-size: 13px;
-  color: #cbd5e1;
+  color: #334155;
 }
 
 .training-brief-text--muted {
-  color: #94a3b8;
+  color: #64748b;
 }
 
 .training-brief-notices {
@@ -235,31 +237,31 @@ const popupVisible = computed({
 .training-brief-notice {
   padding: 12px 14px;
   border-radius: 12px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.06);
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
 }
 
 .training-brief-notice--warn {
-  background: rgba(245,158,11,0.12);
-  border-color: rgba(245,158,11,0.22);
+  background: #fffbeb;
+  border-color: #fde68a;
 }
 
 .training-brief-notice--danger {
-  background: rgba(239,68,68,0.12);
-  border-color: rgba(239,68,68,0.22);
+  background: #fef2f2;
+  border-color: #fecaca;
 }
 
 .training-brief-notice__title {
   font-size: 12px;
   font-weight: 800;
   margin-bottom: 4px;
-  color: #f8fafc;
+  color: #111827;
 }
 
 .training-brief-notice__text {
   font-size: 12px;
   line-height: 1.7;
-  color: #cbd5e1;
+  color: #475569;
 }
 
 .training-brief-modes {
@@ -269,9 +271,9 @@ const popupVisible = computed({
 }
 
 .training-brief-mode {
-  border: 1px solid rgba(255,255,255,0.08);
-  background: rgba(255,255,255,0.03);
-  color: #cbd5e1;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  color: #475569;
   border-radius: 14px;
   padding: 14px;
   text-align: left;
@@ -281,7 +283,7 @@ const popupVisible = computed({
 .training-brief-mode strong {
   display: block;
   font-size: 14px;
-  color: #f8fafc;
+  color: #111827;
   margin-bottom: 6px;
 }
 
@@ -292,51 +294,30 @@ const popupVisible = computed({
 }
 
 .training-brief-mode--active {
-  border-color: rgba(59,130,246,0.45);
-  background: rgba(59,130,246,0.14);
+  border-color: #93c5fd;
+  background: #eff6ff;
 }
 
 .training-brief-mode--danger.training-brief-mode--active {
-  border-color: rgba(239,68,68,0.45);
-  background: rgba(239,68,68,0.14);
-}
-
-.training-brief-stats {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.training-brief-stat {
-  padding: 14px;
-  border-radius: 14px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.06);
-  text-align: center;
-}
-
-.training-brief-stat strong {
-  display: block;
-  font-size: 22px;
-  font-weight: 900;
-  color: #fff;
-}
-
-.training-brief-stat span {
-  display: block;
-  margin-top: 4px;
-  font-size: 12px;
-  color: #94a3b8;
+  border-color: #fca5a5;
+  background: #fef2f2;
 }
 
 .training-brief-card__foot {
-  border-top: 1px solid rgba(255,255,255,0.08);
+  border-top: 1px solid #eef2f7;
+  background: #fff;
   justify-content: flex-end;
 }
 
 @media (max-width: 640px) {
-  .training-brief-modes,
-  .training-brief-stats {
+  .training-brief-popup {
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .training-brief-modes {
     grid-template-columns: 1fr;
   }
 }

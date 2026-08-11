@@ -232,7 +232,7 @@
     <van-popup
       v-model:show="showAdd"
       teleport="body"
-      :style="{ width: 'min(1180px, 96vw)', height: '92vh', borderRadius: '20px', overflow: 'hidden' }"
+      :style="{ width: 'min(1180px, 96vw)', height: '92vh', borderRadius: '12px', overflow: 'hidden' }"
       class="case-add-global-popup flex flex-col"
     >
       <div class="flex h-16 items-center justify-between border-b border-slate-100 bg-white px-6">
@@ -242,15 +242,15 @@
         <van-icon name="cross" class="cursor-pointer text-slate-400" @click="showAdd = false" />
       </div>
 
-      <div class="border-b border-slate-100 bg-slate-50/70 px-6 py-4">
-        <van-steps :active="currentStep" active-color="#1D3557">
+      <div class="border-b border-slate-100 bg-white px-6 py-4">
+        <van-steps :active="currentStep" active-color="#007AFF">
           <van-step>基础录入</van-step>
-          <van-step>AI 解析预览</van-step>
-          <van-step>场景生成</van-step>
+          <van-step>整理结果</van-step>
+          <van-step>训练场景</van-step>
         </van-steps>
       </div>
 
-      <div class="cases-compact flex-1 overflow-y-auto bg-[#F8FAFC] p-4">
+      <div class="cases-compact flex-1 overflow-y-auto bg-[#F2F2F7] p-4">
         <div v-if="currentStep === 0" class="space-y-3">
           <section class="space-y-3 rounded-2xl border border-slate-100 bg-white p-4">
             <div>
@@ -290,7 +290,14 @@
 
               <div>
                 <label class="form-label">原始文本</label>
-                <textarea v-model="form.rawText" rows="6" class="form-textarea" placeholder="请粘贴案件原文、警情摘要、接处警记录等内容..."></textarea>
+                <TextZoomField
+                  v-model="form.rawText"
+                  label="案件原文"
+                  title="录入新案件 / 案件原文"
+                  placeholder="请粘贴案件原文、警情摘要、接处警记录等内容..."
+                  :rows="7"
+                  mono
+                />
               </div>
             </template>
 
@@ -358,87 +365,66 @@
         </div>
 
         <div v-else-if="currentStep === 1" class="space-y-3">
-          <div v-if="parsing" class="flex justify-center rounded-2xl border border-slate-100 bg-white py-24">
-            <van-loading color="#1D3557" vertical>正在进行 AI 解析...</van-loading>
-          </div>
+          <CasePipelineProgress v-if="parsing" :job="pipelineJob" />
           <div v-else class="space-y-3">
-            <section class="space-y-4 rounded-2xl border border-slate-100 bg-white p-5">
-              <div class="flex items-center justify-between">
-                <div class="text-base font-bold text-slate-800">AI 解析结果预览</div>
+            <section class="case-review-shell">
+              <div class="case-review-hero">
+                <div>
+                  <div class="case-review-hero__eyebrow">案件整理结果</div>
+                  <h2 class="case-review-hero__title">确认系统识别参考与最终发布内容</h2>
+                </div>
                 <van-button size="small" plain @click="reparse">重新解析</van-button>
               </div>
 
-              <div class="rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-700">
-                这一页用于确认“AI 建议值”和“最终发布值”。
-                你在下方输入框里修改的是最终发布内容；上面的识别卡片和下方建议文案仅作为参考。
-              </div>
-              <div v-if="aiWorkflowSummary(aiParsedData.ai_workflow)" class="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-700">
-                <strong>本次 AI 解析工作流：</strong>{{ aiWorkflowSummary(aiParsedData.ai_workflow) }}
-              </div>
-
-              <div v-if="fileMeta.name" class="grid grid-cols-1 gap-4 md:grid-cols-3">
-                <div class="preview-card">
-                  <div class="preview-label">上传文件</div>
-                  <div class="preview-value break-all">{{ fileMeta.name }}</div>
-                </div>
-                <div class="preview-card">
-                  <div class="preview-label">文件类型</div>
-                  <div class="preview-value">{{ fileMeta.type || '-' }}</div>
-                </div>
-                <div class="preview-card">
-                  <div class="preview-label">文件大小</div>
-                  <div class="preview-value">{{ formatFileSize(fileMeta.size || 0) }}</div>
-                </div>
-              </div>
-
-              <div class="section-block section-block--blue">
+              <div class="case-review-grid">
+                <div class="section-block section-block--blue">
                 <div class="section-block__header">
                   <div>
-                    <div class="section-block__eyebrow">第一步</div>
-                    <div class="section-block__title">识别概览与最终发布值</div>
+                    <div class="section-block__eyebrow">系统识别参考</div>
+                    <div class="section-block__title">识别摘要</div>
                   </div>
                 </div>
-                <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <div class="preview-card">
-                  <div class="preview-label">AI 建议标题</div>
-                  <div class="preview-value">{{ aiParsedData.case_name || '未识别' }}</div>
+                <div class="case-summary-list">
+                  <div class="case-summary-list__item case-summary-list__item--wide">
+                    <span>建议标题</span>
+                    <strong>{{ aiParsedData.case_name || '未识别' }}</strong>
                   </div>
-                  <div class="preview-card">
-                  <div class="preview-label">解析来源</div>
-                  <div class="preview-value">{{ parseEngineLabel(aiParsedData) }}</div>
+                  <div class="case-summary-list__item">
+                    <span>标准化类型</span>
+                    <strong>{{ aiParsedData.case_type || '-' }}</strong>
                   </div>
-                  <div class="preview-card">
-                  <div class="preview-label">导入来源</div>
-                  <div class="preview-value">{{ aiParsedData.source_classification || '-' }}</div>
+                  <div class="case-summary-list__item">
+                    <span>原始识别类型</span>
+                    <strong>{{ aiParsedData.ai_case_type_raw || aiParsedData.case_type || '-' }}</strong>
                   </div>
-                  <div class="preview-card">
-                  <div class="preview-label">主要责任方</div>
-                  <div class="preview-value">{{ aiParsedData.main_culprit || '未明确' }}</div>
+                  <div class="case-summary-list__item">
+                    <span>解析来源</span>
+                    <strong>{{ parseEngineLabel(aiParsedData) }}</strong>
                   </div>
-                  <div class="preview-card">
-                  <div class="preview-label">AI 原始识别类型</div>
-                  <div class="preview-value">{{ aiParsedData.ai_case_type_raw || aiParsedData.case_type || '-' }}</div>
+                  <div class="case-summary-list__item">
+                    <span>导入来源</span>
+                    <strong>{{ aiParsedData.source_classification || '-' }}</strong>
                   </div>
-                  <div class="preview-card">
-                  <div class="preview-label">标准化后类型</div>
-                  <div class="preview-value">{{ aiParsedData.case_type || '-' }}</div>
+                  <div class="case-summary-list__item">
+                    <span>主要责任方</span>
+                    <strong>{{ aiParsedData.main_culprit || '未明确' }}</strong>
+                  </div>
+                  <div class="case-summary-list__item case-summary-list__item--wide">
+                    <span>特征标签</span>
+                    <strong>{{ normalizeCaseTags(aiParsedData.case_tags).join('、') || '未识别' }}</strong>
                   </div>
                 </div>
-              </div>
+                <div v-if="fileMeta.name" class="case-file-strip">
+                  <span>{{ fileMeta.name }}</span>
+                  <span>{{ fileMeta.type || '-' }}</span>
+                  <span>{{ formatFileSize(fileMeta.size || 0) }}</span>
+                </div>
+                </div>
 
-              <div v-if="parseWarnings(aiParsedData).length" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                <div class="font-bold">复核提醒</div>
-                <div v-for="warning in parseWarnings(aiParsedData)" :key="warning" class="mt-1">{{ warning }}</div>
-              </div>
-
-              <div v-if="showTypeNormalizationHint(aiParsedData)" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                AI 原始识别为“{{ aiParsedData.ai_case_type_raw || '未识别' }}”，系统标准化后归类为“{{ aiParsedData.case_type || '其他' }}”。
-              </div>
-
-              <div class="section-block section-block--neutral">
+                <div class="section-block section-block--neutral">
                 <div class="section-block__header">
                   <div>
-                    <div class="section-block__eyebrow">第二步</div>
+                    <div class="section-block__eyebrow">管理员确认</div>
                     <div class="section-block__title">发布信息确认</div>
                   </div>
                 </div>
@@ -459,26 +445,51 @@
                 </div>
                 <div class="mt-4">
                   <label class="form-label">最终案件背景</label>
-                  <textarea v-model="aiParsedData.case_background" rows="2" class="form-textarea"></textarea>
-                  <p class="mt-2 text-xs leading-5 text-slate-400">这里保存的是最终背景描述；下方“接警简报建议”和“现场第一印象建议”属于 AI 草案。</p>
+                  <TextZoomField
+                    v-model="aiParsedData.case_background"
+                    label="最终案件背景"
+                    title="发布信息确认 / 最终案件背景"
+                    :rows="4"
+                  />
+                </div>
                 </div>
               </div>
 
-              <section v-if="aiParsedData && currentStep >= 1" class="space-y-4 rounded-2xl border border-slate-100 bg-white p-5">
+              <div v-if="parseWarnings(aiParsedData).length || showTypeNormalizationHint(aiParsedData)" class="case-review-alert">
+                <div class="font-bold">复核提醒</div>
+                <div v-if="showTypeNormalizationHint(aiParsedData)" class="mt-1">
+                  AI 原始识别为“{{ aiParsedData.ai_case_type_raw || '未识别' }}”，系统标准化后归类为“{{ aiParsedData.case_type || '其他' }}”。
+                </div>
+                <div v-for="warning in parseWarnings(aiParsedData)" :key="warning" class="mt-1">{{ warning }}</div>
+              </div>
+              <div v-if="aiParsedData.story_material_audit" class="case-review-alert case-review-alert--neutral">
+                <div class="font-bold">剧情素材审计</div>
+                <div class="mt-1">
+                  原文 {{ aiParsedData.story_material_audit.original_chars || 0 }} 字，整理后 {{ aiParsedData.story_material_audit.training_chars || 0 }} 字，
+                  压缩比例 {{ Math.round((aiParsedData.story_material_audit.compaction_ratio || 0) * 100) }}%。
+                </div>
+                <div v-if="aiParsedData.story_material_audit.large_document || aiParsedData.story_material_audit.possible_truncation" class="mt-1 text-amber-700">
+                  当前材料体量较大或压缩比例偏低，请重点核验剧情卡片与完整 Word 阅读页是否遗漏关键时空、人物和证据。
+                </div>
+              </div>
+
+              <CaseGenerationWorkflow />
+
+              <section v-if="aiParsedData && currentStep >= 1" class="space-y-4 border-t border-slate-200 py-6">
                 <div class="flex items-center justify-between gap-3">
                   <div>
-                    <div class="section-block__eyebrow">第三步</div>
-                    <div class="section-title">AI 角色模板预览</div>
-                    <p class="mt-1 text-sm text-slate-500">程序已从原文提取人物身份与来源事实，不会自动编造人物画像。可直接删改角色；确需人物模板时再人工选择行为原型。</p>
+                    <div class="section-block__eyebrow">角色来源</div>
+                    <div class="section-title">角色与人物来源</div>
+                    <p class="mt-1 text-sm text-slate-500">系统根据原文形成可追溯的人物记忆，并以低权重行为画像辅助自然表达。画像不会替代案件事实或学员当前问题。</p>
                   </div>
                   <div class="flex items-center gap-2">
                     <van-tag type="primary" plain>{{ parsedPersons(aiParsedData).length }} 人</van-tag>
                     <van-button
                       v-if="parsedPersons(aiParsedData).length"
                       size="small"
-                      class="persona-toolbar-button"
-                      :plain="!areAllParsedPersonsExpanded"
+                      plain
                       type="primary"
+                      class="persona-toolbar-button"
                       @click="toggleAllParsedPersons"
                     >
                       {{ areAllParsedPersonsExpanded ? '全部收起' : '全部展开' }}
@@ -486,52 +497,23 @@
                     <van-button size="small" plain type="primary" class="persona-toolbar-button" @click="addParsedPerson">手动新增角色</van-button>
                   </div>
                 </div>
-                <div v-if="parsedPersons(aiParsedData).length" class="persona-stack-list">
-                  <div
-                    v-for="(person, index) in parsedPersons(aiParsedData)"
-                    :key="person._editor_id || `person-${index}`"
-                    class="persona-stack-card"
-                    :class="{ 'is-collapsed': person._collapsed, 'is-expanded': !person._collapsed }"
-                    :style="getParsedPersonCardStyle(Number(index), person)"
+                <div v-if="parsedPersons(aiParsedData).length" class="parsed-role-list">
+                  <RoleDossierCard
+                    v-for="(person, personIndex) in parsedPersons(aiParsedData)"
+                    :key="person._editor_id || `dossier-${personIndex}`"
+                    :person="person"
+                    :index="Number(personIndex)"
+                    :expanded="!person._collapsed"
+                    :style="getParsedPersonCardStyle(Number(personIndex), person)"
+                    @toggle="togglePersonCollapsed(person)"
+                    @remove="removeParsedPerson(Number(personIndex))"
                   >
-                    <div class="persona-stack-shell">
-                      <div class="persona-stack-layer persona-stack-layer--back"></div>
-                      <div class="persona-stack-layer persona-stack-layer--mid"></div>
-                      <div
-                        class="persona-stack-surface"
-                        :class="{ 'persona-stack-surface--clickable': person._collapsed }"
-                        @click="person._collapsed && openParsedPersonCard(person)"
-                      >
-                        <div class="persona-stack-header">
-                          <div class="flex min-w-0 items-center gap-3">
-                            <div class="text-base font-bold text-slate-800">{{ person.name || '未命名角色' }}</div>
-                            <van-tag plain type="primary">{{ person.role_type || person.role || '相关人员' }}</van-tag>
-                            <van-tag plain :type="Array.isArray(person.role_memories) && person.role_memories.length ? undefined : 'warning'">人物线 {{ Array.isArray(person.role_memories) ? person.role_memories.length : 0 }} 条</van-tag>
-                            <van-tag v-if="person.source_verification === 'pending_review'" plain type="warning">待核实：可入场复核</van-tag>
-                            <van-tag v-else-if="person.source_verification" plain type="success">原文可回指</van-tag>
-                          </div>
-                          <div class="flex items-center gap-2">
-                            <span class="persona-stack-toggle" @click.stop="togglePersonCollapsed(person)">{{ person._collapsed ? '展开详情' : '收起详情' }}</span>
-                            <van-button size="small" type="danger" plain @click.stop="removeParsedPerson(Number(index))">删除角色</van-button>
-                          </div>
-                        </div>
-                        <div v-if="person._collapsed" class="persona-stack-summary">
-                          <span v-for="item in getCompactPersonaSummary(person)" :key="item">{{ item }}</span>
-                        </div>
-                        <div v-else class="persona-stack-expanded" @click.stop>
-                          <div class="mt-3">
-                            <label class="form-label form-label--muted">人物身份</label>
-                            <input v-model="person.role" type="text" class="form-input" placeholder="如报警人、家属、围观者" />
-                          </div>
-                          <RoleCompactForm
-                            :model-value="person"
-                            :scene-behavior-mode="resolvePersonSceneBehaviorMode(person, aiParsedData)"
-                            @update:model-value="(next) => applyPersonCompactUpdate(aiParsedData, person, next)"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                    <RoleCompactForm
+                      :model-value="person"
+                      :scene-behavior-mode="resolvePersonSceneBehaviorMode(person, aiParsedData)"
+                      @update:model-value="(next) => applyPersonCompactUpdate(aiParsedData, person, next)"
+                    />
+                  </RoleDossierCard>
                 </div>
                 <div v-else class="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
                   当前还没有可用角色。你可以手动新增角色，补齐 AI 漏掉的人物。
@@ -544,14 +526,12 @@
                 <div>
                   <div class="section-block__eyebrow">案件叙事</div>
                   <div class="section-block__title">完整故事剧情</div>
+                  <p class="mt-1 text-sm text-slate-500">下方为提纯后的章节卡片（可收起）；完整长文请打开无截断 Word 阅读页。</p>
                 </div>
+                <van-button size="small" plain type="primary" @click="showStoryWordReader = true">打开 Word 阅读页</van-button>
               </div>
-              <div class="rounded-2xl border border-slate-100 bg-white p-5">
-                <div class="section-title">案件完整故事剧情</div>
-                <WordDocumentView
-                  :content="aiParsedData.narrative_document?.content || aiParsedData.complete_story || aiParsedData.story_world?.complete_story || aiParsedData.full_narrative || ''"
-                  title="案件完整故事剧情"
-                />
+              <div class="py-2">
+                <CaseStoryViewer :case-data="aiParsedData" />
               </div>
             </section>
           </div>
@@ -565,9 +545,6 @@
             <div v-if="sceneGenerationWarning(aiParsedData)" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
               <div class="font-bold">{{ sceneGenerationLabel(aiParsedData) }}</div>
               <div class="mt-1">{{ sceneGenerationWarning(aiParsedData) }}</div>
-            </div>
-            <div v-if="aiWorkflowSummary(aiParsedData.scene_ai_workflow)" class="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-700">
-              <strong>本次场景生成工作流：</strong>{{ aiWorkflowSummary(aiParsedData.scene_ai_workflow) }}
             </div>
             <div v-for="(scene, idx) in generatedScenes" :key="idx" class="scene-editor-card">
               <div class="scene-editor-card__top">
@@ -589,32 +566,57 @@
                     <div class="scene-editor-card__section-title">参与角色与主对话人</div>
                   </div>
                 </div>
+                <div class="scene-role-preview__header">
+                  <span>现场全部可交流人员</span>
+                  <span>{{ (scene.present_roles || scene.roles || []).length }} 人</span>
+                </div>
                 <div class="mt-2 flex flex-wrap gap-2">
                   <span
-                    v-for="roleName in scene.roles || []"
+                    v-for="roleName in scene.present_roles || scene.roles || []"
                     :key="roleName"
                     class="inline-flex items-center rounded-full bg-[#1D3557] px-3 py-1 text-xs font-bold text-white"
                   >
                     {{ roleName }}
                   </span>
                 </div>
-                <div v-if="getSceneRoleRecommendation({ persons: aiParsedData.persons || [] }, { role_names: scene.roles || [] })" class="mt-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-700">
-                  推荐理由：{{ getSceneRoleRecommendation({ persons: aiParsedData.persons || [] }, { role_names: scene.roles || [] })?.reason }}
+                <div v-if="scene.primary_roles?.length" class="mt-2 text-xs text-slate-500">
+                  优先交涉：{{ scene.primary_roles.join('、') }}
+                </div>
+                <div v-if="getSceneRoleRecommendation({ persons: aiParsedData.persons || [] }, { role_names: scene.roles || [] })" class="scene-role-preview__audit">
+                  <strong>匹配校验</strong>
+                  <span>推荐主对话人：{{ getSceneRoleRecommendation({ persons: aiParsedData.persons || [] }, { role_names: scene.roles || [] })?.name }}</span>
+                  <span>{{ getSceneRoleRecommendation({ persons: aiParsedData.persons || [] }, { role_names: scene.roles || [] })?.reason }}</span>
                 </div>
               </div>
 
               <div class="scene-editor-card__panel scene-editor-card__panel--copy">
                 <div class="scene-editor-card__section-head">
-                  <div></div>
-                </div>
-                <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
-                  <div class="preview-card">
-                    <div class="preview-label">接警简报</div>
-                    <div class="preview-body">{{ scene.dispatch_brief || '暂无' }}</div>
+                  <div>
+                    <div class="scene-editor-card__section-title">场景进入信息</div>
                   </div>
-                  <div class="preview-card">
-                    <div class="preview-label">现场第一印象</div>
-                    <div class="preview-body">{{ scene.first_impression || '暂无' }}</div>
+                </div>
+                <div class="scene-copy-grid">
+                  <div class="scene-copy-card">
+                    <div class="scene-copy-card__label">接警简报</div>
+                    <TextZoomField
+                      v-model="scene.dispatch_brief"
+                      label="接警简报"
+                      :title="`${scene.name || `场景 ${idx + 1}`} / 接警简报`"
+                      placeholder="暂无接警简报"
+                      :rows="4"
+                      readonly
+                    />
+                  </div>
+                  <div class="scene-copy-card scene-copy-card--impression">
+                    <div class="scene-copy-card__label">现场第一印象</div>
+                    <TextZoomField
+                      v-model="scene.first_impression"
+                      label="现场第一印象"
+                      :title="`${scene.name || `场景 ${idx + 1}`} / 现场第一印象`"
+                      placeholder="暂无现场第一印象"
+                      :rows="4"
+                      readonly
+                    />
                   </div>
                 </div>
               </div>
@@ -678,16 +680,13 @@
                   <div class="wp__sub">审核并调整案件基本信息</div>
                 </div>
               </div>
-              <van-button size="small" type="primary" class="!border-none !bg-[#1D3557]" :loading="supplementingAi" :disabled="!canRunAiSupplement" @click="runAiSupplement">
-                AI 补全
-              </van-button>
             </div>
             <div class="wp__body">
               <div v-if="showTypeNormalizationHint(editableCase)" class="wp-alert wp-alert--blue">
                 AI 原始识别为「{{ editableCase.ai_case_type_raw || '未识别' }}」，当前标准化类型为「{{ editableCase.case_type || '其他' }}」。
               </div>
               <div v-if="parseWarnings(editableCase).length || sceneGenerationWarning(editableCase)" class="wp-alert wp-alert--amber">
-                <div class="wp-alert__title">AI 补全复核提醒</div>
+                <div class="wp-alert__title">AI 解析复核提醒</div>
                 <div class="wp-alert__row">解析来源：{{ parseEngineLabel(editableCase) }}</div>
                 <div v-for="warning in parseWarnings(editableCase)" :key="warning" class="wp-alert__row">{{ warning }}</div>
                 <div v-if="sceneGenerationWarning(editableCase)" class="wp-alert__row">{{ sceneGenerationWarning(editableCase) }}</div>
@@ -1080,6 +1079,10 @@
                     </div>
                   </div>
                 </div>
+                <SceneOpeningConfigForm
+                  v-model="scene.opening_config"
+                  :roles="editableCase.persons || []"
+                />
 
                 <div class="scene-flow-panel">
                   <div class="scene-flow-panel__toolbar">
@@ -1218,6 +1221,26 @@
       </div>
     </van-popup>
     <van-popup
+      v-model:show="showStoryWordReader"
+      teleport="body"
+      :style="{ width: 'min(1120px, 96vw)', height: '92vh', borderRadius: '12px', overflow: 'hidden' }"
+      class="case-story-word-popup"
+    >
+      <div class="case-story-word">
+        <div class="case-story-word__head">
+          <div>
+            <div class="case-story-word__eyebrow">案件完整剧情</div>
+            <h3>无截断 Word 阅读页</h3>
+          </div>
+          <van-button plain size="small" icon="cross" @click="showStoryWordReader = false">关闭</van-button>
+        </div>
+        <div class="case-story-word__body">
+          <WordDocumentView :content="storyWordContent" title="案件完整故事剧情" unbounded />
+        </div>
+      </div>
+    </van-popup>
+
+    <van-popup
       v-model:show="showLargeTextEditor"
       position="center"
       round
@@ -1247,12 +1270,13 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import RoleCompactForm from '../components/RoleCompactForm.vue'
+import CaseStoryViewer from '../components/CaseStoryViewer.vue'
+import RoleDossierCard from '../components/cases/RoleDossierCard.vue'
+import TextZoomField from '../components/cases/TextZoomField.vue'
 import WordDocumentView from '../components/WordDocumentView.vue'
 import {
-  buildRoleCompactSummary,
   expandRoleCompactToPerson,
   inferTrainingFocus,
-  personToRoleCompact,
   trainingFocusToBehaviorMode,
 } from '../utils/roleCompact'
 import {
@@ -1271,6 +1295,21 @@ import {
 } from '../utils/personaTemplate'
 import { sceneBucketLabel, SCENE_NAME_PLACEHOLDERS } from '../utils/sceneBucket'
 import request from '../utils/request'
+import CasePipelineProgress from '../components/cases/CasePipelineProgress.vue'
+import CaseGenerationWorkflow from '../components/cases/CaseGenerationWorkflow.vue'
+import SceneOpeningConfigForm from '../components/cases/SceneOpeningConfigForm.vue'
+import { saveWithCaseQualityGate } from '../utils/caseQuality'
+import { normalizeCasePipelineResult, useCasePipeline } from '../composables/useCasePipeline'
+import {
+  aiWorkflowSummary,
+  normalizeCaseTags,
+  parseEngineIsFallback,
+  parseEngineLabel,
+  purifyStoryMaterial,
+  resolveParsedCaseTitle,
+  sceneGenerationIsFallback,
+  sceneGenerationLabel,
+} from '../utils/caseAnalysis'
 
 const router = useRouter()
 const route = useRoute()
@@ -1292,6 +1331,8 @@ const generating = ref(false)
 const savingCreate = ref(false)
 const savingDetail = ref(false)
 const supplementingAi = ref(false)
+const { job: pipelineJob, isRunning: pipelineIsRunning, startText: startTextPipeline, startFile: startFilePipeline, resume: resumeCasePipeline, clear: clearCasePipeline } = useCasePipeline()
+const showStoryWordReader = ref(false)
 type ReviewModule = 'basic' | 'roles' | 'scenes'
 type SceneEditTab = 'overview' | 'roles_copy' | 'flow'
 
@@ -1923,40 +1964,8 @@ const getEditablePersonCardStyle = (_index: number, person: any) => {
   }
 }
 
-const parseEngineLabel = (payload: any) => {
-  const engine = String(payload?.parse_engine || '')
-  if (engine === 'ai_text_first') return 'AI 主叙事 + 程序提取'
-  if (engine === 'ai') return 'AI 结构化解析（旧版）'
-  if (engine === 'rule_text_first') return '程序提取（AI 主叙事未成功）'
-  return '规则兜底解析'
-}
-const parseEngineIsFallback = (payload: any) => {
-  if (typeof payload?.ai_workflow?.used_rule_fallback === 'boolean') return payload.ai_workflow.used_rule_fallback
-  return !String(payload?.parse_engine || '').startsWith('ai')
-}
-const sceneGenerationLabel = (payload: any) => {
-  const mode = String(payload?.scene_generation_mode || '')
-  if (mode === 'ai_template_first') return 'AI 模板优先场景生成'
-  if (mode === 'ai_case_driven' || mode === 'ai') return 'AI 案件驱动场景生成'
-  if (mode === 'ai_text_template') return 'AI 纯文本剧本场景生成'
-  if (mode === 'fallback_template_first') return '模板优先兜底场景'
-  if (mode === 'fallback_case_driven' || mode === 'fallback_modules' || mode === 'fallback') return '案件驱动兜底场景'
-  return '场景生成'
-}
-const sceneGenerationIsFallback = (payload: any) => String(payload?.scene_generation_mode || '').startsWith('fallback')
 const parseWarnings = (payload: any) => Array.isArray(payload?.parse_warnings) ? payload.parse_warnings : []
 const sceneGenerationWarning = (payload: any) => String(payload?.scene_generation_warning || '').trim()
-const aiWorkflowSummary = (workflow: any) => {
-  if (!workflow) return ''
-  const attempts = Array.isArray(workflow.attempts) ? workflow.attempts : []
-  const primary = workflow.primary_provider || attempts[0]?.provider || 'AI'
-  const final = workflow.final_provider || attempts.at(-1)?.provider || primary
-  const failed = Number(workflow.failed_attempts || attempts.filter((item: any) => item?.status !== 'success').length || 0)
-  if (workflow.used_rule_fallback) return `${primary} 已失败 ${failed || attempts.length} 次，当前为规则兜底。`
-  return failed > 0 || primary !== final
-    ? `${primary} 失败 ${failed} 次，已切换至 ${final} 并生成成功。`
-    : `使用 ${final} 生成成功，共尝试 ${attempts.length || 1} 次。`
-}
 
 let personEditorSeed = 1
 
@@ -2026,6 +2035,17 @@ const parsedPersons = (payload: any) => {
   }
   return payload.persons
 }
+const storyWordContent = computed(() => {
+  const value = aiParsedData.value || {}
+  return purifyStoryMaterial(
+    value.story_documents?.narrative?.content
+      || value.complete_story
+      || value.story_world?.complete_story
+      || value.full_narrative
+      || value.narrative_document?.content
+      || '',
+  )
+})
 const getPersonListText = (value: any) => (Array.isArray(value) ? value : []).join('\n')
 
 const toComparableList = (value: any) => {
@@ -2052,9 +2072,6 @@ const getPersonDedupInsights = (person: any) => {
 
   return { issues, mergedPreview }
 }
-
-const getCompactPersonaSummary = (person: any) =>
-  buildRoleCompactSummary(personToRoleCompact(person, resolvePersonSceneBehaviorMode(person)))
 
 const togglePersonCollapsed = (target: any) => {
   const persons = aiParsedData.value?.persons || []
@@ -2700,6 +2717,11 @@ const resetCreateState = () => {
 }
 
 const openAddModal = () => {
+  if (pipelineIsRunning.value || pipelineJob.value) {
+    currentStep.value = 1
+    showAdd.value = true
+    return
+  }
   resetCreateState()
   showAdd.value = true
 }
@@ -2764,26 +2786,67 @@ const handleTranscriptFilePaste = (event: ClipboardEvent) => {
   acceptTranscriptFile(file)
 }
 
+const normalizeGeneratedScenesFromPipeline = (scenes: any[], persons: any[]) => {
+  return (Array.isArray(scenes) ? scenes : []).map((scene: any) => {
+    const baseRoleNames = Array.isArray(scene?.roles)
+      ? scene.roles
+      : Array.isArray(scene?.role_names)
+        ? scene.role_names
+        : []
+    const presentRoleNames = Array.isArray(scene?.present_roles) ? scene.present_roles : []
+    const isOnsiteScene = String(scene?.training_entry_phase || scene?.scene_kind || scene?.scene_name || '').includes('现场')
+      || String(scene?.training_entry_phase || '') === 'post_incident_onsite'
+    const roleNames = Array.from(new Set((isOnsiteScene ? [...presentRoleNames, ...baseRoleNames] : baseRoleNames).filter(Boolean)))
+    return {
+      ...scene,
+      roles: roleNames,
+      role_names: roleNames,
+      present_roles: presentRoleNames.length ? presentRoleNames : roleNames,
+      dispatch_brief: String(scene.dispatch_brief || scene.dispatch_brief_suggestion || '').trim(),
+      first_impression: String(scene.first_impression || scene.first_impression_suggestion || '').trim(),
+      opening_config: scene.opening_config || {
+        enabled: true,
+        mode: 'dynamic',
+        speaker_role_ids: [],
+        speaker_names: roleNames.slice(0, 3),
+        director_note: '',
+        preset_turns: [],
+      },
+      primary_role_name: scene.primary_role_name || pickRecommendedPrimaryRoleName(persons || [], roleNames) || roleNames[0] || '',
+    }
+  })
+}
+
+const applyPipelineJobResult = (rawResult: any) => {
+  const normalized = normalizeCasePipelineResult(rawResult)
+  const res: any = normalized.caseInfo || {}
+  aiParsedData.value = {
+    ...res,
+    scene_ai_workflow: normalized.sceneAiWorkflow,
+    ai_workflows: normalized.aiWorkflows,
+  }
+  aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: false })
+  generatedScenes.value = normalizeGeneratedScenesFromPipeline(normalized.scenes, aiParsedData.value.persons || [])
+  return res
+}
+
 const startParsing = async () => {
   parsing.value = true
   try {
+    clearCasePipeline()
+    generatedScenes.value = []
     if (importMode.value === 'transcript_file') {
       if (!uploadedFile.value) {
         showToast('请先上传笔录文件')
         return
       }
-      const payload = new FormData()
-      payload.append('file', uploadedFile.value)
-      payload.append('source_mode', 'transcript_file')
-      const res: any = await request.post('/cases/parse-file', payload, { timeout: 600000, _skipErrorToast: true } as any)
-      aiParsedData.value = res || {}
-      aiParsedData.value.ai_workflows = res?.ai_workflow ? [res.ai_workflow] : []
-      aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: true })
+      const job = await startFilePipeline(uploadedFile.value)
+      const res: any = applyPipelineJobResult(job.result || {})
       if (parseEngineIsFallback(res)) {
         showToast('本次为规则兜底解析，请人工复核后再发布')
       }
       fileParseStatus.value = 'parsed'
-      if (!form.title) form.title = res.case_name || ''
+      form.title = resolveParsedCaseTitle(res, form.title)
       if (!form.caseType) form.caseType = res.case_type || ''
       form.caseTypeGroup = getCaseTypeGroup(form.caseType)
       fileMeta.name = res.file_meta?.name || fileMeta.name
@@ -2792,10 +2855,8 @@ const startParsing = async () => {
       return
     }
 
-    const res: any = await request.post('/cases/parse', { text: form.rawText, source_mode: 'plain_case' }, { timeout: 600000, _skipErrorToast: true } as any)
-    aiParsedData.value = res || {}
-    aiParsedData.value.ai_workflows = res?.ai_workflow ? [res.ai_workflow] : []
-    aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: true })
+    const job = await startTextPipeline(form.rawText)
+    const res: any = applyPipelineJobResult(job.result || {})
     if (parseEngineIsFallback(res)) {
       showToast('本次为规则兜底解析，请人工复核后再发布')
     }
@@ -2813,6 +2874,16 @@ const startParsing = async () => {
 const startGenerating = async () => {
   generating.value = true
   try {
+    if (generatedScenes.value.length) {
+      aiParsedData.value = {
+        ...aiParsedData.value,
+        scene_ai_workflow: aiParsedData.value.scene_ai_workflow || aiParsedData.value.ai_workflow || null,
+      }
+      if (sceneGenerationIsFallback(aiParsedData.value)) {
+        showToast('本次为规则兜底场景，请人工复核场景与角色分配')
+      }
+      return
+    }
     const caseInfo = {
       ...aiParsedData.value,
       case_name: form.title || aiParsedData.value.case_name,
@@ -2824,13 +2895,11 @@ const startGenerating = async () => {
       { case_info: caseInfo, scene_generation_strategy: 'case_driven' },
       { timeout: 600000, _skipErrorToast: true } as any,
     )
-    generatedScenes.value = (res.scenes || []).map((scene: any) => {
-      const roleNames = Array.isArray(scene?.roles) ? scene.roles : []
-      return {
-        ...scene,
-        primary_role_name: pickRecommendedPrimaryRoleName(aiParsedData.value.persons || [], roleNames) || roleNames[0] || '',
-      }
-    })
+    generatedScenes.value = normalizeGeneratedScenesFromPipeline(res.scenes || [], aiParsedData.value.persons || [])
+    if (!generatedScenes.value.length) {
+      showToast('场景生成未产生可发布场景，请返回检查案件内容后重试')
+      throw new Error('empty-scenes')
+    }
     aiParsedData.value = {
       ...aiParsedData.value,
       scene_generation_mode: res.scene_generation_mode || '',
@@ -2858,10 +2927,14 @@ const startGenerating = async () => {
 
 const submitFinal = async () => {
   if (!validatePersonsBeforeSave(aiParsedData.value?.persons || [], aiParsedData.value)) return
+  if (!generatedScenes.value.length) {
+    showToast('请先生成至少一个训练场景')
+    return
+  }
   savingCreate.value = true
   try {
     const personsPayload = serializePersonsForSave(aiParsedData.value.persons || [])
-    const createdCase: any = await request.post('/cases/full-create', {
+    const createdCase: any = await saveWithCaseQualityGate((qualityAcknowledgements) => request.post('/cases/full-create', {
       case: {
         ...aiParsedData.value,
         persons: personsPayload,
@@ -2878,7 +2951,8 @@ const submitFinal = async () => {
         extracted_text_preview: aiParsedData.value.extracted_text_preview || '',
       },
       scenes: generatedScenes.value,
-    }, { _skipErrorToast: true } as any)
+      quality_acknowledgements: qualityAcknowledgements,
+    }, { _skipErrorToast: true } as any))
     showToast({ type: 'success', message: '案件发布成功' })
     showAdd.value = false
     await refreshCasesPage()
@@ -2957,7 +3031,7 @@ const handleNext = async () => {
   }
 
   if (currentStep.value === 1) {
-    if (!form.title) form.title = aiParsedData.value.case_name || ''
+    form.title = resolveParsedCaseTitle(aiParsedData.value, form.title)
     if (!form.caseType) form.caseType = aiParsedData.value.case_type || ''
     currentStep.value = 2
     try {
@@ -3088,6 +3162,7 @@ const applyCaseCompletionPayload = (target: any, payload: any, rawText: string) 
       description: pickFilled(scene.description, aiScene.scene_description),
       dispatch_brief: pickFilled(scene.dispatch_brief, aiScene.dispatch_brief),
       first_impression: pickFilled(scene.first_impression, aiScene.first_impression),
+      opening_config: scene.opening_config || aiScene.opening_config || null,
       difficulty: pickFilled(scene.difficulty, aiScene.difficulty),
       stagesModel: nextStages ? normalizeStageEditors(nextStages) : scene.stagesModel,
       stagesText: nextStages ? stringifyStages(nextStages) : scene.stagesText,
@@ -3231,6 +3306,7 @@ const saveCaseDetail = async () => {
       difficulty: scene.difficulty,
       dispatch_brief: scene.dispatch_brief,
       first_impression: scene.first_impression,
+      opening_config: scene.opening_config || null,
       training_focus: sceneMeta.training_focus,
       behavior_mode: sceneMeta.behavior_mode,
       assessment_points: serializeAssessmentPointsForSave(scene.assessmentPointsModel || []),
@@ -3302,6 +3378,25 @@ const getTagType = (type: string) => {
 
 onMounted(async () => {
   await refreshCasesPage()
+  if (localStorage.getItem('case_pipeline_job_id')) {
+    currentStep.value = 1
+    showAdd.value = true
+    parsing.value = true
+    try {
+      const resumed = await resumeCasePipeline()
+      if (resumed?.status === 'completed') {
+        const res: any = applyPipelineJobResult(resumed.result || {})
+        form.title = resolveParsedCaseTitle(res, form.title)
+        if (!form.caseType) form.caseType = res.case_type || ''
+        form.caseTypeGroup = getCaseTypeGroup(form.caseType)
+        showToast({ type: 'success', message: '案件整理任务已恢复完成' })
+      }
+    } catch (error: any) {
+      showToast(getApiErrorDetail(error, '案件整理任务恢复失败'))
+    } finally {
+      parsing.value = false
+    }
+  }
   // 处理从 /admin/cases/:id/edit 跳转回来后自动打开编辑弹窗
   const pendingId = sessionStorage.getItem('pendingEditCaseId')
   if (pendingId) {
@@ -3877,6 +3972,113 @@ const previewFormatDate = (dt: string | null | undefined) => {
   font-size: 12px;
   line-height: 1.5;
   color: #475569;
+}
+
+.case-review-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 24px;
+  background: #fff;
+  padding: 20px;
+}
+
+.case-review-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid #eef2f7;
+  padding-bottom: 16px;
+}
+
+.case-review-hero__eyebrow {
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+}
+
+.case-review-hero__title {
+  margin: 4px 0 0;
+  color: #0f172a;
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 900;
+}
+
+.case-review-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.case-summary-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.case-summary-list__item {
+  min-width: 0;
+  border: 1px solid #edf2f7;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 10px 12px;
+}
+
+.case-summary-list__item--wide {
+  grid-column: 1 / -1;
+}
+
+.case-summary-list__item span {
+  display: block;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.case-summary-list__item strong {
+  display: block;
+  margin-top: 5px;
+  color: #172033;
+  font-size: 14px;
+  line-height: 1.55;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.case-file-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.case-file-strip span {
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.case-review-alert {
+  border: 1px solid #fbbf24;
+  border-radius: 8px;
+  background: #fffbeb;
+  padding: 14px 16px;
+  color: #92400e;
+  font-size: 13px;
+}
+
+.case-review-alert--neutral {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1e3a8a;
 }
 
 
@@ -4568,6 +4770,70 @@ const previewFormatDate = (dt: string | null | undefined) => {
   color: #0f172a;
 }
 
+.scene-role-preview__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.scene-role-preview__audit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  border: 1px solid #bae6fd;
+  border-radius: 12px;
+  background: #f0f9ff;
+  padding: 10px 12px;
+  color: #0369a1;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.scene-role-preview__audit strong {
+  color: #075985;
+}
+
+.scene-copy-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  gap: 14px;
+}
+
+.scene-copy-card {
+  min-height: 132px;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  background: #fff;
+  padding: 14px 16px;
+}
+
+.scene-copy-card--impression {
+  border-color: #bbf7d0;
+  background: #f7fef9;
+}
+
+.scene-copy-card__label {
+  margin-bottom: 10px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.scene-copy-card__body {
+  margin-top: 10px;
+  color: #334155;
+  font-size: 14px;
+  line-height: 1.85;
+  white-space: pre-wrap;
+}
+
 .scene-editor-card__helper {
   max-width: 260px;
   font-size: 12px;
@@ -4790,6 +5056,52 @@ const previewFormatDate = (dt: string | null | undefined) => {
   accent-color: #1d3557;
 }
 
+.parsed-role-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.case-story-word-popup {
+  background: transparent;
+}
+
+.case-story-word {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #eef2f7;
+}
+
+.case-story-word__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #dbe3ee;
+  background: #fff;
+  padding: 16px 18px;
+}
+
+.case-story-word__eyebrow {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.case-story-word h3 {
+  margin: 2px 0 0;
+  color: #172033;
+  font-size: 20px;
+}
+
+.case-story-word__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
 .persona-stack-list {
   position: relative;
   padding-top: 8px;
@@ -4952,6 +5264,16 @@ const previewFormatDate = (dt: string | null | undefined) => {
 }
 
 @media (max-width: 768px) {
+  .case-review-hero {
+    flex-direction: column;
+  }
+
+  .case-review-grid,
+  .case-summary-list,
+  .scene-copy-grid {
+    grid-template-columns: 1fr;
+  }
+
   .section-block__header,
   .wp__header,
   .scene-workbench__header,
@@ -5264,6 +5586,12 @@ const previewFormatDate = (dt: string | null | undefined) => {
 }
 
 @media (max-width: 960px) {
+  .case-review-grid,
+  .case-summary-list,
+  .scene-copy-grid {
+    grid-template-columns: 1fr;
+  }
+
   .supplement-toolbar {
     flex-direction: column;
     align-items: stretch;

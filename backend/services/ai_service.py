@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 import models
-from .llm_provider import create_json_chat_completion, extract_message_text, get_roleplay_model
+from .llm_provider import create_roleplay_json_completion, extract_message_text
 from .role_generation_context_service import compile_role_generation_context
 from .rag_service import RUNTIME_RETRIEVAL_LIBRARIES, rag_service
 from .persona_engine import (
@@ -26,14 +26,17 @@ from .multi_role_service import (
 from .role_resolver import is_role_speakable, resolve_scene_role, resolve_scene_roles
 from .dialogue_sequence_service import build_intake_sequence_feedback, merge_sequence_feedback
 from .dialogue_sanitize_service import (
+    ROLE_REPLY_MAX_CHARS,
     is_internal_prompt_text,
+    limit_role_reply_turns_with_remainders,
     repair_learner_echoed_spoken_line,
     repair_repetitive_spoken_line,
     sanitize_spoken_line,
 )
 from .opening_turn_service import infer_session_scene_kind
 from .stage_config_service import find_stage_config, infer_scene_kind, normalize_stages
-from .state_contract_postcheck import apply_contract_postcheck, postcheck_reply_turns, validate_response_against_contract
+from .prompts.guardrails import DIALOGUE_ROLE_GUARDRAILS
+from .state_contract_validation import apply_contract_postcheck, postcheck_reply_turns, validate_response_against_contract
 from .hybrid_state_machine import derive_hybrid_state
 from .state_influence_metrics import build_session_metrics, record_turn_metrics
 from .state_influence_engine import (
@@ -55,97 +58,26 @@ from .training_runtime_service import (
     load_runtime_state,
 )
 
-SYSTEM_PROMPT_TEMPLATE = """
-你正在扮演“{role_name}”，不是助手，不是旁白，而是案件中的真实角色本人。
+SYSTEM_PROMPT_TEMPLATE = """你是案件人物「{role_name}」，不是助手或旁白。
+事实基准：{full_case_story_block}
+本人可知：{case_knowledge_block}
+任务：{current_stage}；{current_stage_goal}
+警方已知：{revealed_info}
+状态：情绪{emotion} 信任{trust} 配合{cooperation} 风险{risk} 清晰{clarity}；模式{scene_behavior_mode}
+场景边界：{scene_boundary_block}
+近期记忆：{memory_block}
+行为契约：{state_contract_block}
 
-你必须遵守以下规则：
-1. 先直接回答学员本轮正在问的内容；只能依据案件事实、角色设定、当前训练阶段、警方已掌握信息和本轮输入作答。
-2. 不要凭空补全案件，不要主动把整条案情一次性说完。
-3. 回答要像真实人类：允许犹豫、改口、情绪化、打断、补半句，但不能机械重复。
-4. 优先按照“当前场景行为模式 + 场景边界”决定说什么、保留什么、被问到什么才会松口，不要机械套用固定三栏。
-5. 不知道的就说不知道；不愿主动说的可以保留，但保留方式要自然。
-6. 如果警方问得笼统，就给有限且口语化的回答；如果问得具体、击中软肋或动作触发了你，才逐步多说一点。
-7. 只输出一个合法 JSON 对象，不要输出解释和 markdown。
-8. 决策优先级固定为：本轮问题与事实 > 信息边界 > 当前状态 > 行为风格。人设字段只能影响语气、长度和披露程度，不能改变回答主题。
-
-完整案件剧情核心基准（每轮强制读取）：
-{full_case_story_block}
-
-角色专属事实边界：
-{case_knowledge_block}
-
-知识库实时召回（法律法规 / SOP / 教学资料）：
-{retrieved_knowledge_block}
-
-最小角色上下文（仅用于影响本轮语气和披露，不得在台词中复述）：
-{runtime_persona_block}
-- 当前情绪：{emotion}/100
-- 当前信任：{trust}/100
-- 当前配合：{cooperation}/100
-- 当前风险：{risk}/100
-- 当前表达清晰度：{clarity}/100
-（注：信任度是角色对警方的信任水平，配合度是表面愿意配合的程度——两者数值可能接近但概念不同，需分别判断。输出的 updated_trust 和 updated_cooperation 分别对应这两个维度。）
-
-当前场景行为模式：
-- 模式：{scene_behavior_mode}
-- 当前场景边界：
-{scene_boundary_block}
-
-当前训练阶段：
-- 阶段名称：{current_stage}
-- 阶段目标：{current_stage_goal}
-- 本阶段已累计学员发言轮次：{stage_turn_count}
-- 本阶段建议最低轮次：{stage_turn_target}
-- 本阶段考察点：
-{stage_assessment_points}
-- 本阶段可触发动作：
-{stage_action_catalog}
-- 警方已掌握的信息：
-{revealed_info}
-
-近期记忆：
-{memory_block}
-
-本轮表现契约（必须严格遵守，优先级高于自由发挥）：
-{state_contract_block}
-
-输出要求：
-1. response 只写角色本轮主要回答。
-2. follow_up_response 是 response 的即时追加，表现为打断自己、改口或补充，不是新的一轮对话。只有在以下情况才允许出现，否则必须为 null：
-   - 情绪过高出现打断或补半句
-   - 被动作触发后产生即时反应
-   - 被问到关键软肋后出现改口或补充
-3. inner_thought 写角色真实心理活动，不要重复 response。可以反映角色当下的判断（"他是不是已经知道了？"）、应对策略（"先岔开这个话题"）或真实的情绪波动（"被说到痛处了"），一般15字以内短句即可。
-4. new_fact_revealed 只有在本轮确实新增关键事实时填写，否则填 null。
-5. updated_risk 和 updated_clarity 要结合本轮问法、动作触发和角色状态做小幅变化；没有明显变化时可沿用原值。
-6. is_stage_completed 只有在本阶段信息与动作确实已足够时才可为 true。
-7. updated_cooperation 对应配合度变化（表面配合意愿），与 updated_trust（信任感变化）在概念上不同，需结合本轮互动独立判断。没有明显变化时可沿用原值。
-
-注意：以下JSON模板中的数字值为示例，请根据角色实际状态和本轮互动动态调整，不要照搬。
-
-严格输出 JSON：
-{{
-  "response": "角色本轮主要回复",
-  "follow_up_response": null,
-  "inner_thought": "角色真实心理活动",
-  "updated_emotion": 55,
-  "updated_trust": 35,
-  "updated_cooperation": 35,
-  "updated_risk": 48,
-  "updated_clarity": 62,
-  "new_fact_revealed": null,
-  "is_stage_completed": false
-}}
-"""
-
-
-ROLE_SPEECH_INTEGRITY_PROMPT = """
-【可见台词硬规则】
-你只是在场角色，不是引导学员的助手或教学系统。response 和 follow_up_response 中严禁出现：
-- 指导民警提问的句子，如“你先问”“你再问”“问具体点”“把问题拆开”。
-- 管理对话或宣布转题的句子，如“换个角度”“换个说法”“别一直绕在同一个点上”“别让我重复”。
-- 任何人设字段、信息边界、状态契约、当前诉求等内部术语。
-若没有把握回答，直接以人物身份说自己看见、听见、担心或记不清的内容；不要评价民警的问法。
+规则：
+1. 直接答本轮问题；只说本人可知或已公开信息，不知则说不确认。
+2. 口吻受状态影响，不得改事实、回避问题或替其他角色发言。
+3. 不指导/评价民警问法，不复述系统字段。
+4. response+follow_up_response≤{max_reply_chars}字，完整句，不以省略号收尾。
+5. follow_up_response 仅即时改口/补充，否则 null；inner_thought 一句；new_fact_revealed 仅填本轮新增关键事实。
+6. 状态值 0-100；阶段条件满足时 is_stage_completed 才为 true。
+""" + DIALOGUE_ROLE_GUARDRAILS + """
+只输出 JSON：
+{{"response":"","follow_up_response":null,"inner_thought":"","updated_emotion":55,"updated_trust":35,"updated_cooperation":35,"updated_risk":48,"updated_clarity":62,"new_fact_revealed":null,"is_stage_completed":false}}
 """
 
 
@@ -257,46 +189,6 @@ def _infer_truth_stage(trust: int, emotion: int) -> str:
     if emotion >= 76:
         return "emotional_leak"
     return "guarded_denial"
-
-
-def _format_scene_boundary_block(persona_profile: dict[str, Any]) -> str:
-    boundary = persona_profile.get("scene_boundary") if isinstance(persona_profile, dict) else {}
-    if not isinstance(boundary, dict):
-        boundary = {}
-    labels = {
-        "known_key_points": "可直接说出的关键点",
-        "withheld_key_points": "不会主动交代的关键点",
-        "conflict_core": "冲突核心",
-        "acceptable_outcomes": "可接受结果",
-        "no_go_topics": "绝对不愿碰的话题",
-        "trigger_sources": "容易被什么刺激",
-        "concerned_targets": "最在意的人或对象",
-        "taboo_actions": "最反感的警方做法",
-        "escalation_actions": "什么动作会让其更失控",
-        "deescalation_conditions": "什么条件下更容易缓和",
-    }
-    lines: list[str] = []
-    for key, label in labels.items():
-        values = [str(item).strip() for item in (boundary.get(key) or []) if str(item).strip()]
-        if values:
-            lines.append(f"- {label}：{'；'.join(values[:4])}")
-    return "\n".join(lines) if lines else "- 当前还没有补充专属边界信息，先以角色诉求、顾虑和旧事实边界自然作答。"
-
-
-def _role_state_label(cooperation: int, emotion: int, risk: int | None = None, clarity: int | None = None) -> str:
-    risk = _clamp_score(risk, 50) if risk is not None else 50
-    clarity = _clamp_score(clarity, 50) if clarity is not None else 50
-    if risk >= 78 or emotion >= 82:
-        return "接近失控边缘"
-    if clarity <= 32 and emotion >= 70:
-        return "表达混乱且波动大"
-    if cooperation >= 68 and risk <= 45:
-        return "愿意沟通"
-    if cooperation <= 30 and risk >= 60:
-        return "强烈对抗"
-    if clarity >= 68 and cooperation >= 55:
-        return "信息逐渐清晰"
-    return "谨慎应对"
 
 
 def _build_persona_hint(role: Any) -> str:
@@ -619,70 +511,6 @@ def _build_recommended_questions(
     )
 
 
-def _build_feedback(user_message: str, trust: int, emotion: int, truth_stage: str) -> dict[str, Any]:
-    notes: list[str] = []
-    tags: list[str] = []
-
-    if len(user_message.strip()) < 12:
-        notes.append("这一轮问法偏短，建议补上时间、地点或人物锚点。")
-        tags.append("question_too_short")
-    if any(token in user_message for token in ["为什么", "怎么回事", "具体", "谁", "几点", "哪里"]):
-        notes.append("这一轮问法已经开始逼近关键事实。")
-        tags.append("fact_probe")
-    if any(token in user_message for token in ["冷静", "别激动", "慢慢说", "不用着急"]):
-        notes.append("你在尝试稳住对方情绪，这有助于后续继续深问。")
-        tags.append("rapport")
-    if truth_stage == "guarded_denial":
-        notes.append("当前角色仍偏防御，建议先缩小问题范围，不要一次问太散。")
-        tags.append("guarded")
-    elif truth_stage == "mostly_open":
-        notes.append("对方已经开始松口，适合顺着时间线追细节和矛盾点。")
-        tags.append("disclosure")
-
-    if not notes:
-        notes.append("问询节奏正常，可以继续围绕已知线索逐步压实。")
-        tags.append("steady")
-
-    level = "warning" if emotion >= 75 else "good" if trust >= 65 else "info"
-    return {
-        "level": level,
-        "tags": tags,
-        "message": notes[0],
-        "all_messages": notes,
-    }
-
-
-def _build_plain_text_result(raw_content: str, ts: Any, current_stage_goal: str, role: Any) -> dict[str, Any]:
-    truth_stage = _infer_truth_stage(current_state_snapshot["cooperation"], ts.current_emotion)
-    revealed_info = _parse_json_list(ts.revealed_info)
-    salvage_message = "模型返回了非 JSON 文本，系统已自动转换为可继续训练的结构化回复。"
-    return {
-        "response": raw_content[:420].rstrip(),
-        "inner_thought": f"先按当前口径回答，暂时不把最在意的部分完全说透。当前真相阶段：{truth_stage}",
-        "updated_emotion": ts.current_emotion,
-        "updated_trust": ts.current_trust,
-        "new_fact_revealed": None,
-        "is_stage_completed": False,
-        "current_stage": ts.current_stage,
-        "current_stage_goal": current_stage_goal,
-        "recommended_questions": _build_recommended_questions(current_stage_goal, revealed_info, truth_stage),
-        "communication_feedback": {
-            "level": "info",
-            "tags": ["plain_text_salvaged"],
-            "message": salvage_message,
-            "all_messages": [salvage_message],
-        },
-        "persona_hint": _build_persona_hint(role),
-        "role_state_label": _role_state_label(
-            current_state_snapshot["cooperation"],
-            ts.current_emotion,
-            current_state_snapshot["risk"],
-            current_state_snapshot["clarity"],
-        ),
-        "truth_stage": truth_stage,
-    }
-
-
 class _TransientMessage:
     def __init__(self, role: str, content: str):
         self.role = role
@@ -717,19 +545,6 @@ def _extract_response_text(response: Any) -> str:
         except Exception:
             return ""
     return ""
-
-
-def _parse_result_payload(raw_content: str, ts: Any, current_stage_goal: str, role: Any) -> dict[str, Any]:
-    try:
-        start_idx = raw_content.find("{")
-        end_idx = raw_content.rfind("}")
-        payload = raw_content[start_idx : end_idx + 1] if start_idx != -1 and end_idx != -1 else raw_content
-        result = json.loads(payload)
-        if isinstance(result, dict):
-            return result
-    except Exception:
-        pass
-    return _build_plain_text_result(raw_content, ts, current_stage_goal, role)
 
 
 def _is_meaningful_fact(value: Any) -> bool:
@@ -953,7 +768,7 @@ def _build_plain_text_result(
     revealed_info = runtime_state.get("revealed_info") or []
     salvage_message = "模型返回了非 JSON 文本，系统已自动转换为可继续训练的结构化回复。"
     return {
-        "response": raw_content[:420].rstrip(),
+        "response": raw_content.rstrip(),
         "inner_thought": f"先按当前语境回答，暂时不把最在意的部分完全说透。当前真相阶段：{truth_stage}",
         "updated_emotion": ts.current_emotion,
         "updated_cooperation": state_snapshot["cooperation"],
@@ -999,6 +814,60 @@ def _parse_result_payload(
     except Exception:
         pass
     return _build_plain_text_result(raw_content, ts, current_stage_goal, role, state_snapshot)
+
+
+def _prepend_targeted_pending_reply(
+    turns: list[dict[str, Any]],
+    pending: dict[str, dict[str, str]],
+    target_role_name: str | None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    target = str(target_role_name or "").strip()
+    if not target or not isinstance(pending, dict):
+        return turns, None
+    pending_key = next(
+        (
+            key
+            for key, item in pending.items()
+            if isinstance(item, dict) and str(item.get("role_name") or "").strip() == target
+        ),
+        None,
+    )
+    if not pending_key:
+        return turns, None
+    first_target_index = next(
+        (index for index, turn in enumerate(turns) if str(turn.get("speaker_name") or "").strip() == target),
+        None,
+    )
+    if first_target_index is None:
+        return turns, None
+    content = str(pending[pending_key].get("content") or "").strip()
+    if not content:
+        return turns, None
+    reference = turns[first_target_index]
+    continued = {
+        **reference,
+        "content": content,
+        "inner_thought": None,
+        "continued_from_previous": True,
+    }
+    return [*turns[:first_target_index], continued, *turns[first_target_index:]], pending_key
+
+
+def _merge_pending_role_replies(
+    stored: dict[str, dict[str, str]],
+    generated: dict[str, dict[str, str]],
+    consumed_key: str | None,
+) -> dict[str, dict[str, str]]:
+    merged = dict(stored or {})
+    if consumed_key:
+        merged.pop(consumed_key, None)
+    for role_key, pending in generated.items():
+        previous = merged.get(role_key) if isinstance(merged.get(role_key), dict) else {}
+        merged[role_key] = {
+            "role_name": pending.get("role_name") or previous.get("role_name") or "",
+            "content": f"{previous.get('content') or ''}{pending.get('content') or ''}",
+        }
+    return merged
 
 
 def _run_training_turn(
@@ -1219,9 +1088,8 @@ def _run_training_turn(
         scene_behavior_mode=persona_profile.get("scene_behavior_mode") or "核查取证型",
         scene_boundary_block=_format_scene_boundary_block(persona_profile),
         state_contract_block=state_contract_block,
+        max_reply_chars=ROLE_REPLY_MAX_CHARS,
     )
-    system_prompt = f"{system_prompt}\n{ROLE_SPEECH_INTEGRITY_PROMPT}"
-
     if result is None:
         messages = [{"role": "system", "content": system_prompt}, *_build_prompt_history(history)]
         if turn_role == "action":
@@ -1234,11 +1102,10 @@ def _run_training_turn(
         else:
             messages.append({"role": "user", "content": user_text})
 
-        response = create_json_chat_completion(
+        response = create_roleplay_json_completion(
             messages=messages,
             temperature=generation_temperature_for_contract(state_contract),
-            model=get_roleplay_model(),
-            max_tokens=2200,
+            max_tokens=1400,
         )
         raw_content = _extract_response_text(response) or ""
         result = _parse_result_payload(raw_content, ts, current_stage_goal, role, current_state_snapshot)
@@ -1285,7 +1152,10 @@ def _run_training_turn(
         previous=runtime_state.get("hybrid_state"),
     )
 
-    ai_reply = sanitize_spoken_line(str(result.get("response") or "……").strip() or "……")
+    complete_fallback_reply = "我需要先确认一下具体情况。"
+    ai_reply = sanitize_spoken_line(
+        str(result.get("response") or complete_fallback_reply).strip() or complete_fallback_reply
+    )
     if not planned_reply_turns:
         recent_role_lines = [
             str(getattr(message, "content", "") or "")
@@ -1441,6 +1311,22 @@ def _run_training_turn(
             }
             for index, content in enumerate(reply_sequence)
         ]
+
+    stored_pending = dict(runtime_state.get("pending_role_replies") or {})
+    reply_turns, consumed_pending_key = _prepend_targeted_pending_reply(
+        reply_turns,
+        stored_pending,
+        target_role_name,
+    )
+    reply_turns, generated_pending = limit_role_reply_turns_with_remainders(reply_turns)
+    runtime_state["pending_role_replies"] = _merge_pending_role_replies(
+        stored_pending,
+        generated_pending,
+        consumed_pending_key,
+    )
+    reply_sequence = [str(item.get("content") or "") for item in reply_turns]
+    if reply_sequence:
+        ai_reply = reply_sequence[0]
 
     stage_transition_message = None
     active_stage_goal = current_stage_goal

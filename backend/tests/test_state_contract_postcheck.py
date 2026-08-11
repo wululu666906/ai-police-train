@@ -1,6 +1,6 @@
 """Tests for state contract post-check."""
 
-from services.state_contract_postcheck import (
+from services.state_contract_validation import (
     apply_contract_postcheck,
     validate_response_against_contract,
 )

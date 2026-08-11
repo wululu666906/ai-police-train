@@ -1,6 +1,5 @@
 from services.workflow_service import workflow_service
 from services.case_role_reconciliation_service import reconcile_case_roles
-from services.persona_soul_service import _persona_context
 
 
 def _trace(stage: str):
@@ -318,20 +317,6 @@ def test_story_phase_reconciliation_recovers_people_without_promoting_story_to_f
     assert narrative["usage"] == "persona_context_only"
     assert all(memory.get("is_scoring_fact") is not False for memory in people["农长望"]["role_memories"])
 
-
-def test_persona_context_includes_source_events_and_marks_narrative_as_non_fact():
-    person = {
-        "name": "农长望",
-        "role_type": "相关人员",
-        "role_memories": [{"statement": "农长望持钢管参与殴打。"}],
-        "role_event_ledger": [{"content": "农长望持钢管参与殴打。"}],
-        "narrative_context": [{"content": "农长望心里仍有怨气。", "is_scoring_fact": False}],
-    }
-    context = _persona_context(person)
-
-    assert "持钢管" in context["source_memories"]
-    assert "持钢管" in context["source_event_summary"]
-    assert "心里仍有怨气" in context["narrative_context_for_persona_only"]
 
 
 def test_ai_document_reading_labels_are_used_as_role_memory_navigation(monkeypatch):

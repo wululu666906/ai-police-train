@@ -7,6 +7,9 @@ from typing import Any
 
 
 SCENE_OPENING_EVENT_MARKER = "[SCENE_OPENING_EVENT]"
+ROLE_REPLY_MAX_CHARS = 150
+_SENTENCE_ENDINGS = "。！？!?"
+_CLAUSE_ENDINGS = "，,；;：:"
 
 
 def is_internal_prompt_text(value: Any) -> bool:
@@ -191,3 +194,92 @@ def sanitize_utterances(utterances: list[dict[str, Any]]) -> list[dict[str, Any]
             if content:
                 cleaned.append({"content": content, "delivery": "normal"})
     return cleaned
+
+
+def split_spoken_text(text: Any, max_chars: int = ROLE_REPLY_MAX_CHARS) -> tuple[str, str]:
+    """Return a complete visible segment and the unshown remainder."""
+    content = sanitize_spoken_line(str(text or ""))
+    budget = max(0, int(max_chars))
+    if not content or budget <= 1:
+        return "", content
+    if re.search(r"(?:\.{3,}|…+)\s*$", content):
+        content = re.sub(r"(?:\.{3,}|…+)\s*$", "", content).rstrip(" ，,；;：:。！？!?")
+        content = f"{content}。" if content else ""
+    if not content:
+        return "", ""
+    if len(content) <= budget:
+        return content, ""
+
+    window = content[:budget]
+    sentence_end = max(window.rfind(mark) for mark in _SENTENCE_ENDINGS)
+    if sentence_end >= 0:
+        return window[: sentence_end + 1].strip(), content[sentence_end + 1 :].strip()
+
+    clause_window = content[: budget - 1]
+    clause_end = max(clause_window.rfind(mark) for mark in _CLAUSE_ENDINGS)
+    if clause_end >= 0:
+        split_at = clause_end + 1
+        visible_source = content[:clause_end]
+    else:
+        split_at = max(1, budget - 1)
+        visible_source = content[:split_at]
+    compact = visible_source.rstrip(" ，,；;：:。！？!?….")
+    visible = f"{compact}。" if compact else ""
+    return visible, content[split_at:].lstrip(" ，,；;：:")
+
+
+def limit_spoken_text(text: Any, max_chars: int = ROLE_REPLY_MAX_CHARS) -> str:
+    """Compatibility wrapper returning only the visible complete segment."""
+    return split_spoken_text(text, max_chars)[0]
+
+
+def _reply_role_key(turn: dict[str, Any], index: int) -> str:
+    return str(
+        turn.get("speaker_role_id")
+        or turn.get("speaker_name")
+        or getattr(turn.get("role"), "id", None)
+        or getattr(turn.get("role"), "name", "")
+        or f"anonymous-{index}"
+    )
+
+
+def limit_role_reply_turns_with_remainders(
+    turns: list[dict[str, Any]],
+    max_chars: int = ROLE_REPLY_MAX_CHARS,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]]]:
+    """Apply a per-role budget while retaining every unshown role sentence."""
+    remaining_budget: dict[str, int] = {}
+    limited: list[dict[str, Any]] = []
+    remainders: dict[str, dict[str, str]] = {}
+    for index, turn in enumerate(turns or []):
+        if not isinstance(turn, dict):
+            continue
+        role_key = _reply_role_key(turn, index)
+        budget = remaining_budget.setdefault(role_key, max(0, int(max_chars)))
+        content = sanitize_spoken_line(turn.get("content"))
+        if not content:
+            continue
+        if role_key in remainders:
+            visible, remainder = "", content
+        elif budget <= 1:
+            visible, remainder = "", content
+        else:
+            visible, remainder = split_spoken_text(content, budget)
+        if visible:
+            limited.append({**turn, "content": visible})
+            remaining_budget[role_key] = max(0, budget - len(visible))
+        if remainder:
+            existing = remainders.get(role_key, {}).get("content", "")
+            remainders[role_key] = {
+                "role_name": str(turn.get("speaker_name") or getattr(turn.get("role"), "name", "") or "").strip(),
+                "content": "".join(part for part in (existing, remainder) if part),
+            }
+    return limited, remainders
+
+
+def limit_role_reply_turns(
+    turns: list[dict[str, Any]],
+    max_chars: int = ROLE_REPLY_MAX_CHARS,
+) -> list[dict[str, Any]]:
+    """Apply one character budget to all bubbles spoken by each role in a turn."""
+    return limit_role_reply_turns_with_remainders(turns, max_chars)[0]

@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 import models
 from .human_reaction_engine import build_director_human_context, scene_mood_shift
+from .prompts.guardrails import DIRECTOR_GUARDRAILS
 from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model, get_fast_generation_kwargs
 from .multi_role_service import (
     _build_history_block,
@@ -20,66 +21,30 @@ from .multi_role_service import (
 from .role_state_service import resolve_role_initial_state
 
 DIRECTOR_ORCHESTRATION_PROMPT = """
-你是警情训练场景的「对话导演」。你只负责编排现场发言秩序，不写任何角色台词。
+你是警情训练「对话导演」。只编排发言秩序，不写台词。
 
-学员（执法民警）本轮输入：{user_text}
-场景：{scene_name}
-阶段：{current_stage}（目标：{current_stage_goal}）
+学员输入：{user_text}
+场景：{scene_name}；阶段：{current_stage}（{current_stage_goal}）
+角色状态：{cast_summary}
+近期对话：{history_block}
+会话上下文：{conversation_summary_block}
+现场判断：{human_context_block}
 
-可对话角色当前状态：
-{cast_summary}
-
-近期对话：
-{history_block}
-
-分层会话上下文（必须先读取，相关早期事实以原文为准）：
-{conversation_summary_block}
-
-真人化现场判断：
-{human_context_block}
-
-编排规则：
-1. 判断本轮互动模式 interaction_mode：
-   - address_named：学员点名某人
-   - public_question：向全场公开提问
-   - calm_scene：安抚、控制场面、要求冷静
-   - interrupt_chain：现场争执、抢话、插话
-   - supplement：学员提到未到场角色，由在场角色以证人/家属视角补充说明（不用第一人称冒充）
-   - mixed：混合情况
-2. cast_plan 最多 2 名角色参与发言（hold_silent 的不要放入）；speaker_name 必须来自上方「可对话角色」列表，禁止出现列表外人物。
-3. 「主对话人」只是默认推荐对象，不是唯一发言人；学员点名几位就安排几位（最多 2 位），不得用未点名的主对话人顶替。
-4. utterance_count（1-8）表示该角色在「一次发言段」内连续输出的台词条数（对应多个聊天气泡），学员在中间不用回复；不是训练轮次，不要理解成「说 1 句就等学员」。
-5. 根据情绪、冲突、是否被点名决定 utterance_count；激动、辩解、交代经过时可 3-6 条，简短确认可 1-2 条。
-6. participation：primary_respond（主回应）/ interrupt（插话打断）/ supplement（补充）
-7. trigger_reason 写该角色本轮开口的具体触发原因（如"被民警点名"、"被对方指责后抢话"、"主动澄清误会"等），不要说空话。
-8. intent 可选值及含义：
-   - explain：说明事情经过
-   - vent：发泄情绪、抱怨
-   - defend：辩解、推卸责任、切割
-   - respond：简短回应确认
-   - witness_account：以在场第三人称提供信息（非本人视角）
-   - calm_down：表达平静、配合
-9. scene_mood 可取：stable（平稳）/ tense（升温）/ deadlock（僵持）/ chaotic（混乱）/ deescalate（缓和）/ edge_loss_control（失控边缘）。
-10. scene_mood_shift 可取：stable（平稳）/ tense（紧张升温）/ deescalate（缓和降温），反映本轮互动对现场氛围的影响方向。
-11. 利用 cast_summary 和真人化现场判断辅助决策：情绪高且风险高者更容易插话或抢话；配合度低者更容易回避、反问或僵持；清晰度低者台词宜短、跳跃、需要民警控场。
-12. 每个 cast_plan 项增加 reaction_hint，写该角色本轮像真人一样的反应倾向，例如争执型、委屈倾诉型、防御否认型、回避沉默型、混乱失序型、求保护型、突然配合型。
-
-注意：以下输出格式中的值为示例，请根据实际场景动态决定，不要照搬。
-
-输出格式：
+规则：
+1. interaction_mode：address_named|public_question|calm_scene|interrupt_chain|supplement|mixed
+2. cast_plan 最多 2 人，speaker_name 必须来自角色列表；hold_silent 不入列
+3. 学员点名几位就安排几位（≤2），不得用未点名主对话人顶替
+4. utterance_count(1-8)：该角色一次发言段内连续气泡数，非训练轮次
+5. participation：primary_respond|interrupt|supplement；写清 trigger_reason 与 intent
+6. intent：explain|vent|defend|respond|witness_account|calm_down
+7. scene_mood：stable|tense|deadlock|chaotic|deescalate|edge_loss_control
+8. 每项含 reaction_hint（真人反应倾向）；示例值勿照搬
+""" + DIRECTOR_GUARDRAILS + """
+输出 JSON：
 {{
   "interaction_mode": "address_named",
-  "routing_summary": "一句话说明编排理由",
-  "cast_plan": [
-    {{
-      "speaker_name": "角色姓名",
-      "participation": "primary_respond",
-      "utterance_count": 2,
-      "intent": "vent",
-      "trigger_reason": "被民警点名要求说明经过",
-      "reaction_hint": "委屈倾诉型"
-    }}
-  ],
+  "routing_summary": "",
+  "cast_plan": [{{"speaker_name":"","participation":"primary_respond","utterance_count":2,"intent":"vent","trigger_reason":"","reaction_hint":""}}],
   "scene_mood": "tense",
   "scene_mood_shift": "tense"
 }}

@@ -238,6 +238,7 @@ import ECharts from '../geeker-adapt/components/ECharts/index.vue'
 import TrainingReportShell from '../components/training-report/TrainingReportShell.vue'
 import VideoReportPaper from '../components/training-report/VideoReportPaper.vue'
 import { isVideoReportReady, type VideoReportData } from '../composables/useVideoReportMetrics'
+import { isInternalPromptMessage } from '../utils/dialogueMessage'
 
 const router = useRouter()
 const route = useRoute()
@@ -260,6 +261,7 @@ const isVideoReport = computed(() => {
   if (route.path.includes('/video-report/')) return true
   return route.query.type === 'video'
 })
+const isGeneratingReportRoute = computed(() => route.query.generating === '1')
 const evaluationReturnPath = computed(() => {
   if (isVideoReport.value) return '/student/video-history'
   return isAssignmentReport.value ? '/student/classes' : '/student/hall'
@@ -583,6 +585,7 @@ const weakAssessmentItems = computed(() =>
 
 const studentMessages = computed(() =>
   (Array.isArray(sessionDetail.value?.messages) ? sessionDetail.value.messages : [])
+    .filter((message: any) => !isInternalPromptMessage(message))
     .filter((message: any) => message?.role === 'user' && String(message?.content || '').trim())
     .map((message: any) => String(message.content || '').trim()),
 )
@@ -810,6 +813,7 @@ const normalizeEvidenceItems = (value: any) => {
 
 const dialogueMessages = computed(() =>
   (Array.isArray(sessionDetail.value?.messages) ? sessionDetail.value.messages : [])
+    .filter((message: any) => !isInternalPromptMessage(message))
     .filter((message: any) => ['user', 'assistant'].includes(String(message?.role || '')) && String(message?.content || '').trim())
     .map((message: any, index: number) => ({
       index,
@@ -1141,7 +1145,8 @@ const fetchEvaluation = async (options: { silent?: boolean; attempt?: number } =
     } as any)
     sessionDetail.value = res || null
     if (!res.evaluation_result) {
-      if (res.status === 'evaluating' && (options.attempt || 0) < 12) {
+      const shouldPollGenerating = res.status === 'evaluating' || (isGeneratingReportRoute.value && res.status === 'active')
+      if (shouldPollGenerating && (options.attempt || 0) < 60) {
         pollingReport.value = true
         setEmptyState('评估报告生成中', '系统正在生成评估报告，请稍候。')
         loading.value = false

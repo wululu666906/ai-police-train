@@ -3,54 +3,34 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import threading
 from collections import defaultdict
 from typing import Any
 
 import models
-from .llm_provider import create_json_chat_completion, extract_json_payload, extract_message_text
+from .llm_provider import create_roleplay_json_completion, extract_json_payload, extract_message_text
 from .persona_engine import build_persona_profile
 from .role_compact_service import person_to_role_compact_view
+from .role_generation_context_service import compile_role_generation_context
 from .role_resolver import is_role_speakable
 from .stage_config_service import infer_scene_behavior_mode, infer_scene_kind
-from .dialogue_sanitize_service import filter_internal_prompt_messages, sanitize_utterances
+from .prompts.case_pipeline import build_opening_system_prompt
+from .dialogue_sanitize_service import (
+    ROLE_REPLY_MAX_CHARS,
+    filter_internal_prompt_messages,
+    limit_role_reply_turns_with_remainders,
+    sanitize_utterances,
+)
 from .training_runtime_service import dump_runtime_state, load_runtime_state
-from .role_state_service import resolve_role_initial_state
 from .role_resolver import resolve_scene_roles
 
 INTAKE_MINIMAL_DISPATCH = "110 有新报警来电，等待接听。"
 _OPENING_LOCKS: defaultdict[int, threading.Lock] = defaultdict(threading.Lock)
+logger = logging.getLogger(__name__)
 
 CALLER_OPEN_ROLE_HINTS = ("报警", "报案", "证人", "被害人", "受害人")
-
-OPENING_TURN_PROMPT = """你是警情训练模拟中的报警人/报案人，刚拨通110，接警员尚未发问。
-
-【你的身份】{role_name}（{role_type}）
-【行为原型（内部参考，禁止念出）】{behavior_archetype}
-【当前诉求（内部参考，禁止念出）】{current_goal}
-【内心担心（内部参考，禁止直说「我最怕/最担心/核心顾虑」）】{core_concern}
-【情绪状态】{emotion_hint}
-
-【案件背景（仅供你组织台词，勿像笔录一样一次说完）】
-- 案件类型：{case_type}
-- 事件线索：{incident_hints}
-
-要求：
-1. 你必须主动开口，不等接警员提问；像真实报警电话开头。
-2. 输出 1-3 条连续台词 utterances，口语化，可慌乱、重复、跳跃。多条之间是报警人一口气说完，学员（接警员）在中间无需回复。
-3. 必须让接警员听出「出了什么事」（如打架、纠纷、逃逸、求助、被盗等），可模糊但要有事件性质。
-4. 可表达紧迫、害怕、催促，但不要一次性报全准确时间、地址、身份证号、电话。时间、地点等信息留待接警员追问时自然给出。
-5. 内心担心只能体现在语气里（如「他们会不会找回来啊」），禁止念配置字段或说「我最怕的就是……」。
-6. 不要以「民警」「同志」称呼对方；这是报警人视角。
-7. 事件线索（incident_hints）可能包含多条信息，选择最紧急的一两条说，不要按清单逐条念。
-8. inner_thought 写当前真实心理活动（如紧张、犹豫、怕说错），不要重复台词内容。
-9. 注意：以下输出中的值为示例，请根据实际场景决定内容。只输出 JSON：
-{{
-  "utterances": [{{"content": "第一句"}}, {{"content": "第二句（可选）"}}],
-  "inner_thought": "内心活动一句"
-}}
-"""
-
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
@@ -65,7 +45,8 @@ def _opening_config(scene: models.Scene | None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         payload = {}
     return {
-        "enabled": payload.get("enabled") is not False,
+        # Every training scene follows the same automatic opening contract.
+        "enabled": True,
         "mode": "preset" if payload.get("mode") == "preset" else "dynamic",
         "speaker_role_ids": [int(item) for item in (payload.get("speaker_role_ids") or []) if str(item).isdigit()][:3],
         "director_note": _text(payload.get("director_note")),
@@ -136,6 +117,33 @@ def _find_person_meta(case: models.Case | None, role: models.Role | None) -> dic
     return {}
 
 
+def _strip_document_voice(value: Any) -> str:
+    text = _text(value)
+    text = re.sub(r"^(?:证人|被害人|受害人|嫌疑人)?[^，。]{1,12}(?:的)?(?:证言|陈述)[，,]?", "", text)
+    text = re.sub(r"^(?:证实|证明|反映)(?:其|了)?", "", text)
+    return text.strip(" ，,；;：:")
+
+
+def _role_fact_lines(compact: dict[str, Any], max_chars: int = 900) -> list[str]:
+    rows = compact.get("knowledge_ledger") or compact.get("role_memories") or []
+    facts: list[str] = []
+    used = 0
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        content = _strip_document_voice(item.get("verbalization") or item.get("content") or item.get("statement"))
+        if not content or content in facts:
+            continue
+        line = f"- {content}"
+        if facts and used + len(line) > max_chars:
+            break
+        facts.append(content)
+        used += len(line)
+        if len(facts) >= 4:
+            break
+    return facts
+
+
 def _incident_hints(case: models.Case | None, structured: dict[str, Any]) -> str:
     parts: list[str] = []
     case_type = _text(case.case_type if case else "") or _text(structured.get("case_type"))
@@ -144,14 +152,14 @@ def _incident_hints(case: models.Case | None, structured: dict[str, Any]) -> str
     for key in ("conflict_points", "key_facts", "transcript_summary"):
         values = structured.get(key)
         if isinstance(values, list):
-            parts.extend(_text(item) for item in values[:3] if _text(item))
+            parts.extend(_text(item) for item in values if _text(item))
         elif _text(values):
             parts.append(_text(values))
     narrative = _text(structured.get("full_narrative") or structured.get("case_background"))
     if narrative:
-        parts.append(narrative[:120])
+        parts.append(narrative)
     if not parts and case:
-        parts.append(_text(case.background)[:120])
+        parts.append(_text(case.background))
     return "；".join(dict.fromkeys(item for item in parts if item)) or "现场发生紧急情况"
 
 
@@ -173,6 +181,15 @@ def _build_opening_context(
     except Exception:
         persona = {}
 
+    generation_context = compile_role_generation_context(case, role) if case and role else {}
+    story_source = generation_context.get("full_story_source") if isinstance(generation_context, dict) else {}
+    story_source = story_source if isinstance(story_source, dict) else {}
+    scene_kind = infer_scene_kind(_text(getattr(scene, "name", "")), "")
+    opening_behavior = (
+        "像真实报警人一样先说清发生了什么和当前紧迫诉求，保留时间、地点等细节等待追问。"
+        if scene_kind == "intake"
+        else "像在场人员一样先说一项与训练任务直接相关、且属于本人认知的关键事实，等待民警继续询问。"
+    )
     return {
         "role_name": _text(getattr(role, "name", "")) or "报警人",
         "role_type": _text(compact.get("role_type") or getattr(role, "role_type", "")) or "报警人",
@@ -182,31 +199,24 @@ def _build_opening_context(
         "case_type": _text(getattr(case, "case_type", "")) or _text(structured.get("case_type")) or "警情",
         "incident_hints": _incident_hints(case, structured),
         "emotion_hint": _text(persona.get("emotion_level")) or "偏紧张",
+        "scene_name": _text(getattr(scene, "name", "")) or "现场处置",
+        "scene_description": _text(getattr(scene, "description", "")) or "根据当前训练任务开始对话",
+        "case_story": _text(story_source.get("content")) or _text(getattr(case, "background", "")) or "暂无完整剧情文本",
+        "role_facts": _role_fact_lines(compact),
+        "opening_behavior": opening_behavior,
     }
 
 
 def _fallback_opening_utterances(context: dict[str, Any]) -> list[dict[str, str]]:
-    incident = context.get("incident_hints") or context.get("case_type") or "出事了"
-    short_incident = str(incident).split("；")[0][:40]
     name = context.get("role_name") or "我"
-    lines = [
-        f"喂，110吗？我是{name}，这边{short_incident}，你们能不能快点过来！",
-        "我现在心里发慌，也不知道该怎么办……",
-    ]
-    concern = _text(context.get("core_concern"))
-    if concern and len(lines) < 3:
-        lines.append("你们先听我说，我现在真的挺急的。")
-    return [{"content": line} for line in lines[:3]]
-
-
-def _fallback_scene_opening(case: models.Case | None, scene: models.Scene | None, role: models.Role) -> list[dict[str, str]]:
-    context = _build_opening_context(case, role, scene)
-    timeline = _text(getattr(scene, "description", "")) or _text(context.get("incident_hints")) or "现场情况"
-    memory = _text(context.get("core_concern"))
-    lines = [f"我是{context['role_name']}，刚才现场{timeline[:90]}。"]
-    if memory:
-        lines.append(f"我最担心的是{memory[:70]}。")
-    return [{"content": item} for item in lines]
+    facts = context.get("role_facts") or []
+    if facts:
+        fact = _strip_document_voice(facts[0])
+        return [{"content": f"我是{name}。我能确认的是，{fact}"}]
+    if context.get("opening_behavior", "").startswith("像真实报警人"):
+        incident = str(context.get("incident_hints") or context.get("case_type") or "现场出事了").split("；")[0]
+        return [{"content": f"喂，110吗？我是{name}，这边{incident}，请你们尽快过来处理。"}]
+    return [{"content": f"我是{name}。关于现在的情况，我只说明自己能够确认的部分。"}]
 
 
 def _parse_opening_payload(raw: Any) -> list[dict[str, str]]:
@@ -232,24 +242,27 @@ def generate_opening_utterances(
     case: models.Case | None,
     role: models.Role | None,
     scene: models.Scene | None,
+    *,
+    director_note: str = "",
 ) -> tuple[list[dict[str, str]], str]:
     context = _build_opening_context(case, role, scene)
     inner_thought = "电话刚接通，得先把最要紧的事说出来。"
-    prompt = OPENING_TURN_PROMPT.format(
+    prompt = build_opening_system_prompt(
         role_name=context["role_name"],
         role_type=context["role_type"],
-        behavior_archetype=context["behavior_archetype"],
-        current_goal=context["current_goal"] or "希望警方尽快处理",
-        core_concern=context["core_concern"] or "事态继续恶化",
-        emotion_hint=context["emotion_hint"],
-        case_type=context["case_type"],
-        incident_hints=context["incident_hints"],
+        scene_name=context["scene_name"],
+        scene_description=context["scene_description"],
+        case_story=context["case_story"],
+        role_facts="\n".join(f"- {item}" for item in context["role_facts"]) or "- 暂无可直接披露的本人事实。",
+        opening_behavior=_text(director_note) or context["opening_behavior"],
+        max_reply_chars=ROLE_REPLY_MAX_CHARS,
     )
     try:
-        response = create_json_chat_completion(
+        response, trace = create_roleplay_json_completion(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.65,
-            max_tokens=800,
+            max_tokens=900,
+            return_trace=True,
         )
         payload = extract_json_payload(extract_message_text(response))
         utterances = _parse_opening_payload(payload)
@@ -257,8 +270,9 @@ def generate_opening_utterances(
             inner_thought = _text(payload.get("inner_thought"))
         if utterances:
             return sanitize_utterances(utterances), inner_thought
-    except Exception:
-        pass
+        logger.warning("Opening role response was not valid JSON: role=%s trace=%s", context["role_name"], trace)
+    except Exception as exc:
+        logger.warning("Opening role generation failed: role=%s error=%s", context["role_name"], exc)
     return sanitize_utterances(_fallback_opening_utterances(context)), inner_thought
 
 
@@ -270,7 +284,7 @@ def generate_scene_opening_utterances(
 ) -> list[dict[str, Any]]:
     selected = [role for role in roles if role.id in set(config.get("speaker_role_ids") or [])]
     if not selected:
-        selected = [role for role in roles if is_role_speakable(role)][:3]
+        selected = [role for role in roles if is_role_speakable(role)][:1]
     if not selected:
         return []
     if config.get("mode") == "preset":
@@ -287,23 +301,12 @@ def generate_scene_opening_utterances(
         return rows
     outputs: list[dict[str, Any]] = []
     for role in selected:
-        context = _build_opening_context(case, role, scene)
-        prompt = (
-            f"你是警情训练场景中的{context['role_name']}（{context['role_type']}），刚进入场景。\n"
-            f"场景：{_text(getattr(scene, 'name', ''))}；场景描述：{_text(getattr(scene, 'description', ''))[:500]}\n"
-            f"案件线索：{context['incident_hints']}\n人物记忆与诉求：{context.get('current_goal') or '无'}；{context.get('core_concern') or '无'}\n"
-            f"四维状态：{resolve_role_initial_state(role, case, scene)}\n导演约束：{config.get('director_note') or '自然开场，直接给出本角色此刻最重要的事实'}\n"
-            "只输出1-2条角色气泡台词，不要旁白、不要编造未给出的事实。JSON：{\"utterances\":[{\"content\":\"台词\"}]}"
+        utterances, _ = generate_opening_utterances(
+            case,
+            role,
+            scene,
+            director_note=config.get("director_note") or "",
         )
-        utterances: list[dict[str, str]] = []
-        try:
-            response = create_json_chat_completion(messages=[{"role": "user", "content": prompt}], temperature=0.6, max_tokens=420)
-            payload = extract_json_payload(extract_message_text(response))
-            utterances = _parse_opening_payload(payload)
-        except Exception:
-            utterances = []
-        if not utterances:
-            utterances = _fallback_scene_opening(case, scene, role)
         outputs.extend({"content": item["content"], "role": role} for item in sanitize_utterances(utterances))
     return outputs
 
@@ -350,6 +353,16 @@ def _ensure_opening_turn_unlocked(
         inner_thought = "场景开场已按角色顺序进入对话。"
     else:
         utterances, inner_thought = generate_opening_utterances(case, opening_role, scene)
+    utterances, pending_replies = limit_role_reply_turns_with_remainders([
+        {
+            **item,
+            "role": item.get("role") or opening_role,
+            "speaker_role_id": getattr(item.get("role") or opening_role, "id", None),
+            "speaker_name": _text(getattr(item.get("role") or opening_role, "name", "")),
+        }
+        for item in utterances
+        if isinstance(item, dict)
+    ])
     created: list[models.Message] = []
     for index, item in enumerate(utterances):
         message = models.Message(
@@ -364,6 +377,14 @@ def _ensure_opening_turn_unlocked(
         created.append(message)
 
     runtime_state = load_runtime_state(session.revealed_info)
+    stored_pending = dict(runtime_state.get("pending_role_replies") or {})
+    for role_key, pending in pending_replies.items():
+        previous = stored_pending.get(role_key) if isinstance(stored_pending.get(role_key), dict) else {}
+        stored_pending[role_key] = {
+            "role_name": pending.get("role_name") or previous.get("role_name") or "",
+            "content": f"{previous.get('content') or ''}{pending.get('content') or ''}",
+        }
+    runtime_state["pending_role_replies"] = stored_pending
     runtime_state["opening_delivered"] = True
     runtime_state["dialogue_mode"] = "caller_first" if resolve_dialogue_mode(scene, session) == "caller_first" else "scene_opening"
     session.revealed_info = dump_runtime_state(runtime_state)

@@ -53,6 +53,7 @@ TEXT_SCAN_EXCLUDE_PARTS = {
     "venv",
     ".venv",
     "mediapipe",
+    "backups",
 }
 QUESTION_DAMAGE_RE = re.compile(r"\?{3,}")
 

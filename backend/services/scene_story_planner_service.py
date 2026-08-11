@@ -25,7 +25,7 @@ def build_scene_portfolio_plan(case_info: dict[str, Any], story_graph: dict[str,
     necessity principle: one scene is correct when it covers the practical
     training goal, and extra scenes require distinct operational value.
     """
-    fact_cards = [item for item in story_graph.get("fact_cards") or [] if isinstance(item, dict)]
+    fact_cards = [item for item in story_graph.get("fact_cards") or story_graph.get("facts") or [] if isinstance(item, dict)]
     persons = [item for item in case_info.get("persons") or [] if isinstance(item, dict)]
     context = " ".join([
         _text(case_info.get("case_type")),
@@ -146,7 +146,7 @@ def complete_scene_blueprint_portfolio(
     function fills missing fields on returned blueprints and only synthesizes a
     single primary scene when no usable blueprint exists.
     """
-    facts = [item for item in story_graph.get("fact_cards") or [] if isinstance(item, dict) and _text(item.get("id"))]
+    facts = [item for item in story_graph.get("fact_cards") or story_graph.get("facts") or [] if isinstance(item, dict) and _text(item.get("id"))]
     person_rows = [item for item in persons if isinstance(item, dict) and _text(item.get("name"))]
     slot_by_role = {
         _text(slot.get("portfolio_role")): slot
@@ -340,8 +340,6 @@ def bind_blueprints_to_story(
             if name in valid_people
         ))
         requested_roles = [name for name in blueprint.get("roles") or [] if name in valid_people]
-        scene_roles = requested_roles
-        primary_roles = scene_roles[:3]
         mentioned_roles = list(dict.fromkeys(
             name
             for node in matched_nodes
@@ -359,6 +357,11 @@ def bind_blueprints_to_story(
         item["student_role"] = "民警"
         item["time"] = _entry_time_label(phase)
         item["place"] = _text(item.get("place")) or item["canonical_place"]
+        if phase == "post_incident_onsite":
+            scene_roles = list(dict.fromkeys([*historical_present_roles, *requested_roles]))
+        else:
+            scene_roles = requested_roles or historical_present_roles[:1]
+        primary_roles = scene_roles[:3]
         item["historical_present_roles"] = historical_present_roles
         item["present_roles"] = list(dict.fromkeys([*historical_present_roles, *requested_roles]))
         item["primary_roles"] = primary_roles

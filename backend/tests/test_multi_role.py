@@ -136,3 +136,57 @@ def test_chat_multi_role_reply_turns(client, student_headers, monkeypatch):
     assert "李某" in speakers
 
     client.request("DELETE", f"/training/session/{session_id}", headers=student_headers)
+
+
+def test_targeted_role_continues_pending_reply_before_new_multi_role_answer(
+    client,
+    student_headers,
+    db_session,
+    monkeypatch,
+):
+    start_response = client.post("/training/start/1", headers=student_headers)
+    session_id = start_response.json()["id"]
+    session = db_session.query(models.TrainingSession).filter_by(id=session_id).first()
+    zhang = db_session.query(models.Role).filter(models.Role.case_id == 1, models.Role.name == "张某").first()
+    runtime_state = load_runtime_state(session.revealed_info)
+    runtime_state["pending_role_replies"] = {
+        str(zhang.id): {"role_name": "张某", "content": "我刚才还没有说完，后面还有一件事。"}
+    }
+    session.revealed_info = dump_runtime_state(runtime_state)
+    db_session.commit()
+
+    def fake_generate_multi_role_turn(db, scene=None, case=None, roles=None, **kwargs):
+        role = next(item for item in roles if item.name == "张某")
+        return {
+            "primary_role": role,
+            "response": "这是对本轮问题的新回答。",
+            "inner_thought": "继续说明。",
+            "reply_turns": [{
+                "speaker_name": "张某",
+                "speaker_role_id": role.id,
+                "content": "这是对本轮问题的新回答。",
+            }],
+            "updated_emotion": 50,
+            "updated_trust": 30,
+            "new_fact_revealed": None,
+            "is_stage_completed": False,
+        }
+
+    monkeypatch.setattr(ai_service, "generate_multi_role_turn", fake_generate_multi_role_turn)
+    response = client.post(
+        f"/training/chat/{session_id}",
+        json={"role": "user", "content": "张某，请继续说。", "target_role_name": "张某"},
+        headers=student_headers,
+    )
+
+    assert response.status_code == 200
+    turns = response.json()["reply_turns"]
+    assert [item["content"] for item in turns[:2]] == [
+        "我刚才还没有说完，后面还有一件事。",
+        "这是对本轮问题的新回答。",
+    ]
+    db_session.refresh(session)
+    assert load_runtime_state(session.revealed_info)["pending_role_replies"] == {}
+
+    session.status = "finished"
+    db_session.commit()

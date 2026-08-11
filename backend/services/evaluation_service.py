@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Tuple
 from sqlalchemy.orm import Session
 
 import models
+from .prompts.guardrails import EVALUATION_GUARDRAILS
 from .dialogue_sanitize_service import filter_internal_prompt_messages, is_internal_prompt_message
 from .llm_provider import create_json_chat_completion, extract_json_payload, extract_message_text, get_chat_model
 from .persona_engine import build_persona_profile
@@ -133,81 +134,35 @@ SCENE_RUBRICS = {
 }
 
 EVALUATION_PROMPT_TEMPLATE = """
-你是一名严格、公正、专业的警务训练评估官，需要根据完整对话、动作执行和“考察点要求表”逐条核查结果给出结构化评估。
+你是警务训练评估官。按 adaptive_v1 制度，依据评分模板、对话与考察点要求表逐条核查并打分。
 
-本系统使用 adaptive_v1 评分制度：你必须依据下方“评分模板”对所有指标逐项打分。后端只负责校验范围、去重、证据有效性和落库，不会替你完成主要评分。
+通用能力（4项）：沟通表达与执法语言；主动询问与逻辑推进；关键信息整理；处置闭环意识。
+场景专属能力仅通过考察点评价。
 
-通用能力只评价以下 4 项：
-1. 沟通表达与执法语言：礼貌克制、身份立场清晰，避免压迫、诱导或激化。
-2. 主动询问与逻辑推进：主动提问、追问连贯，信息流由学员推动。
-3. 关键信息整理能力：归纳时间、地点、人物、经过、诉求、矛盾点等已获信息。
-4. 处置闭环意识：阶段总结、下一步安排、确认反馈，避免草率结束。
+场景：{scene_info}
+专项标准：{scene_rubric}
+规则校验：{rule_check_summary}
+案件：{case_info}
+对话：{dialogue_history}
+考察点要求表：{assessment_requirements}
+参考知识：{knowledge_base}
+评分模板：{scoring_template}
 
-场景专属能力全部通过考察点评价。例如接警场景不强制评价“证据固定”，除非考察点中明确配置了相关要求。
-
-场景信息（评估时应关注学员是否识别了人物的身份、诉求、顾虑和情绪触发点）：
-{scene_info}
-
-专项评分标准：
-{scene_rubric}
-
-规则校验结果：
-{rule_check_summary}
-
-案件信息：
-{case_info}
-
-完整对话历史：
-{dialogue_history}
-
-考察点要求表（你必须逐条核查“是否满足”，并在输出中给出 evidence 引用）：
-{assessment_requirements}
-
-参考知识：
-{knowledge_base}
-
-动态权重规则（由后端计算，你只需按事实评价）：
-- 通用能力固定 4 个评分单位。
-- 每个考察点按难度和 required 属性形成动态评分单位。
-- 学员有效发言轮次、必考点命中率和严重红线会触发总分上限。
-
-评分模板（必须逐项打分，score 不得只机械给半分或整档分）：
-{scoring_template}
-
-动作执行评估：
-- 训练日志中的"动作"行（以"动作："开头）代表学员完成的现场操作（如开启执法记录仪、拍照取证、分离双方等）。
-- 动作只在相关考察点或通用闭环意识中作为证据引用，不作为旧固定维度评分。
-
-参考知识引用要求：
-- 评分时必须尽量引用"参考知识"中的条款作为法律依据，并在 reason 中明示（如"根据参考知识第X条…"）。
-- 如果知识库中的内容与学员的行为直接相关，必须在 assessment_check_results 的 evidence 或 reason 中引用。
-
-学员主动性判断（不要被 AI 角色牵着走）：
-- 区分"学员主动追问获知的信息"和"AI 角色主动告知的信息"。如果信息是 AI 角色主动交代而非学员问出的，不应作为学员的信息获取加分。
-- 学员的每个追问轮次应带来新增信息；如果多轮反复询问同一件事而无新进展，应在“主动询问与逻辑推进”中体现不足。
-- 判断依据：观察对话中谁在主导信息流动——学员提问→AI角色回答→学员追问问细节，这是主动；AI角色长篇陈述→学员仅应答，这是被动。
-
-输出要求：
-1. common_reviews 必须覆盖 4 个通用能力，每项包含 dimension、full_score、score、level、reason、evidence。level 只能为 excellent/good/fair/weak。
-2. assessment_check_results 必须与“考察点要求表”逐条对应，不得遗漏 id，每项包含 id、label、full_score、score、status、evidence、reason。status 只能为 hit/partial/missed。
-3. evidence 必须引用具体学员发言/动作，以及学员提问后紧邻的 AI 回答。考察点命中需要同时看到学员主动触发和 AI 反馈结果；不得把 AI 主动长篇交代或学员简单应答直接算作命中。
-4. strengths 是学员表现亮点（2-4 条），improvements 是具体不足（2-4 条），suggestions 给出下一轮训练建议。
-5. 只输出合法 JSON。
-
-严格输出 JSON：
+评分要点：
+- 动作行（「动作：」开头）仅作相关考察点证据
+- 尽量引用参考知识条款
+- 区分学员主动追问 vs AI 主动告知；后者不得加分
+- common_reviews 覆盖 4 项通用能力（level: excellent/good/fair/weak）
+- assessment_check_results 与考察点表逐条对应（status: hit/partial/missed）
+- evidence 须引用学员发言/动作；命中须见学员主动触发
+""" + EVALUATION_GUARDRAILS + """
+输出 JSON：
 {{
-  "common_reviews": [
-    {{"dimension": "沟通表达与执法语言", "full_score": 12, "score": 9, "level": "good", "reason": "学员语气总体克制。", "evidence": ["学员: 请您先说明情况"]}},
-    {{"dimension": "主动询问与逻辑推进", "full_score": 12, "score": 7, "level": "fair", "reason": "追问不足。", "evidence": []}},
-    {{"dimension": "关键信息整理能力", "full_score": 12, "score": 6, "level": "fair", "reason": "未形成完整事实归纳。", "evidence": []}},
-    {{"dimension": "处置闭环意识", "full_score": 12, "score": 4, "level": "weak", "reason": "未说明下一步处置。", "evidence": []}}
-  ],
-  "assessment_check_results": [
-    {{"id": "ap_001", "label": "核实报警人身份", "content": "学员应主动询问报警人姓名、身份及与事件的关系", "full_score": 8, "score": 6, "status": "partial", "evidence": ["学员: 请问您怎么称呼？"], "reason": "学员主动核实身份，但未确认联系方式。"}}
-  ],
-  "strengths": ["表达较克制"],
-  "improvements": ["需要补齐关键事实追问"],
-  "suggestions": "建议按通用能力和本场景考察点逐项复训。"
+  "common_reviews": [{{"dimension":"","full_score":12,"score":0,"level":"fair","reason":"","evidence":[]}}],
+  "assessment_check_results": [{{"id":"","label":"","content":"","full_score":8,"score":0,"status":"missed","evidence":[],"reason":""}}],
+  "strengths": [],
+  "improvements": [],
+  "suggestions": ""
 }}
 """
 

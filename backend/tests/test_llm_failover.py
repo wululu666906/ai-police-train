@@ -8,9 +8,9 @@ from services.workflow_service import workflow_service
 REAL_CREATE_JSON_CHAT_COMPLETION = llm_provider.create_json_chat_completion
 
 
-def _response(content: str):
+def _response(content: str, finish_reason: str = "stop"):
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content), finish_reason="stop")]
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content), finish_reason=finish_reason)]
     )
 
 
@@ -83,3 +83,55 @@ def test_provider_specific_max_tokens_are_clamped(monkeypatch):
 
     assert llm_provider.extract_message_text(response) == '{"ok":true}'
     assert captured[0]["max_tokens"] == 32768
+
+
+def test_complete_json_requirement_rejects_length_finish_and_fails_over(monkeypatch):
+    primary = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_kwargs: _response('{"utterances":[', "length"))
+        )
+    )
+    alternate = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_kwargs: _response('{"utterances":[{"content":"完整台词。"}]}'))
+        )
+    )
+    monkeypatch.setattr(llm_provider, "_provider_for_client", lambda _client: "deepseek")
+    monkeypatch.setattr(llm_provider, "_provider_fallback_order", lambda _provider: ["qwen"])
+    monkeypatch.setattr(llm_provider, "_chat_client_for_provider", lambda _provider: alternate)
+    monkeypatch.setattr(llm_provider, "_chat_model_for_provider", lambda _provider: "qwen-plus")
+    monkeypatch.setattr(llm_provider.time, "sleep", lambda _seconds: None)
+
+    response, trace = REAL_CREATE_JSON_CHAT_COMPLETION(
+        messages=[{"role": "user", "content": "生成完整台词"}],
+        llm_client=primary,
+        retries=1,
+        require_complete=True,
+        return_trace=True,
+    )
+
+    assert llm_provider.extract_message_text(response) == '{"utterances":[{"content":"完整台词。"}]}'
+    assert trace["attempts"][0]["status"] == "truncated"
+    assert trace["final_provider"] == "qwen"
+
+
+def test_roleplay_completion_disables_thinking_and_requires_complete_output(monkeypatch):
+    captured = {}
+
+    def fake_json_completion(**kwargs):
+        captured.update(kwargs)
+        return "response"
+
+    monkeypatch.setattr(llm_provider, "create_json_chat_completion", fake_json_completion)
+    monkeypatch.setattr(llm_provider, "get_roleplay_model", lambda: "roleplay-model")
+    monkeypatch.setattr(llm_provider, "get_fast_generation_kwargs", lambda: {"extra_body": {"thinking": {"type": "disabled"}}})
+
+    result = llm_provider.create_roleplay_json_completion(
+        messages=[{"role": "user", "content": "开场"}],
+        max_tokens=900,
+    )
+
+    assert result == "response"
+    assert captured["model"] == "roleplay-model"
+    assert captured["require_complete"] is True
+    assert captured["extra_kwargs"]["extra_body"]["thinking"]["type"] == "disabled"

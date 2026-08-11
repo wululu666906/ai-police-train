@@ -30,14 +30,20 @@ def format_full_story_block(source: dict[str, Any]) -> str:
 
 
 def compile_role_generation_context(case: Any, role: Any) -> dict[str, Any]:
-    """Force-load the current case story and role-scoped knowledge together."""
+    """Load role dialogue sources in the new story-first order."""
     bundle = load_case_knowledge_bundle(case, role)
     story_source = bundle.get("complete_story_source") if isinstance(bundle, dict) else {}
     story_source = story_source if isinstance(story_source, dict) else {}
     return {
         "full_story_block": format_full_story_block(story_source),
         "full_story_source": story_source,
-        "role_knowledge_block": _text(bundle.get("knowledge_block")) or "暂无角色专属案件知识",
+        "role_knowledge_block": "\n".join(
+            item for item in (
+                "角色读取信息来源优先级：角色记忆、角色信息、程序化事实、当前上下文。",
+                _text(bundle.get("knowledge_block")) or "暂无角色专属案件知识",
+            )
+            if item
+        ),
         "role_knowledge_view": bundle.get("role_knowledge_view") or {},
         "documents": bundle.get("documents") or [],
     }

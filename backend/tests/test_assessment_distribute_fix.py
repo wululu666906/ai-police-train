@@ -49,8 +49,8 @@ def test_distribute_empty_llm_payload_falls_back_to_builtin():
     from unittest.mock import patch
 
     with patch(
-        "services.assessment_point_import_service.generate_bucketed_assessment_points_with_officer",
-        return_value={"buckets": {"intake": {}, "onsite": {}, "investigation": {}}, "warnings": []},
+        "services.assessment_point_import_service.generate_assessment_points_with_llm",
+        return_value=[],
     ):
         result = distribute_assessment_points_to_scenes(
             {"title": "纠纷", "case_type": "邻里纠纷", "full_narrative": "案情"},

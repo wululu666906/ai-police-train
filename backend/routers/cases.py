@@ -23,7 +23,6 @@ from services.role_state_service import ensure_scene_role_initial_state
 from services.scene_role_service import audit_scene_roles, normalize_scene_roles
 from services.scene_compact_service import build_scene_stages_from_compact, infer_training_focus
 from services.stage_config_service import infer_scene_behavior_mode, normalize_stages
-from services.case_completion_service import complete_case_information, list_field_catalog
 from services.case_knowledge_service import delete_case_from_knowledge, try_sync_case_to_knowledge
 from services.case_intelligence_service import assess_source_quality, build_role_knowledge_view, normalize_case_intelligence
 from services.training_compiler_service import build_observable_scoring_rules, build_training_tasks, compile_state_machine
@@ -49,7 +48,7 @@ from services.assessment_point_import_service import (
     list_builtin_templates,
     parse_text_to_assessment_points,
 )
-from services.ai_roles import get_assessment_point_officer_prompts, list_ai_roles
+from services.ai_roles import list_ai_roles
 from services.scene_bucket_service import BUCKET_LABELS, STANDARD_SCENE_NAMES
 
 router = APIRouter(prefix="/cases", tags=["Cases"], dependencies=[Depends(require_admin_user)])
@@ -1278,10 +1277,6 @@ async def parse_case_file(
         raise HTTPException(status_code=502, detail=f"AI file parsing failed: {exc}") from exc
 
 
-@router.get("/completion-catalog")
-def get_completion_catalog():
-    return list_field_catalog()
-
 
 @router.get("/assessment-point-templates")
 def get_assessment_point_templates():
@@ -1398,11 +1393,6 @@ def get_ai_roles_catalog():
     return {"roles": list_ai_roles()}
 
 
-@router.get("/ai-roles/assessment-point-officer")
-def get_assessment_point_officer_role(_user=Depends(require_admin_user)):
-    """Return dedicated officer prompts for admin review (read-only)."""
-    return get_assessment_point_officer_prompts()
-
 
 @router.get("/assessment-points/scene-naming-rules")
 def get_assessment_scene_naming_rules():
@@ -1430,7 +1420,7 @@ def distribute_assessment_points_api(payload: dict = Body(...)):
             rename_scenes=bool(payload.get("rename_scenes", True)),
             reference_text=str(payload.get("reference_text") or "").strip(),
         )
-        result["officer_role"] = "考察点编排专员"
+        result["officer_role"] = "考察点生成"
         return result
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"分场景考察点生成失败: {exc}") from exc
@@ -1455,97 +1445,6 @@ def generate_assessment_points_api(payload: dict = Body(...)):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"考察点生成失败: {exc}") from exc
 
-
-@router.post("/{case_id}/ai-fill")
-def ai_fill_case_by_id(case_id: int, payload: dict = Body(default={}), db: Session = Depends(database.get_db)):
-    """按案件 ID 一键补齐：读取原文与结构化数据，返回补全建议（不自动保存）。"""
-    db_case = db.query(models.Case).filter(models.Case.id == case_id).first()
-    if not db_case:
-        raise HTTPException(status_code=404, detail="案件不存在")
-
-    source_text = db_case.original_content or db_case.background or ""
-    if not str(source_text).strip():
-        raise HTTPException(
-            status_code=400,
-            detail="该案件没有原始文本内容（original_content），无法进行 AI 补全。请先在案件编辑页填写原始案情文字。",
-        )
-
-    existing_case = _safe_json_loads(db_case.structured_data, {})
-    if not existing_case.get("case_name") and db_case.title:
-        existing_case["case_name"] = db_case.title
-    if not existing_case.get("case_type") and db_case.case_type:
-        existing_case["case_type"] = db_case.case_type
-    if not existing_case.get("case_background") and db_case.background:
-        existing_case["case_background"] = db_case.background
-
-    mode = str(payload.get("mode") or "fill_gaps")
-    if mode not in {"full", "fill_gaps", "targeted"}:
-        mode = "fill_gaps"
-
-    target_groups = payload.get("target_groups")
-    if isinstance(target_groups, str):
-        target_groups = [target_groups]
-    if not isinstance(target_groups, list):
-        target_groups = None
-
-    include_scenes = bool(payload.get("include_scenes", True))
-    scene_generation_strategy = payload.get("scene_generation_strategy") or "case_driven"
-
-    try:
-        result = complete_case_information(
-            source_text=str(source_text),
-            source_mode="plain_case",
-            existing_case=existing_case,
-            mode=mode,
-            target_groups=target_groups,
-            include_scenes=include_scenes,
-            scene_generation_strategy=scene_generation_strategy,
-        )
-        result["case_id"] = case_id
-        result["case_title"] = db_case.title
-        return result
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI 补全失败: {exc}") from exc
-
-
-@router.post("/ai-complete")
-def ai_complete_case(payload: dict = Body(...)):
-    source_text = payload.get("source_text") or payload.get("text") or ""
-    if not str(source_text).strip():
-        raise HTTPException(status_code=400, detail="source_text is required")
-
-    source_mode = payload.get("source_mode") or "plain_case"
-    mode = payload.get("mode") or "fill_gaps"
-    if mode not in {"full", "fill_gaps", "targeted"}:
-        mode = "fill_gaps"
-
-    target_groups = payload.get("target_groups")
-    if isinstance(target_groups, str):
-        target_groups = [target_groups]
-    if not isinstance(target_groups, list):
-        target_groups = None
-
-    existing_case = payload.get("case_info") or payload.get("existing_case") or {}
-    include_scenes = bool(payload.get("include_scenes", True))
-    scene_generation_strategy = payload.get("scene_generation_strategy") or "case_driven"
-
-    try:
-        return complete_case_information(
-            source_text=str(source_text),
-            source_mode=source_mode,
-            existing_case=existing_case if isinstance(existing_case, dict) else {},
-            mode=mode,
-            target_groups=target_groups,
-            include_scenes=include_scenes,
-            source_meta=payload.get("source_meta"),
-            scene_generation_strategy=scene_generation_strategy,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"案件信息补全失败: {exc}") from exc
 
 
 @router.post("/generate-scenes")

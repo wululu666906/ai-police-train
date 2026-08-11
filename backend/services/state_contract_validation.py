@@ -1,11 +1,10 @@
-"""Lightweight post-check: align role utterances with state contract."""
+"""Non-LLM state contract validation and trimming for role utterances."""
 
 from __future__ import annotations
 
 import re
 from typing import Any
 
-from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
 from .state_influence_engine import max_chars_for_disclosure
 
 _AFFECT_LABELS = {
@@ -27,15 +26,14 @@ _RULE_FOLLOW_UPS = {
     "guarded": "……这个我不想讲。",
 }
 
+_TIMELINE_PATTERN = re.compile(r"(先.{1,8}再|然后|最后|第一|第二|时间线|从头到尾|一共.{1,6}步)")
+
 
 def affect_display_label(contract: dict[str, Any] | None) -> str:
     if not contract:
         return ""
     affect = str(contract.get("primary_affect") or "").strip()
     return _AFFECT_LABELS.get(affect, affect or "")
-
-
-_TIMELINE_PATTERN = re.compile(r"(先.{1,8}再|然后|最后|第一|第二|时间线|从头到尾|一共.{1,6}步)")
 
 
 def validate_response_against_contract(text: str, contract: dict[str, Any]) -> dict[str, Any]:
@@ -48,9 +46,6 @@ def validate_response_against_contract(text: str, contract: dict[str, Any]) -> d
     max_sentences = int(contract.get("max_sentences") or 3)
     disclosure = float(contract.get("disclosure_level") or 0.45)
     max_chars = int(contract.get("max_chars") or max_chars_for_disclosure(disclosure))
-    # Older callers do not provide the derived field; retain strict legacy
-    # validation for those contracts while new contracts carry an explicit
-    # control score.
     expression_control = int(contract.get("expression_control", 0) or 0)
     sentence_count = len([part for part in re.split(r"[。！？!?…]+", content) if part.strip()]) or 1
 
@@ -87,52 +82,6 @@ def validate_response_against_contract(text: str, contract: dict[str, Any]) -> d
     return {"ok": len(issues) == 0, "issues": issues, "score": round(score, 2)}
 
 
-def _rewrite_with_llm(
-    text: str,
-    contract: dict[str, Any],
-    *,
-    role_name: str,
-    user_text: str,
-) -> str:
-    prompt = f"""你是台词校正器。把角色台词改到符合表现契约，保持口语、短句。
-
-角色：{role_name}
-学员刚说：{user_text or '（无）'}
-原台词：{text}
-
-契约：
-- 主情绪：{contract.get('primary_affect')}（delivery={contract.get('delivery')}）
-- 句式：{contract.get('sentence_style')}，最多 {contract.get('max_sentences')} 句，总字数≤{contract.get('max_chars')}
-- 披露度：{contract.get('disclosure_level')}，禁止完整时间线式长段交代
-- 语气：{contract.get('tone_hint')}
-- 宜体现：{'、'.join(contract.get('must_include') or []) or '无'}
-- 禁止：{'、'.join(contract.get('must_avoid') or []) or '无'}
-
-只输出 JSON：{{"response":"校正后的台词"}}"""
-    try:
-        response = create_json_chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.35,
-            model=get_chat_model(),
-            max_tokens=400,
-        )
-        raw = extract_message_text(response) or ""
-        match = re.search(r"\{[\s\S]*\}", raw)
-        if not match:
-            return text
-        import json
-
-        payload = json.loads(match.group(0))
-        rewritten = str(payload.get("response") or "").strip()
-        if rewritten:
-            check = validate_response_against_contract(rewritten, contract)
-            if check.get("ok") or check.get("score", 0) >= validate_response_against_contract(text, contract).get("score", 0):
-                return rewritten
-    except Exception:
-        pass
-    return text
-
-
 def _trim_to_contract(text: str, contract: dict[str, Any]) -> str:
     content = str(text or "").strip()
     if not content:
@@ -166,40 +115,24 @@ def apply_contract_postcheck(
     *,
     role_name: str = "",
     user_text: str = "",
-    use_llm: bool = True,
+    use_llm: bool = False,
 ) -> dict[str, Any]:
+    del role_name, user_text, use_llm
     if not contract:
         return {"text": str(text or "").strip(), "follow_up": None, "adjusted": False, "validation": {"ok": True}}
 
     original = str(text or "").strip()
     validation = validate_response_against_contract(original, contract)
     if validation.get("ok"):
-        return {
-            "text": original,
-            "follow_up": None,
-            "adjusted": False,
-            "validation": validation,
-        }
+        return {"text": original, "follow_up": None, "adjusted": False, "validation": validation}
 
-    # The actor already generated the role's words. A contract postcheck may
-    # validate/trim them, but must not silently create a second persona unless
-    # the caller explicitly permits a rewrite.
-    should_llm = bool(use_llm)
     revised = original
     adjusted = False
-    if should_llm:
-        candidate = _rewrite_with_llm(original, contract, role_name=role_name, user_text=user_text)
-        if candidate != original:
-            revised = candidate
-            adjusted = True
-            validation = validate_response_against_contract(revised, contract)
-
-    if not validation.get("ok"):
-        trimmed = _trim_to_contract(revised, contract)
-        if trimmed and trimmed != revised:
-            revised = trimmed
-            adjusted = True
-            validation = validate_response_against_contract(revised, contract)
+    trimmed = _trim_to_contract(revised, contract)
+    if trimmed and trimmed != revised:
+        revised = trimmed
+        adjusted = True
+        validation = validate_response_against_contract(revised, contract)
 
     follow_up = None
     if not validation.get("ok"):
@@ -208,12 +141,7 @@ def apply_contract_postcheck(
         if follow_up and follow_up not in revised:
             adjusted = True
 
-    return {
-        "text": revised,
-        "follow_up": follow_up,
-        "adjusted": adjusted,
-        "validation": validation,
-    }
+    return {"text": revised, "follow_up": follow_up, "adjusted": adjusted, "validation": validation}
 
 
 def postcheck_reply_turns(
@@ -222,7 +150,7 @@ def postcheck_reply_turns(
     *,
     fallback_contract: dict[str, Any] | None = None,
     user_text: str = "",
-    use_llm: bool = True,
+    use_llm: bool = False,
 ) -> list[dict[str, Any]]:
     contracts = role_contracts if isinstance(role_contracts, dict) else {}
     output: list[dict[str, Any]] = []
@@ -234,13 +162,7 @@ def postcheck_reply_turns(
         contract = contracts.get(role_id) or fallback_contract
         content = str(row.get("content") or "").strip()
         if content and contract:
-            post = apply_contract_postcheck(
-                content,
-                contract,
-                role_name=str(row.get("speaker_name") or ""),
-                user_text=user_text,
-                use_llm=use_llm,
-            )
+            post = apply_contract_postcheck(content, contract, user_text=user_text, use_llm=use_llm)
             row["content"] = post.get("text") or content
         output.append(row)
     return output

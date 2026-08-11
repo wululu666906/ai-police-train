@@ -1,4 +1,4 @@
-﻿"""Per-role actor: each selected character generates 1-8 utterances with own persona."""
+"""Per-role actor: each selected character generates 1-8 utterances with own persona."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ from typing import Any, Optional
 import models
 from .role_generation_context_service import compile_role_generation_context
 from .case_intelligence_service import validate_supporting_knowledge_ids
+from .prompts.guardrails import DIALOGUE_ROLE_GUARDRAILS
 from .llm_provider import (
-    create_json_chat_completion,
+    create_roleplay_json_completion,
     create_text_chat_completion,
     extract_message_text,
     get_fast_generation_kwargs,
@@ -35,6 +36,7 @@ from .canonical_facts_service import (
     format_peer_utterances_block,
 )
 from .dialogue_sanitize_service import (
+    ROLE_REPLY_MAX_CHARS,
     contains_role_coaching_language,
     contains_role_meta_language,
     sanitize_utterances,
@@ -51,142 +53,33 @@ from .dialogue_policy_service import blend_state_delta
 from .role_dialogue_policy_service import build_dialogue_priority
 from .dialogue_context_service import find_repetition
 
-LEGACY_ROLE_ACTOR_PROMPT = """
-你正在扮演警情训练场景中的角色「{role_name}」，根据导演编排意图说出台词。
+ROLE_ACTOR_PROMPT = """你是警情训练现场人物「{role_name}」。只输出该人物此刻会自然说出口的话。
 
-【导演编排】
-- 互动模式：{interaction_mode}
-- 你的参与方式：{participation}
-- 本次连续发言最多 {utterance_count} 条台词（可少于该数，不可超过）；多条之间学员无需回复，你应顺着同一段思路往下说
-- 发言意图：{intent}
-- 触发原因：{trigger_reason}
+场景：{scene_name}；阶段：{current_stage}
+学员刚说：{user_text}
+剧情基准（校验逻辑，非全案知情）：{full_case_story_block}
+策略：{dialogue_priority}；问题：{question_instruction}
+参与：{participation}；意图：{intent}；触发：{trigger_reason}
+身份边界：{identity_anchor_block}
+行为契约：{state_contract_block}
+自然反应：{human_reaction_block}
+相关记忆：{case_knowledge_block}
+本人近期：{history_block}
+他人已说：{peer_utterances_block}
+公开现场：{public_scene_block}
+会话上下文：{conversation_summary_block}
+视角：{perspective_hint}
 
-【场景】{scene_name}  阶段：{current_stage}
-【学员刚才说】{user_text}
-
-【你的人设与状态】
-{persona_block}
-
-【当前角色大脑 / 身体绑定（最高优先级，不得借给其他角色）】
-{role_brain_block}
-
-【身份锚点（最高优先级，不得违反）】
-{identity_anchor_block}
-
-【本轮表现契约（必须严格遵守）】
-{state_contract_block}
-
-【真人化反应策略（必须体现）】
-{human_reaction_block}
-
-【后台一致性规则（不是你可直接复述的案件知识）】
-{canonical_facts_block}
-
-【案件库与角色剧本库】
-{case_knowledge_block}
-
-【知识库实时召回（法律法规 / SOP / 教学资料）】
-{retrieved_knowledge_block}
-
-【你掌握的事实边界】
-已知：{knows_facts}
-不可透露：{hidden_truths}
-不知道：{does_not_know}
-
-【本轮已发言角色（勿与其时间/地点说法矛盾）】
-{peer_utterances_block}
-
-【公开场景台词（只代表别人说过的话，不是你的记忆或身份事实）】
-{public_scene_block}
-
-【近期对话】
-{history_block}
-
-【视角约束】
-{perspective_hint}
-
-要求：
-1. 一次生成 utterances 数组，含 1 到 utterance_count 条连续台词；每条对应界面一个气泡，条与条之间是同一角色接着说完，不是等学员回话再说下一句。
-2. 生成前必须先读【当前角色大脑 / 身体绑定】、【学员刚才说】、【近期对话】、【案件库与角色剧本库】和【本轮已发言角色】；如果你是第二个开口的人，必须像已经听见前一个角色发言一样回应或补充，不能无视前文。
-3. 必须符合你的人设、情绪、配合度；不能串戏、不能全知。
-4. 严禁用第一人称「我」冒充学员点名的其他角色作答；若你是证人/家属且学员在问别人，请用第三人称转述你观察到的情况。
-5. 若 participation=interrupt，第一句可带打断感；若 calm_scene 模式，情绪应略有缓和但仍保角色性格。
-6. 若本人证言存在待核实或相互矛盾之处，只能如实说明“记不清、无法确认或需要核实”，不得借此编造、推责或指导民警如何提问。学员明确追问证据、监控、证人、伤情、时间线矛盾时，才可结合本人来源记忆补充。
-7. 若学员只是笼统问“具体点/说清楚”，不要自动交代所有事实；先自然补充一项你亲历、看见或听见的细节。只有确实无法判断学员所指对象时，才能以角色口吻简短表示自己没听明白，不能教导学员如何提问。
-8. 若学员拿出证据或指出矛盾，回复中应体现被击中的心理变化：停顿、犹豫、缩小说法、改口一小步，而不是突然完整认罪。
-9. 必须优先回应【学员刚才说】这一句；【近期对话】只能作为背景，不能把历史里的问题说成学员本轮刚问的问题。
-10. 如果学员刚才是在告知、安抚、说明已采取措施（例如“已经叫救护车/已经通知/请稍等”），应回应这项措施是否让你安心、是否继续催促、需要什么确认；不得说“你们光问”“你刚才问这些”“你不是问了吗”等把历史追问当成本轮提问的话。
-11. 人设配置（如核心顾虑、当前诉求、触发点）仅用于决定语气与反应，禁止在台词中念出字段名、配置原文或「我最怕的就是XXX」这类说明书句式；把担心融入自然口语。
-12. 被问时间、地点时，只能使用【角色专属案件知识】或【已知】中的信息；没有角色来源支持时必须具体说明无法确认，不得从全案视角补答案。
-13. 严格遵守【视角约束】中的身份边界：若提示你是旁观者/证人，禁止用第一人称「我」替被问对象回答经历。
-14. delivery 取值及含义：
-    - normal：平常语气
-    - angry：愤怒、激动
-    - anxious：焦急、不安
-    - sad：委屈、低落
-    - defensive：防御、辩解
-    - calm：冷静、缓和
-    - hesitant：犹豫、吞吞吐吐
-15. new_fact_revealed 只有在本轮确实新增了一条关键事实时才填写该事实文本，否则填 null。
-16. state_delta 是四个轴的变化量（范围-15 到 +15），不是绝对值；没有明显变化时写 0，不要整条不填。
-17. 台词只能是现场人物会自然说出口的话。严禁把系统的对话管理要求说出来，例如「换个角度」「把问题拆开」「别一直绕在同一个点上」「你先问哪一项」「别让我重复刚才那段」；即使你记不清，也要直接说自己看见、听见、害怕或不确定的内容。
-18. 注意：以下输出格式中的值为示例（delivery、数字等），请根据角色状态和本轮互动动态决定，不要照搬。只输出 JSON：
-19. 若【真人化反应策略】要求你回避、沉默、争执、转移或求保护，要通过自然口语表现出来；不要直接说“我是争执型/回避型”。
-20. 如果本轮已有人先发言，必须像听见了对方的话一样回应：同意、反驳、补充、纠正、沉默回避均可，但不能无视明显冲突；但不要把前一个角色没有说过的话强行安到对方头上。
-21. 角色身份、职业/案件角色、亲属关系、社会关系和称谓必须以【身份锚点】为准；不确定时只说姓名或“对方”，禁止自编哥哥/弟弟、父母子女、夫妻、朋友、同事、邻居、证人/嫌疑人/被害人等身份。
-22. 若你指责“对方诬赖/栽赃/让你背锅/他说你动手”，必须能在【学员刚才说】或最近 2 条对方发言里找到依据；找不到依据时改为回答学员当前问题。
-23. 如果你前几轮已经围绕同一件事抱怨或辩解过，本轮除非学员继续明确追问这件事，否则必须直接回应学员当前问点，或补充一项尚未说过的自然细节；不得评价学员的提问方式、要求学员换话题或指导学员下一步问什么。
-24. 你不是一个共享演员在临时换皮；你是【当前角色大脑 / 身体绑定】里的唯一角色。其他角色的话只是你听到的外部声音，不能变成你的身份、记忆、经历或第一人称立场。
-25. 【公开场景台词】只能用于回应“谁刚才说了什么”，不能据此推断或确认亲属、同事、同案、朋友等关系；除非【身份锚点】明确支持，否则学员在问题里使用的称谓也只是提问方式，不能当成事实复述。
-26. 每轮先看学员当前问题、本人来源记忆事实、当前情绪/信任状态和民警实际动作，再决定补充、犹豫、无法确认或缓和；不得把任何后台配置、标签或规则说出口。
-27. 台词必须以【案件库与角色剧本库】中属于本人的内容为依据；supporting_knowledge_ids 可以填写你确定的 ID，也可以留空，系统会按台词内容自动绑定依据。没有依据时直接说自己无法确认。
-28. 【当前角色大脑 / 身体绑定】中的“当前场景在场契约”定义你此刻的物理位置、动作和可见范围，优先级高于任何跨时段证言。不得把“之前/之后/听说”的地点或动作说成现在正在发生；若契约显示位置未确认，直接说明无法确认具体站位。
-
-{{
-  "utterances": [
-    {{"content": "第一句台词", "delivery": "angry", "supporting_knowledge_ids": ["K1"]}},
-    {{"content": "第二句台词", "delivery": "normal", "supporting_knowledge_ids": []}}
-  ],
- "inner_thought": "心理活动",
-  "supporting_knowledge_ids": ["K1"],
-  "state_delta": {{"emotion": 0, "cooperation": 0, "risk": 0, "clarity": 0}},
-  "new_fact_revealed": null
-}}
-"""
-
-ROLE_ACTOR_PROMPT = """你是警情训练现场人物「{role_name}」。只输出该人物此刻会自然说出口的话，不解释系统规则。
-
-当前场景：{scene_name}；阶段：{current_stage}
-学员刚才说：{user_text}
-完整案件剧情核心基准（每轮强制读取）：
-{full_case_story_block}
-本轮唯一执行策略：{dialogue_priority}
-当前问题要求：{question_instruction}
-本轮参与方式：{participation}；发言意图：{intent}；触发原因：{trigger_reason}
-你的身份边界：{identity_anchor_block}
-当前行为状态：{state_contract_block}
-本轮自然反应：{human_reaction_block}
-与你当前问题最相关的本人记忆：
-{case_knowledge_block}
-最近本人对话：
-{history_block}
-本轮其他角色已说：{peer_utterances_block}
-当前公开现场信息：{public_scene_block}
-分层会话上下文（较早摘要、相关原文与近期原文）：
-{conversation_summary_block}
-视角要求：{perspective_hint}
-
-执行顺序：
-1. 先回答学员刚才这句话，不评价其提问技巧，不重复后台字段和模板话术。
-2. 先用完整剧情校验全局逻辑，再按本人记忆和本轮公开信息过滤可说内容；不得把全案知情能力赋给角色。
-3. 人物性格只影响口吻和披露节奏，不能压过当前问题。普通群众通常会对警方保持基本尊重并逐步配合。
-4. 有效安抚、明确保护或说明下一步后，应自然缓和；除非存在明确危险刺激，不得长期维持同样的激烈反应。
-5. 最多输出 {utterance_count} 条连续台词；能一句说清就只输出一句。
-6. supporting_knowledge_ids 填所用记忆ID；state_delta 仅表示轻微建议，最终状态由系统计算。
-7. 不得复述本人或其他角色已经说过的同义台词；需要继续回答时，换用尚未披露的本人记忆事实、不同立场或新的具体细节。
-
+规则：
+1. 先答学员这句；不评价问法，不复述后台字段或模板话术。
+2. 用剧情校验逻辑，用本人记忆过滤可说内容；不得全案知情。
+3. 性格只影响口吻；有效安抚后应缓和，避免长期激烈反应。
+4. 最多 {utterance_count} 条；能一句说清就一句；不得重复同义台词。
+5. 全部气泡合计≤{max_reply_chars}字，完整句，禁止省略号截断。
+6. supporting_knowledge_ids 填所用记忆ID；state_delta 仅轻微建议。
+""" + DIALOGUE_ROLE_GUARDRAILS + """
 只输出 JSON：
-{{"utterances":[{{"content":"自然台词","delivery":"normal","supporting_knowledge_ids":["K1"]}}],"inner_thought":"","state_delta":{{"emotion":0,"cooperation":0,"risk":0,"clarity":0}},"new_fact_revealed":null}}
+{{"utterances":[{{"content":"","delivery":"normal","supporting_knowledge_ids":["K1"]}}],"inner_thought":"","state_delta":{{"emotion":0,"cooperation":0,"risk":0,"clarity":0}},"new_fact_revealed":null}}
 """
 
 
@@ -206,7 +99,7 @@ def _grounding_memory_reply(role: models.Role, knowledge_view: dict[str, Any], u
     if not chosen:
         return _grounding_safe_reply(role)
     statement = _strip_source_document_style(_text(chosen.get("content")))
-    return f"我记得，当时{statement[:180]}"
+    return f"我记得，当时{statement}"
 
 
 _GROUNDING_MODES = {
@@ -2044,16 +1937,15 @@ def generate_role_dialogue(
             public_scene_block=_format_public_scene_block(public_scene_utterances),
             history_block=_build_history_block(history),
             conversation_summary_block=conversation_summary_block or "（暂无累计摘要）",
+            max_reply_chars=ROLE_REPLY_MAX_CHARS,
         )
         try:
-            response = create_json_chat_completion(
+            response = create_roleplay_json_completion(
                 messages=[{"role": "user", "content": prompt}],
                 # Actor answers are factual turns; lower variance makes the JSON
                 # envelope and role separation markedly more reliable on DeepSeek.
                 temperature=0.42,
-                model=get_roleplay_model(),
-                max_tokens=max(256, int(os.getenv("ROLE_AI_MAX_TOKENS", "700"))),
-                extra_kwargs=get_fast_generation_kwargs(),
+                max_tokens=max(512, int(os.getenv("ROLE_AI_MAX_TOKENS", "1400"))),
             )
             raw = extract_message_text(response) or ""
             match = re.search(r"\{[\s\S]*\}", raw)
@@ -2309,12 +2201,10 @@ def generate_role_dialogue(
                 "不要编造，不要解释修改原因。只输出JSON：{\"content\":\"台词\"}"
             )
             try:
-                retry_response = create_json_chat_completion(
+                retry_response = create_roleplay_json_completion(
                     messages=[{"role": "user", "content": retry_prompt}],
                     temperature=0.55,
-                    model=get_roleplay_model(),
                     max_tokens=240,
-                    extra_kwargs=get_fast_generation_kwargs(),
                 )
                 retry_raw = extract_message_text(retry_response) or ""
                 retry_match = re.search(r"\{[\s\S]*\}", retry_raw)

@@ -1,10 +1,58 @@
 from services.canonical_facts_service import extract_canonical_facts, format_canonical_facts_block, merge_role_knows_facts
 from services.dialogue_sanitize_service import (
+    ROLE_REPLY_MAX_CHARS,
+    limit_role_reply_turns,
+    limit_role_reply_turns_with_remainders,
+    limit_spoken_text,
+    split_spoken_text,
     repair_learner_echoed_spoken_line,
     repair_repetitive_spoken_line,
     sanitize_spoken_line,
     sanitize_utterances,
 )
+
+
+def test_role_reply_limit_keeps_complete_sentence_without_ellipsis():
+    text = "第一句说明现场情况。" + "第二句补充关键事实。" * 30
+    limited = limit_spoken_text(text)
+    repaired_short_line = limit_spoken_text("我记得他往山上走了……")
+
+    assert len(limited) <= ROLE_REPLY_MAX_CHARS
+    assert limited.endswith(("。", "！", "？", "!", "?"))
+    assert not limited.endswith(("...", "……"))
+    assert repaired_short_line == "我记得他往山上走了。"
+
+
+def test_role_reply_limit_is_shared_across_bubbles_per_role():
+    turns = [
+        {"speaker_role_id": 1, "speaker_name": "甲", "content": "甲角色第一段。" * 18},
+        {"speaker_role_id": 1, "speaker_name": "甲", "content": "甲角色第二段。" * 18},
+        {"speaker_role_id": 2, "speaker_name": "乙", "content": "乙角色独立发言。" * 18},
+    ]
+    limited = limit_role_reply_turns(turns)
+
+    for role_id in (1, 2):
+        total = sum(len(item["content"]) for item in limited if item["speaker_role_id"] == role_id)
+        assert total <= ROLE_REPLY_MAX_CHARS
+    assert all(item["content"].endswith(("。", "！", "？", "!", "?")) for item in limited)
+
+
+def test_role_reply_limit_retains_unshown_complete_content():
+    original = "第一段已经说完。" + "第二段需要后续继续说明。" * 20
+    visible, remainder = split_spoken_text(original)
+
+    assert len(visible) <= ROLE_REPLY_MAX_CHARS
+    assert visible.endswith(("。", "！", "？", "!", "?"))
+    assert remainder
+    assert f"{visible}{remainder}" == original
+
+    turns, pending = limit_role_reply_turns_with_remainders([
+        {"speaker_role_id": 9, "speaker_name": "甲", "content": original},
+        {"speaker_role_id": 9, "speaker_name": "甲", "content": "第三段仍需保留。"},
+    ])
+    assert sum(len(item["content"]) for item in turns) <= ROLE_REPLY_MAX_CHARS
+    assert pending["9"]["role_name"] == "甲"
+    assert "第三段仍需保留。" in pending["9"]["content"]
 
 
 def test_sanitize_template_leakage():

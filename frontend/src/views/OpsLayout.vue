@@ -114,7 +114,11 @@ const logout = () => {
   --ops-border: #e3eaf3;
   --ops-muted: #8b96aa;
   display: flex;
-  min-height: 100vh;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
   background: var(--ops-bg);
 }
 
@@ -122,6 +126,10 @@ const logout = () => {
   width: 210px;
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   border-right: 1px solid rgba(255, 255, 255, 0.08);
   background: var(--ops-navy);
   color: #fff;
@@ -171,7 +179,9 @@ const logout = () => {
 
 .ops-nav {
   flex: 1;
+  min-height: 0;
   padding: 12px;
+  overflow: auto;
 }
 
 .ops-nav__item,
@@ -198,6 +208,7 @@ const logout = () => {
 .ops-logout {
   margin: 12px;
   width: calc(100% - 24px);
+  flex-shrink: 0;
 }
 
 .ops-logout:hover,
@@ -209,11 +220,15 @@ const logout = () => {
 .ops-main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .ops-topbar {
+  flex-shrink: 0;
   min-height: 72px;
   display: flex;
   align-items: center;
@@ -276,8 +291,11 @@ const logout = () => {
 .ops-content {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   padding: 20px;
   overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .ops-content :deep(.ops-card),
@@ -347,13 +365,48 @@ const logout = () => {
   accent-color: var(--ops-blue);
 }
 
+@media (min-width: 768px) {
+  .ops-shell {
+    height: calc(100dvh / var(--platform-display-scale, 1));
+    max-height: calc(100dvh / var(--platform-display-scale, 1));
+  }
+}
+
 @media (max-width: 780px) {
   .ops-shell {
-    display: block;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    max-height: 100%;
   }
 
   .ops-sidebar {
     width: 100%;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .ops-nav {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 8px;
+  }
+
+  .ops-nav__item {
+    width: auto;
+    white-space: nowrap;
+  }
+
+  .ops-logout {
+    display: none;
+  }
+
+  .ops-main {
+    flex: 1;
+    min-height: 0;
   }
 
   .ops-topbar {

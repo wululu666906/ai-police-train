@@ -37,6 +37,8 @@ DEFAULT_RUNTIME_STATE = {
     "last_target_role_name": "",
     "conversation_summary": {},
     "agent_context": {},
+    "pending_role_replies": {},
+    "pending_role_replies_version": 1,
     "state_influence_turn_log": [],
 }
 
@@ -228,6 +230,25 @@ def _normalize_role_id_list(value: Any) -> list[int]:
     return result
 
 
+def _normalize_pending_role_replies(value: Any) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict):
+        return {}
+    pending: dict[str, dict[str, str]] = {}
+    for raw_key, raw_item in value.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        item = raw_item if isinstance(raw_item, dict) else {"content": raw_item}
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        pending[key] = {
+            "role_name": str(item.get("role_name") or "").strip(),
+            "content": content,
+        }
+    return pending
+
+
 def load_runtime_state(raw_value: Any) -> dict[str, Any]:
     parsed = _safe_json_loads(raw_value, [])
     if isinstance(parsed, list):
@@ -251,6 +272,8 @@ def load_runtime_state(raw_value: Any) -> dict[str, Any]:
     state["last_target_role_name"] = str(parsed.get("last_target_role_name") or "").strip()
     state["conversation_summary"] = parsed.get("conversation_summary") if isinstance(parsed.get("conversation_summary"), dict) else {}
     state["agent_context"] = parsed.get("agent_context") if isinstance(parsed.get("agent_context"), dict) else {}
+    state["pending_role_replies"] = _normalize_pending_role_replies(parsed.get("pending_role_replies"))
+    state["pending_role_replies_version"] = 1
     progress = parsed.get("assessment_progress")
     if isinstance(progress, dict):
         state["assessment_progress"] = progress
@@ -282,6 +305,8 @@ def dump_runtime_state(state: dict[str, Any]) -> str:
         "last_target_role_name": str((state or {}).get("last_target_role_name") or "").strip(),
         "conversation_summary": (state or {}).get("conversation_summary") if isinstance((state or {}).get("conversation_summary"), dict) else {},
         "agent_context": (state or {}).get("agent_context") if isinstance((state or {}).get("agent_context"), dict) else {},
+        "pending_role_replies": _normalize_pending_role_replies((state or {}).get("pending_role_replies")),
+        "pending_role_replies_version": 1,
     }
     for key in _RUNTIME_PASSTHROUGH_KEYS:
         if key in (state or {}):

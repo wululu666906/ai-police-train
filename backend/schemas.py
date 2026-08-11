@@ -225,6 +225,7 @@ class SessionDetail(BaseModel):
     completed_action_ids: List[str] = []
     auto_finish_ready: bool = False
     closure_summary: Optional[dict] = None
+    opening_delivered: bool = False
     assignment_context: Optional[dict] = None
     artifacts: List[dict] = []
     messages: List[Message] = []

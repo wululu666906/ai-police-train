@@ -196,7 +196,7 @@
           <video
             ref="videoRef"
             class="imm-video-layer__video"
-            :poster="video?.thumbnail_url || undefined"
+            :poster="resolveMediaUrl(video?.thumbnail_url) || undefined"
             preload="auto"
             @play="playbackPaused = false; markPlaybackPlaying()"
             @pause="playbackPaused = true"
@@ -718,7 +718,7 @@
               <video
                 ref="videoRef"
                 class="stage-video"
-                :poster="video?.thumbnail_url || undefined"
+                :poster="resolveMediaUrl(video?.thumbnail_url) || undefined"
                 preload="auto"
                 @play="playbackPaused = false; markPlaybackPlaying()"
                 @pause="playbackPaused = true"
@@ -1182,6 +1182,7 @@ import { useGestureDetector } from '../composables/useGestureDetector'
 import { useSegmentedVideoPlayback } from '../composables/useSegmentedVideoPlayback'
 import { createSpeechProvider } from '../services/speech/index'
 import type { SpeechRecognitionProvider } from '../services/speech/types'
+import { resolveMediaUrl } from '../utils/media'
 
 interface VideoNode {
   id: number
@@ -2067,7 +2068,7 @@ async function fetchVideo() {
     const res: any = await request.get(`/videos/${videoId}`)
     video.value = res
     await nextTick()
-    playbackPreparePromise = attachPlayback(videoId, String(res.video_url || ''))
+    playbackPreparePromise = attachPlayback(videoId, resolveMediaUrl(res.video_url))
   } catch (error: any) {
     ElMessage.error('加载视频失败')
     video.value = null

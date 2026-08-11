@@ -5,7 +5,7 @@ from __future__ import annotations
 from statistics import mean
 from typing import Any
 
-from .state_contract_postcheck import affect_display_label, validate_response_against_contract
+from .state_contract_validation import affect_display_label, validate_response_against_contract
 from .state_influence_engine import (
     build_state_contract,
     enrich_momentum_with_axis_deltas,

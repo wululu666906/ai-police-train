@@ -482,6 +482,7 @@ def create_json_chat_completion(
     allow_plain_json_fallback: bool = True,
     return_trace: bool = False,
     long_output: bool = False,
+    require_complete: bool = False,
 ):
     request_messages = list(messages)
     request_messages.insert(
@@ -532,10 +533,14 @@ def create_json_chat_completion(
         try:
             response = call()
             content = extract_message_text(response)
+            finish_reason = _response_finish_reason(response)
+            status = "success" if content and content.strip() else "empty"
+            if status == "success" and require_complete and finish_reason == "length":
+                status = "truncated"
             entry.update(
                 {
-                    "status": "success" if content and content.strip() else "empty",
-                    "finish_reason": _response_finish_reason(response),
+                    "status": status,
+                    "finish_reason": finish_reason,
                     "response_chars": len(content or ""),
                     "duration_ms": round((time.perf_counter() - started) * 1000),
                     **_response_usage(response),
@@ -552,6 +557,11 @@ def create_json_chat_completion(
             })
             trace.append(entry)
             return None, ""
+
+    def _is_complete(content: str) -> bool:
+        if not content or not content.strip():
+            return False
+        return not require_complete or not trace or trace[-1].get("finish_reason") != "length"
 
     def _success(response: Any, final_provider: str):
         result_trace = {
@@ -583,19 +593,20 @@ def create_json_chat_completion(
             max_output_tokens=int(kwargs["max_tokens"]),
             call=lambda: active_client.chat.completions.create(**kwargs),
         )
-        if content and content.strip():
+        if _is_complete(content):
             return _success(response, provider)
 
         finish_reason = trace[-1].get("finish_reason", "") if trace else ""
         error_text = trace[-1].get("error", "") if trace else ""
-        errors.append(f"{provider} JSON mode: {error_text or 'empty response'}")
+        failure = "output truncated at token limit" if finish_reason == "length" else (error_text or "empty response")
+        errors.append(f"{provider} JSON mode: {failure}")
         if any(marker in str(error_text).lower() for marker in ("insufficient balance", "error code: 402", "quota exhausted")):
             # A balance/quota failure cannot be repaired by changing prompt or
             # JSON mode.  Move directly to the configured alternate provider.
             primary_unavailable = True
             break
         print(
-            f"LLM empty JSON response detected: provider={provider}, "
+            f"LLM incomplete JSON response detected: provider={provider}, "
             f"attempt={attempt + 1}, finish_reason={finish_reason or 'unknown'}"
         )
 
@@ -642,10 +653,11 @@ def create_json_chat_completion(
             max_output_tokens=int(fallback_kwargs["max_tokens"]),
             call=lambda: active_client.chat.completions.create(**fallback_kwargs),
         )
-        if content and content.strip():
+        if _is_complete(content):
             print("LLM JSON fallback succeeded with plain-text JSON mode.")
             return _success(response, provider)
-        errors.append(f"{provider} plain JSON mode: {trace[-1].get('error') or 'empty response'}")
+        failure = "output truncated at token limit" if trace[-1].get("finish_reason") == "length" else (trace[-1].get("error") or "empty response")
+        errors.append(f"{provider} plain JSON mode: {failure}")
 
     # The project can be configured with both providers. Use the alternate one
     # as an actual failover instead of silently returning an empty response.
@@ -671,13 +683,33 @@ def create_json_chat_completion(
             max_output_tokens=int(fallback_kwargs["max_tokens"]),
             call=lambda: fallback_client.chat.completions.create(**fallback_kwargs),
         )
-        if content and content.strip():
+        if _is_complete(content):
             print(f"LLM provider failover succeeded: from={provider}, to={fallback_provider}")
             return _success(response, fallback_provider)
-        errors.append(f"{fallback_provider} plain JSON failover: {trace[-1].get('error') or 'empty response'}")
+        failure = "output truncated at token limit" if trace[-1].get("finish_reason") == "length" else (trace[-1].get("error") or "empty response")
+        errors.append(f"{fallback_provider} plain JSON failover: {failure}")
 
     detail = "; ".join(errors) or f"{provider} returned an empty JSON response"
     raise LLMJsonCompletionError(f"LLM JSON generation unavailable: {detail}", trace=trace)
+
+
+def create_roleplay_json_completion(
+    *,
+    messages: List[dict[str, str]],
+    temperature: float = 0.4,
+    max_tokens: int = 1400,
+    return_trace: bool = False,
+):
+    """Use one low-latency, complete-output contract for all live role speech."""
+    return create_json_chat_completion(
+        messages=messages,
+        temperature=temperature,
+        model=get_roleplay_model(),
+        max_tokens=max_tokens,
+        extra_kwargs=get_fast_generation_kwargs(),
+        require_complete=True,
+        return_trace=return_trace,
+    )
 
 
 def create_text_chat_completion(
