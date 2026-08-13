@@ -15,7 +15,6 @@ from .guardrails import (
     DIRECTOR_GUARDRAILS,
     EVALUATION_GUARDRAILS,
 )
-from .training_dialogue import SYSTEM_PROMPT_TEMPLATE
 
 __all__ = [
     "ASSESSMENT_POINT_PROMPT",
@@ -23,7 +22,6 @@ __all__ = [
     "FACTS_ROLES_MEMORIES_PROMPT",
     "OPENING_DIALOGUE_ADDENDUM",
     "SCENE_BLUEPRINT_PROMPT",
-    "SYSTEM_PROMPT_TEMPLATE",
     "build_opening_system_prompt",
     "ADMIN_JSON_GUARDRAILS",
     "COACH_SPEECH_GUARDRAILS",
