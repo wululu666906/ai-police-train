@@ -218,7 +218,7 @@ def generate_assessment_points_with_llm(
     prompt = f"{ASSESSMENT_GEN_PROMPT}\n\n{context}"
     response = create_json_chat_completion(
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.35,
+        temperature=0.25,
         model=get_chat_model(),
         max_tokens=2800,
     )

@@ -376,7 +376,7 @@ def ensure_scene_schema_compatibility():
 def backfill_role_state_defaults():
     db = database.SessionLocal()
     try:
-        from services.role_state_service import backfill_role_initial_states
+        from services.training_view_service import backfill_role_initial_states
 
         backfill_role_initial_states(db)
     except Exception as error:

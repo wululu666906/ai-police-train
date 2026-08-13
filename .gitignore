@@ -11,6 +11,8 @@ __pycache__/
 .pytest-run-tmp/
 .pytest-tmp/
 tmp/
+ai_workflow_service/data/*
+!ai_workflow_service/data/.gitkeep
 
 # Database & runtime data
 *.db

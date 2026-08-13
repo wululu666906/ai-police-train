@@ -15,7 +15,8 @@ from sqlalchemy.orm import Session
 
 import models
 from services.classroom_service import sync_assignment_submission_for_session
-from services.evaluation_service import enforce_final_score_policy, evaluate_session
+from services.agent_training_service import evaluate_session
+from services.evaluation_policy_service import enforce_final_score_policy
 from services.import_isolation import isolated_sys_path
 from services.object_storage_service import MEDIA_BUCKET, build_object_key, guess_content_type, object_storage, upsert_media_asset
 

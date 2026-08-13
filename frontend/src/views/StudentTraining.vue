@@ -226,7 +226,15 @@
               <span class="msg-sender" :style="{ color: getAvatarBg(msg.avatarId) }">
                 {{ msg.speakerName || roleInfo.name }}
               </span>
-              <div class="msg-bubble bubble-ai">{{ msg.content }}</div>
+              <div
+                class="msg-bubble bubble-ai"
+                :class="{ 'typing-indicator': Boolean(msg.pending) }"
+              >
+                <template v-if="msg.pending">
+                  <span></span><span></span><span></span>
+                </template>
+                <template v-else>{{ msg.content }}</template>
+              </div>
             </div>
           </div>
 
@@ -243,7 +251,7 @@
           </div>
         </div>
 
-        <div v-if="isAssistantBusy" class="msg-row msg-ai">
+        <div v-if="isAssistantBusy && !hasPendingAssistantBubble" class="msg-row msg-ai">
           <div class="avatar avatar-ai">
             <van-icon name="contact" size="20" />
           </div>
@@ -433,6 +441,9 @@ const faceGuardRef = ref<InstanceType<typeof TrainingFaceGuard> | null>(null)
 const failedAvatarUrls = ref<Set<string>>(new Set())
 const canUseConversation = computed(() => faceVerified.value && !faceTerminated.value)
 const isAssistantBusy = computed(() => isLoading.value || isOpeningLoading.value)
+const hasPendingAssistantBubble = computed(() =>
+  chatHistory.value.some((message) => message.role === 'assistant' && Boolean(message.pending)),
+)
 const sceneReadyForOpening = computed(() => (
   Boolean(sessionId.value)
   && !isSessionBooting.value
@@ -534,7 +545,7 @@ const autoFinishReady = ref(false)
 
 const revealedInfo = ref<string[]>([])
 const chatHistory = ref<
-  Array<{ id: number; role: string; content: string; speakerName?: string; avatarUrl?: string; avatarId?: number }>
+  Array<{ id: number; role: string; content: string; speakerName?: string; avatarUrl?: string; avatarId?: number; pending?: boolean }>
 >([])
 let activeChatAbortController: AbortController | null = null
 let activeChatRequestId = 0
@@ -814,6 +825,7 @@ type AssistantStreamRow = {
   speakerName?: string
   avatarUrl?: string
   avatarId?: number
+  pending?: boolean
 }
 
 const consumeAssistantStream = async (response: Response) => {
@@ -826,30 +838,72 @@ const consumeAssistantStream = async (response: Response) => {
   const result: any = {}
   const assistantRows: AssistantStreamRow[] = []
   let buffer = ''
+  let pendingRow: AssistantStreamRow | null = null
+
+  const resolveSpeakerMeta = (speakerName: string) => {
+    const speakerRole = sceneRoles.value.find((role) => role.name === speakerName)
+    return {
+      speakerName,
+      avatarUrl: speakerRole?.avatar_url,
+      avatarId: speakerRole?.avatar_id,
+    }
+  }
 
   const consumeBlock = async (block: string) => {
     const parsed = parseSseBlock(block)
     if (!parsed) return
     if (parsed.event === 'error') throw new Error(String(parsed.data?.message || 'AI 对话生成失败'))
     if (parsed.event === 'done') {
+      if (pendingRow?.pending) {
+        chatHistory.value = chatHistory.value.filter((message) => message.id !== pendingRow?.id)
+        pendingRow = null
+      }
       Object.assign(result, parsed.data || {})
+      return
+    }
+    if (parsed.event === 'thinking') {
+      const data = parsed.data || {}
+      const speakerName = String(data.speaker_name || roleInfo.name).trim() || roleInfo.name
+      const meta = resolveSpeakerMeta(speakerName)
+      pendingRow = {
+        id: Date.now() + Number(data.index || 0) + assistantRows.length,
+        role: 'assistant',
+        content: '',
+        pending: true,
+        ...meta,
+      }
+      chatHistory.value.push(pendingRow)
+      await nextTick()
+      scrollToBottom()
       return
     }
     if (parsed.event !== 'chunk') return
     const chunk = parsed.data || {}
     const speakerName = String(chunk.speaker_name || roleInfo.name).trim() || roleInfo.name
-    const speakerRole = sceneRoles.value.find((role) => role.name === speakerName)
-    const row: AssistantStreamRow = {
-      id: Number(chunk.message_id) || Date.now() + Number(chunk.index || 0) + assistantRows.length,
-      role: 'assistant',
-      content: String(chunk.content || ''),
-      speakerName,
-      avatarUrl: speakerRole?.avatar_url,
-      avatarId: speakerRole?.avatar_id,
+    const meta = resolveSpeakerMeta(speakerName)
+    const content = String(chunk.content || '')
+    if (!content.trim()) return
+
+    if (pendingRow?.pending) {
+      pendingRow.content = content
+      pendingRow.pending = false
+      pendingRow.speakerName = meta.speakerName
+      pendingRow.avatarUrl = meta.avatarUrl
+      pendingRow.avatarId = meta.avatarId
+      assistantRows.push({ ...pendingRow })
+      pendingRow = null
+    } else {
+      const row: AssistantStreamRow = {
+        id: Number(chunk.message_id) || Date.now() + Number(chunk.index || 0) + assistantRows.length,
+        role: 'assistant',
+        content,
+        pending: false,
+        ...meta,
+      }
+      if (chatHistory.value.some((message) => message.id === row.id)) return
+      assistantRows.push(row)
+      chatHistory.value.push(row)
     }
-    if (!row.content.trim() || chatHistory.value.some((message) => message.id === row.id)) return
-    assistantRows.push(row)
-    chatHistory.value.push(row)
     await nextTick()
     scrollToBottom()
   }

@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 import models
-from services.evaluation_service import enforce_final_score_policy, is_current_evaluation_report
+from services.evaluation_policy_service import enforce_final_score_policy, is_current_evaluation_report
 
 
 ACTIVE_SUBMISSION_STATUSES = {"in_progress", "evaluating"}

@@ -9,7 +9,7 @@ from typing import Any
 
 from .llm_provider import CASE_AI_MAX_TOKENS, create_json_chat_completion, create_text_chat_completion, extract_json_payload, extract_message_text, get_case_workflow_model, get_chat_completion_binding, get_chat_model, get_fast_generation_kwargs
 from .ai_workflow_audit import new_correlation_id, record_issue, record_workflow_run, save_story_version
-from .persona_engine import get_behavior_archetype_defaults, infer_persona_template, normalize_compact_persona_fields
+from .case_persona_defaults import get_behavior_archetype_defaults, infer_persona_template, normalize_compact_persona_fields
 from .case_schema_service import canonicalize_person_payload, migrate_structured_data_payload
 from .case_intelligence_service import assess_source_quality, normalize_case_intelligence
 from .training_compiler_service import build_observable_scoring_rules, build_training_tasks, compile_state_machine
@@ -124,62 +124,6 @@ BASE_PARSE_RESULT = {
     "parse_warnings": [],
     "parse_engine": "heuristic",
 }
-
-NAME_EXTRACTION_PROMPT = """你是公安警情训练平台的人物名称识别专家。你的准确率直接影响训练系统的数据质量，误报一个非人名就会导致角色污染。
-
-任务：从以下案件文本中，找出所有**真实人物的完整姓名**，返回一个纯 JSON 字符串数组。
-
-核心规则（严格遵循，违者将导致系统故障）：
-1. 只提取2-4个汉字的真实完整人名（如：张三、李四、王小明、赵建国）。
-2. **绝对禁止**把以下任何类型当作人名输出，即使它们在文本中紧邻角色称谓或动词：
-   - 地名/地点（如：某某村、东风路、向阳街、幸福小区、某某庄、某某路、某某大厦、某某巷、某某街道、某某社区、某某镇、某某乡）
-   - 抽象名词/事件词（如：证言、陈述、供述、交代、案情、纠纷、口供、笔录、报警记录、报案材料、情况、材料、线索、证据）
-   - 物品名称（如：电动车、手机、菜刀、木棍、汽车、钱包、自行车、砖头、铁锹、钢管、绳索）
-   - 角色称谓/身份词（如：嫌疑人、犯罪嫌疑人、被害人、受害人、报警人、报案人、证人、邻居、家属、目击者、当事人、伤者、死者、对方、男子、女子、顾客、店员、保安、路人、同学、朋友、工友、老乡、房东、租客、乘客、司机、业主）
-   - 行为描述词（如：争吵、打架、受伤、逃离、抓捕、调解、询问、审讯、报案、报警、追赶、推搡、辱骂、威胁、敲诈、勒索、盗窃、抢劫、诈骗）
-   - 占位符名称（如：张某某、李某某、某某某、王某、赵某、刘某、陈某——只有姓氏加"某"的不算完整人名）
-   - 仅称谓+姓氏（如：老王、小张、大刘、李姐、王哥、赵叔——这些不是完整姓名）
-3. **姓名结构规则**：中国真实人名由「姓氏+名字」组成。确认提取的每个名字都以一个真实姓氏开头（如：王、李、张、刘、陈、杨、赵、黄、周、吴、徐、孙、马、胡、朱、郭、何、罗、高、林等）。如果无法确认，宁可漏过。
-4. 同一人物只保留一个标准名称。如果文本中出现同一人的不同写法（如"张三供述"和"张三（审讯）"），只保留最简洁的标准名"张三"。
-5. 如果姓名前后夹着身份、阶段、关系词或动词（如"证人张三""张三嫌疑人""张三称""张三说"），必须还原成纯人名"张三"。
-6. **自我验证**：在输出前，逐个检查候选名单中的每一项——问自己"这真的是一个真实人物的人名吗？还是地名/事件词/身份词？"如果不确定，移除它。
-7. **宁可漏过，绝不误报**：如果不确定某个词是否为真实人名（如只有姓氏加"某"：王某、李某），必须排除。如果文本中没有明确真实的人名，必须返回空数组 []。
-8. 只输出一个合法的 JSON 数组，不要 markdown、解释或额外说明。
-
-示例：
-输入："报警人张三称，其与邻居李四因纠纷发生冲突，李四手持木棍打伤张三。"
-输出：["张三", "李四"]
-
-输入："某某村幸福小区发生一起邻里纠纷，现场无人员受伤。"
-输出：[]
-
-输入："据被害人王小花陈述，嫌疑人赵大龙在东风路持刀抢劫其手机。"
-输出：["王小花", "赵大龙"]
-
-输入："民警到场后，证言显示某某村的李某和王某因琐事发生口角。"
-输出：[]（李某、王某只有姓氏加"某"，不是明确完整人名）
-
-输入："报警人陈述称其在东风路被一名男子抢走手机。"
-输出：[]（没有明确人名）
-
-输入："嫌疑人张某因纠纷将被害人李某打伤，张某系某某村村民。"
-输出：[]（张某、李某只有姓氏加"某"，不是明确完整人名）
-
-输入："王小明与赵丽华因感情纠纷发生争吵，赵丽华将王小明电动车砸坏。"
-输出：["王小明", "赵丽华"]
-
-输入："在东风路发生纠纷，幸福小区的保安和业主因停车费问题争吵。"
-输出：[]（没有明确人名）
-
-输入："民警到达现场后发现店主张强与顾客刘芳因商品质量问题发生争执。"
-输出：["张强", "刘芳"]
-
-输入："伤者已被送医，死者身份待确认，现场证言已收集完毕。"
-输出：[]（"伤者""死者""证言"都不是人名）
-
-输入："老公王磊和老婆赵敏因家庭琐事发生争吵。"
-输出：["王磊", "赵敏"]
-"""
 
 
 PARSE_PROMPT = f"""你是“公安警情训练平台”的案件结构化解析专家。你的输出会直接进入管理员的“AI 解析结果预览”页，管理员会把其中一部分当作 AI 建议值，再人工确认最终发布值。
@@ -1494,7 +1438,7 @@ class WorkflowService:
             result = create_text_chat_completion(
                 messages=messages,
                 model=get_chat_model(),
-                temperature=0.35,
+                temperature=0.25,
                 max_tokens=min(CASE_AI_MAX_TOKENS, max(4096, int(os.getenv("CASE_AI_TEXT_SCENE_MAX_TOKENS", "24000")))),
                 return_trace=True,
                 long_output=True,
@@ -2867,29 +2811,6 @@ class WorkflowService:
 
         return persons
 
-    def extract_case_person_names(self, text: str) -> list[str]:
-        """Extract unique character names from case text using focused LLM call."""
-        messages = [
-            {"role": "system", "content": NAME_EXTRACTION_PROMPT},
-            {"role": "user", "content": str(text or "")[:8000]},
-        ]
-        try:
-            from .llm_provider import create_json_chat_completion, extract_message_text, get_chat_model
-            response = create_json_chat_completion(messages=messages, model=get_chat_model(), temperature=0.1, max_tokens=1000)
-            payload = self._safe_json_loads(extract_message_text(response), [])
-            if isinstance(payload, list):
-                valid_names = []
-                seen = set()
-                for name in payload:
-                    clean = self._normalize_person_name(str(name or "").strip())
-                    if clean and self._is_valid_person_name(clean) and clean not in seen:
-                        seen.add(clean)
-                        valid_names.append(clean)
-                return valid_names
-        except Exception:
-            pass
-        return []
-
     def _normalize_parsed_case(
         self,
         text: str,
@@ -4190,7 +4111,6 @@ class WorkflowService:
     def generate_scenes(
         self,
         case_info: dict[str, Any],
-        use_case_completion_officer: bool = False,
         scene_generation_strategy: str = "case_driven",
     ):
         if scene_generation_strategy not in {"template_first", "case_driven"}:

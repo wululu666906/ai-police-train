@@ -159,34 +159,6 @@ embedding_client = OpenAI(
 )
 
 
-CASE_COMPLETION_PROVIDER = (os.getenv("CASE_COMPLETION_PROVIDER") or "deepseek").strip().lower()
-CASE_COMPLETION_MODEL = (os.getenv("CASE_COMPLETION_MODEL") or DEEPSEEK_CHAT_MODEL).strip()
-
-
-def _resolve_case_completion_binding() -> tuple[str, str, str]:
-    if CASE_COMPLETION_PROVIDER == "deepseek" and DEEPSEEK_API_KEY:
-        return DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, CASE_COMPLETION_MODEL or DEEPSEEK_CHAT_MODEL
-    if CASE_COMPLETION_PROVIDER in {"custom", "local", "openai", "openai_compatible"} and CUSTOM_LLM_BASE_URL:
-        return CUSTOM_LLM_API_KEY, CUSTOM_LLM_BASE_URL, CASE_COMPLETION_MODEL or CUSTOM_LLM_CHAT_MODEL
-    return ACTIVE_API_KEY, ACTIVE_BASE_URL, ACTIVE_CHAT_MODEL
-
-
-CASE_COMPLETION_API_KEY, CASE_COMPLETION_BASE_URL, CASE_COMPLETION_ACTIVE_MODEL = _resolve_case_completion_binding()
-CASE_COMPLETION_ACTIVE_PROVIDER = (
-    "deepseek"
-    if CASE_COMPLETION_PROVIDER == "deepseek" and DEEPSEEK_API_KEY
-    else "custom"
-    if CASE_COMPLETION_PROVIDER in {"custom", "local", "openai", "openai_compatible"} and CUSTOM_LLM_BASE_URL
-    else ACTIVE_PROVIDER
-)
-
-case_completion_client = OpenAI(
-    api_key=CASE_COMPLETION_API_KEY or "missing-api-key",
-    base_url=CASE_COMPLETION_BASE_URL,
-    timeout=LLM_TIMEOUT_SECONDS,
-    default_headers=qwen_default_headers(CASE_COMPLETION_BASE_URL) if CASE_COMPLETION_ACTIVE_PROVIDER == "qwen" else None,
-)
-
 qwen_chat_client = OpenAI(
     api_key=QWEN_API_KEY or "missing-api-key",
     base_url=QWEN_BASE_URL,
@@ -208,8 +180,6 @@ custom_chat_client = OpenAI(
 
 
 def _provider_for_client(llm_client: Optional[OpenAI]) -> str:
-    if llm_client is case_completion_client:
-        return CASE_COMPLETION_ACTIVE_PROVIDER
     if llm_client is qwen_chat_client:
         return "qwen"
     if llm_client is deepseek_chat_client:
@@ -375,14 +345,6 @@ def _response_finish_reason(response: Any) -> str:
         return str(response.choices[0].finish_reason or "")
     except Exception:
         return ""
-
-
-def get_case_completion_model() -> str:
-    return CASE_COMPLETION_ACTIVE_MODEL
-
-
-def get_case_completion_provider() -> str:
-    return CASE_COMPLETION_ACTIVE_PROVIDER
 
 
 def get_embedding_model() -> str:
@@ -696,7 +658,7 @@ def create_json_chat_completion(
 def create_roleplay_json_completion(
     *,
     messages: List[dict[str, str]],
-    temperature: float = 0.4,
+    temperature: float = 0.3,
     max_tokens: int = 1400,
     return_trace: bool = False,
 ):
@@ -716,7 +678,7 @@ def create_text_chat_completion(
     *,
     messages: List[dict[str, str]],
     model: Optional[str] = None,
-    temperature: float = 0.3,
+    temperature: float = 0.25,
     max_tokens: int = CASE_AI_MAX_TOKENS,
     llm_client: Optional[OpenAI] = None,
     return_trace: bool = False,
@@ -781,23 +743,6 @@ def create_text_chat_completion(
             entry.update({"status": "error", "error": last_error, "duration_ms": round((time.perf_counter() - started) * 1000)})
             trace.append(entry)
     raise LLMJsonCompletionError(f"LLM text template unavailable: {last_error}", trace=trace)
-
-
-def create_case_completion_chat_completion(
-    *,
-    messages: List[dict[str, str]],
-    temperature: float = 0.2,
-    max_tokens: int = CASE_AI_MAX_TOKENS,
-    extra_kwargs: Optional[dict[str, Any]] = None,
-):
-    return create_json_chat_completion(
-        messages=messages,
-        model=get_case_completion_model(),
-        temperature=temperature,
-        max_tokens=max_tokens,
-        extra_kwargs=extra_kwargs,
-        llm_client=case_completion_client,
-    )
 
 
 def create_embeddings(texts: List[str]) -> List[List[float]]:

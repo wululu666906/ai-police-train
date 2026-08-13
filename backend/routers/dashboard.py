@@ -12,7 +12,6 @@ import database
 import models
 from routers.auth import require_admin_user
 from services.rag_service import rag_service
-from services.state_influence_metrics import build_calibration_report
 from services.training_runtime_service import load_runtime_state
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"], dependencies=[Depends(require_admin_user)])
@@ -197,15 +196,6 @@ def get_state_calibration(
     if scene_id is not None:
         query = query.filter(models.TrainingSession.scene_id == scene_id)
     sessions = query.limit(limit).all()
-    result = build_calibration_report(
-        [
-            {
-                "session_id": session.id,
-                "scene_id": session.scene_id,
-                "runtime_state": load_runtime_state(session.revealed_info),
-            }
-            for session in sessions
-        ]
-    )
+    result = {"status": "removed", "sessions": len(sessions), "message": "旧状态影响链路已删除"}
     _dashboard_cache.set(cache_key, result)
     return result

@@ -16,10 +16,9 @@ import database
 import models
 import schemas
 from routers.auth import get_current_user, require_admin_user
-from services.ai_service import (
+from services.agent_training_service import (
     _build_available_actions,
     _build_feedback,
-    _build_recommended_questions,
     _evaluate_stage_coverage,
     _get_case_type,
     _get_stage_config,
@@ -28,8 +27,9 @@ from services.ai_service import (
     _role_state_label,
     apply_training_action,
     generate_dialogue,
+    iter_dialogue_stream_events,
 )
-from services.evaluation_service import evaluate_session, is_current_evaluation_report
+from services.agent_training_service import evaluate_session, is_current_evaluation_report
 from services.classroom_service import (
     get_session_assignment_context,
     link_session_to_assignment,
@@ -37,24 +37,23 @@ from services.classroom_service import (
     validate_assignment_training_access,
 )
 from services.face_service import has_successful_session_verification
-from services.dialogue_sanitize_service import filter_internal_prompt_messages
-from services.role_state_service import resolve_role_initial_state
-from services.recommended_questions_service import (
+from services.training_view_service import (
+    filter_internal_prompt_messages,
+    resolve_role_initial_state,
     build_recommended_question_items,
     filter_stale_missing_requirements_for_history,
     serialize_message_history,
-)
-from services.multi_role_service import serialize_scene_roles
-from services.role_resolver import resolve_scene_role
-from services.text_repair import repair_payload, repair_text
-from services.dialogue_sequence_service import build_intake_sequence_feedback, merge_sequence_feedback
-from services.opening_turn_service import (
+    serialize_scene_roles,
+    build_intake_sequence_feedback,
+    merge_sequence_feedback,
     ensure_opening_turn,
     infer_session_scene_kind,
     redact_dispatch_brief_for_student,
     redact_first_impression_for_student,
     resolve_dialogue_mode,
 )
+from services.role_resolver import resolve_scene_role
+from services.text_repair import repair_payload, repair_text
 from services.training_runtime_service import dump_runtime_state, load_runtime_state
 from services.object_storage_service import MEDIA_BUCKET, build_object_key, delete_media_assets, get_media_asset, guess_content_type, object_storage, upsert_media_asset
 
@@ -629,6 +628,11 @@ def _opening_stream_response(
             payload = _ensure_opening_payload(db, session, scene, case, role)
             messages = payload.get("messages") or []
             for index, message in enumerate(messages):
+                yield _sse_event("thinking", {
+                    "index": index,
+                    "speaker_name": message.get("speaker_name") or "",
+                    "speaker_role_id": message.get("speaker_role_id"),
+                })
                 yield _sse_event("chunk", {
                     "index": index,
                     "message_id": message.get("id"),
@@ -725,47 +729,70 @@ def training_chat_stream(
         raise HTTPException(status_code=400, detail="Training session has already been finished")
     if not message.content or not message.content.strip():
         raise HTTPException(status_code=400, detail="Message content cannot be empty")
-    result = generate_dialogue(
-        db,
-        session_id,
-        message.content.strip(),
-        current_user.id,
-        target_role_name=message.target_role_name,
-    )
-    if not result:
-        raise HTTPException(status_code=502, detail="训练环境暂时无法响应，请稍后重试")
-    if result.get("inner_thought") == "ACCESS_DENIED":
-        raise HTTPException(status_code=403, detail="当前账号无权访问这条训练会话")
-    if result.get("inner_thought") == "ERROR":
-        detail = result.get("communication_feedback", {}).get("message") or "训练环境暂时无法响应，请稍后重试"
-        raise HTTPException(status_code=502, detail=detail)
 
-    result.pop("state_contract", None)
-    result.pop("last_postcheck", None)
-    result.pop("state_influence_metrics", None)
-    _redact_internal_role_fields(result)
+    user_text = message.content.strip()
+    target_role_name = message.target_role_name
 
     def _stream():
-        yield _sse_event("meta", {
-            "session_id": session_id,
-            "status": session.status,
-            "auto_finished": bool(result.get("auto_finished")),
-            "reply_turns": len(result.get("reply_turns") or []),
-        })
-        reply_turns = result.get("reply_turns") or []
-        for index, turn in enumerate(reply_turns):
-            content = str(turn.get("content") or "").strip()
-            if not content:
-                continue
-            chunk_payload = {
-                "index": index,
-                "speaker_name": turn.get("speaker_name") or "",
-                "speaker_role_id": turn.get("speaker_role_id"),
-                "content": content,
-                "is_last": index == len(reply_turns) - 1,
-            }
-            yield _sse_event("chunk", chunk_payload)
-            time.sleep(0.03)
+        result = None
+        streamed_chunks = 0
+        try:
+            for item in iter_dialogue_stream_events(
+                db,
+                session_id,
+                user_text,
+                current_user.id,
+                target_role_name=target_role_name,
+            ):
+                event_name = item.get("event")
+                payload = item.get("data") or {}
+                if event_name == "_result":
+                    result = payload
+                    continue
+                if event_name == "chunk":
+                    streamed_chunks += 1
+                    payload = {
+                        **payload,
+                        "is_last": False,
+                    }
+                yield _sse_event(str(event_name), payload)
+        except Exception:
+            logger.exception("Failed to stream training chat for session %s", session_id)
+            yield _sse_event("error", {"message": "训练环境暂时无法响应，请稍后重试"})
+            return
+
+        if not result:
+            yield _sse_event("error", {"message": "训练环境暂时无法响应，请稍后重试"})
+            return
+        if result.get("inner_thought") == "ACCESS_DENIED":
+            yield _sse_event("error", {"message": "当前账号无权访问这条训练会话"})
+            return
+        if result.get("inner_thought") == "ERROR":
+            detail = result.get("communication_feedback", {}).get("message") or "训练环境暂时无法响应，请稍后重试"
+            yield _sse_event("error", {"message": detail})
+            return
+
+        result.pop("state_contract", None)
+        result.pop("last_postcheck", None)
+        result.pop("state_influence_metrics", None)
+        _redact_internal_role_fields(result)
+        result = _trigger_auto_evaluation_if_needed(db, session_id, current_user.id, result)
+
+        # If progressive chunks were skipped (fallback), emit final turns once.
+        if streamed_chunks == 0:
+            reply_turns = result.get("reply_turns") or []
+            for index, turn in enumerate(reply_turns):
+                content = str(turn.get("content") or "").strip()
+                if not content:
+                    continue
+                yield _sse_event("chunk", {
+                    "index": index,
+                    "speaker_name": turn.get("speaker_name") or "",
+                    "speaker_role_id": turn.get("speaker_role_id"),
+                    "content": content,
+                    "is_last": index == len(reply_turns) - 1,
+                })
+
         yield _sse_event("done", {
             "response": result.get("response"),
             "reply_sequence": result.get("reply_sequence"),
@@ -803,7 +830,11 @@ def training_chat_stream(
             "truth_stage": result.get("truth_stage"),
         })
 
-    return StreamingResponse(_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/action/{session_id}")

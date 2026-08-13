@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import models
 from docx import Document
 from PIL import Image, ImageDraw
-from services.evaluation_service import COMMON_DIMENSIONS
+from services.evaluation_policy_service import COMMON_DIMENSIONS
 from services.workflow_service import workflow_service
 
 
@@ -111,8 +111,6 @@ class TestCasesParse:
             )
 
         monkeypatch.setattr("services.workflow_service.create_json_chat_completion", fake_completion)
-        monkeypatch.setattr(workflow_service, "extract_case_person_names", lambda _text: ["李娟"])
-
         result = workflow_service.parse_case_text(CASE_TEXT, source_mode="plain_case")
 
         assert result["parse_engine"] in {"ai_text_first", "rule_text_first"}

@@ -7,7 +7,7 @@
 
 from .guardrails import ADMIN_JSON_GUARDRAILS
 
-ASSESSMENT_POINT_PROMPT = f"""你是公安教官。根据【完整案件剧情】和【本场景训练目标】直接生成 4-6 条考察点。
+ASSESSMENT_POINT_PROMPT = f"""你是公安教官。根据【完整案件剧情】和【本场景训练目标】直接生成 2-6 条考察点。
 
 字段说明：
 - label：≤20字，考察点标题

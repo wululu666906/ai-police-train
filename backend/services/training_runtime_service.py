@@ -39,14 +39,12 @@ DEFAULT_RUNTIME_STATE = {
     "agent_context": {},
     "pending_role_replies": {},
     "pending_role_replies_version": 1,
-    "state_influence_turn_log": [],
 }
 
 _RUNTIME_PASSTHROUGH_KEYS = (
     "state_contract",
     "role_contracts",
     "last_postcheck",
-    "state_influence_turn_log",
     "opening_delivered",
     "dialogue_mode",
     "last_guidance_outcomes",
@@ -284,8 +282,6 @@ def load_runtime_state(raw_value: Any) -> dict[str, Any]:
         state["opening_delivered"] = bool(parsed.get("opening_delivered"))
     if parsed.get("dialogue_mode"):
         state["dialogue_mode"] = str(parsed.get("dialogue_mode"))
-    if not isinstance(state.get("state_influence_turn_log"), list):
-        state["state_influence_turn_log"] = []
     return state
 
 

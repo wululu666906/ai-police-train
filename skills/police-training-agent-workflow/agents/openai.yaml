@@ -1,0 +1,4 @@
+interface:
+  display_name: "警情 Agent 工作流维护"
+  short_description: "维护独立警情 Agent、Skill、Tool 与隔离契约"
+  default_prompt: "Use $police-training-agent-workflow to maintain the isolated police training agent workflow."

@@ -1,9 +1,9 @@
 import json
 from types import SimpleNamespace
 
-from services.ai_service import _build_role_archetype_block, _get_stage_goal
-from services.evaluation_service import _build_scene_info
-from services.persona_engine import normalize_compact_persona_fields
+from services.agent_training_service import _get_stage_goal
+from services.evaluation_policy_service import _build_scene_info
+from services.case_persona_defaults import normalize_compact_persona_fields
 from services.workflow_service import workflow_service
 
 
@@ -146,27 +146,6 @@ def test_scene_role_names_are_locked_to_case_person_names():
     result = workflow_service._normalize_scenes(case_info, payload)
 
     assert result["scenes"][0]["roles"] == ["张三", "李四"]
-
-
-def test_role_archetype_block_uses_compact_persona_signals():
-    role = SimpleNamespace(role_type="嫌疑人", interaction_style="观察型", weakness="最怕孩子被牵连")
-    scene = SimpleNamespace(name="现场调查")
-    persona_profile = {
-        "behavior_archetype": "防御切责型",
-        "police_attitude": "防备排斥",
-        "current_goal": "先把主动责任切出去",
-        "core_concern": "最怕孩子被牵连",
-        "trigger_points": ["问谁先动手"],
-        "calming_points": ["先按时间线核实"],
-    }
-
-    block = _build_role_archetype_block(role, scene, persona_profile)
-
-    assert "切割关键行为" in block
-    assert "先切责任再谈细节" in block
-    assert "先把主动责任切出去" in block
-    assert "问谁先动手" in block
-    assert "先按时间线核实" in block
 
 
 def test_evaluation_scene_info_includes_compact_persona_snapshot():

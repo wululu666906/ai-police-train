@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import uuid
 from collections import defaultdict
 from typing import List
 
@@ -19,7 +20,7 @@ from services.case_schema_service import (
 )
 from services.document_extract_service import document_extract_service
 from services.role_resolver import is_role_speakable
-from services.role_state_service import ensure_scene_role_initial_state
+from services.training_view_service import ensure_scene_role_initial_state
 from services.scene_role_service import audit_scene_roles, normalize_scene_roles
 from services.scene_compact_service import build_scene_stages_from_compact, infer_training_focus
 from services.stage_config_service import infer_scene_behavior_mode, normalize_stages
@@ -49,6 +50,7 @@ from services.assessment_point_import_service import (
     parse_text_to_assessment_points,
 )
 from services.ai_roles import list_ai_roles
+from services.agent_case_service import generate_scenes_with_agent, parse_case_with_agent
 from services.scene_bucket_service import BUCKET_LABELS, STANDARD_SCENE_NAMES
 
 router = APIRouter(prefix="/cases", tags=["Cases"], dependencies=[Depends(require_admin_user)])
@@ -1212,7 +1214,7 @@ def parse_case(payload: dict = Body(...)):
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
     try:
-        return workflow_service.parse_case_text_with_rule_fallback(text, source_mode=source_mode)
+        return parse_case_with_agent(text, workflow_id=f"case-parse-{uuid.uuid4().hex}")
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI parsing failed: {exc}") from exc
 
@@ -1243,11 +1245,7 @@ async def parse_case_file(
         raise HTTPException(status_code=500, detail=f"文件解析失败: {exc}") from exc
 
     try:
-        result = workflow_service.parse_case_text_with_rule_fallback(
-            extracted_text,
-            source_mode=source_mode or "transcript_file",
-            source_meta=extraction.as_source_meta(name=filename, extension=extension, size=len(file_bytes)),
-        )
+        result = parse_case_with_agent(extracted_text, workflow_id=f"case-file-{uuid.uuid4().hex}")
         stored = object_storage.put_bytes(
             bucket=MEDIA_BUCKET,
             object_key=build_object_key("case-source-files", filename),
@@ -1454,7 +1452,7 @@ def generate_scenes(payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail="Case info is required")
     scene_generation_strategy = payload.get("scene_generation_strategy") or "case_driven"
     try:
-        return workflow_service.generate_scenes(case_info, scene_generation_strategy=scene_generation_strategy)
+        return generate_scenes_with_agent(case_info, workflow_id=f"scene-build-{uuid.uuid4().hex}")
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI scene generation failed: {exc}") from exc
 

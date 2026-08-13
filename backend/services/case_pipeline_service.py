@@ -16,7 +16,7 @@ import models
 from .scene_design_service import compile_scene_lifecycles
 from .case_scene_contract_service import build_case_quality_report, compile_case_scene_artifacts
 from .workflow_job_service import update_job
-from .workflow_service import workflow_service
+from .agent_case_service import generate_scenes_with_agent, parse_case_with_agent
 from .case_source_compaction_service import compact_case_source, compact_role_memories
 from .case_role_reconciliation_service import reconcile_case_roles
 from .case_knowledge_repository import store_case_knowledge, upsert_node
@@ -175,20 +175,13 @@ def _run(job_id: str) -> None:
         finish_stage("source_compaction")
 
         update_job(job_id, stage="story", progress=25, status_message="正在生成完整案件剧情")
-        try:
-            complete_story, story_trace = workflow_service.generate_complete_case_story(compacted_source["training_text"])
-        except Exception as exc:
-            complete_story = compacted_source["training_text"]
-            story_trace = {"attempts": getattr(exc, "trace", []), "error": str(exc)[:500], "used_source_fallback": True}
+        complete_story = compacted_source["training_text"]
+        story_trace = {"attempts": [], "engine": "agent-workflow-v1"}
         story_metadata = story_trace.get("story_metadata") if isinstance(story_trace.get("story_metadata"), dict) else {}
         finish_stage("complete_story_generation")
 
         update_job(job_id, stage="facts", progress=45, status_message="正在解析事实、提取人物并生成角色记忆")
-        case_info = workflow_service.parse_case_for_training(
-            complete_story,
-            source_mode=str(request.get("source_mode") or "plain_case"),
-            source_meta=request.get("source_meta") if isinstance(request.get("source_meta"), dict) else None,
-        )
+        case_info = parse_case_with_agent(complete_story, workflow_id=f"case-pipeline-{job_id}")
         if story_metadata.get("case_name"):
             case_info["case_name"] = story_metadata["case_name"]
         if story_metadata.get("case_type"):
@@ -271,7 +264,7 @@ def _run(job_id: str) -> None:
             for person in case_info.get("persons") or []
             if isinstance(person, dict) and person.get("role_memories")
         ]
-        scene_result = workflow_service.generate_scenes(scene_context, scene_generation_strategy="case_driven")
+        scene_result = generate_scenes_with_agent(scene_context, workflow_id=f"case-pipeline-{job_id}-scenes")
         scenes = compile_scene_lifecycles(case_info, scene_result.get("scenes") or [])
         finish_stage("scene_blueprints_and_scripts")
 

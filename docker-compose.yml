@@ -2,6 +2,30 @@
 # 浏览器访问 http://127.0.0.1:5555（WEB_PORT）
 # 拆分部署（Nginx 前端 + API）：docker compose --profile split up -d --build api frontend
 services:
+  ai-workflow:
+    build:
+      context: .
+      dockerfile: ai_workflow_service/Dockerfile
+    image: ai-police-workflow:latest
+    container_name: ai_police_workflow
+    environment:
+      AI_WORKFLOW_DATA_DIR: /app/ai_workflow_service/data
+      AI_WORKFLOW_INTERNAL_TOKEN: ${AI_WORKFLOW_INTERNAL_TOKEN:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_ROLEPLAY_MODEL: ${DEEPSEEK_ROLEPLAY_MODEL:-deepseek-chat}
+    ports:
+      - "${AI_WORKFLOW_PORT:-8010}:8010"
+    volumes:
+      - ./ai_workflow_service/data:/app/ai_workflow_service/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/healthz')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
   app:
     build:
       context: .
@@ -19,6 +43,8 @@ services:
       VIDEO_ANALYSIS_MODEL: ${VIDEO_ANALYSIS_MODEL:-qwen-plus}
       VIDEO_ASR_CHUNK_SECONDS: ${VIDEO_ASR_CHUNK_SECONDS:-30}
       PORT: "8000"
+      AI_WORKFLOW_URL: http://ai-workflow:8010
+      AI_WORKFLOW_INTERNAL_TOKEN: ${AI_WORKFLOW_INTERNAL_TOKEN:-}
     ports:
       - "${WEB_PORT:-5555}:8000"
     volumes:
@@ -53,6 +79,8 @@ services:
       VIDEO_ANALYSIS_MODEL: ${VIDEO_ANALYSIS_MODEL:-qwen-plus}
       VIDEO_ASR_CHUNK_SECONDS: ${VIDEO_ASR_CHUNK_SECONDS:-30}
       PORT: "8000"
+      AI_WORKFLOW_URL: http://ai-workflow:8010
+      AI_WORKFLOW_INTERNAL_TOKEN: ${AI_WORKFLOW_INTERNAL_TOKEN:-}
     ports:
       - "${APP_PORT:-8000}:8000"
     volumes:

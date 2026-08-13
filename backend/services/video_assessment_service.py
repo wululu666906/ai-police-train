@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 from typing import Any, Optional
 
 import models
-from services.evaluation_service import compute_grade_level, merge_assessment_point_results
+from services.evaluation_policy_service import compute_grade_level, merge_assessment_point_results
 
 VIDEO_DIMENSION_LABELS = {
     "procedure_execution": "流程执行完整度",
