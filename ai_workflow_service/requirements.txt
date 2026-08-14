@@ -2,4 +2,4 @@ fastapi>=0.135.0,<1.0.0
 uvicorn[standard]>=0.44.0,<1.0.0
 pydantic>=2.0.0,<3.0.0
 openai>=2.0.0,<3.0.0
-tinytroupe @ git+https://github.com/microsoft/TinyTroupe.git@v0.7.0
+tinytroupe @ git+https://github.com/microsoft/TinyTroupe.git@a6244b358a1fe1c71bf751f7ba0f8dfa368ec5a4

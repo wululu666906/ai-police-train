@@ -10,5 +10,5 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY ai_workflow_service ./ai_workflow_service
 RUN mkdir -p /app/ai_workflow_service/data
 
-EXPOSE 8010
-CMD ["uvicorn", "ai_workflow_service.main:app", "--host", "0.0.0.0", "--port", "8010"]
+EXPOSE 8020
+CMD ["uvicorn", "ai_workflow_service.main:app", "--host", "0.0.0.0", "--port", "8020"]

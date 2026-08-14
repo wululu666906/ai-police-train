@@ -22,6 +22,9 @@ FORBIDDEN_LEGACY = [
     "backend/services/multi_role_actor.py",
     "backend/services/multi_role_director.py",
     "backend/services/state_influence_engine.py",
+    "ai_workflow_service/skills/case_parse_skill.py",
+    "ai_workflow_service/skills/persona_build_skill.py",
+    "ai_workflow_service/skills/scene_build_skill.py",
 ]
 
 
@@ -71,9 +74,13 @@ def main() -> int:
         if "tinytroupe" in roots:
             errors.append(f"平台直接导入 TinyTroupe: {path.relative_to(ROOT)}")
     contracts = (ROOT / "docs/contracts.md").read_text(encoding="utf-8")
-    for endpoint in ("/healthz", "/v1/workflows/execute", "/v1/workflows/{workflow_id}"):
+    for endpoint in ("/healthz", "/v1/workflows/execute", "/v1/case-imports/execute", "/v1/workflows/{workflow_id}"):
         if endpoint not in contracts:
             errors.append(f"契约未登记接口: {endpoint}")
+    contract_source = (ROOT / "ai_workflow_service/contracts.py").read_text(encoding="utf-8")
+    for legacy_skill in ("case_parse", "persona_build", "scene_build"):
+        if f'{legacy_skill} = "{legacy_skill}"' in contract_source:
+            errors.append(f"旧 Skill 契约仍存在: {legacy_skill}")
     if (ROOT / "frontend/pnpm-lock.yaml").exists() or (ROOT / "frontend/pnpm-workspace.yaml").exists():
         warnings.append("前端仍存在 pnpm 配置，但构建链使用 npm ci")
     for message in warnings:

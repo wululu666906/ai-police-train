@@ -18,7 +18,6 @@ from .case_scene_contract_service import build_case_quality_report, compile_case
 from .workflow_job_service import update_job
 from .agent_case_service import generate_scenes_with_agent, parse_case_with_agent
 from .case_source_compaction_service import compact_case_source, compact_role_memories
-from .case_role_reconciliation_service import reconcile_case_roles
 from .case_knowledge_repository import store_case_knowledge, upsert_node
 
 
@@ -31,11 +30,8 @@ _LOCK = threading.Lock()
 
 
 def _pipeline_version() -> str:
-    configured = os.getenv("CASE_PIPELINE_VERSION", "case-pipeline-v9-flowchart")
-    story_provider = os.getenv("CASE_STORY_PROVIDER", "deepseek")
-    story_model = os.getenv("CASE_STORY_MODEL", "")
-    fallback = os.getenv("CASE_STORY_ALLOW_PROVIDER_FALLBACK", "0")
-    return f"{configured}|story={story_provider}:{story_model}|fallback={fallback}|cache-v2"
+    configured = os.getenv("CASE_PIPELINE_VERSION", "case-pipeline-v11-narrative-story")
+    return f"{configured}|ai-workflow=case-import-harness|cache-v3"
 
 
 def _items(value: Any) -> list[Any]:
@@ -44,6 +40,18 @@ def _items(value: Any) -> list[Any]:
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _source_refs(item: dict[str, Any], source_text: str, content: str) -> list[dict[str, Any]]:
+    proposed = item.get("source_refs")
+    if isinstance(proposed, list):
+        valid = [ref for ref in proposed if isinstance(ref, dict)]
+        if valid:
+            return valid
+    position = source_text.find(content)
+    if position >= 0:
+        return [{"source_id": "complete-story", "start": position, "end": position + len(content), "summary": content[:180]}]
+    return [{"source_id": "complete-story", "start": 0, "end": len(source_text), "summary": content[:180]}] if source_text else []
 
 
 def _fact_cards_from_case(case_info: dict[str, Any]) -> list[dict[str, Any]]:
@@ -71,17 +79,18 @@ def _fact_cards_from_case(case_info: dict[str, Any]) -> list[dict[str, Any]]:
 
     cards: list[dict[str, Any]] = []
     seen: set[str] = set()
+    source_text = _text(case_info.get("complete_story") or case_info.get("original_content") or case_info.get("rawText"))
     for index, item in enumerate(source_cards, start=1):
         content = _text(item.get("content"))
         if not content or content in seen:
             continue
         seen.add(content)
         cards.append({
-            "id": _text(item.get("id")) or f"F{len(cards) + 1}",
+            "id": _text(item.get("id") or item.get("fact_id") or item.get("claim_id")) or f"F{len(cards) + 1}",
             "content": content,
             "fact_type": _text(item.get("fact_type")) or "事实",
             "status": _text(item.get("status")) or "claimed",
-            "source_refs": item.get("source_refs") if isinstance(item.get("source_refs"), list) else [],
+            "source_refs": _source_refs(item, source_text, content),
         })
     return cards
 
@@ -165,6 +174,7 @@ def _run(job_id: str) -> None:
         db.close()
 
     try:
+        source_mode = _text(request.get("source_mode")) or "plain_case"
         update_job(job_id, status="running", stage="cleaning", progress=10, status_message="正在清洗案件原文", started_at=datetime.utcnow(), error_message=None)
         text = str(request.get("source_text") or "").strip()
         if not text:
@@ -175,13 +185,12 @@ def _run(job_id: str) -> None:
         finish_stage("source_compaction")
 
         update_job(job_id, stage="story", progress=25, status_message="正在生成完整案件剧情")
-        complete_story = compacted_source["training_text"]
-        story_trace = {"attempts": [], "engine": "agent-workflow-v1"}
+        story_trace = {"attempts": [], "engine": "agent-workflow-v2-flowchart"}
         story_metadata = story_trace.get("story_metadata") if isinstance(story_trace.get("story_metadata"), dict) else {}
-        finish_stage("complete_story_generation")
 
         update_job(job_id, stage="facts", progress=45, status_message="正在解析事实、提取人物并生成角色记忆")
-        case_info = parse_case_with_agent(complete_story, workflow_id=f"case-pipeline-{job_id}")
+        case_info = parse_case_with_agent(text, workflow_id=f"case-pipeline-{job_id}", source_mode=source_mode)
+        complete_story = str(case_info.get("complete_story") or compacted_source["training_text"])
         if story_metadata.get("case_name"):
             case_info["case_name"] = story_metadata["case_name"]
         if story_metadata.get("case_type"):
@@ -192,9 +201,14 @@ def _run(job_id: str) -> None:
             warnings = case_info.get("parse_warnings") if isinstance(case_info.get("parse_warnings"), list) else []
             warnings.append(f"完整剧情模型不可用，已使用清洗后的案件正文继续抽取：{story_trace['error']}")
             case_info["parse_warnings"] = list(dict.fromkeys(warnings))
+        finish_stage("complete_story_generation")
         finish_stage("structured_facts_roles_memories")
 
-        update_job(job_id, stage="world", progress=58, status_message="正在构建案件故事世界")
+        update_job(job_id, stage="roles", progress=58, status_message="正在核对新后端角色记忆与信息来源")
+        case_info["persons"] = compact_role_memories(case_info.get("persons") or [])
+        finish_stage("role_memory_validation")
+
+        update_job(job_id, stage="world", progress=68, status_message="正在构建案件故事世界")
         case_info["complete_story"] = complete_story
         case_info["full_narrative"] = complete_story
         case_info["narrative_document"] = {
@@ -219,6 +233,8 @@ def _run(job_id: str) -> None:
         }
         original_chars = int(compacted_source.get("original_chars") or len(text))
         training_chars = int(compacted_source.get("training_chars") or len(compacted_source["training_text"]))
+        import_quality = case_info.get("case_import_quality") if isinstance(case_info.get("case_import_quality"), dict) else {}
+        story_quality = import_quality.get("story") if isinstance(import_quality.get("story"), dict) else {}
         case_info["story_material_audit"] = {
             "original_chars": original_chars,
             "training_chars": training_chars,
@@ -226,21 +242,16 @@ def _run(job_id: str) -> None:
             "compaction_ratio": round(training_chars / max(original_chars, 1), 4),
             "large_document": original_chars >= int(os.getenv("CASE_LARGE_DOCUMENT_CHARS", "50000")),
             "possible_truncation": training_chars < original_chars * 0.65 and original_chars >= int(os.getenv("CASE_TRUNCATION_AUDIT_CHARS", "20000")),
+            "complete_story_chars": len(complete_story),
+            "complete_story_ratio": story_quality.get("compression_ratio"),
+            "complete_story_sufficient": story_quality.get("sufficient", False),
+            "complete_story_repaired": story_quality.get("repaired", False),
+            "complete_story_fallback": story_quality.get("fallback", ""),
         }
         case_info["knowledge_namespace"] = namespace
         case_info["story_world"] = _build_story_world_payload(case_info, story_graph)
-        finish_stage("story_world_carrier")
-
-        update_job(job_id, stage="roles", progress=68, status_message="正在核对角色记忆与信息来源")
-        case_info = reconcile_case_roles(
-            case_info,
-            source_text=complete_story,
-            complete_story=complete_story,
-        )
-        case_info["persons"] = compact_role_memories(case_info.get("persons") or [])
-        case_info["story_world"] = _build_story_world_payload(case_info, story_graph)
         case_info["knowledge_manifest"] = store_case_knowledge(namespace, case_info)
-        finish_stage("role_reconciliation")
+        finish_stage("story_world_carrier")
         parse_ai_workflow = case_info.get("parse_ai_workflow") or case_info.get("ai_workflow") or {}
 
         update_job(job_id, stage="scenes", progress=82, status_message="正在生成场景蓝图")

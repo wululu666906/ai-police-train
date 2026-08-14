@@ -474,6 +474,7 @@
               </div>
 
               <CaseGenerationWorkflow />
+              <CaseFactLedger :case-data="aiParsedData" />
 
               <section v-if="aiParsedData && currentStep >= 1" class="space-y-4 border-t border-slate-200 py-6">
                 <div class="flex items-center justify-between gap-3">
@@ -558,6 +559,7 @@
                   </div>
                 </div>
                 <p class="mt-2 text-sm leading-7 text-slate-500">{{ scene.scene_description }}</p>
+                <SceneTrainingContract :scene="scene" :case-data="aiParsedData" />
               </div>
 
               <div class="scene-editor-card__panel scene-editor-card__panel--roles">
@@ -1297,6 +1299,8 @@ import { sceneBucketLabel, SCENE_NAME_PLACEHOLDERS } from '../utils/sceneBucket'
 import request from '../utils/request'
 import CasePipelineProgress from '../components/cases/CasePipelineProgress.vue'
 import CaseGenerationWorkflow from '../components/cases/CaseGenerationWorkflow.vue'
+import CaseFactLedger from '../components/cases/CaseFactLedger.vue'
+import SceneTrainingContract from '../components/cases/SceneTrainingContract.vue'
 import SceneOpeningConfigForm from '../components/cases/SceneOpeningConfigForm.vue'
 import { saveWithCaseQualityGate } from '../utils/caseQuality'
 import { normalizeCasePipelineResult, useCasePipeline } from '../composables/useCasePipeline'

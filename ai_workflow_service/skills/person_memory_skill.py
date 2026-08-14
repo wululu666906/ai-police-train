@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from ai_workflow_service.contracts import CaseWorld, Person
+from ai_workflow_service.errors import WorkflowServiceError
+from ai_workflow_service.llm.deepseek_adapter import DeepSeekAdapter
+from ai_workflow_service.domain.case_import_quality import memory_quality
+
+
+class PersonMemorySkill:
+    def __init__(self, llm: DeepSeekAdapter):
+        self.llm = llm
+
+    def execute(self, world: CaseWorld, complete_story: str) -> tuple[CaseWorld, list[dict[str, Any]], dict]:
+        try:
+            result = self.llm.complete_json(
+                system=("根据案件剧情和事实账本抽取适合警情训练对话的人物、知识范围和来源记忆，不得创造事实。"
+                        "排除法官、检察官、辩护人等非警情对话角色；区分可对话角色与仅被提及人员。只输出 JSON："
+                        "{persons:[{person_id,name,role,speakable,training_relevance,facts_known,facts_hidden,"
+                        "memories:[{fact_id,memory_type,statement,source_quote,certainty}],response_constraints:[]}]}。"
+                        "memory_type 只能是 direct_statement、personal_experience、direct_observation、hearsay、later_learned。"
+                        "每条记忆必须引用给定 fact_id，statement 只能表达本人已知范围。"),
+                user=complete_story + "\n事实账本：" + str([fact.model_dump(mode="json") for fact in world.facts]),
+                max_tokens=5000, max_attempts=1,
+            )
+        except WorkflowServiceError as exc:
+            if exc.code not in {"MODEL_REQUEST_FAILED", "MODEL_NOT_CONFIGURED"}:
+                raise
+            result = {}
+        valid_fact_ids = {fact.fact_id for fact in world.facts}
+        persons = []
+        raw_by_person_id: dict[str, dict[str, Any]] = {}
+        for index, raw in enumerate(result.get("persons") or []):
+            item = raw if isinstance(raw, dict) else {}
+            person_id = str(item.get("person_id") or f"P{index + 1:03d}")
+            person = Person(
+                person_id=person_id, name=str(item.get("name") or "未知人员"),
+                role=str(item.get("role") or "相关人员"),
+                facts_known=[str(v) for v in item.get("facts_known") or [] if str(v) in valid_fact_ids],
+                facts_hidden=[str(v) for v in item.get("facts_hidden") or [] if str(v) in valid_fact_ids],
+                speakable=bool(item.get("speakable", True)),
+                training_relevance=str(item.get("training_relevance") or "dialogue"),
+            )
+            persons.append(person)
+            raw_by_person_id[person_id] = item
+        if not persons:
+            excluded = {"办案机关", "鉴定机构", "公安机关", "人民法院", "检察机关"}
+            names = list(dict.fromkeys(
+                name for fact in world.facts for name in fact.known_by
+                if name and name in complete_story and name not in excluded and len(name) <= 8
+            ))[:12]
+            if not names:
+                names = list(dict.fromkeys(
+                    name.strip("，。；：、 ")
+                    for values in re.findall(
+                        r"(?:报警人|报案人|被害人|受害人|证人|当事人|嫌疑人|被告人)[：为是称叫]?([\u4e00-\u9fa5某甲乙丙丁0-9]{2,10}(?:、[\u4e00-\u9fa5某甲乙丙丁0-9]{2,10})*)",
+                        complete_story,
+                    )
+                    for name in values.split("、")
+                    if name.strip("，。；：、 ") not in excluded
+                ))[:12]
+            persons = [Person(
+                person_id=f"P{i + 1:03d}", name=name,
+                facts_known=[fact.fact_id for fact in world.facts if name in fact.known_by or name in fact.content],
+            ) for i, name in enumerate(names)]
+        if not persons:
+            persons = [Person(person_id="P001", name="报警人", facts_known=[world.facts[0].fact_id])]
+        persons = [
+            person if person.facts_known else person.model_copy(update={
+                "facts_known": [fact.fact_id for fact in world.facts if person.name in fact.known_by or person.name in fact.content]
+            })
+            for person in persons
+        ]
+        updated = world.model_copy(update={"persons": persons})
+        memories = []
+        for person in persons:
+            raw_person = raw_by_person_id.get(person.person_id, {})
+            inferred_known = [fact.fact_id for fact in world.facts if person.name in fact.known_by or person.name in fact.content]
+            known = set(person.facts_known or inferred_known)
+            facts = [fact for fact in world.facts if fact.fact_id in known or person.name in fact.known_by]
+            fact_by_id = {fact.fact_id: fact for fact in facts}
+            role_memories = []
+            for raw_memory in raw_person.get("memories") or []:
+                if not isinstance(raw_memory, dict):
+                    continue
+                fact_id = str(raw_memory.get("fact_id") or "")
+                fact = fact_by_id.get(fact_id)
+                if not fact:
+                    continue
+                statement = str(raw_memory.get("statement") or fact.content).strip()
+                if not statement:
+                    continue
+                role_memories.append({
+                    "memory_id": f"{person.person_id}-M{len(role_memories) + 1}",
+                    "memory_type": str(raw_memory.get("memory_type") or "personal_experience"),
+                    "statement": statement,
+                    "content": statement,
+                    "quote": str(raw_memory.get("source_quote") or ""),
+                    "certainty": str(raw_memory.get("certainty") or fact.status),
+                    "fact_id": fact_id,
+                    "source_refs": fact.source_refs,
+                })
+            covered_fact_ids = {item["fact_id"] for item in role_memories}
+            for fact in facts:
+                if fact.fact_id in covered_fact_ids:
+                    continue
+                role_memories.append({
+                    "memory_id": f"{person.person_id}-M{len(role_memories) + 1}",
+                    "memory_type": "personal_experience",
+                    "statement": fact.content,
+                    "content": fact.content,
+                    "quote": fact.content[:180],
+                    "certainty": fact.status,
+                    "fact_id": fact.fact_id,
+                    "source_refs": fact.source_refs,
+                })
+            memories.append({
+                "person_id": person.person_id, "name": person.name,
+                "role_memories": role_memories,
+                "knowledge_ledger": [fact.fact_id for fact in facts],
+                "response_constraints": list(raw_person.get("response_constraints") or ["只依据本人记忆、已知事实和本轮公开信息回答。"]),
+                "narrative_context": [{"content": complete_story[:2000], "usage": "persona_context_only", "is_scoring_fact": False}],
+            })
+        return updated, memories, memory_quality(updated.persons, memories)

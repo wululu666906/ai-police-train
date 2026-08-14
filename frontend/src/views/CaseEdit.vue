@@ -5,6 +5,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import RoleCompactForm from '../components/RoleCompactForm.vue'
 import SceneOpeningConfigForm from '../components/cases/SceneOpeningConfigForm.vue'
+import CaseFactLedger from '../components/cases/CaseFactLedger.vue'
+import SceneTrainingContract from '../components/cases/SceneTrainingContract.vue'
 import { saveWithCaseQualityGate } from '../utils/caseQuality'
 import { normalizeCasePipelineResult, useCasePipeline } from '../composables/useCasePipeline'
 import {
@@ -1134,20 +1136,26 @@ void removeStageFromScene
 
 const normalizeSceneEditors = (scenes: any, structuredData: any, persons: any[]) => {
   const sceneRoleMap = structuredData?.scene_role_map || {}
+  const blueprintByName = new Map<string, any>(
+    (Array.isArray(structuredData?.scene_blueprints) ? structuredData.scene_blueprints : [])
+      .map((item: any) => [String(item?.scene_name || item?.name || '').trim(), item])
+      .filter(([name]: any[]) => Boolean(name)) as Array<[string, any]>
+  )
   return (scenes || []).map((scene: any) => {
     const sceneName = String(scene?.name || '').trim()
+    const source = { ...(blueprintByName.get(sceneName) || {}), ...scene }
     const mapped = sceneRoleMap?.[sceneName] || {}
     const roleNames = Array.isArray(mapped?.role_names) ? mapped.role_names.filter(Boolean) : []
     const fallbackRoles = Array.isArray(scene?.roles) ? scene.roles.map((item: any) => String(item?.name || item || '').trim()).filter(Boolean) : []
     const normalizedRoleNames: string[] = Array.from(new Set((roleNames.length ? roleNames : fallbackRoles).filter((name: string) => persons.some((person) => person.name === name))))
     const mappedPrimaryRoleName = String(mapped?.primary_role_name || '').trim()
     const recommendedPrimaryRoleName = pickRecommendedPrimaryRoleName(persons, normalizedRoleNames)
-    const stagesModel = normalizeStageEditors(scene.stages)
+    const stagesModel = normalizeStageEditors(source.stages)
     return {
-      ...scene,
+      ...source,
       _assessmentPaste: String(scene?._assessmentPaste || ''),
       _assessmentMessage: String(scene?._assessmentMessage || ''),
-      stagesText: stringifyStages(scene.stages),
+      stagesText: stringifyStages(source.stages),
       stagesModel,
       stagesAdvanced: false,
       assessmentPointsModel: normalizeAssessmentPointsFromStages(stagesModel),
@@ -1958,7 +1966,8 @@ const saveCaseDetail = async () => {
     const parsedStages = [
       {
         stage_name: '考察点',
-        stage_goal: '',
+        stage_goal: scene.training_goal || '完成当前场景警务处置目标',
+        fact_ids: Array.isArray(scene.fact_ids) ? scene.fact_ids : [],
         recommended_prompts: [],
         assessment_points: serializeAssessmentPointsForSave(scene.assessmentPointsModel || []),
         action_catalog: [],
@@ -1986,6 +1995,9 @@ const saveCaseDetail = async () => {
       difficulty: scene.difficulty,
       dispatch_brief: scene.dispatch_brief,
       first_impression: scene.first_impression,
+      training_goal: scene.training_goal || '',
+      expected_outcomes: Array.isArray(scene.expected_outcomes) ? scene.expected_outcomes : [],
+      fact_ids: Array.isArray(scene.fact_ids) ? scene.fact_ids : [],
       opening_config: scene.opening_config || null,
       training_focus: sceneMeta.training_focus,
       behavior_mode: sceneMeta.behavior_mode,
@@ -2214,6 +2226,7 @@ const previewFormatDate = (dt: string | null | undefined) => {
                   </div>
                 </div>
               </div>
+              <CaseFactLedger :case-data="editableCase" />
               <div class="wp-card">
                 <div class="wp-card__header">
                   <span class="wp-card__title">案件原始文本</span>
@@ -2514,6 +2527,7 @@ const previewFormatDate = (dt: string | null | undefined) => {
                   <label class="form-label">场景描述</label>
                   <textarea v-model="scene.description" rows="2" class="form-textarea"></textarea>
                 </div>
+                <SceneTrainingContract :scene="scene" :case-data="editableCase" />
               </div>
 
               <div v-show="activeSceneTab === 'roles_copy'" v-if="editableCase.persons?.length" class="scene-editor-card__panel scene-editor-card__panel--roles">

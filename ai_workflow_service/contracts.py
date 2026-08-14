@@ -7,25 +7,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class WorkflowStage(str, Enum):
-    case_uploaded = "CASE_UPLOADED"
-    case_parsing = "CASE_PARSING"
-    case_parsed = "CASE_PARSED"
-    persona_building = "PERSONA_BUILDING"
-    personas_ready = "PERSONAS_READY"
-    scene_building = "SCENE_BUILDING"
-    ready = "READY"
     training = "TRAINING"
     completed = "COMPLETED"
-    evaluating = "EVALUATING"
     evaluated = "EVALUATED"
     archived = "ARCHIVED"
     failed = "FAILED"
 
 
 class SkillName(str, Enum):
-    case_parse = "case_parse"
-    persona_build = "persona_build"
-    scene_build = "scene_build"
+    case_import_harness = "case_import_harness"
     role_simulation = "role_simulation"
     evaluation = "evaluation"
     report = "report"
@@ -35,13 +25,30 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class FourDimensionalState(StrictModel):
+    emotion: int = Field(default=50, ge=0, le=100)
+    cooperation: int = Field(default=35, ge=0, le=100)
+    risk: int = Field(default=50, ge=0, le=100)
+    clarity: int = Field(default=50, ge=0, le=100)
+
+
+class RoleInitialState(StrictModel):
+    person_id: str
+    name: str = ""
+    initial_state: FourDimensionalState = Field(default_factory=FourDimensionalState)
+
+
 class Fact(StrictModel):
     fact_id: str
     content: str
     source: str = ""
+    source_refs: list[dict[str, Any]] = Field(default_factory=list)
+    fact_type: str = "事实"
+    status: str = "claimed"
     known_by: list[str] = Field(default_factory=list)
     unknown_by: list[str] = Field(default_factory=list)
     secret: bool = False
+    disclosure_policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class Person(StrictModel):
@@ -50,12 +57,15 @@ class Person(StrictModel):
     role: str = "相关人员"
     facts_known: list[str] = Field(default_factory=list)
     facts_hidden: list[str] = Field(default_factory=list)
+    speakable: bool = True
+    training_relevance: str = "dialogue"
 
 
 class CaseWorld(StrictModel):
     case_id: str
     title: str = ""
     summary: str = ""
+    case_type: str = "其他"
     persons: list[Person] = Field(default_factory=list)
     facts: list[Fact] = Field(default_factory=list)
     timeline: list[dict[str, Any]] = Field(default_factory=list)
@@ -72,7 +82,14 @@ class Persona(StrictModel):
     goals: list[str] = Field(default_factory=list)
     known_fact_ids: list[str] = Field(default_factory=list)
     hidden_fact_ids: list[str] = Field(default_factory=list)
-    state: dict[str, float] = Field(default_factory=dict)
+    state: FourDimensionalState = Field(default_factory=FourDimensionalState)
+    platform_role_id: str = ""
+    state_label: str = ""
+    is_primary: bool = False
+    role_memories: list[dict[str, Any]] = Field(default_factory=list)
+    knowledge_ledger: list[Any] = Field(default_factory=list)
+    relationships: list[dict[str, Any]] = Field(default_factory=list)
+    response_constraints: list[str] = Field(default_factory=list)
 
 
 class SceneWorld(StrictModel):
@@ -82,6 +99,9 @@ class SceneWorld(StrictModel):
     environment: dict[str, Any] = Field(default_factory=dict)
     role_ids: list[str] = Field(default_factory=list)
     rules: list[str] = Field(default_factory=list)
+    current_stage: str = ""
+    stages: list[dict[str, Any]] = Field(default_factory=list)
+    role_states: list[RoleInitialState] = Field(default_factory=list)
 
 
 class WorkflowRequest(StrictModel):

@@ -49,6 +49,12 @@ _RUNTIME_PASSTHROUGH_KEYS = (
     "dialogue_mode",
     "last_guidance_outcomes",
     "opening_message_ids",
+    "role_state_label",
+    "role_state_labels",
+    "assessment_results",
+    "stage_advance_allowed",
+    "action_effective",
+    "knowledge_refs",
 )
 
 

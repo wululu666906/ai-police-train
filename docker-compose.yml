@@ -8,19 +8,25 @@ services:
       dockerfile: ai_workflow_service/Dockerfile
     image: ai-police-workflow:latest
     container_name: ai_police_workflow
+    env_file:
+      - ./backend/.env
     environment:
       AI_WORKFLOW_DATA_DIR: /app/ai_workflow_service/data
       AI_WORKFLOW_INTERNAL_TOKEN: ${AI_WORKFLOW_INTERNAL_TOKEN:-}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_CHAT_MODEL: ${DEEPSEEK_CHAT_MODEL:-deepseek-v4-flash}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
-      DEEPSEEK_ROLEPLAY_MODEL: ${DEEPSEEK_ROLEPLAY_MODEL:-deepseek-chat}
+      DEEPSEEK_REASONING_MODE: ${DEEPSEEK_REASONING_MODE:-disabled}
+      TINY_TROUPE_MODE: ${TINY_TROUPE_MODE:-world}
+      TINY_TROUPE_MAX_ACTORS: ${TINY_TROUPE_MAX_ACTORS:-6}
+      TINY_TROUPE_MODEL_CONCURRENCY: ${TINY_TROUPE_MODEL_CONCURRENCY:-6}
+      TINY_TROUPE_MAX_TOKENS: ${TINY_TROUPE_MAX_TOKENS:-1600}
     ports:
-      - "${AI_WORKFLOW_PORT:-8010}:8010"
+      - "${AI_WORKFLOW_PORT:-8020}:8020"
     volumes:
       - ./ai_workflow_service/data:/app/ai_workflow_service/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/healthz')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/healthz')"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -43,8 +49,9 @@ services:
       VIDEO_ANALYSIS_MODEL: ${VIDEO_ANALYSIS_MODEL:-qwen-plus}
       VIDEO_ASR_CHUNK_SECONDS: ${VIDEO_ASR_CHUNK_SECONDS:-30}
       PORT: "8000"
-      AI_WORKFLOW_URL: http://ai-workflow:8010
+      AI_WORKFLOW_URL: http://ai-workflow:8020
       AI_WORKFLOW_INTERNAL_TOKEN: ${AI_WORKFLOW_INTERNAL_TOKEN:-}
+      AI_WORKFLOW_TIMEOUT_SECONDS: ${AI_WORKFLOW_TIMEOUT_SECONDS:-120}
     ports:
       - "${WEB_PORT:-5555}:8000"
     volumes:
@@ -79,8 +86,9 @@ services:
       VIDEO_ANALYSIS_MODEL: ${VIDEO_ANALYSIS_MODEL:-qwen-plus}
       VIDEO_ASR_CHUNK_SECONDS: ${VIDEO_ASR_CHUNK_SECONDS:-30}
       PORT: "8000"
-      AI_WORKFLOW_URL: http://ai-workflow:8010
+      AI_WORKFLOW_URL: http://ai-workflow:8020
       AI_WORKFLOW_INTERNAL_TOKEN: ${AI_WORKFLOW_INTERNAL_TOKEN:-}
+      AI_WORKFLOW_TIMEOUT_SECONDS: ${AI_WORKFLOW_TIMEOUT_SECONDS:-120}
     ports:
       - "${APP_PORT:-8000}:8000"
     volumes:

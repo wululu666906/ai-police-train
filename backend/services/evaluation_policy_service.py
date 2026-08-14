@@ -5,11 +5,10 @@ from typing import Any
 from services.agent_training_service import is_current_evaluation_report
 
 COMMON_DIMENSIONS = [
-    ("沟通能力", 20),
-    ("信息采集", 20),
-    ("风险判断", 20),
-    ("处置规范", 20),
-    ("情绪安抚", 20),
+    ("沟通表达与执法语言", 25),
+    ("主动询问与逻辑推进", 25),
+    ("关键信息整理能力", 25),
+    ("处置闭环意识", 25),
 ]
 
 
@@ -41,12 +40,14 @@ def _build_scene_info(scene, scene_type: str, role, case=None) -> str:
 def compute_grade_level(total_score: int) -> str:
     score = max(0, min(100, int(total_score or 0)))
     if score >= 90:
-        return "优秀"
+        return "卓越"
     if score >= 80:
+        return "优秀"
+    if score >= 70:
         return "良好"
     if score >= 60:
         return "合格"
-    return "待提升"
+    return "需改进"
 
 
 def enforce_final_score_policy(report: dict[str, Any], *, policy_source: str = "agent") -> dict[str, Any]:

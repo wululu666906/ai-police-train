@@ -262,9 +262,10 @@ def _resolve_state_snapshot(
         snapshot["cooperation"] = _clamp_score(raw_snapshot.get("cooperation"), snapshot["cooperation"])
         snapshot["risk"] = _clamp_score(raw_snapshot.get("risk"), snapshot["risk"])
         snapshot["clarity"] = _clamp_score(raw_snapshot.get("clarity"), snapshot["clarity"])
-    if current_trust is not None:
+    has_runtime_snapshot = (runtime_state or {}).get("state_contract") == "four_dimensional_v1"
+    if current_trust is not None and not has_runtime_snapshot:
         snapshot["cooperation"] = _clamp_score(current_trust, snapshot["cooperation"])
-    if current_emotion is not None:
+    if current_emotion is not None and not has_runtime_snapshot:
         snapshot["emotion"] = _clamp_score(current_emotion, snapshot["emotion"])
     return snapshot
 
@@ -449,11 +450,8 @@ def _build_session_guidance(
         "recommended_questions": recommended_questions,
         "recommended_question_items": recommended_question_items,
         "communication_feedback": communication_feedback,
-        "role_state_label": _role_state_label(
-            state_snapshot["cooperation"],
-            session_emotion,
-            state_snapshot["risk"],
-            state_snapshot["clarity"],
+        "role_state_label": runtime_state.get("role_state_label") or _role_state_label(
+            state_snapshot["cooperation"], session_emotion, state_snapshot["risk"], state_snapshot["clarity"]
         ),
         "truth_stage": truth_stage,
         "available_actions": available_actions,
@@ -710,7 +708,6 @@ def training_chat(
 
     result.pop("state_contract", None)
     result.pop("last_postcheck", None)
-    result.pop("state_influence_metrics", None)
     # Internal reasoning and persona summaries are never part of the learner API.
     _redact_internal_role_fields(result)
 
@@ -774,7 +771,6 @@ def training_chat_stream(
 
         result.pop("state_contract", None)
         result.pop("last_postcheck", None)
-        result.pop("state_influence_metrics", None)
         _redact_internal_role_fields(result)
         result = _trigger_auto_evaluation_if_needed(db, session_id, current_user.id, result)
 
@@ -798,6 +794,8 @@ def training_chat_stream(
             "reply_sequence": result.get("reply_sequence"),
             "reply_turns": result.get("reply_turns"),
             "active_speakers": result.get("active_speakers"),
+            "role_state_results": result.get("role_state_results"),
+            "simulation_meta": result.get("simulation_meta"),
             "scene_roles": result.get("scene_roles"),
             "routing_summary": result.get("routing_summary"),
             "addressing_warning": result.get("addressing_warning"),

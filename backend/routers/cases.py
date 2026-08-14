@@ -605,8 +605,8 @@ def _upsert_case_roles_from_structured_persons(db: Session, case: models.Case):
                 init_risk=person.get("init_risk", 50),
                 init_expression_clarity=person.get("init_expression_clarity", 50),
                 status=str(person.get("status") or "正常").strip(),
-                hidden_truths="[]",
-                knows_facts="[]",
+                hidden_truths=json.dumps(person.get("hidden_truths") or person.get("facts_hidden") or person.get("withheld_key_points") or [], ensure_ascii=False),
+                knows_facts=json.dumps(person.get("knows_facts") or person.get("facts_known") or person.get("known_key_points") or [], ensure_ascii=False),
                 does_not_know="[]",
                 iq_level="",
                 eq_level="",
@@ -1214,7 +1214,7 @@ def parse_case(payload: dict = Body(...)):
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
     try:
-        return parse_case_with_agent(text, workflow_id=f"case-parse-{uuid.uuid4().hex}")
+        return parse_case_with_agent(text, workflow_id=f"case-parse-{uuid.uuid4().hex}", source_mode=source_mode)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI parsing failed: {exc}") from exc
 
@@ -1245,7 +1245,7 @@ async def parse_case_file(
         raise HTTPException(status_code=500, detail=f"文件解析失败: {exc}") from exc
 
     try:
-        result = parse_case_with_agent(extracted_text, workflow_id=f"case-file-{uuid.uuid4().hex}")
+        result = parse_case_with_agent(extracted_text, workflow_id=f"case-file-{uuid.uuid4().hex}", source_mode=source_mode)
         stored = object_storage.put_bytes(
             bucket=MEDIA_BUCKET,
             object_key=build_object_key("case-source-files", filename),
@@ -1770,9 +1770,9 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
                 init_risk=person.get("init_risk", 50),
                 init_expression_clarity=person.get("init_expression_clarity", 50),
                 status=person.get("status") or "正常",
-                hidden_truths="[]",
-                knows_facts="[]",
-                does_not_know="[]",
+                hidden_truths=json.dumps(person.get("hidden_truths") or person.get("facts_hidden") or person.get("withheld_key_points") or [], ensure_ascii=False),
+                knows_facts=json.dumps(person.get("knows_facts") or person.get("facts_known") or person.get("known_key_points") or [], ensure_ascii=False),
+                does_not_know=json.dumps(person.get("does_not_know") or person.get("cannot_answer") or [], ensure_ascii=False),
                 iq_level="",
                 eq_level="",
                 lying_ability="",
@@ -1805,6 +1805,10 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
             db.flush()
 
             linked_role_ids = set()
+            scene_initial_states = {
+                str(item.get("name") or ""): item.get("initial_state") or {}
+                for item in scene_data.get("scene_roles") or [] if isinstance(item, dict)
+            }
             requested_primary_role_name = workflow_service.canonicalize_role_name(scene_data.get("primary_role_name"), persons_data)
             selected_roles = []
 
@@ -1826,6 +1830,8 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
                 link = models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=bool(primary_role and role.id == primary_role.id))
                 db.add(link)
                 ensure_scene_role_initial_state(link, role, db_case, db_scene, source="generated_profile")
+                if scene_initial_states.get(role.name):
+                    link.initial_state = json.dumps({**scene_initial_states[role.name], "source": "case_import_harness"}, ensure_ascii=False)
 
         db.flush()
         _sync_role_compatibility_scene(db, db_case.id)
@@ -2005,6 +2011,10 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
                 db_scene.stages = json.dumps(stages, ensure_ascii=False)
 
             incoming_role_names = scene_data.get("role_names")
+            scene_initial_states = {
+                str(item.get("name") or ""): item.get("initial_state") or {}
+                for item in scene_data.get("scene_roles") or [] if isinstance(item, dict)
+            }
             primary_role_name = workflow_service.canonicalize_role_name(scene_data.get("primary_role_name"), scene_persons)
             if isinstance(incoming_role_names, list):
                 role_names = []
@@ -2032,11 +2042,16 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
                     link = models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=bool(primary_role and role.id == primary_role.id))
                     db.add(link)
                     ensure_scene_role_initial_state(link, role, db_case, db_scene, source="generated_profile")
+                    if scene_initial_states.get(role.name):
+                        link.initial_state = json.dumps({**scene_initial_states[role.name], "source": "case_import_harness"}, ensure_ascii=False)
 
             for link in db.query(models.SceneRole).filter(models.SceneRole.scene_id == db_scene.id).all():
                 linked_role = next((item for item in role_map.values() if item.id == link.role_id), None)
                 if linked_role:
-                    ensure_scene_role_initial_state(link, linked_role, db_case, db_scene, source="edited_profile")
+                    if scene_initial_states.get(linked_role.name):
+                        link.initial_state = json.dumps({**scene_initial_states[linked_role.name], "source": "case_import_harness"}, ensure_ascii=False)
+                    else:
+                        ensure_scene_role_initial_state(link, linked_role, db_case, db_scene, source="edited_profile")
 
         db.flush()
         _sync_role_compatibility_scene(db, db_case.id)

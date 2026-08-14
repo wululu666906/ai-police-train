@@ -12,12 +12,15 @@ from ai_workflow_service.tools.state_store import JsonStateStore
 
 
 STAGE_SKILLS: dict[WorkflowStage, SkillName] = {
-    WorkflowStage.case_uploaded: SkillName.case_parse,
-    WorkflowStage.case_parsed: SkillName.persona_build,
-    WorkflowStage.personas_ready: SkillName.scene_build,
     WorkflowStage.training: SkillName.role_simulation,
     WorkflowStage.completed: SkillName.evaluation,
     WorkflowStage.evaluated: SkillName.report,
+}
+
+ALLOWED_TRANSITIONS: dict[WorkflowStage, WorkflowStage] = {
+    WorkflowStage.training: WorkflowStage.training,
+    WorkflowStage.completed: WorkflowStage.evaluated,
+    WorkflowStage.evaluated: WorkflowStage.archived,
 }
 
 
@@ -32,14 +35,28 @@ class TrainingOrchestratorAgent:
         if existing and existing.get("idempotency_key") == idempotency_key and existing.get("response"):
             return WorkflowResponse.model_validate(existing["response"])
 
-        skill_name = request.skill or STAGE_SKILLS.get(request.stage)
-        if not skill_name or skill_name not in self.skills:
+        expected_skill = STAGE_SKILLS.get(request.stage)
+        if not expected_skill:
+            raise WorkflowServiceError("NO_SKILL_FOR_STAGE", "No executable skill is configured for this stage")
+        if request.skill and request.skill != expected_skill:
+            raise WorkflowServiceError("INVALID_SKILL_FOR_STAGE", "The requested skill does not match the workflow stage")
+        skill_name = expected_skill
+        if skill_name not in self.skills:
             raise WorkflowServiceError("NO_SKILL_FOR_STAGE", f"阶段 {request.stage.value} 没有可执行 Skill")
 
         started = time.perf_counter()
         skill = self.skills[skill_name]
         try:
-            result = skill.execute(request)
+            if skill.next_stage != ALLOWED_TRANSITIONS[request.stage]:
+                raise WorkflowServiceError("INVALID_SKILL_TRANSITION", "The skill proposes an invalid workflow transition")
+            execution_request = request.model_copy(update={
+                "payload": {
+                    **request.payload,
+                    "_idempotency_key": idempotency_key,
+                    "_trace_id": trace_id,
+                }
+            })
+            result = skill.execute(execution_request)
             response = WorkflowResponse(
                 workflow_id=request.workflow_id,
                 trace_id=trace_id,
@@ -59,6 +76,16 @@ class TrainingOrchestratorAgent:
                 skill=skill_name,
                 status="failed",
                 error=WorkflowError(code=exc.code, message=exc.message, retryable=exc.retryable),
+            )
+        except Exception as exc:
+            response = WorkflowResponse(
+                workflow_id=request.workflow_id,
+                trace_id=trace_id,
+                stage=request.stage,
+                next_stage=WorkflowStage.failed,
+                skill=skill_name,
+                status="failed",
+                error=WorkflowError(code="SKILL_EXECUTION_FAILED", message=f"Skill execution failed: {exc}", retryable=False),
             )
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
         record: dict[str, Any] = {

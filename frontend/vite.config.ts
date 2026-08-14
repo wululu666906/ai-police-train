@@ -41,7 +41,22 @@ function serveDistAssetsFallback() {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const apiTarget = env.VITE_DEV_PROXY_TARGET || 'http://127.0.0.1:8000'
-  const apiProxy = { target: apiTarget, changeOrigin: true, ws: true }
+  // Browser navigations send Accept: text/html; XHR/fetch API calls do not.
+  // Without this, SPA paths under /student (e.g. /student/hall) are proxied to
+  // FastAPI and return {"detail":"Not Found"} / 401 instead of index.html.
+  const bypassSpaDocument = (req: { headers?: Record<string, unknown>; url?: string }) => {
+    const accept = String(req.headers?.accept || '')
+    if (accept.includes('text/html')) {
+      return '/index.html'
+    }
+    return undefined
+  }
+  const apiProxy = {
+    target: apiTarget,
+    changeOrigin: true,
+    ws: true,
+    bypass: bypassSpaDocument,
+  }
 
   return {
     plugins: [vue(), serveDistAssetsFallback()],

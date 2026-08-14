@@ -5,6 +5,8 @@ import os
 import re
 from typing import Any
 
+from services.dialogue_scene_admission_service import evaluate_dialogue_admission, remap_scene_for_dialogue_admission
+
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
@@ -193,6 +195,9 @@ def complete_scene_blueprint_portfolio(
             )
             grounded = [_text(person.get("name")) for person in person_rows if _text(person.get("name")) in fact_text]
             item["roles"] = grounded or [_text(person.get("name")) for person in person_rows]
+        admission = evaluate_dialogue_admission(item)
+        if not admission.get("admitted"):
+            item = remap_scene_for_dialogue_admission(item)
         output.append(item)
     if output and not any(item.get("is_primary") for item in output):
         output[0]["is_primary"] = True

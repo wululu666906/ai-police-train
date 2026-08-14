@@ -12,6 +12,12 @@ class ReportSkill(Skill):
 
     def execute(self, request: WorkflowRequest) -> dict:
         evaluation = dict(request.payload.get("evaluation") or {})
+        mature_report = evaluation.get("report")
+        if isinstance(mature_report, dict) and mature_report.get("evaluation_meta"):
+            report = dict(mature_report)
+            report.setdefault("training_id", request.training_id)
+            report.setdefault("generated_at", datetime.now(timezone.utc).isoformat())
+            return {"report": report}
         return {
             "report": {
                 "training_id": request.training_id,

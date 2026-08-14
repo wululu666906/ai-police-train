@@ -6,6 +6,7 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $BackendRoot = Join-Path $Root "backend"
 $FrontendRoot = Join-Path $Root "frontend"
+$AiWorkflowRoot = $Root
 $LogsRoot = Join-Path $Root "logs"
 $PythonExe = Join-Path $BackendRoot "venv\Scripts\python.exe"
 $BundledNodeExe = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
@@ -13,6 +14,8 @@ $DatabasePath = Join-Path $Root "data\ai_police.db"
 $ChromaPath = Join-Path $Root "data\chroma_db"
 $BackendLog = Join-Path $LogsRoot "dev-backend.log"
 $BackendErrLog = Join-Path $LogsRoot "dev-backend.err.log"
+$AiWorkflowLog = Join-Path $LogsRoot "dev-ai-workflow.log"
+$AiWorkflowErrLog = Join-Path $LogsRoot "dev-ai-workflow.err.log"
 $FrontendLog = Join-Path $LogsRoot "dev-frontend.log"
 $FrontendErrLog = Join-Path $LogsRoot "dev-frontend.err.log"
 $OpsFrontendLog = Join-Path $LogsRoot "dev-ops-frontend.log"
@@ -79,6 +82,27 @@ function Stop-BackendDevProcesses {
     }
 }
 
+function Stop-AiWorkflowDevProcesses {
+    $snapshot = Get-WindowsProcessSnapshot
+    $processes = $snapshot | Where-Object {
+        $_.CommandLine -like "*uvicorn ai_workflow_service.main:app*" -and
+        $_.CommandLine -like "*--port 8020*"
+    } | Where-Object {
+        $_.CommandLine -notlike "*Get-CimInstance*"
+    }
+    foreach ($proc in $processes) {
+        if ($proc.ProcessId -and $proc.ProcessId -ne $PID) {
+            $result = Stop-WindowsProcessTree -RootProcessId $proc.ProcessId -ProcessSnapshot $snapshot
+            if ($result.StoppedIds.Count -gt 0) {
+                Write-Host "已停止 AI 工作流开发进程树 PID $($result.StoppedIds -join ', ')" -ForegroundColor DarkYellow
+            }
+            foreach ($failure in $result.Failures) {
+                Write-Host "停止 AI 工作流开发进程 PID $($failure.ProcessId) 失败: $($failure.Message)" -ForegroundColor Red
+            }
+        }
+    }
+}
+
 Set-Location $Root
 New-Item -ItemType Directory -Force -Path $LogsRoot | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DatabasePath) | Out-Null
@@ -98,12 +122,14 @@ if (-not $HasBundledNode) {
 }
 
 Stop-BackendDevProcesses
+Stop-AiWorkflowDevProcesses
 Stop-PortListener 8000
+Stop-PortListener 8020
 Stop-PortListener 5556
 Stop-PortListener 6666
 Stop-PortListener 6670
 Stop-PortListener 5175
-foreach ($port in @(8000, 5556, 6666, 6670, 5175)) {
+foreach ($port in @(8000, 8020, 5556, 6666, 6670, 5175)) {
     if (-not (Wait-PortReleased -Port $port)) {
         $ownerIds = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
             Select-Object -ExpandProperty OwningProcess -Unique
@@ -115,6 +141,8 @@ foreach ($port in @(8000, 5556, 6666, 6670, 5175)) {
 
 Set-Content -Path $BackendLog -Value "" -Encoding UTF8
 Set-Content -Path $BackendErrLog -Value "" -Encoding UTF8
+Set-Content -Path $AiWorkflowLog -Value "" -Encoding UTF8
+Set-Content -Path $AiWorkflowErrLog -Value "" -Encoding UTF8
 Set-Content -Path $FrontendLog -Value "" -Encoding UTF8
 Set-Content -Path $FrontendErrLog -Value "" -Encoding UTF8
 Set-Content -Path $OpsFrontendLog -Value "" -Encoding UTF8
@@ -123,8 +151,18 @@ Set-Content -Path $OpsFrontendErrLog -Value "" -Encoding UTF8
 $DatabaseUrl = "sqlite:///$($DatabasePath.Replace('\', '/'))"
 $env:DATABASE_URL = $DatabaseUrl
 $env:CHROMA_DB_PATH = $ChromaPath
+$env:AI_WORKFLOW_URL = "http://127.0.0.1:8020"
+$env:AI_WORKFLOW_PORT = "8020"
 $env:PYTHONIOENCODING = "utf-8"
 $env:CI = "true"
+
+Write-Host "启动 AI 工作流热重载服务 ..." -ForegroundColor Cyan
+$aiWorkflowProcess = Start-HiddenNativeProcess `
+    -FilePath $PythonExe `
+    -ArgumentList @("-m", "uvicorn", "ai_workflow_service.main:app", "--host", "0.0.0.0", "--port", "8020", "--reload", "--reload-dir", "ai_workflow_service") `
+    -WorkingDirectory $AiWorkflowRoot `
+    -StandardOutputPath $AiWorkflowLog `
+    -StandardErrorPath $AiWorkflowErrLog
 
 Write-Host "启动后端热重载服务 ..." -ForegroundColor Cyan
 $backendProcess = Start-HiddenNativeProcess `
@@ -149,6 +187,13 @@ $opsFrontendProcess = Start-HiddenNativeProcess `
     -WorkingDirectory $FrontendRoot `
     -StandardOutputPath $OpsFrontendLog `
     -StandardErrorPath $OpsFrontendErrLog
+
+Write-Host "检查 AI 工作流 /healthz ..." -ForegroundColor Cyan
+$aiWorkflowResp = Wait-HttpOk -Url "http://127.0.0.1:8020/healthz" -Seconds 90
+if (-not $aiWorkflowResp) {
+    Write-Host "AI 工作流启动校验失败，请查看 $AiWorkflowLog 和 $AiWorkflowErrLog" -ForegroundColor Red
+    exit 1
+}
 
 Write-Host "检查后端 /healthz ..." -ForegroundColor Cyan
 $backendResp = Wait-HttpOk -Url "http://127.0.0.1:8000/healthz" -Seconds 90
@@ -185,7 +230,10 @@ Write-Host "本地开发环境已启动。" -ForegroundColor Green
 Write-Host "  管理端/学员端: http://localhost:5556/" -ForegroundColor Green
 Write-Host "  维护端: http://localhost:6670/" -ForegroundColor Green
 Write-Host "  后端接口文档: http://127.0.0.1:8000/docs" -ForegroundColor Green
+Write-Host "  AI 工作流接口文档: http://127.0.0.1:8020/docs" -ForegroundColor Green
 Write-Host "  后端日志: $BackendLog" -ForegroundColor DarkGray
 Write-Host "  后端错误日志: $BackendErrLog" -ForegroundColor DarkGray
+Write-Host "  AI 工作流日志: $AiWorkflowLog" -ForegroundColor DarkGray
+Write-Host "  AI 工作流错误日志: $AiWorkflowErrLog" -ForegroundColor DarkGray
 Write-Host "  前端日志: $FrontendLog" -ForegroundColor DarkGray
 Write-Host "  维护端日志: $OpsFrontendLog" -ForegroundColor DarkGray

@@ -12,7 +12,6 @@ import database
 import models
 from routers.auth import require_admin_user
 from services.rag_service import rag_service
-from services.training_runtime_service import load_runtime_state
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"], dependencies=[Depends(require_admin_user)])
 

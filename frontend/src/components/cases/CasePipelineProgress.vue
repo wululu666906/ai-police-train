@@ -7,8 +7,9 @@ const props = defineProps<{ job: CasePipelineJob | null }>()
 const stages = [
   { key: 'cleaning', label: '文本清洗', threshold: 20 },
   { key: 'story', label: '完整案件剧情', threshold: 40 },
-  { key: 'facts', label: '事实与角色记忆', threshold: 58 },
-  { key: 'world', label: '案件故事世界', threshold: 72 },
+  { key: 'facts', label: '事实抽取', threshold: 52 },
+  { key: 'roles', label: '人物与角色记忆', threshold: 58 },
+  { key: 'world', label: '案件故事世界', threshold: 68 },
   { key: 'scenes', label: '场景蓝图', threshold: 90 },
   { key: 'validating', label: '边界校验', threshold: 100 },
 ]

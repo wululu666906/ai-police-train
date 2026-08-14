@@ -22,7 +22,11 @@ AI Workflow FastAPI ---- 独立工作流状态目录
               |
               +---- Skills ---- Tools
               |
-              +---- TinyTroupeAdapter ---- PoliceTrainingWorld
+              +---- RoleSimulationSkill
+                        |
+                        +---- TinyTroupeAdapter ---- persistent TinyWorld/TinyPerson
+                        |
+                        +---- PoliceTrainingWorld ---- state/disclosure/stage rules
 ```
 
 ## 七层 Harness
@@ -40,6 +44,8 @@ AI Workflow FastAPI ---- 独立工作流状态目录
 - 平台调用 Agent 超时后返回 `503 AI_WORKFLOW_UNAVAILABLE`，不影响其他路由。
 - Agent 不可访问平台数据库，因此不能破坏账号、成绩或训练数据。
 - TinyTroupe 导入或运行失败转成 `SIMULATION_UNAVAILABLE`。
+- 角色台词只能来自 TinyTroupe 的 `TALK`；DeepSeek 作为 TinyTroupe 底层模型并执行只读聚合审计，不二次改写台词。
+- 全部场景角色接收公开事件，确定性路由每轮最多选择 6 名角色执行模型行动。
 - DeepSeek 超时、限流或无效输出转成明确错误；最多两次受控重试。
 - 所有已接收任务状态写入 Agent 自有存储，进程重启后可恢复。
 
@@ -48,3 +54,4 @@ AI Workflow FastAPI ---- 独立工作流状态目录
 - 平台：用户、案件原文、发布场景、训练会话、消息、正式成绩、归档。
 - Agent：工作流运行记录、模拟快照、角色工作记忆、校验轨迹。
 - Agent 返回建议状态，平台根据允许迁移表决定是否持久化。
+- TinyWorld 快照按训练工作流独立保存；幂等重放不重复推进世界，校验失败不提交本轮快照。

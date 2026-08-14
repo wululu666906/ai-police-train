@@ -47,11 +47,17 @@ def merge_sequence_feedback(base: dict, sequence: dict) -> dict:
 
 
 def resolve_role_initial_state(role=None, case=None, scene=None, scene_role_link=None) -> dict[str, int]:
+    stored = {}
+    if scene_role_link is not None and getattr(scene_role_link, "initial_state", None):
+        try:
+            stored = json.loads(scene_role_link.initial_state)
+        except (TypeError, ValueError):
+            stored = {}
     return {
-        "emotion": int(getattr(role, "init_emotion", None) or 50),
-        "cooperation": int(getattr(role, "init_trust", None) or 35),
-        "risk": int(getattr(role, "init_risk", None) or 50),
-        "clarity": int(getattr(role, "init_expression_clarity", None) or 50),
+        "emotion": int(stored.get("emotion", getattr(role, "init_emotion", None) or 50)),
+        "cooperation": int(stored.get("cooperation", getattr(role, "init_trust", None) or 35)),
+        "risk": int(stored.get("risk", getattr(role, "init_risk", None) or 50)),
+        "clarity": int(stored.get("clarity", getattr(role, "init_expression_clarity", None) or 50)),
     }
 
 
@@ -79,6 +85,9 @@ def serialize_scene_roles(db: Session, scene, case, *, runtime_state=None) -> li
         return []
     runtime_state = runtime_state or {}
     snapshots = runtime_state.get("role_state_snapshots") or {}
+    deltas = runtime_state.get("role_state_deltas") or {}
+    labels = runtime_state.get("role_state_labels") or {}
+    active_role_ids = {str(item) for item in runtime_state.get("last_active_role_ids") or []}
     links = db.query(models.SceneRole).filter(models.SceneRole.scene_id == scene.id).all()
     result = []
     for link in links:
@@ -86,6 +95,7 @@ def serialize_scene_roles(db: Session, scene, case, *, runtime_state=None) -> li
         if not role:
             continue
         state = snapshots.get(str(role.id)) or resolve_role_initial_state(role, case, scene, link)
+        delta = deltas.get(str(role.id)) or {}
         result.append({
             "id": role.id,
             "name": repair_text(role.name or ""),
@@ -95,7 +105,12 @@ def serialize_scene_roles(db: Session, scene, case, *, runtime_state=None) -> li
             "cooperation": state.get("cooperation"),
             "risk": state.get("risk"),
             "clarity": state.get("clarity"),
-            "is_active": False,
+            "emotion_delta": int(delta.get("emotion") or 0),
+            "cooperation_delta": int(delta.get("cooperation") or 0),
+            "risk_delta": int(delta.get("risk") or 0),
+            "clarity_delta": int(delta.get("clarity") or 0),
+            "state_label": labels.get(str(role.id)) or runtime_state.get("role_state_label"),
+            "is_active": str(role.id) in active_role_ids,
         })
     return result
 

@@ -13,6 +13,7 @@ from .case_persona_defaults import get_behavior_archetype_defaults, infer_person
 from .case_schema_service import canonicalize_person_payload, migrate_structured_data_payload
 from .case_intelligence_service import assess_source_quality, normalize_case_intelligence
 from .training_compiler_service import build_observable_scoring_rules, build_training_tasks, compile_state_machine
+from .dialogue_scene_admission_service import admission_prompt_block
 from .stage_config_service import normalize_stages
 from .case_scene_module_service import build_case_frequency_prompt, build_scene_module_prompt
 from .scene_story_planner_service import (
@@ -322,7 +323,8 @@ story_world 只作为承载结构，包含 complete_story、facts、roles、metr
 facts 每项使用 id、content、fact_type、status、source_refs；roles 每项只保留 name、role_type、status、role_memories、knowledge_ledger。
 confirmed 只能是有原文引用的事实；单方说法写 claimed；互相矛盾写 conflicted；无法确认写 unknown。不得把模拟补写写入 confirmed 或人物已知事实。"""
 
-SCENE_BLUEPRINT_PROMPT = """你是警务训练场景规划师。基于案件完整剧情、程序化事实卡、角色记忆和 candidate_scene_slots 生成必要的训练场景蓝图，只输出 JSON：
+SCENE_BLUEPRINT_PROMPT = (
+    """你是警务训练场景规划师。基于案件完整剧情、程序化事实卡、角色记忆和 candidate_scene_slots 生成必要的训练场景蓝图，只输出 JSON：
 {"blueprints":[{"scene_id":"S1","portfolio_role":"intake|primary|investigation|followup","is_primary":false,"scene_name":"","scene_kind":"接警|案发后现场处置|案发后调查询问|案发后复盘回访|其他","scene_purpose":"为什么训练该场景","training_goal":"学员完成什么","start_state":"训练开始时的状态","completion_criteria":["可观察的完成条件"],"end_prompt":"达标后的结束提示","training_entry_phase":"intake|post_incident_onsite|post_incident_inquiry|post_incident_followup","entry_time_policy":"dispatch_intake|after_canonical_event","canonical_outcome_locked":true,"student_role":"民警","time":"","place":"","roles":["可交互人物名"],"present_roles":["在场人物名"],"mentioned_roles":["被提及人物名"],"fact_ids":["F1"],"open_question_ids":[],"supplement_ids":[],"stages":[{"stage_name":"","stage_goal":""}]}]}。
 
 规则：
@@ -335,7 +337,10 @@ SCENE_BLUEPRINT_PROMPT = """你是警务训练场景规划师。基于案件完�
 7. 场景按不同警务目标拆分，不能把同一段事实换标题重复生成。相同地点但工作对象、矛盾焦点或线索任务不同，才可以形成独立场景。
 8. roles 应列出该处置阶段可接触且可交流的相关人物；死亡、昏迷或无法交流者除外。历史节点的在场名单仅作人物相关性参考。
 9. 每个场景引用 1-24 条真正用于该场景的事实，不得把全案所有事实平均分给每个场景；不得依赖事件账本、时间线/空间线或人物关系图生成业务决策。
-10. 每个场景必须写清 scene_purpose、training_goal、start_state、completion_criteria 和 end_prompt；完成条件必须是学员可执行、系统可观察的行为。"""
+10. 每个场景必须写清 scene_purpose、training_goal、start_state、completion_criteria 和 end_prompt；完成条件必须是学员可执行、系统可观察的行为。
+11. """
+    + admission_prompt_block()
+)
 
 SCENE_BLUEPRINT_COMPLETION_PROMPT = """你是警务训练场景组合补全器。输入中包含已经生成的场景和 missing_scene_slots。
 只为 missing_scene_slots 逐项生成蓝图，不得重写已有场景，不得增加槽位，不得复制主场景目标。
