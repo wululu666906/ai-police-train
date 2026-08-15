@@ -38,7 +38,7 @@
 - `case_id: string|null`、`training_id: string|null`。
 - `payload: object`，由目标 Skill 的白名单模型再次校验。
 
-`role_simulation` 的 `payload` 必须包含全部场景 `personas`、逐角色状态与记忆、`scene_world`、`case_world`、完整公开历史和可选的 `target_role_name`。单个旧 `persona` 仅保留服务端兼容解析，不再由平台发送。
+`role_simulation` 的 `payload` 必须包含全部场景 `personas`、逐角色状态与隔离记忆、`scene_world`、`case_world`、完整公开历史和可选的 `target_role_name`。`scene_world` 必须提供本场景 `fact_ids` 和逐角色 `role_participation`。单个旧 `persona` 仅保留服务端兼容解析，不再由平台发送。
 
 返回字段：
 
@@ -52,12 +52,19 @@
 
 - `reply_turns`：逐角色的 `person_id`、平台角色 ID、姓名、公开台词和披露事实。
 - `role_state_results`：逐角色的新四维状态、变化量和状态标签。
-- `active_speakers`：本轮最多 6 名 TinyTroupe 行动角色。
+- `role_intents`：逐角色独立产生的 `answer|react|interrupt|silent` 意图、置信度和原因，仅供服务审计。
+- `active_speakers`：通过角色意图仲裁后实际执行 TinyTroupe 行动的角色；可能为空。
 - `simulation_meta`：世界 ID、轮次、观察者/行动者数量、调用数、重试数和重建标记。
+
+合法沉默轮次返回成功状态、空 `reply_turns`、`routing_summary` 和可选 `addressing_warning`，平台不得将其转换为 AI 执行错误。四维状态只轻微影响角色台词风格，不得参与发言、事实披露、阶段推进或动作结果判断。
 
 ## POST /v1/case-imports/execute
 
-流程图定义的主业务入口。请求使用 `workflow_id`、`case_id`、`source_text`；返回清洗结果、完整剧情、事实/人物、角色记忆、案件故事世界、场景蓝图和训练读取源。每个节点均写入 Agent 审计日志，平台只负责持久化与质量门禁。
+流程图定义的主业务入口。请求使用 `workflow_id`、`case_id`、`source_text`；返回清洗结果、完整剧情、事实/人物、角色记忆、案件故事世界、场景蓝图和训练读取源。角色节点同时生成四维初始值。每个节点均写入 Agent 审计日志，平台只负责持久化与质量门禁。
+
+场景节点禁止使用默认场景、默认阶段、默认考核点或默认角色名单补齐结果。候选场景不适合通过纯文本多轮对话训练时，允许返回空 `scene_blueprints`，并在 `case_import_quality.scene_admission` 中返回 `no_suitable_scene=true` 和拒绝原因。首次候选不合格时最多定向修复一次。
+
+场景蓝图的 `first_impression` 必须为 80-160 字单段文本，只能包含民警进入场景时可直接观察的环境、人员位置、当前动作、伤情或危险物、声音和即时风险。不得包含接警/报警转述、人员清单、任务说明、人物内心、隐藏事实、案件结论或裁判结果。平台发布门禁对少于 80 字的内容只生成可确认警告，不直接阻断发布；超过 160 字或违反内容边界时阻断发布，并返回具体原因代码。
 
 ## 边界规则
 

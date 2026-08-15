@@ -25,14 +25,27 @@ def filter_stale_missing_requirements_for_history(missing: list[str], **kwargs) 
     return list(missing or [])
 
 
-def build_recommended_question_items(*, custom_prompts=None, missing_requirements=None, **kwargs) -> list[dict[str, Any]]:
+def build_recommended_question_items(*, stored_items=None, custom_prompts=None, missing_requirements=None, **kwargs) -> list[dict[str, Any]]:
+    items = [
+        {
+            "text": str(item.get("text") or "").strip(),
+            "category": str(item.get("category") or "追问"),
+            "priority": str(item.get("priority") or "medium"),
+            "target_role_name": item.get("target_role_name"),
+            "related_point_id": item.get("related_point_id"),
+        }
+        for item in (stored_items or [])
+        if isinstance(item, dict) and str(item.get("text") or "").strip()
+    ]
+    if items:
+        return items[:5]
     items = [
         {"text": item.strip(), "category": "推荐", "priority": "medium"}
         for item in (custom_prompts or [])
         if isinstance(item, str) and item.strip()
     ]
     items.extend(
-        {"text": f"请问{item}？", "category": "缺失项", "priority": "high"}
+        {"text": f"请问{item}？", "category": "缺失项", "priority": "high", "target_role_name": None}
         for item in (missing_requirements or [])[:3]
     )
     return items[:5]
@@ -96,11 +109,22 @@ def serialize_scene_roles(db: Session, scene, case, *, runtime_state=None) -> li
             continue
         state = snapshots.get(str(role.id)) or resolve_role_initial_state(role, case, scene, link)
         delta = deltas.get(str(role.id)) or {}
+        participation = {}
+        if getattr(link, "participation_config", None):
+            try:
+                participation = json.loads(link.participation_config)
+            except (TypeError, ValueError):
+                participation = {}
+        present = participation.get("present") is not False
         result.append({
             "id": role.id,
             "name": repair_text(role.name or ""),
             "role_type": role.role_type or "",
-            "speakable": True,
+            "speakable": present,
+            "present": present,
+            "interaction_purpose": str(participation.get("interaction_purpose") or ""),
+            "can_initiate": bool(participation.get("can_initiate", link.is_primary)),
+            "can_interrupt": bool(participation.get("can_interrupt", False)),
             "emotion": state.get("emotion"),
             "cooperation": state.get("cooperation"),
             "risk": state.get("risk"),

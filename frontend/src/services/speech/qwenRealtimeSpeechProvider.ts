@@ -159,23 +159,18 @@ export class QwenRealtimeSpeechProvider implements SpeechRecognitionProvider {
       }
     }, CONNECT_TIMEOUT_MS)
 
-    this.ws.onopen = async () => {
-      try {
-        const stream = options.mediaStream || await navigator.mediaDevices.getUserMedia({ audio: true })
-        if (!options.mediaStream) this.ownedStream = stream
-        await this.openAudio(stream)
-        this.started = true
-        this.clearConnectTimer()
-        this.setStatus('listening')
-      } catch (error: any) {
-        this.failStartup(error?.message || '无法访问麦克风，请检查浏览器权限')
-      }
+    this.ws.onopen = () => {
+      this.setStatus('processing')
     }
 
-    this.ws.onmessage = (event) => {
+    this.ws.onmessage = async (event) => {
       try {
         const payload = JSON.parse(String(event.data || '{}'))
         if (payload.type === 'ready') {
+          if (this.started) return
+          const stream = options.mediaStream || await navigator.mediaDevices.getUserMedia({ audio: true })
+          if (!options.mediaStream) this.ownedStream = stream
+          await this.openAudio(stream)
           this.started = true
           this.clearConnectTimer()
           this.setStatus('listening')
@@ -187,8 +182,7 @@ export class QwenRealtimeSpeechProvider implements SpeechRecognitionProvider {
           throw new Error(String(payload.message || '千问实时语音识别失败'))
         }
       } catch (error: any) {
-        this.setStatus('error')
-        callbacks.onError?.(error?.message || '千问实时语音识别失败')
+        this.failStartup(error?.message || '千问实时语音识别失败')
       }
     }
 

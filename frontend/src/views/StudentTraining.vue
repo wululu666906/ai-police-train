@@ -116,7 +116,7 @@
                   <span class="scene-role-card__name">{{ role.name }}</span>
                   <span class="scene-role-card__meta">
                     {{ role.state_label || role.role_type || '角色' }}
-                    <template v-if="role.emotion != null"> · 情绪{{ role.emotion }}</template>
+                    <template v-if="role.emotion != null"> · 激动度{{ role.emotion }}</template>
                   </span>
                 </span>
                 <span v-if="isRoleAvatarThinking(role.name)" class="scene-role-card__badge scene-role-card__badge--think">
@@ -508,6 +508,7 @@ interface SceneRoleBrief {
   role_type?: string
   is_primary?: boolean
   speakable?: boolean
+  present?: boolean
   emotion?: number
   cooperation?: number
   risk?: number
@@ -553,7 +554,7 @@ let activeChatRequestId = 0
 type RoleStateAxisKey = 'emotion' | 'cooperation' | 'risk' | 'clarity'
 
 const roleStateAxes: Array<{ key: RoleStateAxisKey; label: string; fillClass: string }> = [
-  { key: 'emotion', label: '情绪值', fillClass: 'emotion-fill' },
+  { key: 'emotion', label: '情绪激动度', fillClass: 'emotion-fill' },
   { key: 'cooperation', label: '配合度', fillClass: 'trust-fill' },
   { key: 'risk', label: '失控风险', fillClass: 'risk-fill' },
   { key: 'clarity', label: '表达清晰度', fillClass: 'clarity-fill' },
@@ -832,7 +833,16 @@ const consumeAssistantStream = async (response: Response) => {
   if (response.status === 405) {
     throw new Error('后端训练服务版本未更新，请使用项目重启脚本后重试')
   }
-  if (!response.ok || !response.body) throw new Error(`AI 对话请求失败：${response.status}`)
+  if (!response.ok || !response.body) {
+    let detail = `AI 对话请求失败：${response.status}`
+    try {
+      const payload = await response.json()
+      detail = normalizeApiError(payload?.detail, detail)
+    } catch {
+      // Keep the HTTP status when the response is not JSON.
+    }
+    throw new Error(detail)
+  }
   const reader = response.body.getReader()
   const decoder = new TextDecoder('utf-8')
   const result: any = {}
@@ -1260,45 +1270,15 @@ const sendMessage = async (content?: string) => {
           })
         }
       }
-    } else {
+    } else if (!res.addressing_warning) {
       showToast('AI 回复出错，请稍后重试')
     }
   } catch (error: any) {
     if (abortController.signal.aborted || error?.name === 'AbortError') {
       return
     }
-    try {
-      const res: any = await request.post(`/training/chat/${sessionId.value}`, {
-        role: 'user',
-        content: msg,
-        target_role_name: targetRoleName.value || undefined,
-      })
-      const hasAssistantReply = await playAssistantReplies(res, Date.now() + 1)
-
-      if (Array.isArray(res.scene_roles) && res.scene_roles.length) {
-        sceneRoles.value = res.scene_roles
-      }
-      routingSummary.value = String(res.routing_summary || '').trim()
-      addressingWarning.value = String(res.addressing_warning || '').trim()
-      applyGuidancePayload(res)
-
-      if (hasAssistantReply) {
-        if (res.new_fact_revealed && res.new_fact_revealed !== 'null' && !revealedInfo.value.includes(res.new_fact_revealed)) {
-          revealedInfo.value.push(res.new_fact_revealed)
-          chatHistory.value.push({
-            id: Date.now() + 2,
-            role: 'system',
-            content: `[关键线索获取] ${res.new_fact_revealed}`
-          })
-        }
-      } else {
-        showToast('AI 回复出错，请稍后重试')
-      }
-    } catch {
-      chatHistory.value = chatHistory.value.filter((item) => item.id !== pendingId)
-      inputMessage.value = msg
-      showToast('AI 响应异常，请稍后重试')
-    }
+    const message = String(error?.message || 'AI 响应异常，请稍后重试')
+    showToast(message)
   } finally {
     if (activeChatRequestId === requestId) {
       activeChatAbortController = null

@@ -1762,9 +1762,9 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
                 case_id=db_case.id,
                 name=role_name,
                 role_type=person.get("role_type") or "相关人员",
-                interaction_style="",
-                personality="",
-                speaking_style="",
+                interaction_style=person.get("interaction_style") or "",
+                personality=person.get("personality") or "",
+                speaking_style=person.get("speaking_style") or "自然口语",
                 init_emotion=person.get("init_emotion", 50),
                 init_trust=person.get("init_trust", 30),
                 init_risk=person.get("init_risk", 50),
@@ -1805,8 +1805,8 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
             db.flush()
 
             linked_role_ids = set()
-            scene_initial_states = {
-                str(item.get("name") or ""): item.get("initial_state") or {}
+            scene_role_configs = {
+                str(item.get("name") or ""): item
                 for item in scene_data.get("scene_roles") or [] if isinstance(item, dict)
             }
             requested_primary_role_name = workflow_service.canonicalize_role_name(scene_data.get("primary_role_name"), persons_data)
@@ -1830,8 +1830,16 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
                 link = models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=bool(primary_role and role.id == primary_role.id))
                 db.add(link)
                 ensure_scene_role_initial_state(link, role, db_case, db_scene, source="generated_profile")
-                if scene_initial_states.get(role.name):
-                    link.initial_state = json.dumps({**scene_initial_states[role.name], "source": "case_import_harness"}, ensure_ascii=False)
+                role_config = scene_role_configs.get(role.name) or {}
+                if role_config.get("initial_state"):
+                    link.initial_state = json.dumps({**role_config["initial_state"], "source": "case_import_harness"}, ensure_ascii=False)
+                link.participation_config = json.dumps({
+                    "present": role_config.get("present") is not False,
+                    "interaction_purpose": role_config.get("interaction_purpose") or "",
+                    "can_initiate": bool(role_config.get("can_initiate", False)),
+                    "can_interrupt": bool(role_config.get("can_interrupt", False)),
+                    "relevant_fact_ids": role_config.get("relevant_fact_ids") or [],
+                }, ensure_ascii=False)
 
         db.flush()
         _sync_role_compatibility_scene(db, db_case.id)
@@ -2011,8 +2019,8 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
                 db_scene.stages = json.dumps(stages, ensure_ascii=False)
 
             incoming_role_names = scene_data.get("role_names")
-            scene_initial_states = {
-                str(item.get("name") or ""): item.get("initial_state") or {}
+            scene_role_configs = {
+                str(item.get("name") or ""): item
                 for item in scene_data.get("scene_roles") or [] if isinstance(item, dict)
             }
             primary_role_name = workflow_service.canonicalize_role_name(scene_data.get("primary_role_name"), scene_persons)
@@ -2042,14 +2050,30 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
                     link = models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=bool(primary_role and role.id == primary_role.id))
                     db.add(link)
                     ensure_scene_role_initial_state(link, role, db_case, db_scene, source="generated_profile")
-                    if scene_initial_states.get(role.name):
-                        link.initial_state = json.dumps({**scene_initial_states[role.name], "source": "case_import_harness"}, ensure_ascii=False)
+                    role_config = scene_role_configs.get(role.name) or {}
+                    if role_config.get("initial_state"):
+                        link.initial_state = json.dumps({**role_config["initial_state"], "source": "case_import_harness"}, ensure_ascii=False)
+                    link.participation_config = json.dumps({
+                        "present": role_config.get("present") is not False,
+                        "interaction_purpose": role_config.get("interaction_purpose") or "",
+                        "can_initiate": bool(role_config.get("can_initiate", False)),
+                        "can_interrupt": bool(role_config.get("can_interrupt", False)),
+                        "relevant_fact_ids": role_config.get("relevant_fact_ids") or [],
+                    }, ensure_ascii=False)
 
             for link in db.query(models.SceneRole).filter(models.SceneRole.scene_id == db_scene.id).all():
                 linked_role = next((item for item in role_map.values() if item.id == link.role_id), None)
                 if linked_role:
-                    if scene_initial_states.get(linked_role.name):
-                        link.initial_state = json.dumps({**scene_initial_states[linked_role.name], "source": "case_import_harness"}, ensure_ascii=False)
+                    role_config = scene_role_configs.get(linked_role.name) or {}
+                    if role_config.get("initial_state"):
+                        link.initial_state = json.dumps({**role_config["initial_state"], "source": "case_import_harness"}, ensure_ascii=False)
+                        link.participation_config = json.dumps({
+                            "present": role_config.get("present") is not False,
+                            "interaction_purpose": role_config.get("interaction_purpose") or "",
+                            "can_initiate": bool(role_config.get("can_initiate", False)),
+                            "can_interrupt": bool(role_config.get("can_interrupt", False)),
+                            "relevant_fact_ids": role_config.get("relevant_fact_ids") or [],
+                        }, ensure_ascii=False)
                     else:
                         ensure_scene_role_initial_state(link, linked_role, db_case, db_scene, source="edited_profile")
 

@@ -15,7 +15,7 @@ NON_DIALOGUE_MARKERS = (
     "现场调度", "指挥调度", "电台调度", "警力部署", "封控圈", "包围圈",
     "武装押解", "押送途中", "解铐", "搜身控制", "强制带离",
     "车辆追击", "追车", "路检", "查缉", "突击检查",
-    "审讯突破", "讯问突破", "审讯室突破", "攻心战术",
+    "审讯", "讯问", "审问", "审讯室", "讯问室", "攻心战术",
     "实弹", "射击", "枪械", "破拆", "破门",
 )
 
@@ -123,6 +123,15 @@ def evaluate_dialogue_admission(scene: dict[str, Any]) -> dict[str, Any]:
     non_dialogue = _matched_markers(blob, NON_DIALOGUE_MARKERS)
     dialogue = _matched_markers(blob, DIALOGUE_CORE_MARKERS)
     interactive_roles = _interactive_role_count(scene)
+    stages = [item for item in scene.get("stages") or [] if isinstance(item, dict)]
+    assessment_points = [
+        point for stage in stages for point in stage.get("assessment_points") or [] if isinstance(point, dict)
+    ]
+    observable_points = [
+        point for point in assessment_points
+        if point.get("keywords") or point.get("related_actions") or point.get("actions")
+    ]
+    outcomes = [item for item in scene.get("expected_outcomes") or [] if _text(item)]
 
     reasons: list[str] = []
     if non_dialogue:
@@ -132,6 +141,14 @@ def evaluate_dialogue_admission(scene: dict[str, Any]) -> dict[str, Any]:
     if not dialogue and not non_dialogue:
         # Ambiguous goal with no clear dialogue anchor — warn-level reject for generation.
         reasons.append("missing_dialogue_core_markers")
+    if not stages:
+        reasons.append("missing_training_stages")
+    if not assessment_points:
+        reasons.append("missing_assessment_points")
+    elif len(observable_points) < len(assessment_points):
+        reasons.append("unobservable_assessment_points")
+    if not outcomes:
+        reasons.append("missing_expected_outcomes")
 
     # Non-dialogue markers dominate when present without sufficient dialogue anchors.
     if non_dialogue and len(dialogue) < 2:
@@ -143,6 +160,12 @@ def evaluate_dialogue_admission(scene: dict[str, Any]) -> dict[str, Any]:
         reasons.append("tactical_goal_not_dialogue_trainable")
 
     dialogue_score = round(len(dialogue) / max(len(dialogue) + len(non_dialogue), 1), 4)
+    training_value_score = round(
+        min(1.0, dialogue_score * 0.45 + min(len(assessment_points), 4) / 4 * 0.3 + min(len(outcomes), 3) / 3 * 0.25),
+        4,
+    )
+    if training_value_score < 0.55:
+        reasons.append("insufficient_training_value")
     admitted = not reasons
 
     return {
@@ -153,6 +176,7 @@ def evaluate_dialogue_admission(scene: dict[str, Any]) -> dict[str, Any]:
         "dialogue_markers": dialogue,
         "interactive_role_count": interactive_roles,
         "dialogue_fit_score": dialogue_score,
+        "training_value_score": training_value_score,
         "suggested_alternative": suggest_dialogue_alternative(scene) if not admitted else "",
     }
 
@@ -161,41 +185,10 @@ def is_dialogue_adapted_scene(scene: dict[str, Any]) -> bool:
     return bool(evaluate_dialogue_admission(scene).get("admitted"))
 
 
-def remap_scene_for_dialogue_admission(scene: dict[str, Any]) -> dict[str, Any]:
-    alternative = suggest_dialogue_alternative(scene)
-    remapped = dict(scene)
-    remapped["scene_name"] = alternative
-    remapped["training_goal"] = (
-        f"通过多轮对话完成{alternative}，核实关键信息、稳控现场风险并形成规范处置记录。"
-    )
-    remapped["scene_purpose"] = f"训练学员在{alternative}环节中的沟通处置与逻辑应对能力。"
-    remapped["expected_outcomes"] = [
-        "通过对话核实关键信息",
-        "稳控现场风险并完成规范告知",
-        "形成可复盘的多轮交互记录",
-    ]
-    remapped["completion_criteria"] = [
-        "已完成关键信息核实对话",
-        "已稳控现场风险或明确移交",
-    ]
-    remapped["stages"] = [{
-        "stage_name": "沟通核实",
-        "stage_goal": remapped["training_goal"],
-        "assessment_points": [
-            {"id": "dialogue_facts", "label": "核实关键事实", "required": True, "keywords": ["核实", "询问", "确认"]},
-            {"id": "dialogue_risk", "label": "稳控现场风险", "required": True, "keywords": ["安全", "风险", "安抚"]},
-        ],
-        "fact_ids": list(remapped.get("fact_ids") or []),
-    }]
-    remapped["dialogue_admission_remapped"] = True
-    remapped["dialogue_admission"] = evaluate_dialogue_admission(remapped)
-    return remapped
-
-
 def filter_dialogue_admitted_scenes(
     candidates: list[dict[str, Any]],
     *,
-    allow_remap: bool = True,
+    allow_remap: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     admitted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
@@ -207,11 +200,6 @@ def filter_dialogue_admitted_scenes(
         else:
             rejected.append(enriched)
 
-    if not admitted and rejected and allow_remap:
-        best = max(rejected, key=lambda row: float((row.get("dialogue_admission") or {}).get("dialogue_fit_score") or 0))
-        remapped = remap_scene_for_dialogue_admission(best)
-        if remapped.get("dialogue_admission", {}).get("admitted"):
-            admitted = [remapped]
     return admitted, rejected
 
 

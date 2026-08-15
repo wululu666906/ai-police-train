@@ -29,6 +29,10 @@
 - [x] 删除旧 `case_parse`、`persona_build`、`scene_build` Skill、调度与公开入口。
 - [x] 接通训练读取源、场景蓝图直用和角色回复底线校验上下文。
 - [x] 将 `ai_workflow_service` 默认模型切换为 `deepseek-v4-flash`，并加载服务本地 `.env` 中的 DeepSeek 密钥。
+- [x] 将场景第一印象上下游契约统一为 80-160 字可观察单段文本，上游增加安全规范化，发布门禁将字数不足调整为可确认警告并分类返回其他违规原因。
+- [x] 完成角色记忆隔离、角色初始四维、无模板场景准入、逐角色发言意图、累计训练进度和独立建议追问链路。
+- [x] TinyWorld 只装载在场角色，只有意图仲裁通过的角色行动；合法沉默不再作为 AI 错误。
+- [x] 删除旧追问提示词、`role_brains` 和预生成多人回复运行时结构，新增 ADR-003 固化边界。
 
 ## 验证备注
 
@@ -41,6 +45,9 @@
 - 宿主机 `127.0.0.1:8010` 被其他项目占用；本地 AgentWorkflowClient 改为访问 `http://127.0.0.1:8020`。
 - `.pytest_cache`、`.pytest-run-tmp`、`.pytest-tmp` 仍受 Windows ACL 限制无法删除（空目录）。
 - 视频实训 ffmpeg 已切到本机 WinGet PATH；人脸模型仍在 `data/face_models`。
+- 第一印象真实任务数据复验通过：两条短文本仅生成 `FIRST_IMPRESSION_TOO_SHORT` 警告，无阻断项且 `publishable=true`；上游安全文本均落在 80-160 字。
+- 2026-08-15 验证：129 个业务 Python 文件静态编译通过，Harness 审计通过，前端 `vue-tsc --noEmit` 通过，角色/场景/记忆相关既有测试 13 项通过，新增能力使用命令行领域冒烟断言通过。
+- 扩展既有测试批次另有 3 项旧 `story_world` 键缺失失败，与本轮新 Agent 链路无关；1 项因当前 Python 环境缺少 `openpyxl` 未能启动。
 
 ## 下次入口
 

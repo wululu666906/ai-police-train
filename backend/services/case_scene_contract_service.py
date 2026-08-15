@@ -14,8 +14,10 @@ from .training_compiler_service import (
 from .dialogue_scene_admission_service import evaluate_dialogue_admission
 
 
-SCENE_CONTRACT_SCHEMA_VERSION = "2026.08.case-scene-contract-v4"
-DERIVED_ARTIFACT_VERSION = "scene-derived-v2"
+SCENE_CONTRACT_SCHEMA_VERSION = "2026.08.case-scene-contract-v5"
+DERIVED_ARTIFACT_VERSION = "scene-derived-v3"
+FIRST_IMPRESSION_MIN_LENGTH = 80
+FIRST_IMPRESSION_MAX_LENGTH = 160
 NON_SPEAKABLE_STATUS_KEYWORDS = (
     "死亡", "死者", "昏迷", "无意识", "重伤无法交流", "无法交流",
     "无法接受审问", "无法接受询问", "无法问询",
@@ -66,19 +68,45 @@ def _roles(value: Any) -> list[str]:
     return list(dict.fromkeys(_text(item) for item in _items(value) if _text(item)))
 
 
-def _normalize_first_impression(value: Any) -> tuple[str, bool]:
-    text = re.sub(r"\s+", " ", _text(value))
-    banned = (
-        "接警信息", "报警信息", "接到报警", "当前可接触人员", "可接触人员", "当前时空", "→",
-        "训练目标", "训练任务", "民警任务", "需要先", "开展询问", "开展处置", "案件结论", "裁判结论",
+def _validate_first_impression(value: Any) -> tuple[str, list[dict[str, str]]]:
+    raw = _text(value)
+    text = re.sub(r"\s+", " ", raw)
+    issues: list[dict[str, str]] = []
+    if not text:
+        issues.append({"severity": "blocking", "code": "MISSING_FIRST_IMPRESSION", "reason": "现场第一印象为空"})
+        return text, issues
+    if len(text) < FIRST_IMPRESSION_MIN_LENGTH:
+        issues.append({
+            "severity": "warning", "code": "FIRST_IMPRESSION_TOO_SHORT",
+            "reason": f"现场第一印象仅 {len(text)} 字，建议补充至 {FIRST_IMPRESSION_MIN_LENGTH}-{FIRST_IMPRESSION_MAX_LENGTH} 字",
+        })
+    if len(text) > FIRST_IMPRESSION_MAX_LENGTH:
+        issues.append({
+            "severity": "blocking", "code": "FIRST_IMPRESSION_TOO_LONG",
+            "reason": f"现场第一印象共 {len(text)} 字，超过 {FIRST_IMPRESSION_MAX_LENGTH} 字上限",
+        })
+    if "\n" in raw or "\r" in raw:
+        issues.append({"severity": "blocking", "code": "FIRST_IMPRESSION_MULTILINE", "reason": "现场第一印象必须为单段文本"})
+
+    marker_groups = (
+        (("接警信息", "报警信息", "接报警", "接到报警", "报警人称", "110指令"),
+         "FIRST_IMPRESSION_DISPATCH_CONTENT", "现场第一印象包含接警或报警转述，应改为入场时可直接观察的内容"),
+        (("当前可接触人员", "可接触人员", "当前时空", "→"),
+         "FIRST_IMPRESSION_CONTEXT_METADATA", "现场第一印象包含人员清单、时空链路或系统元数据"),
+        (("训练目标", "训练任务", "民警任务", "需要先", "开展询问", "开展处置"),
+         "FIRST_IMPRESSION_TASK_CONTENT", "现场第一印象包含训练或处置任务说明"),
+        (("案件结论", "裁判结论", "隐藏证据", "定罪", "量刑"),
+         "FIRST_IMPRESSION_SPOILER_CONTENT", "现场第一印象包含案件结论、隐藏证据或裁判信息"),
     )
-    valid = (
-        40 <= len(text) <= 220
-        and "\n" not in text
-        and not any(word in text for word in banned)
-        and not re.search(r"\d{4}年\d{1,2}月\d{1,2}日|\d{1,2}时\d{1,2}分|F\d+", text)
-    )
-    return text, not valid
+    for markers, code, reason in marker_groups:
+        if any(marker in text for marker in markers):
+            issues.append({"severity": "blocking", "code": code, "reason": reason})
+    if re.search(r"\d{4}年\d{1,2}月\d{1,2}日|\d{1,2}时\d{1,2}分|F\d+", text):
+        issues.append({
+            "severity": "blocking", "code": "FIRST_IMPRESSION_TIMELINE_CONTENT",
+            "reason": "现场第一印象包含案件时间线或事实编号",
+        })
+    return text, issues
 
 
 def _existing_scene_index(case_info: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
@@ -129,7 +157,7 @@ def compile_case_scene_artifacts(case_info: dict[str, Any], scenes: list[dict[st
 
         previous_roles = _roles(previous.get("roles"))
         manual_override = bool(previous and roles != previous_roles)
-        first_impression, impression_repaired = _normalize_first_impression(scene.get("first_impression"))
+        first_impression, impression_issues = _validate_first_impression(scene.get("first_impression"))
         scene.update({
             "scene_ref": ref,
             "scene_name": name,
@@ -141,7 +169,7 @@ def compile_case_scene_artifacts(case_info: dict[str, Any], scenes: list[dict[st
             "stages": stages,
             "canonical_outcome_locked": scene.get("canonical_outcome_locked", previous.get("canonical_outcome_locked", True)) is not False,
             "first_impression": first_impression,
-            "first_impression_autofixed": impression_repaired,
+            "first_impression_quality_issues": impression_issues,
         })
         compiled_scenes.append(scene)
 
@@ -268,8 +296,10 @@ def build_case_quality_report(case_info: dict[str, Any], scenes: list[dict[str, 
         ref = _scene_ref(scene, index)
         name = _scene_name(scene, index)
         scene_names.append(name)
-        if scene.get("first_impression_autofixed"):
-            add(blocking, "INVALID_FIRST_IMPRESSION", f"{name} 的现场第一印象不符合可观察、无剧透要求", ref)
+        _, impression_issues = _validate_first_impression(scene.get("first_impression"))
+        for issue in impression_issues:
+            target = warnings if issue["severity"] == "warning" else blocking
+            add(target, issue["code"], f"{name} 的{issue['reason']}", ref)
         admission = evaluate_dialogue_admission(scene)
         if not admission.get("admitted"):
             markers = "、".join(admission.get("non_dialogue_markers") or []) or "非对话核心能力"

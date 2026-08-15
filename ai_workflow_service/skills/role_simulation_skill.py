@@ -4,7 +4,7 @@ import json
 import hashlib
 from typing import Any
 
-from ai_workflow_service.contracts import CaseWorld, Persona, SceneWorld, SkillName, WorkflowRequest, WorkflowStage
+from ai_workflow_service.contracts import CaseWorld, Persona, RoleParticipation, SceneWorld, SkillName, WorkflowRequest, WorkflowStage
 from ai_workflow_service.domain.four_dimensional_state import infer_rule_delta, transition
 from ai_workflow_service.domain.training_runtime import evaluate_training
 from ai_workflow_service.errors import WorkflowServiceError
@@ -13,6 +13,8 @@ from ai_workflow_service.simulation.police_training_world import PoliceTrainingW
 from ai_workflow_service.simulation.role_validator import PoliceRoleValidator
 from ai_workflow_service.simulation.tinytroupe_adapter import TinyTroupeAdapter
 from ai_workflow_service.skills.base import Skill
+from ai_workflow_service.skills.role_intent_skill import RoleIntentSkill
+from ai_workflow_service.skills.recommended_questions_skill import RecommendedQuestionsSkill
 
 
 STATE_KEYS = ("emotion", "cooperation", "risk", "clarity")
@@ -26,6 +28,8 @@ class RoleSimulationSkill(Skill):
         self.llm = llm
         self.simulation = simulation
         self.validator = PoliceRoleValidator()
+        self.role_intent = RoleIntentSkill(llm)
+        self.recommended_questions = RecommendedQuestionsSkill(llm)
 
     @staticmethod
     def _bounded_model_delta(value: Any) -> dict[str, int]:
@@ -123,9 +127,25 @@ class RoleSimulationSkill(Skill):
         if len(personas_by_id) != len(personas):
             raise WorkflowServiceError("INVALID_PERSONAS", "场景人物 person_id 必须唯一")
 
+        configured_participation = {item.person_id: item for item in scene.role_participation}
+        participation = {
+            persona.person_id: configured_participation.get(persona.person_id) or RoleParticipation(
+                person_id=persona.person_id,
+                present=True,
+                interaction_purpose="承担本场景中与其身份和已知事实相关的互动",
+                can_initiate=persona.is_primary,
+                can_interrupt=False,
+            )
+            for persona in personas
+        }
+        present_personas = [persona for persona in personas if participation[persona.person_id].present]
+        if not present_personas:
+            raise WorkflowServiceError("NO_PRESENT_PERSONAS", "当前场景没有在场且可参与交互的角色")
+
         policy_world = PoliceTrainingWorld(scene.scene_id, current_stage=scene.current_stage, rules=scene.rules)
         revealed_before = {str(item) for item in request.payload.get("revealed_fact_ids") or []}
         fact_access: dict[str, list[dict[str, Any]]] = {}
+        scene_fact_ids = set(scene.fact_ids) or {fact.fact_id for fact in case_world.facts}
         for persona in personas:
             allowed = policy_world.allowed_fact_ids(
                 persona,
@@ -133,6 +153,10 @@ class RoleSimulationSkill(Skill):
                 learner_input,
                 revealed_fact_ids=revealed_before,
             )
+            role_scope = set(participation[persona.person_id].relevant_fact_ids)
+            allowed &= scene_fact_ids | revealed_before
+            if role_scope:
+                allowed &= role_scope | revealed_before
             fact_access[persona.person_id] = [
                 fact.model_dump(mode="json")
                 for fact in case_world.facts
@@ -151,16 +175,31 @@ class RoleSimulationSkill(Skill):
                 fact_access=fact_access,
             )
 
+        public_history = list(request.payload.get("public_history") or request.payload.get("recent_dialogue") or [])
+        input_kind = str(request.payload.get("input_kind") or "dialogue")
+        target_role_name = str(request.payload.get("target_role_name") or "")
+        intent_result = self.role_intent.execute(
+            personas=present_personas,
+            learner_input=learner_input,
+            input_kind=input_kind,
+            target_role_name=target_role_name,
+            public_history=public_history,
+            fact_access=fact_access,
+            participation=participation,
+            max_actors=self.simulation.settings.tinytroupe_max_actors,
+        )
         simulation_turn = self.simulation.simulate_turn(
             workflow_id=request.workflow_id,
             idempotency_key=str(request.payload.get("_idempotency_key") or request.workflow_id),
             scene=scene,
-            personas=personas,
+            personas=present_personas,
             learner_input=learner_input,
-            input_kind=str(request.payload.get("input_kind") or "dialogue"),
-            target_role_name=str(request.payload.get("target_role_name") or ""),
-            history=list(request.payload.get("public_history") or request.payload.get("recent_dialogue") or []),
+            input_kind=input_kind,
+            target_role_name=target_role_name,
+            history=public_history,
             fact_access=fact_access,
+            case_facts=case_world.facts,
+            actor_ids=intent_result["actor_ids"],
             world_revision=hashlib.sha256(
                 json.dumps(
                     [fact.model_dump(mode="json") for fact in case_world.facts],
@@ -173,10 +212,8 @@ class RoleSimulationSkill(Skill):
         )
         audit_rows = simulation_turn.audit.get("roles") if isinstance(simulation_turn.audit.get("roles"), dict) else {}
         active_ids = {item["person_id"] for item in simulation_turn.active_speakers}
-        input_kind = str(request.payload.get("input_kind") or "dialogue")
-        affected = personas if input_kind == "action" else [item for item in personas if item.person_id in active_ids]
+        affected = present_personas if input_kind == "action" else [item for item in present_personas if item.person_id in active_ids]
         role_state_results: list[dict[str, Any]] = []
-        any_crisis = False
         for persona in affected:
             rule_delta = infer_rule_delta(learner_input, input_kind=input_kind)
             model_delta = self._bounded_model_delta((audit_rows.get(persona.person_id) or {}).get("state_delta"))
@@ -187,7 +224,6 @@ class RoleSimulationSkill(Skill):
                 previous_label=persona.state_label,
                 thresholds=request.payload.get("state_thresholds"),
             )
-            any_crisis = any_crisis or state_transition.crisis_blocked
             role_state_results.append({
                 "person_id": persona.person_id,
                 "platform_role_id": persona.platform_role_id,
@@ -210,35 +246,54 @@ class RoleSimulationSkill(Skill):
                 "content": turn["content"],
                 "revealed_fact_ids": revealed,
             })
-        if not reply_turns:
-            raise WorkflowServiceError("ROLE_VALIDATION_FAILED", "TinyTroupe 未产生有效 TALK", retryable=True)
-
-        target_name = str(request.payload.get("target_role_name") or "")
-        primary_turn = next((item for item in reply_turns if item["speaker_name"] == target_name), reply_turns[0])
+        primary_turn = next(
+            (item for item in reply_turns if item["speaker_name"] == target_role_name),
+            reply_turns[0] if reply_turns else None,
+        )
         primary_state = next(
-            (item for item in role_state_results if item["person_id"] == primary_turn["person_id"]),
+            (item for item in role_state_results if primary_turn and item["person_id"] == primary_turn["person_id"]),
             role_state_results[0] if role_state_results else None,
         )
-        if primary_state is None:
-            raise WorkflowServiceError("STATE_TRANSITION_FAILED", "本轮没有可持久化的角色状态")
 
         training = evaluate_training(request.payload, learner_input)
-        if any_crisis:
-            training["stage_advance_allowed"] = False
-            training["training_finished"] = False
+        recommendation_payload = {
+            **request.payload,
+            "revealed_fact_ids": list(dict.fromkeys([
+                *(request.payload.get("revealed_fact_ids") or []),
+                *revealed_all,
+            ])),
+            "public_history": [
+                *public_history,
+                {"role": input_kind, "content": learner_input},
+                *[
+                    {"role": "assistant", "person_id": item["person_id"], "speaker_name": item["speaker_name"], "content": item["content"]}
+                    for item in reply_turns
+                ],
+            ],
+        }
+        recommendation_items = self.recommended_questions.execute(
+            payload=recommendation_payload,
+            training_result=training,
+            role_intents=intent_result["decisions"],
+        )
+        training["recommended_question_items"] = recommendation_items
+        training["recommended_questions"] = [item["text"] for item in recommendation_items]
         simulation_meta = dict(simulation_turn.simulation_meta)
         simulation_meta["audit_model_calls"] = audit_calls or int(simulation_meta.get("audit_model_calls") or simulation_turn.audit.get("model_calls") or 0)
         simulation_meta["model_calls"] = int(simulation_meta.get("model_calls") or 0) + simulation_meta["audit_model_calls"]
         return {
-            "reply": primary_turn["content"],
-            "speaker": {"person_id": primary_turn["person_id"], "name": primary_turn["speaker_name"]},
+            "reply": primary_turn["content"] if primary_turn else "",
+            "speaker": {"person_id": primary_turn["person_id"], "name": primary_turn["speaker_name"]} if primary_turn else {},
             "reply_turns": reply_turns,
             "active_speakers": simulation_turn.active_speakers,
             "role_state_results": role_state_results,
             "revealed_fact_ids": list(dict.fromkeys(revealed_all)),
-            "state": primary_state["state"],
-            "state_delta": primary_state["state_delta"],
-            "role_state_label": primary_state["role_state_label"],
+            "state": primary_state["state"] if primary_state else {},
+            "state_delta": primary_state["state_delta"] if primary_state else {},
+            "role_state_label": primary_state["role_state_label"] if primary_state else "",
+            "role_intents": intent_result["decisions"],
+            "routing_summary": intent_result["routing_summary"],
+            "addressing_warning": "当前没有角色认为自己适合发言，请明确询问对象或调整问题。" if not reply_turns and input_kind != "action" else "",
             "simulation_meta": simulation_meta,
             **training,
         }

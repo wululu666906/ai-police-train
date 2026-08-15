@@ -147,7 +147,7 @@ async def speech_realtime(
             max_size=8 * 1024 * 1024,
         ) as upstream:
             await upstream.send(json.dumps(build_realtime_session_update(language=language)))
-            await websocket.send_json({"type": "ready", **get_speech_status()})
+            await websocket.send_json({"type": "ready", **status_payload})
 
             async def client_to_upstream() -> None:
                 while True:
@@ -194,7 +194,7 @@ async def speech_realtime(
                             {
                                 "type": "transcript_delta",
                                 "text": transcript_delta,
-                                "model": get_speech_status()["realtime_model"],
+                                "model": status_payload["realtime_model"],
                                 "event": event_type,
                             }
                         )
@@ -203,7 +203,7 @@ async def speech_realtime(
                             {
                                 "type": "transcript",
                                 "text": transcript,
-                                "model": get_speech_status()["realtime_model"],
+                                "model": status_payload["realtime_model"],
                                 "event": event_type,
                             }
                         )

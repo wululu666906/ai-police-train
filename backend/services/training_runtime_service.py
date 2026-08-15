@@ -31,14 +31,11 @@ DEFAULT_RUNTIME_STATE = {
     },
     "role_state_snapshots": {},
     "role_state_deltas": {},
-    "role_brains": {},
     "last_guidance_outcomes": {},
     "last_active_role_ids": [],
     "last_target_role_name": "",
     "conversation_summary": {},
     "agent_context": {},
-    "pending_role_replies": {},
-    "pending_role_replies_version": 1,
 }
 
 _RUNTIME_PASSTHROUGH_KEYS = (
@@ -55,6 +52,7 @@ _RUNTIME_PASSTHROUGH_KEYS = (
     "stage_advance_allowed",
     "action_effective",
     "knowledge_refs",
+    "recommended_question_items",
 )
 
 
@@ -153,72 +151,6 @@ def _normalize_role_state_deltas(value: Any) -> dict[str, dict[str, int]]:
     return deltas
 
 
-def _normalize_role_brains(value: Any) -> dict[str, dict[str, Any]]:
-    if not isinstance(value, dict):
-        return {}
-    brains: dict[str, dict[str, Any]] = {}
-    for raw_key, raw_brain in value.items():
-        key = str(raw_key or "").strip()
-        if not key or not isinstance(raw_brain, dict):
-            continue
-        brain = dict(raw_brain)
-        brain["role_id"] = brain.get("role_id")
-        brain["role_name"] = str(brain.get("role_name") or "").strip()
-        brain["person_id"] = str(brain.get("person_id") or "").strip()
-        brain["role_type"] = str(brain.get("role_type") or "").strip()
-        brain["brain_id"] = str(brain.get("brain_id") or "").strip()
-        brain["brain_signature"] = str(brain.get("brain_signature") or "").strip()
-        brain["last_topics"] = _dedupe_strings(brain.get("last_topics") or [])
-        brain["recent_response_topics"] = _dedupe_strings(brain.get("recent_response_topics") or brain["last_topics"])
-        brain["recent_user_topics"] = _dedupe_strings(brain.get("recent_user_topics") or [])
-        brain["last_self_utterances"] = _dedupe_strings(brain.get("last_self_utterances") or [])
-        brain["allowed_identity_terms"] = _dedupe_strings(brain.get("allowed_identity_terms") or [])
-        brain["known_facts"] = str(brain.get("known_facts") or "").strip()
-        brain["shared_case_facts"] = str(brain.get("shared_case_facts") or "").strip()
-        brain["hidden_truths"] = str(brain.get("hidden_truths") or "").strip()
-        brain["does_not_know"] = str(brain.get("does_not_know") or "").strip()
-        brain["role_case_evidence"] = _dedupe_strings(brain.get("role_case_evidence") or [])[-4:]
-        relationship_ledger = brain.get("relationship_ledger") if isinstance(brain.get("relationship_ledger"), list) else []
-        brain["relationship_ledger"] = [
-            {
-                "source": str(item.get("source") or "").strip(),
-                "statement": str(item.get("statement") or "").strip(),
-            }
-            for item in relationship_ledger[-8:]
-            if isinstance(item, dict) and str(item.get("statement") or "").strip()
-        ]
-        public_observations = brain.get("public_observations") if isinstance(brain.get("public_observations"), list) else []
-        brain["public_observations"] = [
-            {
-                "speaker_name": str(item.get("speaker_name") or "").strip(),
-                "speaker_role_id": item.get("speaker_role_id"),
-                "content": str(item.get("content") or "").strip(),
-                "source": str(item.get("source") or "公开场景台词").strip(),
-            }
-            for item in public_observations[-8:]
-            if isinstance(item, dict) and str(item.get("content") or "").strip()
-        ]
-        raw_private_turns = brain.get("private_turns") if isinstance(brain.get("private_turns"), list) else []
-        private_turns: list[dict[str, Any]] = []
-        for item in raw_private_turns[-6:]:
-            if not isinstance(item, dict):
-                continue
-            learner_text = str(item.get("learner_text") or "").strip()
-            self_utterances = _dedupe_strings(item.get("self_utterances") or [])
-            topics = _dedupe_strings(item.get("topics") or [])
-            if learner_text or self_utterances:
-                private_turns.append(
-                    {
-                        "learner_text": learner_text,
-                        "self_utterances": self_utterances[-4:],
-                        "topics": topics[-4:],
-                    }
-                )
-        brain["private_turns"] = private_turns
-        brains[key] = brain
-    return brains
-
-
 def _normalize_role_id_list(value: Any) -> list[int]:
     result: list[int] = []
     seen: set[int] = set()
@@ -232,25 +164,6 @@ def _normalize_role_id_list(value: Any) -> list[int]:
         seen.add(numeric)
         result.append(numeric)
     return result
-
-
-def _normalize_pending_role_replies(value: Any) -> dict[str, dict[str, str]]:
-    if not isinstance(value, dict):
-        return {}
-    pending: dict[str, dict[str, str]] = {}
-    for raw_key, raw_item in value.items():
-        key = str(raw_key or "").strip()
-        if not key:
-            continue
-        item = raw_item if isinstance(raw_item, dict) else {"content": raw_item}
-        content = str(item.get("content") or "").strip()
-        if not content:
-            continue
-        pending[key] = {
-            "role_name": str(item.get("role_name") or "").strip(),
-            "content": content,
-        }
-    return pending
 
 
 def load_runtime_state(raw_value: Any) -> dict[str, Any]:
@@ -271,13 +184,10 @@ def load_runtime_state(raw_value: Any) -> dict[str, Any]:
     state["state_snapshot"] = _normalize_state_snapshot(parsed.get("state_snapshot"))
     state["role_state_snapshots"] = _normalize_role_state_snapshots(parsed.get("role_state_snapshots"))
     state["role_state_deltas"] = _normalize_role_state_deltas(parsed.get("role_state_deltas"))
-    state["role_brains"] = _normalize_role_brains(parsed.get("role_brains"))
     state["last_active_role_ids"] = _normalize_role_id_list(parsed.get("last_active_role_ids"))
     state["last_target_role_name"] = str(parsed.get("last_target_role_name") or "").strip()
     state["conversation_summary"] = parsed.get("conversation_summary") if isinstance(parsed.get("conversation_summary"), dict) else {}
     state["agent_context"] = parsed.get("agent_context") if isinstance(parsed.get("agent_context"), dict) else {}
-    state["pending_role_replies"] = _normalize_pending_role_replies(parsed.get("pending_role_replies"))
-    state["pending_role_replies_version"] = 1
     progress = parsed.get("assessment_progress")
     if isinstance(progress, dict):
         state["assessment_progress"] = progress
@@ -302,13 +212,10 @@ def dump_runtime_state(state: dict[str, Any]) -> str:
         "state_snapshot": _normalize_state_snapshot((state or {}).get("state_snapshot")),
         "role_state_snapshots": _normalize_role_state_snapshots((state or {}).get("role_state_snapshots")),
         "role_state_deltas": _normalize_role_state_deltas((state or {}).get("role_state_deltas")),
-        "role_brains": _normalize_role_brains((state or {}).get("role_brains")),
         "last_active_role_ids": _normalize_role_id_list((state or {}).get("last_active_role_ids")),
         "last_target_role_name": str((state or {}).get("last_target_role_name") or "").strip(),
         "conversation_summary": (state or {}).get("conversation_summary") if isinstance((state or {}).get("conversation_summary"), dict) else {},
         "agent_context": (state or {}).get("agent_context") if isinstance((state or {}).get("agent_context"), dict) else {},
-        "pending_role_replies": _normalize_pending_role_replies((state or {}).get("pending_role_replies")),
-        "pending_role_replies_version": 1,
     }
     for key in _RUNTIME_PASSTHROUGH_KEYS:
         if key in (state or {}):

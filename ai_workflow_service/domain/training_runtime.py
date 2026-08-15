@@ -50,11 +50,16 @@ def evaluate_points(points: list[dict[str, Any]], transcript: list[dict[str, Any
 
 def evaluate_training(payload: dict[str, Any], learner_input: str) -> dict[str, Any]:
     stage = dict(payload.get("stage") or {})
-    transcript = list(payload.get("recent_dialogue") or []) + [{"role": payload.get("input_kind", "user"), "content": learner_input}]
+    transcript = list(payload.get("public_history") or payload.get("recent_dialogue") or [])
+    transcript.append({"role": payload.get("input_kind", "user"), "content": learner_input})
     actions = list(payload.get("completed_action_ids") or [])
     if payload.get("input_kind") == "action" and payload.get("action_id"):
         actions.append(_text(payload.get("action_id")))
     results = evaluate_points(stage.get("assessment_points") or [], transcript, actions)
+    previously_completed = {_text(item) for item in payload.get("completed_point_ids") or []}
+    for item in results:
+        if _text(item.get("id")) in previously_completed:
+            item.update({"status": "hit", "hit_ratio": 1.0, "evidence": [*(item.get("evidence") or []), "prior_turn"]})
     required = [item for item in results if item.get("required")]
     completed_ids = [_text(item.get("id")) for item in results if item.get("status") == "hit"]
     required_complete = all(item.get("status") == "hit" for item in required) if required else False
@@ -78,7 +83,6 @@ def evaluate_training(payload: dict[str, Any], learner_input: str) -> dict[str, 
     requirements = [_text(item.get("label") or item.get("content") or item.get("id")) for item in results]
     satisfied = [_text(item.get("label") or item.get("content") or item.get("id")) for item in results if item.get("status") == "hit"]
     missing = [_text(item.get("label") or item.get("content") or item.get("id")) for item in results if item.get("status") != "hit"]
-    recommended = [f"请进一步核实：{item}" for item in missing[:3]]
     return {
         "current_stage": _text(next_stage.get("stage_name")) if next_stage else current_name,
         "stage_advanced": bool(next_stage),
@@ -97,8 +101,8 @@ def evaluate_training(payload: dict[str, Any], learner_input: str) -> dict[str, 
         "stage_completion_requirements": requirements,
         "stage_completion_satisfied": satisfied,
         "stage_completion_missing": missing,
-        "recommended_questions": recommended,
-        "recommended_question_items": [{"text": item, "category": "缺失项", "priority": "high"} for item in recommended],
+        "recommended_questions": [],
+        "recommended_question_items": [],
         "communication_feedback": {
             "level": "warning" if missing else "success",
             "tags": ["stage_gap"] if missing else ["stage_complete"],

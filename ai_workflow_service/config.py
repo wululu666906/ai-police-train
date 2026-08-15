@@ -40,8 +40,8 @@ class Settings:
     complete_story_reasoning_mode: str = (os.getenv("COMPLETE_STORY_REASONING_MODE") or os.getenv("CASE_STORY_REASONING_MODE") or "enabled").strip().lower()
     complete_story_reasoning_effort: str = (os.getenv("COMPLETE_STORY_REASONING_EFFORT") or os.getenv("CASE_STORY_REASONING_EFFORT") or "max").strip().lower()
     tinytroupe_mode: str = (os.getenv("TINY_TROUPE_MODE") or "world").strip().lower()
-    tinytroupe_max_actors: int = max(1, min(6, int(os.getenv("TINY_TROUPE_MAX_ACTORS", "6"))))
-    tinytroupe_model_concurrency: int = max(1, min(6, int(os.getenv("TINY_TROUPE_MODEL_CONCURRENCY", "6"))))
+    tinytroupe_max_actors: int = max(1, min(6, int(os.getenv("TINY_TROUPE_MAX_ACTORS", "1"))))
+    tinytroupe_model_concurrency: int = max(1, min(6, int(os.getenv("TINY_TROUPE_MODEL_CONCURRENCY", "1"))))
     tinytroupe_max_tokens: int = max(400, int(os.getenv("TINY_TROUPE_MAX_TOKENS", "1600")))
     tinytroupe_state_version: int = 1
 

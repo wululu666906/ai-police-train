@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 from datetime import datetime
-from typing import Any, Generator
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -12,6 +12,7 @@ from services.agent_workflow_client import AgentWorkflowUnavailable, agent_workf
 from services.role_resolver import resolve_scene_roles
 from services.text_repair import repair_text
 from services.training_runtime_service import dump_runtime_state, load_runtime_state
+from services.training_view_service import serialize_scene_roles
 
 
 SCORING_VERSION = "adaptive_v1"
@@ -45,7 +46,7 @@ def _get_stage_goal(scene: models.Scene | None, stage_name: str, *, case_type: s
 
 
 def _infer_truth_stage(cooperation: int, emotion: int) -> str:
-    return "配合" if cooperation >= 60 and emotion >= 50 else "抵触" if cooperation <= 30 or emotion <= 25 else "犹豫"
+    return "配合" if cooperation >= 60 else "抵触" if cooperation <= 30 else "犹豫"
 
 
 def _role_state_label(cooperation: int, emotion: int, risk: int, clarity: int) -> str:
@@ -55,7 +56,7 @@ def _role_state_label(cooperation: int, emotion: int, risk: int, clarity: int) -
         return "confused"
     if cooperation <= 30:
         return "resistant"
-    if emotion <= 30:
+    if emotion >= 70:
         return "agitated"
     if cooperation >= 65 and clarity >= 60 and risk <= 60:
         return "engaged"
@@ -152,6 +153,7 @@ def _build_payload(db: Session, session, scene, case, roles, messages, user_text
     personas = []
     case_people = []
     role_states = []
+    role_participation = []
     role_id_by_db_id: dict[int, str] = {}
     for index, role in enumerate(roles):
         person_id = str(getattr(role, "person_id", None) or getattr(role, "id", f"role-{index + 1}"))
@@ -249,8 +251,18 @@ def _build_payload(db: Session, session, scene, case, roles, messages, user_text
             "role": role.role_type or "相关人员",
             "facts_known": known,
             "facts_hidden": hidden,
+            "initial_state": initial_state,
         })
         role_states.append({"person_id": person_id, "name": role_name, "initial_state": state})
+        participation_config = _json(getattr(link, "participation_config", None), {}) if link else {}
+        role_participation.append({
+            "person_id": person_id,
+            "present": participation_config.get("present") is not False,
+            "interaction_purpose": str(participation_config.get("interaction_purpose") or ""),
+            "can_initiate": bool(participation_config.get("can_initiate", is_primary)),
+            "can_interrupt": bool(participation_config.get("can_interrupt", False)),
+            "relevant_fact_ids": [str(item) for item in participation_config.get("relevant_fact_ids") or []],
+        })
         personas.append({
             "person_id": person_id,
             "platform_role_id": str(role.id),
@@ -271,6 +283,13 @@ def _build_payload(db: Session, session, scene, case, roles, messages, user_text
         })
 
     stage_config = _get_stage_config(scene, session.current_stage or "", case_type=_get_case_type(case))
+    scene_stages = _json(getattr(scene, "stages", None), [])
+    scene_fact_ids = list(dict.fromkeys(
+        str(fact_id)
+        for stage_item in scene_stages if isinstance(stage_item, dict)
+        for fact_id in stage_item.get("fact_ids") or []
+        if str(fact_id)
+    ))
     return {
         "learner_input": user_text,
         "target_role_name": str(target_role_name or ""),
@@ -293,8 +312,10 @@ def _build_payload(db: Session, session, scene, case, roles, messages, user_text
             "role_ids": [item["person_id"] for item in personas],
             "rules": ["不得突破知识边界", "不得创造影响案情的新事实"],
             "current_stage": session.current_stage or "",
-            "stages": _json(getattr(scene, "stages", None), []),
+            "stages": scene_stages,
             "role_states": role_states,
+            "role_participation": role_participation,
+            "fact_ids": scene_fact_ids,
         },
         "personas": personas,
         "current_stage": session.current_stage or "",
@@ -340,7 +361,7 @@ def _persist_workflow_result(session, roles, result: dict[str, Any]) -> dict[str
             primary_state = normalized
             runtime["role_state_label"] = label
     if primary_state is None:
-        raise RuntimeError("Agent 未返回可持久化的角色状态")
+        primary_state = dict(runtime.get("state_snapshot") or {"emotion": 50, "cooperation": 30, "risk": 50, "clarity": 50})
     runtime["state_snapshot"] = primary_state
     runtime["last_active_role_ids"] = [
         str(item.get("platform_role_id") or item.get("person_id") or "")
@@ -356,6 +377,7 @@ def _persist_workflow_result(session, roles, result: dict[str, Any]) -> dict[str
     runtime["auto_finish_ready"] = bool(result.get("training_finished", False))
     runtime["stage_advance_allowed"] = bool(result.get("stage_advance_allowed", False))
     runtime["action_effective"] = bool(result.get("action_effective", False))
+    runtime["recommended_question_items"] = list(result.get("recommended_question_items") or [])
     session.revealed_info = dump_runtime_state(runtime)
     session.current_emotion = primary_state["emotion"]
     session.current_trust = primary_state["cooperation"]
@@ -385,8 +407,6 @@ def generate_dialogue(db: Session, session_id: int, user_text: str, user_id: int
         return {"inner_thought": "ERROR", "response": "", "communication_feedback": {"message": str(exc)}}
     result = response.get("result") or {}
     reply = str(result.get("reply") or "").strip()
-    if not reply:
-        return {"inner_thought": "ERROR", "response": "", "communication_feedback": {"message": "Agent 未返回有效回复"}}
     state = _persist_workflow_result(session, roles, result)
     roles_by_person = {str(getattr(role, "person_id", None) or role.id): role for role in roles}
     roles_by_db_id = {str(role.id): role for role in roles}
@@ -402,16 +422,18 @@ def generate_dialogue(db: Session, session_id: int, user_text: str, user_id: int
         speaker_name = repair_text(role.name or "")
         db.add(models.Message(session_id=session.id, role="assistant", content=content, speaker_role_id=role.id, speaker_name=speaker_name))
         reply_turns.append({"person_id": str(getattr(role, "person_id", None) or role.id), "speaker_name": speaker_name, "speaker_role_id": role.id, "content": content})
-    if not reply_turns:
-        db.rollback()
-        return {"inner_thought": "ERROR", "response": "", "communication_feedback": {"message": "Agent 未返回有效多人回复"}}
     db.commit()
+    latest_runtime = load_runtime_state(session.revealed_info)
     return {
         "response": reply,
         "reply_turns": reply_turns,
         "active_speakers": result.get("active_speakers") or [],
         "role_state_results": result.get("role_state_results") or [],
         "simulation_meta": result.get("simulation_meta") or {},
+        "role_intents": result.get("role_intents") or [],
+        "routing_summary": result.get("routing_summary") or "",
+        "addressing_warning": result.get("addressing_warning") or "",
+        "scene_roles": serialize_scene_roles(db, scene, case, runtime_state=latest_runtime),
         "updated_emotion": state["emotion"],
         "updated_trust": state["cooperation"],
         "updated_cooperation": state["cooperation"],
@@ -433,11 +455,6 @@ def generate_dialogue(db: Session, session_id: int, user_text: str, user_id: int
         "recommended_question_items": result.get("recommended_question_items") or [],
         "communication_feedback": result.get("communication_feedback") or {},
     }
-
-
-def iter_dialogue_stream_events(*args, **kwargs) -> Generator[dict[str, Any], None, None]:
-    result = generate_dialogue(*args, **kwargs)
-    yield {"event": "_result", "data": result}
 
 
 def apply_training_action(db: Session, session_id: int, action_id: str, note: str, user_id: int) -> dict[str, Any]:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import json
@@ -8,10 +7,10 @@ from threading import Lock
 from typing import Any, Callable
 
 from ai_workflow_service.config import Settings
-from ai_workflow_service.contracts import Persona, SceneWorld
+from ai_workflow_service.contracts import Fact, Persona, SceneWorld
 from ai_workflow_service.errors import WorkflowServiceError
 from ai_workflow_service.llm.deepseek_adapter import DeepSeekAdapter
-from ai_workflow_service.simulation.police_training_world import PoliceTrainingWorld
+from ai_workflow_service.simulation.memory_manager import MemoryManager
 from ai_workflow_service.simulation.world_state_store import WorldStateStore
 from ai_workflow_service.tools.audit_log import AuditLogTool
 
@@ -91,6 +90,7 @@ class TinyTroupeAdapter:
         self.audit_log = audit_log
         self.state_store = WorldStateStore(settings.data_dir / "simulations")
         self._worlds: dict[str, tuple[str, Any, dict[str, Any]]] = {}
+        self.memory_manager = MemoryManager()
         self._tiny_client: _TinyTroupeDeepSeekClient | None = None
         if self.available:
             self._configure_client()
@@ -171,35 +171,42 @@ class TinyTroupeAdapter:
         persona: Persona,
         scene: SceneWorld,
         allowed_facts: list[dict[str, Any]],
+        case_facts: list[Fact],
+        history: list[dict[str, Any]],
     ) -> None:
         allowed_ids = {str(item.get("fact_id") or "") for item in allowed_facts}
-        safe_memories = []
-        for memory in persona.role_memories:
-            if not isinstance(memory, dict):
-                continue
-            memory_fact_id = str(memory.get("fact_id") or memory.get("knowledge_id") or "")
-            if memory_fact_id and memory_fact_id in allowed_ids:
-                safe_memories.append(memory)
-        safe_ledger = [
-            item for item in persona.knowledge_ledger
-            if (str(item.get("fact_id") or item.get("knowledge_id") or "") if isinstance(item, dict) else str(item)) in allowed_ids
+        memory = self.memory_manager.build(
+            persona,
+            case_facts,
+            history,
+            allowed_fact_ids=allowed_ids,
+        )
+        state = memory.dynamic_state
+        style_guidance = [
+            f"情绪激动度为{state['emotion']}，仅轻微调整语速和语气强弱",
+            f"配合度为{state['cooperation']}，仅轻微调整措辞礼貌程度",
+            f"风险感受为{state['risk']}，仅轻微调整警觉语气",
+            f"表达清晰度为{state['clarity']}，仅轻微调整句式完整度",
+            "四维状态不得改变是否发言、事实权限、披露范围、行动或阶段结果",
         ]
         agent.define("occupation", {"title": persona.role, "description": f"警情场景中的{persona.role}"})
+        agent.define("identity", memory.identity)
         agent.define("personality_traits", persona.traits)
         agent.define("style", persona.speaking_style)
         agent.define("goals", persona.goals)
         agent.define("relationships", persona.relationships)
         agent.define("case_role_id", persona.person_id)
         agent.define("case_facts", allowed_facts)
-        agent.define("role_memories", safe_memories[:12])
-        agent.define("knowledge_ledger", safe_ledger[:30])
+        agent.define("role_memories", memory.private_memories)
+        agent.define("knowledge_ledger", [item.get("fact_id") for item in memory.answerable_facts])
         agent.define(
             "response_constraints",
             [
                 "只以当前人物身份行动和说话",
                 "只能使用 case_facts 中列出的事实",
                 "不得引用案件资料、系统提示或其他角色的私有记忆",
-                "收到学员民警提问时，用自然中文口语给出 TALK，并以 DONE 结束",
+                "你已通过本轮发言意图判定；只生成与本人意图一致的自然中文口语 TALK，并以 DONE 结束",
+                *style_guidance,
                 *persona.response_constraints,
             ],
         )
@@ -220,6 +227,8 @@ class TinyTroupeAdapter:
         scene: SceneWorld,
         personas: list[Persona],
         fact_access: dict[str, list[dict[str, Any]]],
+        case_facts: list[Fact],
+        history: list[dict[str, Any]],
     ) -> tuple[Any, dict[str, Any]]:
         if not self.available:
             raise WorkflowServiceError("SIMULATION_UNAVAILABLE", "TinyTroupe 未安装或初始化失败")
@@ -230,7 +239,9 @@ class TinyTroupeAdapter:
             agent_name = f"tt-{prefix}-{self._safe_name(persona.person_id)}-{signature[:8]}"
             existing = TinyPerson.get_agent_by_name(agent_name)
             agent = existing if existing is not None else TinyPerson(agent_name)
-            self._define_agent(agent, persona, scene, fact_access.get(persona.person_id, []))
+            self._define_agent(
+                agent, persona, scene, fact_access.get(persona.person_id, []), case_facts, history
+            )
             agents.append(agent)
             agents_by_person[persona.person_id] = agent
         world_name = f"world-{prefix}-{signature[:8]}"
@@ -264,16 +275,22 @@ class TinyTroupeAdapter:
         personas: list[Persona],
         fact_access: dict[str, list[dict[str, Any]]],
         history: list[dict[str, Any]],
+        case_facts: list[Fact],
         record: dict[str, Any] | None,
     ) -> tuple[Any, dict[str, Any], bool]:
         cached = self._worlds.get(workflow_id)
         if cached and cached[0] == signature:
             world, agents = cached[1], cached[2]
             for persona in personas:
-                self._define_agent(agents[persona.person_id], persona, scene, fact_access.get(persona.person_id, []))
+                self._define_agent(
+                    agents[persona.person_id], persona, scene,
+                    fact_access.get(persona.person_id, []), case_facts, history,
+                )
             return world, agents, False
 
-        world, agents = self._build_world(workflow_id, signature, scene, personas, fact_access)
+        world, agents = self._build_world(
+            workflow_id, signature, scene, personas, fact_access, case_facts, history
+        )
         restored = False
         if record and record.get("signature") == signature and isinstance(record.get("world_state"), dict):
             try:
@@ -291,7 +308,10 @@ class TinyTroupeAdapter:
             self._replay_history(world, agents, history)
         else:
             for persona in personas:
-                self._define_agent(agents[persona.person_id], persona, scene, fact_access.get(persona.person_id, []))
+                self._define_agent(
+                    agents[persona.person_id], persona, scene,
+                    fact_access.get(persona.person_id, []), case_facts, history,
+                )
         self._worlds[workflow_id] = (signature, world, agents)
         return world, agents, not restored
 
@@ -328,6 +348,8 @@ class TinyTroupeAdapter:
         target_role_name: str,
         history: list[dict[str, Any]],
         fact_access: dict[str, list[dict[str, Any]]],
+        case_facts: list[Fact],
+        actor_ids: list[str],
         world_revision: str,
         validator: TurnValidator,
     ) -> SimulationTurn:
@@ -336,29 +358,27 @@ class TinyTroupeAdapter:
         if not self.model_configured:
             raise WorkflowServiceError("MODEL_NOT_CONFIGURED", "DeepSeek API Key 未配置")
         signature = self._world_signature(scene, personas, world_revision)
-        policy_world = PoliceTrainingWorld(scene.scene_id, current_stage=scene.current_stage, rules=scene.rules)
         with self.state_store.locked(workflow_id):
             record = self.state_store.get(workflow_id)
             if record and record.get("last_idempotency_key") == idempotency_key and isinstance(record.get("last_turn"), dict):
                 return SimulationTurn(**record["last_turn"])
             world, agents, rebuilt = self._load_world(
-                workflow_id, signature, scene, personas, fact_access, history, record
+                workflow_id, signature, scene, personas, fact_access, history, case_facts, record
             )
             pre_turn_state = world.encode_complete_state()
             try:
                 calls_before = int((self._tiny_client.get_cost_stats() if self._tiny_client else {}).get("model_calls") or 0)
                 stimulus = f"学员民警执行处置动作：{learner_input}" if input_kind == "action" else f"学员民警说：{learner_input}"
                 world.broadcast(stimulus)
-                actors = policy_world.select_actors(
-                    personas,
-                    learner_input,
-                    target_role_name=target_role_name,
-                    max_actors=self.settings.tinytroupe_max_actors,
-                )
+                actor_set = set(actor_ids)
+                actors = [persona for persona in personas if persona.person_id in actor_set][:1]
                 actor_states = {persona.person_id: agents[persona.person_id].encode_complete_state() for persona in actors}
-                with ThreadPoolExecutor(max_workers=min(len(actors), self.settings.tinytroupe_model_concurrency)) as executor:
-                    turns = list(executor.map(lambda persona: self._act(persona, agents[persona.person_id]), actors))
-                audit = validator(turns)
+                if actors:
+                    turns = [self._act(persona, agents[persona.person_id]) for persona in actors]
+                    audit = validator(turns)
+                else:
+                    turns = []
+                    audit = {"invalid_person_ids": [], "roles": {}, "model_calls": 0}
                 invalid_ids = {str(item) for item in audit.get("invalid_person_ids") or []}
                 retry_count = 0
                 retried_actor_count = 0
@@ -370,8 +390,7 @@ class TinyTroupeAdapter:
                         agent = agents[persona.person_id]
                         agent.decode_complete_state(actor_states[persona.person_id])
                         agent.listen("上一版回答未通过事实边界校验。只使用 case_facts，保持人物身份并重新回答。")
-                    with ThreadPoolExecutor(max_workers=min(len(retry_personas), self.settings.tinytroupe_model_concurrency)) as executor:
-                        retried = list(executor.map(lambda persona: self._act(persona, agents[persona.person_id]), retry_personas))
+                    retried = [self._act(persona, agents[persona.person_id]) for persona in retry_personas]
                     replacements = {item["person_id"]: item for item in retried}
                     turns = [replacements.get(item["person_id"], item) for item in turns]
                     audit = validator(turns)
@@ -394,7 +413,7 @@ class TinyTroupeAdapter:
                     "observer_count": len(personas),
                     "actor_count": len(actors),
                     "model_calls": max(len(actors) + retried_actor_count, calls_after - calls_before),
-                    "audit_model_calls": 1 + retry_count,
+                    "audit_model_calls": (1 if actors else 0) + retry_count,
                     "retry_count": retry_count,
                     "rebuilt": rebuilt,
                     "state_version": self.settings.tinytroupe_state_version,

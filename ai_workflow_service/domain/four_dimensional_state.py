@@ -27,7 +27,7 @@ DEFAULT_THRESHOLDS: dict[str, dict[str, dict[str, int]]] = {
     "crisis": {"enter": {"risk_gte": 80}, "exit": {"risk_lt": 75}},
     "confused": {"enter": {"clarity_lte": 30}, "exit": {"clarity_gt": 35}},
     "resistant": {"enter": {"cooperation_lte": 30}, "exit": {"cooperation_gt": 35}},
-    "agitated": {"enter": {"emotion_lte": 30}, "exit": {"emotion_gt": 35}},
+    "agitated": {"enter": {"emotion_gte": 70}, "exit": {"emotion_lt": 65}},
     "engaged": {"enter": {"cooperation_gte": 65, "clarity_gte": 60, "risk_lte": 60}, "exit": {"cooperation_lt": 60}},
     "guarded": {"enter": {}, "exit": {}},
 }
@@ -111,9 +111,9 @@ def infer_rule_delta(text: str, *, input_kind: str = "dialogue") -> dict[str, in
     risk_control = ("隔离", "疏散", "增援", "控制", "急救", "保护现场", "停止危险")
     clarifying = ("时间", "地点", "谁", "什么", "经过", "证据", "是否", "为什么")
     delta["cooperation"] += 4 if any(token in content for token in positive) else 0
-    delta["emotion"] += 3 if any(token in content for token in positive) else 0
+    delta["emotion"] -= 3 if any(token in content for token in positive) else 0
     delta["cooperation"] -= 7 if any(token in content for token in coercive) else 0
-    delta["emotion"] -= 6 if any(token in content for token in coercive) else 0
+    delta["emotion"] += 6 if any(token in content for token in coercive) else 0
     delta["risk"] -= 6 if any(token in content for token in risk_control) else 0
     delta["clarity"] += 5 if any(token in content for token in clarifying) else 0
     if input_kind == "action" and content:

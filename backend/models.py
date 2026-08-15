@@ -245,6 +245,7 @@ class SceneRole(Base):
     role_id = Column(Integer, ForeignKey("roles.id"))
     is_primary = Column(Boolean, default=False)
     initial_state = Column(Text, default="{}")
+    participation_config = Column(Text, default="{}")
 
 
 class AvatarImage(Base):

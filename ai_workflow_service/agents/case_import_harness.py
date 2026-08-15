@@ -39,18 +39,32 @@ class CaseImportHarnessAgent:
         return {"cleaned_text": cleaned, "excluded_appendix": excluded, "original_chars": len(original), "cleaned_chars": len(cleaned)}
 
     def _blueprints(self, world: Any, story: str, *, trace_id: str, workflow_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        system_prompt = (
+            "依据案件故事世界和训练目标生成必要训练场景，只输出 JSON：{scenes:[...]}。"
+            + admission_prompt_block()
+            + "学员固定为一线处置民警，禁止生成检察审查、法庭辩论、定罪量刑场景。场景必须完整、互不重复且"
+            "只能为可执行的警情处置训练目标服务，单场景足够时只生成 1 个，最多 4 个。每个场景必须使用不同且明确的"
+            "scene_name，并含 student_role、training_entry_phase、training_goal、dispatch_brief、"
+            "first_impression、expected_outcomes、scene_roles；角色四维初始值已由 case_world.persons.initial_state 给出，"
+            "场景节点只能继承，不得另行生成或修改。"
+            "scene_roles 还必须包含 person_id、present、interaction_purpose、can_initiate、can_interrupt、relevant_fact_ids。"
+            "first_impression 必须为 80-160 字单段文本，只写民警进入场景时可直接观察到的环境、人员位置、"
+            "当前动作、伤情或危险物、声音与即时风险；禁止接警或报警转述、任务说明、人物内心、"
+            "隐藏事实、案件结论和裁判结果。"
+            "场景 fact_ids，以及 stages/assessment_points/action_catalog/completion_rules/end_conditions。"
+            "每个考核点必须给出可由学员话语或动作识别的 keywords 或 related_actions。"
+            "每个阶段也必须包含 fact_ids；roles 只放本场景需要对话的人物，不得把全部人物复制到每个场景。"
+            "所有人物和事实编号必须来自 case_world，不得超出人物和事实边界。"
+            "不要用通用模板补齐不适合训练的案件；若没有高质量纯对话场景，返回 scenes 空数组。"
+        )
+        request_payload: dict[str, Any] = {
+            "case_world": world.model_dump(mode="json"),
+            "complete_story": story,
+        }
         try:
             result = self.llm.complete_json(
-                system=("依据案件故事世界和训练目标生成必要训练场景，只输出 JSON：{scenes:[...]}。"
-                        + admission_prompt_block()
-                        + "学员固定为一线处置民警，禁止生成检察审查、法庭辩论、定罪量刑场景。场景必须完整、互不重复且"
-                        "只能为可执行的警情处置训练目标服务，单场景足够时只生成 1 个，最多 4 个。每个场景必须使用不同且明确的"
-                        "scene_name，并含 student_role、training_entry_phase、training_goal、dispatch_brief、"
-                        "first_impression、expected_outcomes、scene_roles.initial_state(emotion/cooperation/risk/clarity)、"
-                        "场景 fact_ids，以及 stages/assessment_points/action_catalog/completion_rules/end_conditions。"
-                        "每个阶段也必须包含 fact_ids；roles 只放本场景需要对话的人物，不得把全部人物复制到每个场景。"
-                        "所有人物和事实编号必须来自 case_world，不得超出人物和事实边界。"),
-                user=json.dumps({"case_world": world.model_dump(mode="json"), "complete_story": story}, ensure_ascii=False),
+                system=system_prompt,
+                user=json.dumps(request_payload, ensure_ascii=False),
                 max_tokens=7000, max_attempts=1,
             )
             raw_scenes = result.get("scenes") if isinstance(result.get("scenes"), list) else []
@@ -58,16 +72,40 @@ class CaseImportHarnessAgent:
             if exc.code not in {"MODEL_REQUEST_FAILED", "MODEL_NOT_CONFIGURED"}:
                 raise
             raw_scenes = []
-        if not raw_scenes:
-            raw_scenes = [{}]
-            self._record(trace_id, workflow_id, "scene_blueprint_agent", "rule_fallback", reason="model_unavailable_or_empty")
         normalized = [normalize_blueprint(
             raw, case_id=world.case_id, index=i, title=world.title, summary=world.summary,
             persons=world.persons, facts=world.facts, default_location=world.locations[0] if world.locations else "",
         ) for i, raw in enumerate(raw_scenes[:4])]
         selected = select_necessary_scenes(normalized)
-        if not selected:
-            raise WorkflowServiceError("INVALID_SCENE_BLUEPRINT", "未生成有效的必要训练场景")
+        repair_attempted = False
+        if raw_scenes and not selected:
+            repair_attempted = True
+            rejection_feedback = []
+            required_fields = ("scene_name", "training_goal", "first_impression", "stages", "fact_ids", "role_ids", "expected_outcomes")
+            for item in normalized:
+                reasons = [f"missing_{field}" for field in required_fields if not item.get(field)]
+                _, rejected_one = filter_dialogue_admitted_scenes([item], allow_remap=False)
+                if rejected_one:
+                    reasons.extend((rejected_one[0].get("dialogue_admission") or {}).get("reasons") or [])
+                rejection_feedback.append({
+                    "scene_name": item.get("scene_name"),
+                    "reasons": list(dict.fromkeys(reasons)),
+                })
+            try:
+                repaired = self.llm.complete_json(
+                    system=system_prompt + "这是唯一一次修复机会。只修复给定准入问题，不得套用默认场景。",
+                    user=json.dumps({**request_payload, "rejected_candidates": rejection_feedback}, ensure_ascii=False),
+                    max_tokens=7000,
+                    max_attempts=1,
+                )
+                repaired_raw = repaired.get("scenes") if isinstance(repaired.get("scenes"), list) else []
+            except WorkflowServiceError:
+                repaired_raw = []
+            normalized = [normalize_blueprint(
+                raw, case_id=world.case_id, index=i, title=world.title, summary=world.summary,
+                persons=world.persons, facts=world.facts, default_location=world.locations[0] if world.locations else "",
+            ) for i, raw in enumerate(repaired_raw[:4])]
+            selected = select_necessary_scenes(normalized)
         _admitted, rejected = filter_dialogue_admitted_scenes(normalized, allow_remap=False)
         scene_admission = {
             "rule_version": "dialogue_scene_admission_v1",
@@ -83,6 +121,8 @@ class CaseImportHarnessAgent:
                 for item in rejected
             ],
             "sufficient": all(isinstance(item.get("dialogue_admission"), dict) and item["dialogue_admission"].get("admitted") for item in selected),
+            "repair_attempted": repair_attempted,
+            "no_suitable_scene": not selected,
         }
         if rejected:
             self._record(
@@ -114,7 +154,7 @@ class CaseImportHarnessAgent:
         return {
             "cleaning": cleaned, "complete_story": story, "case_world": world.model_dump(mode="json"),
             "role_memories": memories, "story_world": story_world,
-            "scene_blueprint": scenes[0], "scene_blueprints": scenes, "necessary_scenes": scenes,
+            "scene_blueprint": scenes[0] if scenes else {}, "scene_blueprints": scenes, "necessary_scenes": scenes,
             "case_import_quality": {
                 "story": story_audit,
                 "facts": fact_audit,

@@ -1,5 +1,6 @@
 import os
 import socket
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -16,6 +17,8 @@ from services.qwen_config import (
 load_backend_env()
 
 QWEN_ASR_API_KEY = qwen_api_key()
+_PROXY_CACHE_TTL_SECONDS = 30.0
+_proxy_cache: tuple[str, float, str | None] | None = None
 
 
 def get_qwen_asr_api_key() -> str:
@@ -72,7 +75,14 @@ def _local_proxy_url_for_realtime(url: str) -> str | None:
 
 
 def get_qwen_realtime_asr_proxy() -> str | None:
-    return _local_proxy_url_for_realtime(get_qwen_realtime_asr_url())
+    global _proxy_cache
+    realtime_url = get_qwen_realtime_asr_url()
+    now = time.monotonic()
+    if _proxy_cache and _proxy_cache[0] == realtime_url and now - _proxy_cache[1] < _PROXY_CACHE_TTL_SECONDS:
+        return _proxy_cache[2]
+    resolved = _local_proxy_url_for_realtime(realtime_url)
+    _proxy_cache = (realtime_url, now, resolved)
+    return resolved
 
 
 def get_qwen_asr_max_data_url_bytes() -> int:

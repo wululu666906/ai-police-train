@@ -132,6 +132,8 @@ def ensure_role_schema_compatibility():
             statements.append("ALTER TABLE roles ADD COLUMN init_expression_clarity INTEGER DEFAULT 50")
         if "initial_state" not in scene_role_columns:
             statements.append("ALTER TABLE scene_roles ADD COLUMN initial_state TEXT DEFAULT '{}'")
+        if "participation_config" not in scene_role_columns:
+            statements.append("ALTER TABLE scene_roles ADD COLUMN participation_config TEXT DEFAULT '{}'")
 
         if not statements:
             return
@@ -669,7 +671,9 @@ async def serve_spa_routes_before_api_prefixes(request, call_next):
 async def apply_frontend_cache_headers(request, call_next):
     response = await call_next(request)
     path = request.url.path
-    if path == "/" or path.startswith(("/admin", "/student", "/ops", "/assets/")):
+    if path.startswith(("/assets/", "/mediapipe/")):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path == "/" or path.startswith(("/admin", "/student", "/ops")):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -677,6 +681,10 @@ async def apply_frontend_cache_headers(request, call_next):
 
 if os.path.exists(os.path.join(frontend_dist, "assets")):
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
+
+    _mediapipe_dir = os.path.join(frontend_dist, "mediapipe")
+    if os.path.exists(_mediapipe_dir):
+        app.mount("/mediapipe", StaticFiles(directory=_mediapipe_dir), name="mediapipe")
 
     @app.get("/favicon.svg")
     def serve_favicon():

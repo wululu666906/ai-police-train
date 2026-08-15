@@ -126,6 +126,10 @@ class SceneRoleBrief(BaseModel):
     status: Optional[str] = None
     is_primary: bool = False
     speakable: bool = True
+    present: bool = True
+    interaction_purpose: Optional[str] = None
+    can_initiate: bool = False
+    can_interrupt: bool = False
     emotion: Optional[int] = None
     cooperation: Optional[int] = None
     risk: Optional[int] = None
@@ -146,6 +150,8 @@ class RecommendedQuestionItem(BaseModel):
     text: str
     category: str = "追问"
     target_role_name: Optional[str] = None
+    priority: str = "medium"
+    related_point_id: Optional[str] = None
 
 
 class ActionTrigger(BaseModel):

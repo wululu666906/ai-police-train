@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
-from typing import Any
-
 from ai_workflow_service.contracts import Fact, Persona
-from ai_workflow_service.domain.four_dimensional_state import normalize_state
 
 
 _DISCLOSURE_STOP_WORDS = {
@@ -18,12 +15,6 @@ class PoliceTrainingWorld:
     scene_id: str
     current_stage: str = ""
     rules: list[str] = field(default_factory=list)
-    interventions: list[dict[str, Any]] = field(default_factory=list)
-
-    def applicable_interventions(self, context: dict[str, Any]) -> list[dict[str, Any]]:
-        elapsed = int(context.get("elapsed_seconds") or 0)
-        return [item for item in self.interventions if elapsed >= int(item.get("after_seconds") or 0)]
-
     @staticmethod
     def _trigger_terms(fact: Fact) -> list[str]:
         explicit = fact.disclosure_policy.get("trigger_terms")
@@ -63,8 +54,10 @@ class PoliceTrainingWorld:
         hidden = set(persona.hidden_fact_ids)
         revealed = revealed_fact_ids or set()
         allowed: set[str] = set()
-        state = normalize_state(persona.state.model_dump())
         for fact in facts:
+            if fact.fact_id in revealed:
+                allowed.add(fact.fact_id)
+                continue
             if fact.fact_id not in known:
                 continue
             policy = fact.disclosure_policy if isinstance(fact.disclosure_policy, dict) else {}
@@ -79,44 +72,7 @@ class PoliceTrainingWorld:
                 continue
             if prerequisites and not prerequisites.issubset(revealed):
                 continue
-            if state["cooperation"] < int(policy.get("min_cooperation", 65)):
-                continue
-            if state["risk"] > int(policy.get("max_risk", 70)):
-                continue
-            if state["clarity"] < int(policy.get("min_clarity", 40)):
-                continue
             if bool(policy.get("require_direct_question", True)) and not self._directly_asked(learner_input, fact):
                 continue
             allowed.add(fact.fact_id)
         return allowed
-
-    def select_actors(
-        self,
-        personas: list[Persona],
-        learner_input: str,
-        *,
-        target_role_name: str = "",
-        max_actors: int = 6,
-    ) -> list[Persona]:
-        target = target_role_name.strip()
-        normalized_input = learner_input.strip()
-
-        def score(item: tuple[int, Persona]) -> tuple[int, int, int, int]:
-            index, persona = item
-            named = bool(persona.name and persona.name in normalized_input)
-            memory_text = " ".join(
-                str(memory.get("statement") or memory.get("content") or memory.get("quote") or "")
-                for memory in persona.role_memories
-                if isinstance(memory, dict)
-            )
-            tokens = {token for token in re.findall(r"[\u4e00-\u9fffA-Za-z0-9]{2,8}", normalized_input)}
-            relevance = sum(1 for token in tokens if token in memory_text)
-            return (
-                0 if target and persona.name == target else 1,
-                0 if named else 1,
-                0 if persona.is_primary else 1,
-                -relevance * 1000 + index,
-            )
-
-        ordered = [persona for _, persona in sorted(enumerate(personas), key=score)]
-        return ordered[:max(1, max_actors)]

@@ -3,6 +3,7 @@ import logging
 import os
 import uuid
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,7 +28,6 @@ from services.agent_training_service import (
     _role_state_label,
     apply_training_action,
     generate_dialogue,
-    iter_dialogue_stream_events,
 )
 from services.agent_training_service import evaluate_session, is_current_evaluation_report
 from services.classroom_service import (
@@ -89,6 +89,7 @@ def _redact_internal_role_fields(result: dict[str, Any]) -> dict[str, Any]:
     """Remove model-only reasoning from learner-facing training responses."""
     result.pop("inner_thought", None)
     result.pop("persona_hint", None)
+    result.pop("role_intents", None)
     for turn in result.get("reply_turns") or []:
         if isinstance(turn, dict):
             turn.pop("inner_thought", None)
@@ -374,6 +375,7 @@ def _build_session_guidance(
         use_intake_flow=scene_kind == "intake",
     )
     recommended_question_items = build_recommended_question_items(
+        stored_items=runtime_state.get("recommended_question_items") or [],
         current_stage=session.current_stage or "",
         current_stage_goal=stage_goal,
         case_type=case_type,
@@ -731,31 +733,30 @@ def training_chat_stream(
     target_role_name = message.target_role_name
 
     def _stream():
-        result = None
-        streamed_chunks = 0
+        def _generate_in_isolated_session():
+            worker_db = database.SessionLocal()
+            try:
+                return generate_dialogue(
+                    worker_db,
+                    session_id,
+                    user_text,
+                    current_user.id,
+                    target_role_name=target_role_name,
+                )
+            finally:
+                worker_db.close()
+
         try:
-            for item in iter_dialogue_stream_events(
-                db,
-                session_id,
-                user_text,
-                current_user.id,
-                target_role_name=target_role_name,
-            ):
-                event_name = item.get("event")
-                payload = item.get("data") or {}
-                if event_name == "_result":
-                    result = payload
-                    continue
-                if event_name == "chunk":
-                    streamed_chunks += 1
-                    payload = {
-                        **payload,
-                        "is_last": False,
-                    }
-                yield _sse_event(str(event_name), payload)
-        except Exception:
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="training-chat") as executor:
+                future = executor.submit(_generate_in_isolated_session)
+                yield _sse_event("heartbeat", {"phase": "routing"})
+                while not future.done():
+                    time.sleep(0.75)
+                    yield _sse_event("heartbeat", {"phase": "simulating"})
+                result = future.result()
+        except Exception as exc:
             logger.exception("Failed to stream training chat for session %s", session_id)
-            yield _sse_event("error", {"message": "训练环境暂时无法响应，请稍后重试"})
+            yield _sse_event("error", {"message": str(exc) or "训练环境暂时无法响应，请稍后重试"})
             return
 
         if not result:
@@ -774,20 +775,18 @@ def training_chat_stream(
         _redact_internal_role_fields(result)
         result = _trigger_auto_evaluation_if_needed(db, session_id, current_user.id, result)
 
-        # If progressive chunks were skipped (fallback), emit final turns once.
-        if streamed_chunks == 0:
-            reply_turns = result.get("reply_turns") or []
-            for index, turn in enumerate(reply_turns):
-                content = str(turn.get("content") or "").strip()
-                if not content:
-                    continue
-                yield _sse_event("chunk", {
-                    "index": index,
-                    "speaker_name": turn.get("speaker_name") or "",
-                    "speaker_role_id": turn.get("speaker_role_id"),
-                    "content": content,
-                    "is_last": index == len(reply_turns) - 1,
-                })
+        reply_turns = result.get("reply_turns") or []
+        for index, turn in enumerate(reply_turns):
+            content = str(turn.get("content") or "").strip()
+            if not content:
+                continue
+            yield _sse_event("chunk", {
+                "index": index,
+                "speaker_name": turn.get("speaker_name") or "",
+                "speaker_role_id": turn.get("speaker_role_id"),
+                "content": content,
+                "is_last": index == len(reply_turns) - 1,
+            })
 
         yield _sse_event("done", {
             "response": result.get("response"),

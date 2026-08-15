@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from typing import Any
 
 from ai_workflow_service.contracts import CaseWorld, Person
@@ -13,12 +14,31 @@ class PersonMemorySkill:
     def __init__(self, llm: DeepSeekAdapter):
         self.llm = llm
 
+    @staticmethod
+    def _initial_state(value: Any, person_id: str) -> dict[str, int]:
+        raw = value if isinstance(value, dict) else {}
+        digest = hashlib.sha256(person_id.encode("utf-8")).digest()
+        defaults = {
+            "emotion": 42 + digest[0] % 17,
+            "cooperation": 38 + digest[1] % 17,
+            "risk": 32 + digest[2] % 17,
+            "clarity": 48 + digest[3] % 17,
+        }
+        result: dict[str, int] = {}
+        for key, fallback in defaults.items():
+            try:
+                result[key] = max(0, min(100, int(raw.get(key, fallback))))
+            except (TypeError, ValueError):
+                result[key] = fallback
+        return result
+
     def execute(self, world: CaseWorld, complete_story: str) -> tuple[CaseWorld, list[dict[str, Any]], dict]:
         try:
             result = self.llm.complete_json(
                 system=("根据案件剧情和事实账本抽取适合警情训练对话的人物、知识范围和来源记忆，不得创造事实。"
                         "排除法官、检察官、辩护人等非警情对话角色；区分可对话角色与仅被提及人员。只输出 JSON："
-                        "{persons:[{person_id,name,role,speakable,training_relevance,facts_known,facts_hidden,"
+                        "{persons:[{person_id,name,role,speakable,training_relevance,traits,speaking_style,goals,facts_known,facts_hidden,"
+                        "initial_state:{emotion,cooperation,risk,clarity},"
                         "memories:[{fact_id,memory_type,statement,source_quote,certainty}],response_constraints:[]}]}。"
                         "memory_type 只能是 direct_statement、personal_experience、direct_observation、hearsay、later_learned。"
                         "每条记忆必须引用给定 fact_id，statement 只能表达本人已知范围。"),
@@ -42,6 +62,10 @@ class PersonMemorySkill:
                 facts_hidden=[str(v) for v in item.get("facts_hidden") or [] if str(v) in valid_fact_ids],
                 speakable=bool(item.get("speakable", True)),
                 training_relevance=str(item.get("training_relevance") or "dialogue"),
+                initial_state=self._initial_state(item.get("initial_state"), person_id),
+                traits=[str(value) for value in item.get("traits") or [] if str(value).strip()],
+                speaking_style=str(item.get("speaking_style") or "自然口语"),
+                goals=[str(value) for value in item.get("goals") or [] if str(value).strip()],
             )
             persons.append(person)
             raw_by_person_id[person_id] = item
@@ -63,13 +87,18 @@ class PersonMemorySkill:
                 ))[:12]
             persons = [Person(
                 person_id=f"P{i + 1:03d}", name=name,
-                facts_known=[fact.fact_id for fact in world.facts if name in fact.known_by or name in fact.content],
+                facts_known=[fact.fact_id for fact in world.facts if name in fact.known_by],
+                initial_state=self._initial_state({}, f"P{i + 1:03d}"),
             ) for i, name in enumerate(names)]
         if not persons:
-            persons = [Person(person_id="P001", name="报警人", facts_known=[world.facts[0].fact_id])]
+            persons = [Person(
+                person_id="P001", name="报警人",
+                facts_known=[fact.fact_id for fact in world.facts if "报警人" in fact.known_by],
+                initial_state=self._initial_state({}, "P001"),
+            )]
         persons = [
             person if person.facts_known else person.model_copy(update={
-                "facts_known": [fact.fact_id for fact in world.facts if person.name in fact.known_by or person.name in fact.content]
+                "facts_known": [fact.fact_id for fact in world.facts if person.name in fact.known_by]
             })
             for person in persons
         ]
@@ -77,7 +106,7 @@ class PersonMemorySkill:
         memories = []
         for person in persons:
             raw_person = raw_by_person_id.get(person.person_id, {})
-            inferred_known = [fact.fact_id for fact in world.facts if person.name in fact.known_by or person.name in fact.content]
+            inferred_known = [fact.fact_id for fact in world.facts if person.name in fact.known_by]
             known = set(person.facts_known or inferred_known)
             facts = [fact for fact in world.facts if fact.fact_id in known or person.name in fact.known_by]
             fact_by_id = {fact.fact_id: fact for fact in facts}
@@ -103,24 +132,14 @@ class PersonMemorySkill:
                     "source_refs": fact.source_refs,
                 })
             covered_fact_ids = {item["fact_id"] for item in role_memories}
-            for fact in facts:
-                if fact.fact_id in covered_fact_ids:
-                    continue
-                role_memories.append({
-                    "memory_id": f"{person.person_id}-M{len(role_memories) + 1}",
-                    "memory_type": "personal_experience",
-                    "statement": fact.content,
-                    "content": fact.content,
-                    "quote": fact.content[:180],
-                    "certainty": fact.status,
-                    "fact_id": fact.fact_id,
-                    "source_refs": fact.source_refs,
-                })
             memories.append({
                 "person_id": person.person_id, "name": person.name,
+                "initial_state": person.initial_state.model_dump(mode="json"),
+                "traits": person.traits,
+                "speaking_style": person.speaking_style,
+                "goals": person.goals,
                 "role_memories": role_memories,
                 "knowledge_ledger": [fact.fact_id for fact in facts],
                 "response_constraints": list(raw_person.get("response_constraints") or ["只依据本人记忆、已知事实和本轮公开信息回答。"]),
-                "narrative_context": [{"content": complete_story[:2000], "usage": "persona_context_only", "is_scoring_fact": False}],
             })
         return updated, memories, memory_quality(updated.persons, memories)

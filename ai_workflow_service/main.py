@@ -3,11 +3,12 @@ from __future__ import annotations
 import uuid
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import JSONResponse
 
 from ai_workflow_service.agents import TrainingOrchestratorAgent
 from ai_workflow_service.agents.case_import_harness import CaseImportHarnessAgent
 from ai_workflow_service.config import settings
-from ai_workflow_service.contracts import WorkflowRequest, WorkflowResponse
+from ai_workflow_service.contracts import WORKFLOW_CONTRACT_VERSION, WorkflowRequest, WorkflowResponse
 from ai_workflow_service.errors import WorkflowServiceError
 from ai_workflow_service.llm.deepseek_adapter import DeepSeekAdapter
 from ai_workflow_service.simulation.tinytroupe_adapter import TinyTroupeAdapter
@@ -41,18 +42,26 @@ def _authorize(token: str | None) -> None:
 
 @app.get("/healthz")
 def healthz():
-    return {
-        "status": "ok",
-        "service": settings.service_name,
-        "components": {
-            "deepseek_configured": llm.configured,
-            "tinytroupe_available": simulation.available,
-            "tinytroupe_mode": settings.tinytroupe_mode,
-            "tinytroupe_model_configured": simulation.model_configured,
-            "tinytroupe_state_store_writable": simulation.state_store_writable,
-            "tinytroupe_max_actors": settings.tinytroupe_max_actors,
-        },
+    components = {
+        "deepseek_configured": llm.configured,
+        "tinytroupe_available": simulation.available,
+        "tinytroupe_mode": settings.tinytroupe_mode,
+        "tinytroupe_model_configured": simulation.model_configured,
+        "tinytroupe_state_store_writable": simulation.state_store_writable,
+        "tinytroupe_max_actors": settings.tinytroupe_max_actors,
     }
+    ready = all((
+        components["deepseek_configured"],
+        components["tinytroupe_available"],
+        components["tinytroupe_model_configured"],
+        components["tinytroupe_state_store_writable"],
+    ))
+    return JSONResponse(status_code=200 if ready else 503, content={
+        "status": "ok" if ready else "unavailable",
+        "service": settings.service_name,
+        "contract_version": WORKFLOW_CONTRACT_VERSION,
+        "components": components,
+    })
 
 
 @app.post("/v1/workflows/execute", response_model=WorkflowResponse)

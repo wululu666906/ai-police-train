@@ -33,7 +33,9 @@ class TrainingOrchestratorAgent:
     def execute(self, request: WorkflowRequest, trace_id: str, idempotency_key: str) -> WorkflowResponse:
         existing = self.state_store.get(request.workflow_id)
         if existing and existing.get("idempotency_key") == idempotency_key and existing.get("response"):
-            return WorkflowResponse.model_validate(existing["response"])
+            cached = WorkflowResponse.model_validate(existing["response"])
+            if cached.status == "succeeded":
+                return cached
 
         expected_skill = STAGE_SKILLS.get(request.stage)
         if not expected_skill:
@@ -95,7 +97,8 @@ class TrainingOrchestratorAgent:
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "response": response.model_dump(mode="json"),
         }
-        self.state_store.put(request.workflow_id, record)
+        if response.status == "succeeded":
+            self.state_store.put(request.workflow_id, record)
         self.audit_log.write({
             "trace_id": trace_id,
             "workflow_id": request.workflow_id,

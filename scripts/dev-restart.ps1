@@ -20,6 +20,7 @@ $FrontendLog = Join-Path $LogsRoot "dev-frontend.log"
 $FrontendErrLog = Join-Path $LogsRoot "dev-frontend.err.log"
 $OpsFrontendLog = Join-Path $LogsRoot "dev-ops-frontend.log"
 $OpsFrontendErrLog = Join-Path $LogsRoot "dev-ops-frontend.err.log"
+$RequiredWorkflowContractVersion = "2026-08-15"
 
 . (Join-Path $Root "scripts\fix-terminal-env.ps1")
 . (Join-Path $Root "scripts\windows-process-utils.ps1")
@@ -139,6 +140,12 @@ foreach ($port in @(8000, 8020, 5556, 6666, 6670, 5175)) {
     }
 }
 
+& $PythonExe -c "import tinytroupe" *> $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "后端虚拟环境未安装 TinyTroupe，请安装 ai_workflow_service/requirements.txt。" -ForegroundColor Red
+    exit 1
+}
+
 Set-Content -Path $BackendLog -Value "" -Encoding UTF8
 Set-Content -Path $BackendErrLog -Value "" -Encoding UTF8
 Set-Content -Path $AiWorkflowLog -Value "" -Encoding UTF8
@@ -192,6 +199,18 @@ Write-Host "检查 AI 工作流 /healthz ..." -ForegroundColor Cyan
 $aiWorkflowResp = Wait-HttpOk -Url "http://127.0.0.1:8020/healthz" -Seconds 90
 if (-not $aiWorkflowResp) {
     Write-Host "AI 工作流启动校验失败，请查看 $AiWorkflowLog 和 $AiWorkflowErrLog" -ForegroundColor Red
+    exit 1
+}
+$aiWorkflowHealth = $aiWorkflowResp.Content | ConvertFrom-Json
+if (
+    $aiWorkflowHealth.contract_version -ne $RequiredWorkflowContractVersion -or
+    -not $aiWorkflowHealth.components.tinytroupe_available -or
+    -not $aiWorkflowHealth.components.tinytroupe_model_configured -or
+    $aiWorkflowHealth.components.tinytroupe_max_actors -ne 1
+) {
+    Write-Host "AI 工作流版本或 TinyTroupe 状态校验失败。" -ForegroundColor Red
+    Write-Host "期望契约: $RequiredWorkflowContractVersion；实际契约: $($aiWorkflowHealth.contract_version)" -ForegroundColor Yellow
+    Write-Host "请确认旧进程已停止，并查看 $AiWorkflowErrLog" -ForegroundColor Yellow
     exit 1
 }
 

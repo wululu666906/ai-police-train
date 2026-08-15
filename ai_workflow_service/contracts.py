@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+WORKFLOW_CONTRACT_VERSION = "2026-08-15"
+
 
 class WorkflowStage(str, Enum):
     training = "TRAINING"
@@ -59,6 +61,10 @@ class Person(StrictModel):
     facts_hidden: list[str] = Field(default_factory=list)
     speakable: bool = True
     training_relevance: str = "dialogue"
+    initial_state: FourDimensionalState = Field(default_factory=FourDimensionalState)
+    traits: list[str] = Field(default_factory=list)
+    speaking_style: str = "自然口语"
+    goals: list[str] = Field(default_factory=list)
 
 
 class CaseWorld(StrictModel):
@@ -92,6 +98,15 @@ class Persona(StrictModel):
     response_constraints: list[str] = Field(default_factory=list)
 
 
+class RoleParticipation(StrictModel):
+    person_id: str
+    present: bool = True
+    interaction_purpose: str = ""
+    can_initiate: bool = False
+    can_interrupt: bool = False
+    relevant_fact_ids: list[str] = Field(default_factory=list)
+
+
 class SceneWorld(StrictModel):
     scene_id: str
     case_id: str
@@ -102,6 +117,8 @@ class SceneWorld(StrictModel):
     current_stage: str = ""
     stages: list[dict[str, Any]] = Field(default_factory=list)
     role_states: list[RoleInitialState] = Field(default_factory=list)
+    role_participation: list[RoleParticipation] = Field(default_factory=list)
+    fact_ids: list[str] = Field(default_factory=list)
 
 
 class WorkflowRequest(StrictModel):

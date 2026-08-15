@@ -100,9 +100,9 @@ const guardRef = ref<HTMLElement | null>(null)
 const MONITOR_MARGIN = 16
 const monitorPosition = ref({ left: MONITOR_MARGIN, top: MONITOR_MARGIN })
 let dragState: { pointerId: number; offsetX: number; offsetY: number } | null = null
+let cameraStartPromise: Promise<MediaStream> | null = null
+let cameraGeneration = 0
 
-const targetCameraLabel = 'HK 5M CAM 200W'
-const builtInCameraLabel = 'ASUS FHD webcam'
 const verifyRetryMs = FACE_VERIFY_RETRY_MS
 const heartbeatRetryMs = FACE_HEARTBEAT_RETRY_MS
 
@@ -175,27 +175,13 @@ const waitForVideoReady = async (video: HTMLVideoElement | null, timeoutMs = 300
   return false
 }
 
-const scoreVideoDevice = (device: MediaDeviceInfo) => {
-  const label = device.label.toLowerCase()
-  if (label.includes(targetCameraLabel.toLowerCase())) return 200
-  if (label.includes(builtInCameraLabel.toLowerCase())) return 100
-  return 0
-}
-
-const chooseVideoInput = async () => {
-  const devices = await navigator.mediaDevices.enumerateDevices()
-  const videoInputs = devices.filter((device) => device.kind === 'videoinput').map((device, index) => ({ device, index }))
-  return [...videoInputs].sort((a, b) => {
-    const scoreDiff = scoreVideoDevice(b.device) - scoreVideoDevice(a.device)
-    return scoreDiff || a.index - b.index
-  })[0]?.device || null
-}
-
-const openStream = async (deviceId?: string) => {
-  const video: MediaTrackConstraints = deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'user' }
+const openStream = async () => {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('当前浏览器不支持摄像头访问，请使用最新版 Chrome 或 Edge。')
+  }
   return navigator.mediaDevices.getUserMedia({
     video: {
-      ...video,
+      facingMode: 'user',
       width: { ideal: 640 },
       height: { ideal: 640 },
     },
@@ -204,52 +190,62 @@ const openStream = async (deviceId?: string) => {
 }
 
 const bindStreamToVideos = async (media: MediaStream) => {
-  if (videoRef.value) {
-    videoRef.value.srcObject = media
-    await videoRef.value.play()
-    await waitForVideoReady(videoRef.value)
-  }
-  if (dialogVideoRef.value) {
-    dialogVideoRef.value.srcObject = media
-    await dialogVideoRef.value.play()
-    await waitForVideoReady(dialogVideoRef.value)
-  }
+  const videos = [videoRef.value, dialogVideoRef.value].filter((video): video is HTMLVideoElement => Boolean(video))
+  if (!videos.length) throw new Error('摄像头预览组件尚未就绪。')
+  await Promise.all(videos.map(async (video) => {
+    video.srcObject = media
+    await video.play()
+    if (!await waitForVideoReady(video)) throw new Error('摄像头已连接，但未能读取到有效画面。')
+  }))
 }
 
 const startCamera = async () => {
-  if (stream.value && cameraReady.value) {
+  const liveStream = stream.value
+  if (liveStream && cameraReady.value && liveStream.getVideoTracks().some((track) => track.readyState === 'live')) {
     await nextTick()
-    await bindStreamToVideos(stream.value)
-    return
+    await bindStreamToVideos(liveStream)
+    return liveStream
   }
-  let fallbackStream: MediaStream | null = null
-  try {
-    const initialStream = await openStream()
-    fallbackStream = initialStream
-    const selected = await chooseVideoInput()
-    let media: MediaStream = initialStream
-    if (selected?.deviceId) {
-      const initialTrack = initialStream.getVideoTracks()[0]
-      const selectedIsInitial = initialTrack?.getSettings?.().deviceId === selected.deviceId || initialTrack?.label === selected.label
-      try {
-        if (!selectedIsInitial) {
-          const selectedStream = await openStream(selected.deviceId)
-          fallbackStream.getTracks().forEach((track) => track.stop())
-          fallbackStream = null
-          media = selectedStream
-        }
-      } catch {
-        media = initialStream
+  if (cameraStartPromise) return cameraStartPromise
+
+  const generation = cameraGeneration
+  cameraStartPromise = (async () => {
+    let media: MediaStream | null = null
+    try {
+      media = await openStream()
+      if (generation !== cameraGeneration) {
+        media.getTracks().forEach((track) => track.stop())
+        throw new Error('摄像头启动已取消。')
       }
+      await bindStreamToVideos(media)
+      stream.value = media
+      cameraReady.value = true
+      return media
+    } catch (error: any) {
+      media?.getTracks().forEach((track) => track.stop())
+      stream.value = null
+      detachVideos()
+      cameraReady.value = false
+      const messages: Record<string, string> = {
+        NotAllowedError: '摄像头权限被拒绝，请在地址栏权限设置中允许访问。',
+        NotFoundError: '未检测到可用摄像头，请检查设备连接。',
+        NotReadableError: '摄像头无法读取，可能正被其他程序或浏览器标签页占用。',
+        OverconstrainedError: '摄像头不支持当前画面参数，请重新连接设备。',
+        AbortError: '摄像头启动被系统中断，请重试。',
+      }
+      const message = messages[String(error?.name || '')] || String(error?.message || '无法打开摄像头。')
+      verifyHint.value = message
+      throw new Error(message)
+    } finally {
+      cameraStartPromise = null
     }
-    stream.value = media
-    await bindStreamToVideos(media)
-    cameraReady.value = true
-  } catch {
-    fallbackStream?.getTracks().forEach((track) => track.stop())
-    const message = '无法打开摄像头，请检查浏览器权限或摄像头占用情况。'
-    verifyHint.value = message
-    emit('failed', message)
+  })()
+  return cameraStartPromise
+}
+
+const detachVideos = () => {
+  for (const video of [videoRef.value, dialogVideoRef.value]) {
+    if (video) video.srcObject = null
   }
 }
 
@@ -270,10 +266,12 @@ const stopHeartbeat = () => {
 }
 
 const stopCamera = () => {
+  cameraGeneration += 1
   stopVerifyLoop()
   stopHeartbeat()
   stream.value?.getTracks().forEach((track) => track.stop())
   stream.value = null
+  detachVideos()
   cameraReady.value = false
 }
 
@@ -409,6 +407,8 @@ const runVerify = async () => {
       })
     }, verifyRetryMs)
   } catch (error: any) {
+    stopVerifyLoop()
+    verifying.value = false
     const message = localizeFaceMessage(error?.response?.data?.detail || error?.message)
     verifyHint.value = message
     verifyStatusText.value = '人脸识别未启动成功'
@@ -417,7 +417,7 @@ const runVerify = async () => {
 }
 
 const cancelVerify = () => {
-  stopVerifyLoop()
+  stopCamera()
   verifying.value = false
   verifyDialogVisible.value = false
   verifyStatusText.value = '已退出验证'
@@ -456,7 +456,6 @@ onMounted(async () => {
   resetMonitorPosition()
   window.addEventListener('resize', clampMonitorPosition)
   await fetchStatus()
-  await startCamera()
 })
 
 watch(mode, (nextMode, previousMode) => {
