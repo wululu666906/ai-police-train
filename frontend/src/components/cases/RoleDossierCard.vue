@@ -10,6 +10,7 @@ defineEmits<{ remove: []; toggle: [] }>()
 const memories = computed(() => Array.isArray(props.person?.role_memories) ? props.person.role_memories : [])
 const soul = computed(() => props.person?.soul_profile && typeof props.person.soul_profile === 'object' ? props.person.soul_profile : {})
 const list = (value: unknown) => Array.isArray(value) ? value.filter(Boolean) : value ? [value] : []
+const memoryText = (memory: any) => String(memory?.statement || memory?.content || memory?.quote || '').trim()
 </script>
 
 <template>
@@ -43,9 +44,10 @@ const list = (value: unknown) => Array.isArray(value) ? value.filter(Boolean) : 
         <h3>本人记忆时间线</h3>
         <ol v-if="memories.length" class="role-card__timeline">
           <li v-for="(memory, memoryIndex) in memories" :key="memory.memory_id || memoryIndex">
-            <span>{{ memory.time_hint || `记忆 ${Number(memoryIndex) + 1}` }}</span>
-            <p>{{ memory.statement || memory.content }}</p>
+            <span>{{ memory.time_hint || memory.event_phase_label || `记忆 ${Number(memoryIndex) + 1}` }}</span>
+            <p>{{ memoryText(memory) || '（无原文内容）' }}</p>
             <small v-if="memory.place_hint">地点：{{ memory.place_hint }}</small>
+            <small v-if="memory.quote && memory.quote !== memoryText(memory)">原文：{{ memory.quote }}</small>
           </li>
         </ol>
         <p v-else class="role-card__muted">未从案件来源中提取到该人物的有效陈述或亲历信息。</p>

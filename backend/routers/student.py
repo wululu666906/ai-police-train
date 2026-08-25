@@ -9,8 +9,10 @@ from sqlalchemy.orm import Session
 import database
 import models
 from routers.auth import get_current_user
+from services.agent_training_service import is_current_evaluation_report
 from services.text_repair import repair_payload, repair_text
 from services.training_runtime_service import load_runtime_state
+from datetime import datetime
 
 router = APIRouter(prefix="/student", tags=["Student"])
 
@@ -286,6 +288,46 @@ def get_student_cases(
     return results
 
 
+def _repair_finished_sessions_with_reports(db: Session, user_id: int) -> int:
+    """Fix sessions that already have reports but remain active/evaluating."""
+    stuck = (
+        db.query(models.TrainingSession)
+        .filter(
+            models.TrainingSession.user_id == user_id,
+            models.TrainingSession.status.in_(("active", "evaluating")),
+            models.TrainingSession.evaluation_result.isnot(None),
+        )
+        .all()
+    )
+    repaired = 0
+    now = datetime.utcnow()
+    for session in stuck:
+        try:
+            report = json.loads(session.evaluation_result or "")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(report, dict) or not is_current_evaluation_report(report):
+            # Still treat any persisted score-bearing or termination report as finished.
+            if not (
+                isinstance(report, dict)
+                and (
+                    isinstance(report.get("total_score"), (int, float))
+                    or bool(report.get("termination_reason"))
+                    or isinstance(report.get("evaluation_meta"), dict)
+                )
+            ):
+                continue
+        session.status = "finished"
+        if session.training_finished_at is None:
+            session.training_finished_at = now
+        if session.training_started_at is None:
+            session.training_started_at = session.created_at or now
+        repaired += 1
+    if repaired:
+        db.commit()
+    return repaired
+
+
 @router.get("/history")
 def get_student_history(
     page: int = 1,
@@ -296,6 +338,7 @@ def get_student_history(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    _repair_finished_sessions_with_reports(db, current_user.id)
     page = max(page, 1)
     page_size = min(max(page_size, 1), 50)
     offset = (page - 1) * page_size

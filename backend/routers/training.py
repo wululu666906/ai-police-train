@@ -28,6 +28,7 @@ from services.agent_training_service import (
     _role_state_label,
     apply_training_action,
     generate_dialogue,
+    resolve_revealed_fact_texts,
 )
 from services.agent_training_service import evaluate_session, is_current_evaluation_report
 from services.classroom_service import (
@@ -36,7 +37,11 @@ from services.classroom_service import (
     sync_assignment_submission_for_session,
     validate_assignment_training_access,
 )
-from services.face_service import has_successful_session_verification
+from services.face_service import (
+    apply_face_termination_report_metadata,
+    build_adaptive_fallback_report,
+    has_successful_session_verification,
+)
 from services.training_view_service import (
     filter_internal_prompt_messages,
     resolve_role_initial_state,
@@ -326,6 +331,21 @@ def _mark_session_training_finished(session: models.TrainingSession, finished_at
     session.training_finished_at = session.training_finished_at or end_time
 
 
+def _sync_session_finished_from_report(session: models.TrainingSession) -> bool:
+    """Promote sessions that already have a valid report but are stuck in active/evaluating."""
+    if session.status == "finished" or not session.evaluation_result:
+        return False
+    try:
+        report = json.loads(session.evaluation_result)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(report, dict) or not is_current_evaluation_report(report):
+        return False
+    _mark_session_training_finished(session)
+    session.status = "finished"
+    return True
+
+
 def _build_session_guidance(
     db: Session,
     session: models.TrainingSession,
@@ -345,7 +365,7 @@ def _build_session_guidance(
         current_emotion=session.current_emotion,
     )
     session_emotion = state_snapshot["emotion"]
-    revealed_info = [repair_text(str(item)) for item in runtime_state.get("revealed_info", []) if str(item).strip()]
+    revealed_info = resolve_revealed_fact_texts(case, list(runtime_state.get("revealed_info") or []))
     case_type = _get_case_type(case)
     stage_goal = current_stage_goal or ""
     stage_coverage = _evaluate_stage_coverage(
@@ -466,31 +486,12 @@ def _build_session_guidance(
     }
 
 
-def _trigger_auto_evaluation_if_needed(
-    db: Session,
-    session_id: int,
-    user_id: int,
-    result: dict,
-):
-    if result.get("auto_finished"):
-        session = get_owned_session(db, session_id, user_id)
-        _mark_session_training_finished(session)
-        session.status = "evaluating"
-        db.commit()
-        report = evaluate_session(db, session_id, user_id)
-        if report and "error" not in report:
-            session.status = "finished"
-            if not session.evaluation_result:
-                session.evaluation_result = json.dumps(report, ensure_ascii=False)
-            db.commit()
-            try:
-                sync_assignment_submission_for_session(db, session_id, user_id, report)
-            except Exception as error:
-                print(f"Assignment submission sync failed: {error}")
-            result["evaluation_ready"] = True
-        else:
-            result["evaluation_ready"] = False
-    return result
+def _pop_face_termination_pending(session: models.TrainingSession) -> dict[str, Any] | None:
+    runtime = load_runtime_state(session.revealed_info)
+    pending = runtime.pop("face_termination_pending", None)
+    if pending:
+        session.revealed_info = dump_runtime_state(runtime)
+    return pending if isinstance(pending, dict) else None
 
 
 @router.post("/start/{scene_id}", response_model=schemas.Session)
@@ -713,7 +714,7 @@ def training_chat(
     # Internal reasoning and persona summaries are never part of the learner API.
     _redact_internal_role_fields(result)
 
-    return _trigger_auto_evaluation_if_needed(db, session_id, current_user.id, result)
+    return result
 
 
 @router.post("/chat-stream/{session_id}")
@@ -773,8 +774,6 @@ def training_chat_stream(
         result.pop("state_contract", None)
         result.pop("last_postcheck", None)
         _redact_internal_role_fields(result)
-        result = _trigger_auto_evaluation_if_needed(db, session_id, current_user.id, result)
-
         reply_turns = result.get("reply_turns") or []
         for index, turn in enumerate(reply_turns):
             content = str(turn.get("content") or "").strip()
@@ -804,8 +803,6 @@ def training_chat_stream(
             "completed_point_ids": result.get("completed_point_ids"),
             "completed_action_ids": result.get("completed_action_ids"),
             "auto_finish_ready": result.get("auto_finish_ready"),
-            "auto_finished": result.get("auto_finished"),
-            "redirect_to_evaluation": result.get("redirect_to_evaluation"),
             "closure_summary": result.get("closure_summary"),
             "updated_emotion": result.get("updated_emotion"),
             "updated_trust": result.get("updated_trust"),
@@ -865,7 +862,7 @@ def training_action(
         detail = result.get("communication_feedback", {}).get("message") or "动作处理失败，请稍后重试"
         raise HTTPException(status_code=502, detail=detail)
 
-    return _trigger_auto_evaluation_if_needed(db, session_id, current_user.id, result)
+    return result
 
 
 @router.get("/session/{session_id}", response_model=schemas.SessionDetail)
@@ -877,6 +874,14 @@ def get_session(
     current_user: models.User = Depends(get_current_user),
 ):
     session = _get_readable_training_session(db, session_id, current_user)
+    if _sync_session_finished_from_report(session):
+        db.commit()
+        try:
+            report = json.loads(session.evaluation_result or "{}")
+            if isinstance(report, dict):
+                sync_assignment_submission_for_session(db, session.id, session.user_id, report)
+        except Exception as error:
+            print(f"Assignment submission sync failed: {error}")
     if assignment_id is not None:
         linked_submission = (
             db.query(models.AssignmentSubmission)
@@ -925,7 +930,10 @@ def get_session(
         current_trust=session.current_trust,
         current_emotion=session.current_emotion,
     )
-    repaired_revealed_info = json.dumps(runtime_state.get("revealed_info") or [], ensure_ascii=False)
+    repaired_revealed_info = json.dumps(
+        resolve_revealed_fact_texts(case, list(runtime_state.get("revealed_info") or [])),
+        ensure_ascii=False,
+    )
 
     if not for_report and session.status == "finished" and session.evaluation_result:
         refreshed_report = evaluate_session(db, session.id, session.user_id)
@@ -1118,6 +1126,10 @@ def finish_training(
     if user_message_count <= 0:
         raise HTTPException(status_code=400, detail="At least one valid round of dialogue is required before finishing")
 
+    face_pending = _pop_face_termination_pending(session)
+    if face_pending:
+        db.commit()
+
     if session.status == "active":
         _mark_session_training_finished(session)
         session.status = "evaluating"
@@ -1126,14 +1138,63 @@ def finish_training(
         _mark_session_training_finished(session)
         db.commit()
 
-    report = evaluate_session(db, session_id, current_user.id)
+    if session.evaluation_result and not face_pending:
+        try:
+            existing = json.loads(session.evaluation_result)
+        except (TypeError, ValueError):
+            existing = None
+        if isinstance(existing, dict) and is_current_evaluation_report(existing):
+            if _sync_session_finished_from_report(session):
+                db.commit()
+                try:
+                    sync_assignment_submission_for_session(db, session_id, current_user.id, existing)
+                except Exception as error:
+                    print(f"Assignment submission sync failed: {error}")
+            return existing
+
+    report = evaluate_session(db, session_id, current_user.id, force_recompute=bool(face_pending))
     if not report:
         raise HTTPException(status_code=404, detail="Session not found")
     if report.get("error"):
+        if face_pending:
+            report = build_adaptive_fallback_report(
+                session=session,
+                failure_count=int(face_pending.get("failure_count") or 0),
+                reason=str(face_pending.get("reason") or ""),
+                error=str(report.get("error") or "未知评估错误"),
+            )
+            report = apply_face_termination_report_metadata(
+                report,
+                failure_count=int(face_pending.get("failure_count") or 0),
+                reason=str(face_pending.get("reason") or ""),
+                evaluation_type="auto_terminated_fallback",
+                policy_source="face_termination_fallback",
+            )
+            _mark_session_training_finished(session)
+            session.status = "finished"
+            session.evaluation_result = json.dumps(report, ensure_ascii=False)
+            db.commit()
+            try:
+                sync_assignment_submission_for_session(db, session_id, current_user.id, report)
+            except Exception as error:
+                print(f"Assignment submission sync failed: {error}")
+            return report
         session.status = "active"
         session.training_finished_at = None
         db.commit()
         raise HTTPException(status_code=502, detail=report["error"])
+
+    if face_pending:
+        report = apply_face_termination_report_metadata(
+            report,
+            failure_count=int(face_pending.get("failure_count") or 0),
+            reason=str(face_pending.get("reason") or ""),
+        )
+        session.evaluation_result = json.dumps(report, ensure_ascii=False)
+
+    _mark_session_training_finished(session)
+    session.status = "finished"
+    db.commit()
     try:
         sync_assignment_submission_for_session(db, session_id, current_user.id, report)
     except Exception as error:
@@ -1171,6 +1232,9 @@ def re_evaluate_training(
         raise HTTPException(status_code=404, detail="Session not found")
     if report.get("error"):
         raise HTTPException(status_code=502, detail=report["error"])
+    _mark_session_training_finished(session)
+    session.status = "finished"
+    db.commit()
     try:
         sync_assignment_submission_for_session(db, session.id, current_user.id, report)
     except Exception as error:

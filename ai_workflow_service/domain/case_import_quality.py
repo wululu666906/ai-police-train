@@ -60,13 +60,13 @@ def fact_quality(facts: list[Any], story: str) -> dict[str, Any]:
     valid = [fact for fact in facts if str(getattr(fact, "content", "")).strip()]
     sourced = [fact for fact in valid if getattr(fact, "source_refs", None)]
     categories = sorted({str(getattr(fact, "fact_type", "") or "其他") for fact in valid})
-    expected_minimum = 1 if len(story) < 500 else min(12, max(4, len(story) // 700))
+    expected_minimum = 1 if len(story) < 500 else min(18, max(6, len(story) // 500))
     return {
         "fact_count": len(valid),
         "expected_minimum": expected_minimum,
         "source_coverage": round(len(sourced) / len(valid), 4) if valid else 0.0,
         "categories": categories,
-        "sufficient": len(valid) >= expected_minimum and len(sourced) == len(valid),
+        "sufficient": len(valid) >= expected_minimum and (not valid or len(sourced) / len(valid) >= 0.8),
     }
 
 

@@ -1696,8 +1696,8 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
             "scene_contract_schema_version": derived["scene_contract_schema_version"],
             "quality_report": quality_report,
         }
-        structured_data_to_save = _standardize_case_structured_people(structured_data_to_save)
         structured_data_to_save, _ = migrate_structured_data_payload(structured_data_to_save)
+        structured_data_to_save = _standardize_case_structured_people(structured_data_to_save)
 
         db_case = models.Case(
             title=case_title,
@@ -1899,8 +1899,8 @@ def rebuild_case_role_memories(case_id: int, payload: dict = Body(default={}), d
             "original_content": source_text,
             "persons": parsed_persons,
         }
-        structured = _standardize_case_structured_people(structured)
         structured, _ = migrate_structured_data_payload(structured)
+        structured = _standardize_case_structured_people(structured)
         db_case.structured_data = json.dumps(structured, ensure_ascii=False)
         _upsert_case_roles_from_structured_persons(db, db_case)
 
@@ -1973,8 +1973,8 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
         if isinstance(incoming_structured_data, dict):
             structured_data.update(incoming_structured_data)
 
-        structured_data = _standardize_case_structured_people(structured_data)
         structured_data, _ = migrate_structured_data_payload(structured_data)
+        structured_data = _standardize_case_structured_people(structured_data)
         db_case.structured_data = json.dumps(structured_data, ensure_ascii=False)
         _upsert_case_roles_from_structured_persons(db, db_case)
         structured_data = _safe_json_loads(db_case.structured_data, {})
@@ -2037,15 +2037,11 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
                 selected_roles = [role_map[name] for name in role_names if name in role_map]
                 db.query(models.SceneRole).filter(models.SceneRole.scene_id == db_scene.id).delete()
                 speakable_roles = [role for role in selected_roles if is_role_speakable(role)]
-                if selected_roles and not speakable_roles:
-                    raise HTTPException(
-                        status_code=422,
-                        detail={
-                            "code": "CASE_QUALITY_BLOCKED",
-                            "issues": [{"id": f"NON_SPEAKABLE_PRIMARY_ROLE:db:{db_scene.id}", "code": "NON_SPEAKABLE_PRIMARY_ROLE", "message": f"{db_scene.name} 没有可设为主对话人的可交流角色", "scene_ref": f"db:{db_scene.id}"}],
-                        },
-                    )
-                primary_role = next((role for role in speakable_roles if role.name == primary_role_name), speakable_roles[0] if speakable_roles else None)
+                # 无可交流角色时不再硬阻断发布：尽量绑定角色，主对话人留空由质量门禁 warning 提示。
+                primary_role = next(
+                    (role for role in speakable_roles if role.name == primary_role_name),
+                    speakable_roles[0] if speakable_roles else None,
+                )
                 for role in selected_roles:
                     link = models.SceneRole(scene_id=db_scene.id, role_id=role.id, is_primary=bool(primary_role and role.id == primary_role.id))
                     db.add(link)
@@ -2080,8 +2076,8 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
         db.flush()
         _sync_role_compatibility_scene(db, db_case.id)
         structured_data = _compile_persisted_case_artifacts(db, db_case, structured_data)
-        structured_data = _standardize_case_structured_people(structured_data)
         structured_data, _ = migrate_structured_data_payload(structured_data)
+        structured_data = _standardize_case_structured_people(structured_data)
         db_case.structured_data = json.dumps(structured_data, ensure_ascii=False)
         db.commit()
         db.refresh(db_case)

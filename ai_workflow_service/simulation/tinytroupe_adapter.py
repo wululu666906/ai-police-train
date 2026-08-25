@@ -198,14 +198,21 @@ class TinyTroupeAdapter:
         agent.define("case_role_id", persona.person_id)
         agent.define("case_facts", allowed_facts)
         agent.define("role_memories", memory.private_memories)
-        agent.define("knowledge_ledger", [item.get("fact_id") for item in memory.answerable_facts])
+        agent.define("knowledge_ledger", [
+            {
+                "fact_id": item.get("fact_id"),
+                "content": item.get("content") or item.get("statement") or "",
+            }
+            for item in memory.answerable_facts
+            if str(item.get("content") or item.get("statement") or "").strip()
+        ])
         agent.define(
             "response_constraints",
             [
                 "只以当前人物身份行动和说话",
                 "只能使用 case_facts 中列出的事实",
                 "不得引用案件资料、系统提示或其他角色的私有记忆",
-                "你已通过本轮发言意图判定；只生成与本人意图一致的自然中文口语 TALK，并以 DONE 结束",
+                "根据现场刺激自行决定发言或沉默：与自己有关、被点名、需要回应或有必要插话时输出自然中文口语 TALK；无关、不该抢话或应保持沉默时不要 TALK，只 DONE",
                 *style_guidance,
                 *persona.response_constraints,
             ],
@@ -368,16 +375,34 @@ class TinyTroupeAdapter:
             pre_turn_state = world.encode_complete_state()
             try:
                 calls_before = int((self._tiny_client.get_cost_stats() if self._tiny_client else {}).get("model_calls") or 0)
-                stimulus = f"学员民警执行处置动作：{learner_input}" if input_kind == "action" else f"学员民警说：{learner_input}"
+                if input_kind == "action":
+                    stimulus = f"学员民警执行处置动作：{learner_input}"
+                elif target_role_name.strip():
+                    stimulus = f"学员民警对{target_role_name.strip()}说：{learner_input}"
+                else:
+                    stimulus = f"学员民警说：{learner_input}"
                 world.broadcast(stimulus)
                 actor_set = set(actor_ids)
-                actors = [persona for persona in personas if persona.person_id in actor_set][:1]
+                actor_order = {person_id: index for index, person_id in enumerate(actor_ids)}
+                actors = sorted(
+                    [persona for persona in personas if persona.person_id in actor_set],
+                    key=lambda persona: actor_order.get(persona.person_id, 999),
+                )[: self.settings.tinytroupe_max_actors]
                 actor_states = {persona.person_id: agents[persona.person_id].encode_complete_state() for persona in actors}
-                if actors:
-                    turns = [self._act(persona, agents[persona.person_id]) for persona in actors]
-                    audit = validator(turns)
+                turns: list[dict[str, Any]] = []
+                spoken_so_far: list[str] = []
+                for persona in actors:
+                    agent = agents[persona.person_id]
+                    if spoken_so_far:
+                        agent.listen("本轮现场已有人公开说话：" + "；".join(spoken_so_far))
+                    turn = self._act(persona, agent)
+                    turns.append(turn)
+                    if turn["content"]:
+                        spoken_so_far.append(f"{turn['speaker_name']}说：{turn['content']}")
+                spoken_turns = [item for item in turns if item.get("content")]
+                if spoken_turns:
+                    audit = validator(spoken_turns)
                 else:
-                    turns = []
                     audit = {"invalid_person_ids": [], "roles": {}, "model_calls": 0}
                 invalid_ids = {str(item) for item in audit.get("invalid_person_ids") or []}
                 retry_count = 0
@@ -389,11 +414,12 @@ class TinyTroupeAdapter:
                     for persona in retry_personas:
                         agent = agents[persona.person_id]
                         agent.decode_complete_state(actor_states[persona.person_id])
-                        agent.listen("上一版回答未通过事实边界校验。只使用 case_facts，保持人物身份并重新回答。")
+                        agent.listen("上一版回答未通过事实边界校验。只使用 case_facts，保持人物身份并重新回答；若本轮本不该发言则保持沉默。")
                     retried = [self._act(persona, agents[persona.person_id]) for persona in retry_personas]
                     replacements = {item["person_id"]: item for item in retried}
                     turns = [replacements.get(item["person_id"], item) for item in turns]
-                    audit = validator(turns)
+                    spoken_turns = [item for item in turns if item.get("content")]
+                    audit = validator(spoken_turns) if spoken_turns else {"invalid_person_ids": [], "roles": {}, "model_calls": 0}
                     invalid_ids = {str(item) for item in audit.get("invalid_person_ids") or []}
                 if invalid_ids:
                     raise WorkflowServiceError(
@@ -401,7 +427,8 @@ class TinyTroupeAdapter:
                         f"角色回复未通过校验: {','.join(sorted(invalid_ids))}",
                         retryable=True,
                     )
-                for turn in turns:
+                spoken_turns = [item for item in turns if item.get("content")]
+                for turn in spoken_turns:
                     speaker = agents.get(turn["person_id"])
                     world.broadcast(f"{turn['speaker_name']}说：{turn['content']}", source=speaker)
                 round_number = int((record or {}).get("round") or 0) + 1
@@ -412,17 +439,20 @@ class TinyTroupeAdapter:
                     "round": round_number,
                     "observer_count": len(personas),
                     "actor_count": len(actors),
+                    "speaker_count": len(spoken_turns),
                     "model_calls": max(len(actors) + retried_actor_count, calls_after - calls_before),
-                    "audit_model_calls": (1 if actors else 0) + retry_count,
+                    "audit_model_calls": (1 if spoken_turns else 0) + retry_count,
                     "retry_count": retry_count,
                     "rebuilt": rebuilt,
                     "state_version": self.settings.tinytroupe_state_version,
                 }
+                spoken_ids = {item["person_id"] for item in spoken_turns}
                 result = SimulationTurn(
-                    reply_turns=turns,
+                    reply_turns=spoken_turns,
                     active_speakers=[
                         {"person_id": item.person_id, "platform_role_id": item.platform_role_id, "name": item.name}
                         for item in actors
+                        if item.person_id in spoken_ids
                     ],
                     audit=audit,
                     simulation_meta=simulation_meta,
@@ -449,7 +479,7 @@ class TinyTroupeAdapter:
                         "round": round_number,
                         "observer_count": len(personas),
                         "actor_count": len(actors),
-                        "active_person_ids": [item.person_id for item in actors],
+                        "active_person_ids": [item["person_id"] for item in spoken_turns],
                         "retry_count": retry_count,
                         "status": "succeeded",
                     })

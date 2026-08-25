@@ -167,30 +167,20 @@ export const personToRoleCompact = (person: any, sceneBehaviorMode = '核查取�
   source_verification: String(person?.source_verification || '').trim(),
   source_refs: Array.isArray(person?.source_refs) ? person.source_refs : [],
   role_memories: normalizeRoleMemories(person),
-  knowledge_ledger: normalizeKnowledgeLedger(person),
   unresolved_claims: Array.isArray(person?.unresolved_claims) ? person.unresolved_claims : [],
   response_constraints: dedupeStringList(person?.response_constraints),
   scene_behavior_mode: String(person?.scene_behavior_mode || sceneBehaviorMode || '核查取证型').trim(),
   persona_autofill: false,
+  init_emotion: person?.init_emotion,
+  init_trust: person?.init_trust,
+  init_risk: person?.init_risk,
+  init_expression_clarity: person?.init_expression_clarity,
+  soul_profile: person?.soul_profile,
 })
 
 export const expandRoleCompactToPerson = (compact: any, sceneBehaviorMode = '核查取证型'): Record<string, any> => {
   const roleMemories = normalizeRoleMemories(compact)
-  const ledger = roleMemories.length
-    ? roleMemories.map((memory: any, index: number) => ({
-        knowledge_id: String(memory.memory_id || `K${index + 1}`), claim_id: String(memory.event_id || ''),
-        knowledge_mode: String(memory.memory_type || 'source_mention'), content: String(memory.statement || '').trim(),
-        certainty: String(memory.certainty || 'source_supported'), disclosure_policy: 'answer_when_asked',
-        verbalization: String(memory.statement || '').trim(), source_refs: Array.isArray(memory.source_refs) ? memory.source_refs : [],
-      }))
-    : normalizeKnowledgeLedger(compact)
-  const contents = (modes: string[]) => ledger
-    .filter((item: any) => modes.includes(item.knowledge_mode))
-    .map((item: any) => item.content)
-    .filter(Boolean)
-  const known = dedupeStringList(contents(['known', 'direct_observation', 'personal_experience', 'personal_statement', 'hearsay', 'later_learned', 'source_mention']))
-  const withheld = dedupeStringList(contents(['withheld']))
-  const unknown = dedupeStringList(contents(['unknown', 'unresolved']))
+  const known = dedupeStringList(roleMemories.map((memory: any) => String(memory.statement || '').trim()).filter(Boolean))
   return {
     name: String(compact?.name || '').trim(),
     role_type: String(compact?.role_type || '相关人员').trim() || '相关人员',
@@ -198,27 +188,29 @@ export const expandRoleCompactToPerson = (compact: any, sceneBehaviorMode = '核
     source_verification: String(compact?.source_verification || '').trim(),
     source_refs: Array.isArray(compact?.source_refs) ? compact.source_refs : [],
     role_memories: roleMemories,
-    knowledge_ledger: ledger,
     unresolved_claims: Array.isArray(compact?.unresolved_claims) ? compact.unresolved_claims : [],
     response_constraints: dedupeStringList(compact?.response_constraints),
     knows_facts: known,
     known_key_points: known,
-    hidden_truths: withheld,
-    withheld_key_points: withheld,
-    does_not_know: unknown,
-    cannot_answer: unknown,
+    hidden_truths: [],
+    withheld_key_points: [],
+    does_not_know: [],
+    cannot_answer: [],
     scene_behavior_mode: String(compact?.scene_behavior_mode || sceneBehaviorMode || '核查取证型').trim(),
     persona_autofill: false,
     persona_source: 'source_grounded_role_memory',
     persona_contract_version: 'role_memory_v2',
+    init_emotion: compact?.init_emotion,
+    init_trust: compact?.init_trust,
+    init_risk: compact?.init_risk,
+    init_expression_clarity: compact?.init_expression_clarity,
+    soul_profile: compact?.soul_profile,
   }
 }
 
 export const buildRoleCompactSummary = (compact: any) => {
-  const ledger = normalizeKnowledgeLedger(compact)
-  const known = ledger.filter((item: any) => !['unknown', 'unresolved'].includes(item.knowledge_mode)).length
-  const unknown = ledger.filter((item: any) => ['unknown', 'unresolved'].includes(item.knowledge_mode)).length
-  return [`认知条目 ${ledger.length}`, `可回答 ${known}`, `未知/未决 ${unknown}`]
+  const memories = normalizeRoleMemories(compact)
+  return [`记忆 ${memories.length} 条`]
 }
 
 export const listToTextarea = (value: any) => stringifyTextList(value)

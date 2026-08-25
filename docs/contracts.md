@@ -52,9 +52,9 @@
 
 - `reply_turns`：逐角色的 `person_id`、平台角色 ID、姓名、公开台词和披露事实。
 - `role_state_results`：逐角色的新四维状态、变化量和状态标签。
-- `role_intents`：逐角色独立产生的 `answer|react|interrupt|silent` 意图、置信度和原因，仅供服务审计。
-- `active_speakers`：通过角色意图仲裁后实际执行 TinyTroupe 行动的角色；可能为空。
-- `simulation_meta`：世界 ID、轮次、观察者/行动者数量、调用数、重试数和重建标记。
+- `role_intents`：TinyTroupe 本轮实际结果回写，发言为 `answer`，未开口为 `silent`，仅供服务审计。
+- `active_speakers`：本轮产出公开 `TALK` 的角色；可能为空。
+- `simulation_meta`：世界 ID、轮次、观察者/行动者/发言者数量、调用数、重试数和重建标记。
 
 合法沉默轮次返回成功状态、空 `reply_turns`、`routing_summary` 和可选 `addressing_warning`，平台不得将其转换为 AI 执行错误。四维状态只轻微影响角色台词风格，不得参与发言、事实披露、阶段推进或动作结果判断。
 

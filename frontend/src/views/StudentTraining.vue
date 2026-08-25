@@ -542,7 +542,6 @@ const suggestedQuestionItems = ref<SuggestedQuestionItem[]>([])
 const assessmentProgress = ref<any>(null)
 const completedPointIds = ref<string[]>([])
 const completedActionIds = ref<string[]>([])
-const autoFinishReady = ref(false)
 
 const revealedInfo = ref<string[]>([])
 const chatHistory = ref<
@@ -721,7 +720,6 @@ const applyGuidancePayload = (res: any) => {
   assessmentProgress.value = res?.assessment_progress || null
   completedPointIds.value = Array.isArray(res?.completed_point_ids) ? res.completed_point_ids : []
   completedActionIds.value = Array.isArray(res?.completed_action_ids) ? res.completed_action_ids : []
-  autoFinishReady.value = Boolean(res?.auto_finish_ready)
 }
 
 const toggleTargetRole = (role: SceneRoleBrief) => {
@@ -768,6 +766,10 @@ const thinkingRoleLabel = computed(() => guessThinkingRoleName())
 
 const isRoleAvatarThinking = (roleName: string) => {
   if (!isAssistantBusy.value) return false
+  const present = sceneRoles.value.filter((role) => role.speakable !== false && role.name)
+  if (present.length > 1) {
+    return present.some((role) => role.name === roleName)
+  }
   return roleName === thinkingRoleLabel.value
 }
 
@@ -1244,7 +1246,18 @@ const sendMessage = async (content?: string) => {
     applyGuidancePayload(res)
 
     if (hasAssistantReply) {
-      if (res.new_fact_revealed && res.new_fact_revealed !== 'null' && !revealedInfo.value.includes(res.new_fact_revealed)) {
+      if (Array.isArray(res.new_facts_revealed) && res.new_facts_revealed.length) {
+        for (const clue of res.new_facts_revealed) {
+          const text = String(clue || '').trim()
+          if (!text || text === 'null' || revealedInfo.value.includes(text)) continue
+          revealedInfo.value.push(text)
+          chatHistory.value.push({
+            id: Date.now() + revealedInfo.value.length,
+            role: 'system',
+            content: `[关键线索获取] ${text}`,
+          })
+        }
+      } else if (res.new_fact_revealed && res.new_fact_revealed !== 'null' && !revealedInfo.value.includes(res.new_fact_revealed)) {
         revealedInfo.value.push(res.new_fact_revealed)
         chatHistory.value.push({
           id: Date.now() + 2,
@@ -1288,19 +1301,35 @@ const sendMessage = async (content?: string) => {
   }
 }
 
+const evaluationReturnQuery = () => (
+  isAssignmentAssessmentMode.value
+    ? `&source=assignment${currentAssignmentId.value ? `&assignment_id=${currentAssignmentId.value}` : ''}`
+    : ''
+)
+
+const goToEvaluationPage = (targetSessionId: string) => {
+  router.replace(`/student/evaluation?session_id=${targetSessionId}&generating=1${evaluationReturnQuery()}`)
+}
+
 const finishTraining = async () => {
   if (isFinishingTraining.value || !sessionId.value) return
   isFinishingTraining.value = true
   faceGuardRef.value?.stopCamera?.()
   const targetSessionId = sessionId.value
-  const sourceQuery = isAssignmentAssessmentMode.value
-    ? `&source=assignment${currentAssignmentId.value ? `&assignment_id=${currentAssignmentId.value}` : ''}`
-    : ''
-  void request.post(`/training/finish/${targetSessionId}`, null, { _skipErrorToast: true } as any).catch(() => {
-    isFinishingTraining.value = false
-    showToast('评估报告生成失败')
+  const loader = showLoadingToast({
+    message: '正在生成评估报告...',
+    forbidClick: true,
+    duration: 0,
   })
-  router.push(`/student/evaluation?session_id=${targetSessionId}&generating=1${sourceQuery}`)
+  try {
+    await request.post(`/training/finish/${targetSessionId}`, null, { _skipErrorToast: true } as any)
+  } catch {
+    showToast('评估报告生成失败')
+  } finally {
+    loader.close()
+    isFinishingTraining.value = false
+    goToEvaluationPage(targetSessionId)
+  }
 }
 
 const interruptAssistantReply = () => {
@@ -1329,23 +1358,11 @@ const handleFaceFailed = (message: string) => {
   }
 }
 
-const handleFaceTerminated = (payload?: any) => {
+const handleFaceTerminated = () => {
   if (isFinishingTraining.value) return
   faceVerified.value = false
   faceTerminated.value = true
-  const maxFailures = Number(payload?.max_failures || 5)
-  const loader = showLoadingToast({
-    message: `实训检测异常达到 ${maxFailures} 次，正在生成评估报告...`,
-    forbidClick: true,
-    duration: 0,
-  })
-  void waitForEvaluationReport(sessionId.value).finally(() => {
-    loader.close()
-    const sourceQuery = isAssignmentAssessmentMode.value
-      ? `&source=assignment${currentAssignmentId.value ? `&assignment_id=${currentAssignmentId.value}` : ''}`
-      : ''
-    router.replace(`/student/evaluation?session_id=${sessionId.value}${sourceQuery}`)
-  })
+  void finishTraining()
 }
 
 const getDifficultyColor = (diff: string) => {

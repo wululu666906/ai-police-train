@@ -8,7 +8,7 @@ AI_ROLES: dict[str, dict[str, Any]] = {
     skill: {"id": skill, "role_name": label, "duty": duty, "consumer": "ai_workflow_service"}
     for skill, label, duty in (
         ("case_import_harness", "案件导入 Harness", "完成清洗、剧情、事实、人物、记忆与场景蓝图闭环。"),
-        ("role_simulation", "角色推演 Skill", "TinyTroupe 状态推演与 DeepSeek 最终回复。"),
+        ("role_simulation", "角色推演 Skill", "TinyTroupe 多角色世界推演；DeepSeek 只做事实审计，不改写台词。"),
         ("evaluation", "训练评估 Skill", "规则评分与 AI 分析。"),
         ("report", "报告生成 Skill", "生成可归档训练报告。"),
     )

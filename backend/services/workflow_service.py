@@ -287,8 +287,10 @@ SCENE_GEN_PROMPT = """你是公安警情训练场景设计专家。你的结果�
 
 EVIDENCE_CARD_PROMPT = """你是案件材料证据整理助手。根据给出的原文分块输出一个紧凑 JSON 对象：
 {"facts":[{"content":"可核对的短事实","fact_type":"行为|时间|地点|关系|证据|风险|陈述","quote":"原文连续摘录","status":"confirmed|claimed|conflicted|unknown"}],"person_observations":[{"name":"原文明确姓名","observation":"该人物做了什么、知道什么或否认什么","quote":"原文摘录"}]}
-只提取本块原文明确表达的内容；不要写剧本、推断、解释、重复事实或完整案情复述。
-硬性容量规则：facts 最多 16 条；person_observations 最多 12 人、每人最多 2 条；content 最多 60 字；observation 最多 50 字；quote 最多 120 字且必须是原文连续片段。优先保留人物、关键行为、时间地点、伤害/损失、证据、冲突和风险。材料再长也必须停止在上述上限内，直接输出完整闭合 JSON。"""
+只提取本块原文明确表达的案件剧情：人物行为、重要事件、时间地点、伤情损失、现场处置。
+禁止写入法院审理、辩护意见、定罪量刑、裁判说理、诉讼程序套话。
+不要写剧本、推断、解释或完整案情复述。
+硬性容量规则：facts 尽量覆盖本块全部关键行为与事件，最多 24 条；person_observations 最多 12 人、每人最多 3 条；content 最多 80 字；observation 最多 60 字；quote 最多 160 字且必须是原文连续片段。优先保留人物、关键行为、时间地点、伤害/损失、证据、冲突和风险。材料再长也必须停止在上述上限内，直接输出完整闭合 JSON。"""
 
 DOCUMENT_STRUCTURE_LABELING_PROMPT = """你是案件材料首席阅读员。请先完整阅读输入文档分块，再为后续人物线、证据与剧情重建建立唯一的“文档导航索引”。只输出 JSON：
 {"sections":[{"section_type":"document_title|document_metadata|case_overview|procedural_history|evidence|testimony|interrogation_record|judgment_reasoning|disposition|conclusion|appendix|other","semantic_label":"用本段真实主题自定义命名，例如：被害人黎某18的陈述、现场监控与物证、法院认定理由","processing_priority":"role_memory|case_reconstruction|evidence_linking|context_only|ignore_header","anchor_quote":"本段开头的原文连续摘录","summary":"本段对后续分析的作用","characters":["本段直接相关人物"]}]}
@@ -296,8 +298,10 @@ DOCUMENT_STRUCTURE_LABELING_PROMPT = """你是案件材料首席阅读员。请�
 1. 这不是固定关键词匹配。必须依据文档真实结构、说话主体、材料功能和叙事顺序给出语义标签；semantic_label 必须具体，不能只写“证言”“证据”。
 2. 必须覆盖本分块从标题/案情介绍、证据、角色陈述或问答笔录，到裁判理由、结果、附件等实际出现的区域；每个区域单独一项。
 3. anchor_quote 必须是该区域开头的原文连续摘录（8-80 字），用于程序精确回指位置；不得编造、改写或把整段内容放进 summary。
-4. 角色的陈述、证言、供述、问答笔录必须标为 testimony 或 interrogation_record，processing_priority 必须为 role_memory；案件标题、判决书名称、目录、页眉标为 ignore_header，绝不能标为 role_memory。
-5. 不要抽取人物线、事实或完整剧情；本步骤只负责阅读、分区、语义标注和导航。"""
+4. 角色的陈述、证言、供述、询问/讯问笔录必须标为 testimony 或 interrogation_record，processing_priority 必须为 role_memory。
+5. 法院审理、判决理由、辩护意见、定罪量刑、裁判结果必须标为 judgment_reasoning / disposition / conclusion，processing_priority 必须为 ignore_header；这些片段不得进入事实账本或角色记忆。
+6. 案件标题、判决书名称、目录、页眉标为 ignore_header，绝不能标为 role_memory。
+7. 不要抽取人物线、事实或完整剧情；本步骤只负责阅读、分区、语义标注和导航。"""
 
 ROLE_LINE_EXTRACTION_PROMPT = """你是公安案件人物线整理员。只依据输入原文，完整识别所有明确出现的人物，并整理每个人自己的陈述、证言和案件经历。只输出 JSON：
 {"persons":[{"name":"原文姓名或明确匿名代号","role_type":"嫌疑人|被害人|证人|报警人|相关人员","role_basis":"原文依据","testimony_lines":[{"statement":"尽量保留原文表达，仅做轻微语序润色","memory_type":"direct_statement|personal_experience|direct_observation|hearsay|later_learned","time_hint":"原文时间或相对时间","place_hint":"原文地点","actors":["涉及人物"],"certainty":"claimed|source_supported|conflicted|unknown","quote":"原文连续摘录"}],"unresolved_claims":["本人无法确认或与他人矛盾的内容"]}]}
@@ -310,6 +314,8 @@ ROLE_LINE_EXTRACTION_PROMPT = """你是公安案件人物线整理员。只依�
 6. 人物过多时优先缩短 statement 和 quote，仍须保留全部姓名及至少一条关键人物线。
 7. 输入会带有文档区段标签。案件介绍、判决理由、证据目录、标题和收尾总结不是角色本人说的话；只有“陈述、证言、供述、询问/讯问笔录”及其连续正文，或明确使用“其称/表示/看到/听到”的原文，才可写入 testimony_lines。
 8. 严禁把案件标题、案由、判决书名称、章节标题、证据名称本身当作 testimony_lines；例如“某某聚众斗殴—审判刑事判决书”不是人物记忆。
+9. 法院审理、辩护、定罪量刑、裁判结果不得写入 testimony_lines。剧情中的人物行为与重要事件应尽量拆成多条记忆。
+10. 每个人物在构建时必须同时给出完整角色档案：role_type、status、testimony_lines；不得只输出姓名或只输出序号。
 """
 
 STORY_RECONSTRUCTION_PROMPT = """你是案件故事重建专家。把本段材料恢复成可供训练后台理解全案的正文故事，只输出 JSON：
@@ -380,6 +386,25 @@ SCENE_TEXT_TEMPLATE_PROMPT = """你是警务训练剧本编辑。JSON 输出不�
 
 
 class WorkflowService:
+    COURT_SECTION_TYPES = frozenset({"judgment_reasoning", "disposition", "conclusion"})
+    COURT_CONTENT_MARKERS = (
+        "本院认为", "判决如下", "裁定如下", "审理查明", "经审理查明", "公诉机关", "公诉人",
+        "辩护人", "辩护意见", "审判员", "书记员", "人民法院", "定罪", "量刑", "构成要件",
+    )
+
+    @classmethod
+    def _is_court_content(cls, text: Any) -> bool:
+        content = str(text or "")
+        return any(marker in content for marker in cls.COURT_CONTENT_MARKERS)
+
+    @classmethod
+    def _is_court_section_label(cls, section_label: Any) -> bool:
+        return str(section_label or "").strip().lower() in cls.COURT_SECTION_TYPES
+
+    @classmethod
+    def _section_blocked_for_story_ledger(cls, section_label: Any, text: Any) -> bool:
+        return cls._is_court_section_label(section_label) or cls._is_court_content(text)
+
     @staticmethod
     def _append_warning(result: dict[str, Any], message: str):
         warnings = result.get("parse_warnings")
@@ -524,7 +549,7 @@ class WorkflowService:
         return story, trace
 
     @staticmethod
-    def _programmatic_claim_cards(text: str) -> list[dict[str, Any]]:
+    def _programmatic_claim_cards(text: str, source_sections: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         """Extract source-grounded claims/evidence locally from original text."""
         cards = []
         evidence_words = ("监控", "录音", "录像", "照片", "伤情", "鉴定", "物证", "证据", "证言", "笔录")
@@ -534,6 +559,9 @@ class WorkflowService:
                 continue
             start = text.find(clean)
             if start < 0:
+                continue
+            section_label = WorkflowService._section_for_position(source_sections or [], start) if source_sections else ""
+            if WorkflowService._section_blocked_for_story_ledger(section_label, clean):
                 continue
             cards.append({
                 "id": f"F{len(cards) + 1}",
@@ -578,7 +606,7 @@ class WorkflowService:
                     "known_key_points": [],
                     "source_verification": "source_matched",
                     "persona_source": "programmatic_identity_only",
-                    "persona_autofill": False,
+                    "persona_autofill": True,
                     "role_template_version": "source_memory_v2",
                 })
                 fact = str(evidence or "").strip()[:120]
@@ -713,6 +741,7 @@ class WorkflowService:
         markers: list[tuple[int, int, str, str]] = [(0, 0, "case_overview", source[:100].strip())]
         patterns = (
             ("conclusion", r"本院认为|判决如下|裁定如下|综上|判决结果|审判委员会"),
+            ("judgment_reasoning", r"经审理查明|辩护人|辩护意见|公诉机关指控|定罪|量刑|构成要件"),
             (
                 "testimony",
                 r"(?:被害人|受害人|证人|被告人|犯罪嫌疑人|报警人|报案人).{0,16}(?:陈述|证言|供述|辩解)"
@@ -734,6 +763,8 @@ class WorkflowService:
                 continue
             if re.search(r"本院认为|判决如下|裁定如下|综上|判决结果|审判委员会", content):
                 label = "conclusion"
+            elif re.search(r"经审理查明|辩护人|辩护意见|公诉机关指控|定罪|量刑|构成要件", content):
+                label = "judgment_reasoning"
             elif re.search(r"被害人.{0,12}(陈述|证言)|证人.{0,12}(证言|陈述)|被告人.{0,12}(供述|辩解)|询问笔录|讯问笔录|其称|其表示|供述称|陈述称", content):
                 label = "testimony"
             elif re.search(r"证据|证实|鉴定|勘验|检查笔录|监控|录像|照片|物证|书证|辨认笔录", content):
@@ -794,8 +825,8 @@ class WorkflowService:
         default_priority = {
             "document_title": "ignore_header", "document_metadata": "context_only", "case_overview": "case_reconstruction",
             "procedural_history": "case_reconstruction", "evidence": "evidence_linking", "testimony": "role_memory",
-            "interrogation_record": "role_memory", "judgment_reasoning": "context_only", "disposition": "context_only",
-            "conclusion": "context_only", "appendix": "context_only", "other": "context_only",
+            "interrogation_record": "role_memory", "judgment_reasoning": "ignore_header", "disposition": "ignore_header",
+            "conclusion": "ignore_header", "appendix": "context_only", "other": "context_only",
         }
         rows: list[dict[str, Any]] = []
         traces: list[dict[str, Any]] = []
@@ -1002,7 +1033,7 @@ class WorkflowService:
                     "unresolved_claims": [],
                     "source_verification": "source_matched",
                     "persona_source": "ai_role_line_extraction",
-                    "persona_autofill": False,
+                    "persona_autofill": True,
                 })
                 if person["role_type"] == "相关人员" and raw_person.get("role_type"):
                     person["role_type"] = str(raw_person.get("role_type"))
@@ -1018,6 +1049,8 @@ class WorkflowService:
                     absolute_start = chunk["start"] + local_pos
                     section_label = self._section_for_position(sections, absolute_start)
                     memory_type = str(raw_line.get("memory_type") or "direct_statement")
+                    if self._section_blocked_for_story_ledger(section_label, f"{statement}\n{quote}"):
+                        continue
                     if not self._is_testimony_candidate(name, statement, quote, memory_type, section_label):
                         continue
                     time_hint, place_hint = self._memory_hints(statement, quote, source, absolute_start)
@@ -1107,6 +1140,9 @@ class WorkflowService:
             quote = source[start:end].strip()
             if len(quote) < 8:
                 continue
+            section_label = self._section_for_position(sections, start)
+            if self._section_blocked_for_story_ledger(section_label, quote):
+                continue
             time_hint, place_hint = self._memory_hints(quote, quote, source, start)
             memories[name].append({
                 "memory_id": f"{name}-M{len(memories[name]) + 1}",
@@ -1121,7 +1157,7 @@ class WorkflowService:
                     "start": start,
                     "end": end,
                     "summary": quote[:180],
-                    "section": self._section_for_position(sections, start),
+                    "section": section_label,
                 }],
                 "quote": quote,
             })
@@ -1134,6 +1170,9 @@ class WorkflowService:
             refs = card.get("source_refs") if isinstance(card.get("source_refs"), list) else []
             start = min((int(ref.get("start", 10**9)) for ref in refs if isinstance(ref, dict)), default=source.find(statement))
             participants = [name for name in names if name in statement]
+            section_label = self._section_for_position(sections, max(0, start))
+            if self._section_blocked_for_story_ledger(section_label, statement):
+                continue
             derived_time, derived_place = self._memory_hints(statement, statement, source, max(0, start))
             time_match = time_pattern.search(statement)
             place_match = place_pattern.search(statement)
@@ -1161,7 +1200,6 @@ class WorkflowService:
                 # identity seeding / source knows_facts during reconciliation.
                 if any(range_start <= start < range_end for range_start, range_end, _speaker in explicit_testimony_ranges):
                     continue
-                section_label = self._section_for_position(sections, max(0, start))
                 if re.search(re.escape(name) + r"(?:称|说|表示|供述|陈述|反映|指认)", statement):
                     memory_type = "direct_statement"
                 elif any(token in statement for token in ("看见", "看到", "目击", "发现", "听见")):
@@ -1998,34 +2036,6 @@ class WorkflowService:
     @staticmethod
     def _clean_person(person: dict[str, Any]) -> dict[str, Any]:
         person = person or {}
-        if person.get("persona_autofill") is False:
-            # Text-first extraction establishes identity and source-grounded
-            # knowledge only.  It must not invent a behavioral archetype,
-            # attitude, motive or stress response from a role label.
-            role = str(person.get("role") or person.get("role_type") or "相关人员").strip() or "相关人员"
-            cleaned = {
-                "person_id": str(person.get("person_id") or "").strip(),
-                "name": WorkflowService._normalize_person_name(person.get("name")) or "未明确",
-                "aliases": person.get("aliases") if isinstance(person.get("aliases"), list) else [],
-                "role": role,
-                "role_type": str(person.get("role_type") or WorkflowService._guess_role_type(role)).strip() or "相关人员",
-                "status": WorkflowService._normalize_person_status(person.get("status")),
-                "knowledge_ledger": person.get("knowledge_ledger") if isinstance(person.get("knowledge_ledger"), list) else [],
-                "role_memories": person.get("role_memories") if isinstance(person.get("role_memories"), list) else [],
-                "unresolved_claims": person.get("unresolved_claims") if isinstance(person.get("unresolved_claims"), list) else [],
-                "response_constraints": person.get("response_constraints") if isinstance(person.get("response_constraints"), list) else [],
-                "persona_source": str(person.get("persona_source") or "programmatic_identity_only").strip(),
-                "persona_autofill": False,
-                "role_template_version": "source_memory_v2",
-                "persona_contract_version": "source_memory_v2",
-            }
-            for key in (
-                "source_verification", "source_refs", "source_name_match", "timeline_actions",
-                "case_memory", "role_thread_id", "role_confidence", "role_basis",
-            ):
-                if key in person:
-                    cleaned[key] = person[key]
-            return cleaned
         inferred_defaults = WorkflowService._infer_person_defaults(person)
         compact_fields = normalize_compact_persona_fields(person)
         scene_behavior_mode = str(compact_fields.get("scene_behavior_mode") or person.get("scene_behavior_mode") or "核查取证型").strip() or "核查取证型"
@@ -2088,6 +2098,16 @@ class WorkflowService:
             "deescalation_conditions": compact_fields.get("deescalation_conditions") if isinstance(compact_fields.get("deescalation_conditions"), list) else [],
             "impairment_state": str(compact_fields.get("impairment_state") or person.get("impairment_state") or "").strip(),
             "persona_template_version": "minimal_v3",
+            "persona_autofill": True,
+            "soul_profile": {
+                "authority_trust": inferred_defaults["init_trust"],
+                "cooperation_baseline": inferred_defaults["init_trust"],
+                "arousal_baseline": inferred_defaults["init_emotion"],
+                "self_control": inferred_defaults["init_expression_clarity"],
+                "coping_style": inferred_defaults["interaction_style"],
+                "speech_tendency": inferred_defaults["speaking_style"],
+                "primary_need": str(compact_fields.get("current_goal") or person.get("current_need") or "").strip(),
+            },
         }
         cleaned.update(infer_persona_template({**person, **cleaned}))
         canonical_cleaned, _ = canonicalize_person_payload(cleaned)
@@ -2095,13 +2115,16 @@ class WorkflowService:
         # them when a parsed case is saved and later re-opened for scene design.
         for key in (
             "source_verification", "source_refs", "source_name_match", "timeline_actions", "case_memory",
-            "role_thread_id", "role_confidence", "role_basis", "knowledge_ledger", "role_memories",
+            "role_thread_id", "role_confidence", "role_basis", "role_memories",
             "unresolved_claims", "response_constraints", "role_template_version",
             "persona_contract_version", "persona_source", "persona_autofill",
-            "knows_facts", "does_not_know", "hidden_truths",
+            "knows_facts", "does_not_know", "hidden_truths", "role_event_ledger",
+            "init_emotion", "init_trust", "init_risk", "init_expression_clarity",
+            "interaction_style", "personality", "speaking_style", "soul_profile",
         ):
-            if key in person:
-                canonical_cleaned[key] = person[key]
+            value = person.get(key) if key in person else cleaned.get(key)
+            if value not in (None, "", {}, []):
+                canonical_cleaned[key] = value
         return canonical_cleaned
 
     @staticmethod
@@ -2272,17 +2295,15 @@ class WorkflowService:
         clean = WorkflowService._normalize_person_name(name)
         if not clean:
             return False
-        # Court records commonly anonymise parties as “黎某18”“王某甲2”“彭某乙”.
+        # Court records commonly anonymise parties as “苗某”“首某”“彭某乙”.
         # These are stable source identifiers, not incomplete names, and must
-        # remain usable as role keys throughout the role-line checkpoint.
-        legal_alias = re.fullmatch(
-            r"([\u4e00-\u9fa5])某(?:[甲乙丙丁戊己庚辛壬癸]\d{0,2}|\d{1,2})",
+        # remain usable as role keys even when the surname is outside the common
+        # surname table used for real-name validation.
+        if re.fullmatch(
+            r"[\u4e00-\u9fa5]某(?:[甲乙丙丁戊己庚辛壬癸]\d{0,2}|\d{1,2})?",
             clean,
-        )
-        if legal_alias:
-            return legal_alias.group(1) in WorkflowService.COMMON_SURNAMES
-        if re.fullmatch(r"([\u4e00-\u9fa5])某", clean):
-            return clean[0] in WorkflowService.COMMON_SURNAMES
+        ):
+            return True
         if not re.fullmatch(r"[\u4e00-\u9fa5]{2,4}", clean):
             return False
         # Reject known non-person tokens
@@ -3134,7 +3155,7 @@ class WorkflowService:
         base = self._heuristic_parse_case(text, source_mode, source_meta, mark_as_fallback=False)
         if document_label_error:
             self._append_warning(base, "AI 文档阅读/语义标签未完整生成，当前分区已切换为规则标签；人物线与剧情需要人工复核。")
-        cards = self._programmatic_claim_cards(text)
+        cards = self._programmatic_claim_cards(text, source_sections)
         uncertainty_words = ("不清楚", "没看清", "不详", "大概", "可能", "不确定", "不记得")
         intelligence = normalize_case_intelligence({"case_intelligence": {
             "source_documents": [{"document_id": "source-1", "length": len(text)}],
@@ -3177,8 +3198,9 @@ class WorkflowService:
             role_memories.sort(key=lambda item: (item.get("source_refs") or [{}])[0].get("start", 10**9))
             person["role_memories"] = role_memories
             compiled_person = compile_person_role_information(person)
+            compiled_person["persona_autofill"] = True
             person.clear()
-            person.update(compiled_person)
+            person.update(self._clean_person(compiled_person))
             reconstruction["role_memories"][name] = person["role_memories"]
             person["response_constraints"] = person.get("response_constraints") or ["只陈述本人亲历、亲眼所见或原文明确记载的内容。"]
             person["unresolved_claims"] = person.get("unresolved_claims") or []
@@ -3286,7 +3308,7 @@ class WorkflowService:
 
         base = self._heuristic_parse_case(text, source_mode, source_meta, mark_as_fallback=False)
         source_sections = self._classify_source_sections(text)
-        cards = self._programmatic_claim_cards(text)
+        cards = self._programmatic_claim_cards(text, source_sections)
         uncertainty_words = ("不清楚", "没看清", "不详", "大概", "可能", "不确定", "不记得")
         intelligence = normalize_case_intelligence({"case_intelligence": {
             "source_documents": [{"document_id": "source-1", "length": len(text)}],
@@ -3341,8 +3363,9 @@ class WorkflowService:
                     known.add(marker)
             person["role_memories"] = memories
             compiled_person = compile_person_role_information(person)
+            compiled_person["persona_autofill"] = True
             person.clear()
-            person.update(compiled_person)
+            person.update(self._clean_person(compiled_person))
             reconstruction.setdefault("role_memories", {})[name] = person["role_memories"]
         base["persons"] = self.standardize_person_records(persons)
         complete_story = self._render_complete_story(reconstruction, base["persons"])
@@ -3456,7 +3479,7 @@ class WorkflowService:
             # state merge waits for both but does not serialize their latency.
             parallel_started = time.perf_counter()
             narrative, narrative_trace = self._generate_free_case_narrative(text)
-            evidence_cards = self._programmatic_claim_cards(text)
+            evidence_cards = self._programmatic_claim_cards(text, self._classify_source_sections(text))
             evidence_people = self._programmatic_people(text)
             assembly_started = time.perf_counter()
             payload = self._heuristic_parse_case(text, source_mode, source_meta)

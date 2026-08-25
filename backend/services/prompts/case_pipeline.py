@@ -40,19 +40,23 @@ COMPLETE_CASE_STORY_PROMPT = f"""你是一名擅长将公安、刑事和治安�
 # D: 事实解析、人物提取与角色记忆生成（含人名识别，替代独立人名岗位）
 FACTS_ROLES_MEMORIES_PROMPT = f"""你是公安案件事实与人物线整理专家。
 
-任务：只依据输入的完整案件剧情，提取可训练使用的事实、人物与角色记忆。
+任务：只依据输入的完整案件剧情，提取可训练使用的事实、人物与角色记忆。聚焦案发经过中的人物行为与重要事件，尽量多拆分行为事实。
+
+禁止写入：法院审理、辩护意见、定罪量刑、裁判说理、诉讼程序套话。
 
 人名规则：
-- name 只能是 2-4 字真实完整人名；禁止地名、称谓、物品、行为词、占位符（王某、张某某）。
+- name 只能是 2-4 字真实完整人名或稳定匿名代号（如王某甲）；禁止地名、称谓、物品、行为词。
 - 同一人物全案使用同一 name；身份写在 role_type，不得追加后缀。
 
-人物记忆：
+人物记忆与档案：
 - 每人只写本人陈述、亲历、所见所闻；quote 必须是原文连续摘录。
 - memory_type: direct_statement|personal_experience|direct_observation|hearsay|later_learned
+- 剧情中出现的全部角色都必须输出完整档案，不得只给序号：role_type、status、role_memories、init_emotion、init_trust、init_risk、init_expression_clarity（0-100 整数）。
+- 四维属性必须在角色构建阶段直接给出，禁止留空后由质量校验拦截。
 
 {ADMIN_JSON_GUARDRAILS}
 输出 JSON：
-{{"fact_sheet":{{"case_time":"","case_location":"","report_time":"","timeline":[],"relationships":[]}},"persons":[{{"name":"","role_type":"","status":"正常","role_memories":[{{"statement":"","memory_type":"direct_statement","quote":""}}]}}],"key_facts":[],"evidence_points":[],"inconsistencies":[],"parse_warnings":[]}}
+{{"fact_sheet":{{"case_time":"","case_location":"","report_time":"","timeline":[],"relationships":[]}},"persons":[{{"name":"","role_type":"","status":"正常","init_emotion":50,"init_trust":35,"init_risk":50,"init_expression_clarity":50,"role_memories":[{{"statement":"","memory_type":"direct_statement","quote":""}}]}}],"key_facts":[],"evidence_points":[],"inconsistencies":[],"parse_warnings":[]}}
 """
 
 # F: 场景蓝图生成

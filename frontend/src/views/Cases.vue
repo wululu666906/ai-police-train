@@ -2006,7 +2006,6 @@ const normalizePersonEditors = (persons: any, options: { collapsed?: boolean } =
       role_type: String(compactFields.role_type || '相关人员').trim() || '相关人员',
       status: String(compactFields.status || '正常').trim() || '正常',
       role_memories: Array.isArray(compactFields.role_memories) ? compactFields.role_memories : [],
-      knowledge_ledger: Array.isArray(compactFields.knowledge_ledger) ? compactFields.knowledge_ledger : [],
       unresolved_claims: Array.isArray(compactFields.unresolved_claims) ? compactFields.unresolved_claims : [],
       response_constraints: Array.isArray(compactFields.response_constraints) ? compactFields.response_constraints : [],
       role_template_version: 'source_memory_v2',
@@ -2025,7 +2024,6 @@ const buildEmptyPerson = (index: number, options: { collapsed?: boolean } = {}) 
   role_type: '相关人员',
   status: '正常',
   role_memories: [],
-  knowledge_ledger: [],
   unresolved_claims: [],
   response_constraints: [],
   source_refs: [],
@@ -2829,7 +2827,7 @@ const applyPipelineJobResult = (rawResult: any) => {
     scene_ai_workflow: normalized.sceneAiWorkflow,
     ai_workflows: normalized.aiWorkflows,
   }
-  aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: false })
+  aiParsedData.value.persons = normalizePersonEditors(aiParsedData.value.persons || [], { collapsed: true })
   generatedScenes.value = normalizeGeneratedScenesFromPipeline(normalized.scenes, aiParsedData.value.persons || [])
   return res
 }

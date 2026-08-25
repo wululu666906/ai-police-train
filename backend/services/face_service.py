@@ -14,9 +14,8 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from sqlalchemy.orm import Session
 
 import models
-from services.classroom_service import sync_assignment_submission_for_session
-from services.agent_training_service import evaluate_session
 from services.evaluation_policy_service import enforce_final_score_policy
+from services.training_runtime_service import dump_runtime_state, load_runtime_state
 from services.import_isolation import isolated_sys_path
 from services.object_storage_service import MEDIA_BUCKET, build_object_key, guess_content_type, object_storage, upsert_media_asset
 
@@ -908,13 +907,38 @@ def build_adaptive_fallback_report(
     }
 
 
+def apply_face_termination_report_metadata(
+    report: dict[str, Any],
+    *,
+    failure_count: int,
+    reason: str,
+    evaluation_type: str = "auto_terminated",
+    policy_source: str = "face_termination_success",
+) -> dict[str, Any]:
+    meta = report.setdefault("evaluation_meta", {})
+    meta["scoring_version"] = meta.get("scoring_version") or "adaptive_v1"
+    meta["evaluation_type"] = evaluation_type
+    meta["trigger"] = "face_verification_guard"
+    meta["auto_finished"] = True
+    report["termination_reason"] = "face_verification_finished"
+    report["termination_report"] = "系统检测到人脸验证连续异常，本次训练已自动终止。请确认本人在镜头内并保持摄像头在线。"
+    report["failure_count"] = failure_count
+    report["last_reason"] = localize_face_reason(reason)
+    report["face_monitor"] = {
+        "termination_reason": "face_verification_failed",
+        "failure_count": failure_count,
+        "last_reason": localize_face_reason(reason),
+    }
+    return enforce_final_score_policy(report, policy_source=policy_source)
+
+
 def _finalize_face_termination(
     db: Session,
     *,
     session: models.TrainingSession,
     failure_count: int,
     reason: str,
-) -> dict[str, Any]:
+) -> None:
     db.add(
         models.Message(
             session_id=session.id,
@@ -928,52 +952,13 @@ def _finalize_face_termination(
     if session.training_started_at is None:
         session.training_started_at = session.created_at or now
     session.training_finished_at = session.training_finished_at or now
+    runtime = load_runtime_state(session.revealed_info)
+    runtime["face_termination_pending"] = {
+        "failure_count": failure_count,
+        "reason": reason,
+    }
+    session.revealed_info = dump_runtime_state(runtime)
     db.commit()
-
-    report = evaluate_session(db, session.id, session.user_id, force_recompute=True)
-    if isinstance(report, dict) and not report.get("error"):
-        meta = report.setdefault("evaluation_meta", {})
-        meta["scoring_version"] = meta.get("scoring_version") or "adaptive_v1"
-        meta["evaluation_type"] = "auto_terminated"
-        meta["trigger"] = "face_verification_guard"
-        meta["auto_finished"] = True
-        report["termination_reason"] = "face_verification_finished"
-        report["termination_report"] = "系统检测到人脸验证连续异常，本次训练已自动终止。请确认本人在镜头内并保持摄像头在线。"
-        report["failure_count"] = failure_count
-        report["last_reason"] = localize_face_reason(reason)
-        report["face_monitor"] = {
-            "termination_reason": "face_verification_failed",
-            "failure_count": failure_count,
-            "last_reason": localize_face_reason(reason),
-        }
-        report = enforce_final_score_policy(report, policy_source="face_termination_success")
-        session.status = "finished"
-        session.evaluation_result = json.dumps(report, ensure_ascii=False)
-        db.commit()
-    else:
-        report = build_adaptive_fallback_report(
-            session=session,
-            failure_count=failure_count,
-            reason=reason,
-            error=str(report.get("error") if isinstance(report, dict) else "未知评估错误"),
-        )
-        report["termination_reason"] = "face_verification_finished"
-        report["termination_report"] = "系统检测到人脸验证连续异常，本次训练已自动终止。"
-        report["face_monitor"] = {
-            "termination_reason": "face_verification_failed",
-            "failure_count": failure_count,
-            "last_reason": localize_face_reason(reason),
-        }
-        report = enforce_final_score_policy(report, policy_source="face_termination_fallback")
-        session.status = "finished"
-        session.evaluation_result = json.dumps(report, ensure_ascii=False)
-        db.commit()
-
-    try:
-        sync_assignment_submission_for_session(db, session.id, session.user_id, report)
-    except Exception as error:
-        print(f"Face termination submission sync failed: {error}")
-    return report
 
 
 def record_event(

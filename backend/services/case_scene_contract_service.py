@@ -73,7 +73,7 @@ def _validate_first_impression(value: Any) -> tuple[str, list[dict[str, str]]]:
     text = re.sub(r"\s+", " ", raw)
     issues: list[dict[str, str]] = []
     if not text:
-        issues.append({"severity": "blocking", "code": "MISSING_FIRST_IMPRESSION", "reason": "现场第一印象为空"})
+        issues.append({"severity": "warning", "code": "MISSING_FIRST_IMPRESSION", "reason": "现场第一印象为空，建议补充入场可观察描述"})
         return text, issues
     if len(text) < FIRST_IMPRESSION_MIN_LENGTH:
         issues.append({
@@ -82,15 +82,15 @@ def _validate_first_impression(value: Any) -> tuple[str, list[dict[str, str]]]:
         })
     if len(text) > FIRST_IMPRESSION_MAX_LENGTH:
         issues.append({
-            "severity": "blocking", "code": "FIRST_IMPRESSION_TOO_LONG",
-            "reason": f"现场第一印象共 {len(text)} 字，超过 {FIRST_IMPRESSION_MAX_LENGTH} 字上限",
+            "severity": "warning", "code": "FIRST_IMPRESSION_TOO_LONG",
+            "reason": f"现场第一印象共 {len(text)} 字，超过 {FIRST_IMPRESSION_MAX_LENGTH} 字建议上限",
         })
     if "\n" in raw or "\r" in raw:
-        issues.append({"severity": "blocking", "code": "FIRST_IMPRESSION_MULTILINE", "reason": "现场第一印象必须为单段文本"})
+        issues.append({"severity": "warning", "code": "FIRST_IMPRESSION_MULTILINE", "reason": "现场第一印象建议为单段文本"})
 
     marker_groups = (
         (("接警信息", "报警信息", "接报警", "接到报警", "报警人称", "110指令"),
-         "FIRST_IMPRESSION_DISPATCH_CONTENT", "现场第一印象包含接警或报警转述，应改为入场时可直接观察的内容"),
+         "FIRST_IMPRESSION_DISPATCH_CONTENT", "现场第一印象包含接警或报警转述，建议改为入场时可直接观察的内容"),
         (("当前可接触人员", "可接触人员", "当前时空", "→"),
          "FIRST_IMPRESSION_CONTEXT_METADATA", "现场第一印象包含人员清单、时空链路或系统元数据"),
         (("训练目标", "训练任务", "民警任务", "需要先", "开展询问", "开展处置"),
@@ -100,10 +100,10 @@ def _validate_first_impression(value: Any) -> tuple[str, list[dict[str, str]]]:
     )
     for markers, code, reason in marker_groups:
         if any(marker in text for marker in markers):
-            issues.append({"severity": "blocking", "code": code, "reason": reason})
+            issues.append({"severity": "warning", "code": code, "reason": reason})
     if re.search(r"\d{4}年\d{1,2}月\d{1,2}日|\d{1,2}时\d{1,2}分|F\d+", text):
         issues.append({
-            "severity": "blocking", "code": "FIRST_IMPRESSION_TIMELINE_CONTENT",
+            "severity": "warning", "code": "FIRST_IMPRESSION_TIMELINE_CONTENT",
             "reason": "现场第一印象包含案件时间线或事实编号",
         })
     return text, issues
@@ -257,7 +257,7 @@ def build_case_quality_report(case_info: dict[str, Any], scenes: list[dict[str, 
     if not [scene for scene in scenes or [] if isinstance(scene, dict)]:
         add(blocking, "CASE_WITHOUT_SCENES", "案件没有可发布的训练场景")
     if len([scene for scene in scenes or [] if isinstance(scene, dict)]) > 4:
-        add(blocking, "TOO_MANY_SCENES", "必要训练场景数量超过 4 个")
+        add(warnings, "TOO_MANY_SCENES", "必要训练场景数量超过 4 个，建议精简")
 
     import_quality = case_info.get("case_import_quality") if isinstance(case_info.get("case_import_quality"), dict) else {}
     story_audit = import_quality.get("story") if isinstance(import_quality.get("story"), dict) else {}
@@ -265,11 +265,11 @@ def build_case_quality_report(case_info: dict[str, Any], scenes: list[dict[str, 
     memory_audit = import_quality.get("memories") if isinstance(import_quality.get("memories"), dict) else {}
     scene_admission_audit = import_quality.get("scene_admission") if isinstance(import_quality.get("scene_admission"), dict) else {}
     if story_audit and not story_audit.get("sufficient"):
-        add(blocking, "INCOMPLETE_COMPLETE_STORY", "完整案件剧情覆盖不足，无法支撑事实与角色对话")
+        add(warnings, "INCOMPLETE_COMPLETE_STORY", "完整案件剧情覆盖不足，建议复核事实与角色对话支撑")
     if fact_audit and not fact_audit.get("sufficient"):
-        add(blocking, "INSUFFICIENT_FACT_EXTRACTION", "事实抽取数量或来源覆盖不足")
+        add(warnings, "INSUFFICIENT_FACT_EXTRACTION", "事实抽取数量或来源覆盖不足，建议补充")
     if memory_audit and not memory_audit.get("sufficient"):
-        add(blocking, "INSUFFICIENT_ROLE_MEMORY", "可对话角色的来源记忆覆盖不足")
+        add(warnings, "INSUFFICIENT_ROLE_MEMORY", "可对话角色的来源记忆覆盖不足，建议补充")
     if scene_admission_audit and scene_admission_audit.get("rejected_count", 0) > 0 and not scene_admission_audit.get("sufficient"):
         rejected_names = [
             _text(item.get("scene_name"))
@@ -298,74 +298,75 @@ def build_case_quality_report(case_info: dict[str, Any], scenes: list[dict[str, 
         scene_names.append(name)
         _, impression_issues = _validate_first_impression(scene.get("first_impression"))
         for issue in impression_issues:
-            target = warnings if issue["severity"] == "warning" else blocking
-            add(target, issue["code"], f"{name} 的{issue['reason']}", ref)
+            add(warnings, issue["code"], f"{name} 的{issue['reason']}", ref)
         admission = evaluate_dialogue_admission(scene)
         if not admission.get("admitted"):
-            markers = "、".join(admission.get("non_dialogue_markers") or []) or "非对话核心能力"
-            alternative = _text(admission.get("suggested_alternative")) or "对话适配型现场处置场景"
+            markers = "、".join(admission.get("non_dialogue_markers") or [])
+            reasons = "、".join(admission.get("reasons") or []) or "对话适配度不足"
+            detail = markers or reasons
+            alternative = _text(admission.get("suggested_alternative")) or "现场人员接触与关键信息核实对话"
             add(
-                blocking,
+                warnings,
                 "NON_DIALOGUE_SCENE",
-                f"{name} 不属于 AI 对话训练适配场景（命中：{markers}），建议改写为：{alternative}",
+                f"{name} 对话训练适配提示（{detail}），建议改写为：{alternative}",
                 ref,
             )
         roles = _roles(scene.get("roles") if scene.get("roles") is not None else scene.get("role_names"))
         unknown = [role for role in roles if role not in persons]
         if unknown:
-            add(blocking, "SCENE_ROLE_OUTSIDE_CASE", f"{name} 包含案件人物名册外角色：{'、'.join(unknown)}", ref)
+            add(warnings, "SCENE_ROLE_OUTSIDE_CASE", f"{name} 包含案件人物名册外角色：{'、'.join(unknown)}", ref)
         non_speakable = [role for role in roles if role in persons and not person_is_speakable(persons[role])]
         if non_speakable:
-            add(blocking, "NON_SPEAKABLE_INTERACTIVE_ROLE", f"{name} 将不可交流人员设为交互角色：{'、'.join(non_speakable)}", ref)
+            add(warnings, "NON_SPEAKABLE_INTERACTIVE_ROLE", f"{name} 将不可交流人员设为交互角色：{'、'.join(non_speakable)}", ref)
         if not roles:
             add(blocking, "MISSING_INTERACTIVE_ROLE", f"{name} 没有可交互角色", ref)
         primary = _text(scene.get("primary_role_name"))
         if roles and (not primary or primary not in roles):
-            add(blocking, "INVALID_PRIMARY_ROLE", f"{name} 缺少有效主对话角色", ref)
+            add(warnings, "INVALID_PRIMARY_ROLE", f"{name} 缺少有效主对话角色，建议指定", ref)
         elif primary in persons and not person_is_speakable(persons[primary]):
-            add(blocking, "NON_SPEAKABLE_PRIMARY_ROLE", f"{name} 的主对话角色不可交流", ref)
+            add(warnings, "NON_SPEAKABLE_PRIMARY_ROLE", f"{name} 的主对话角色不可交流", ref)
 
         facts = set(_fact_ids(scene.get("fact_ids")))
         scene_fact_sets.append(facts)
         referenced_facts.update(facts)
         invalid_facts = sorted(fact for fact in facts if valid_facts and fact not in valid_facts)
         if invalid_facts:
-            add(blocking, "SCENE_FACT_OUTSIDE_CASE", f"{name} 引用了案件事实范围外编号：{'、'.join(invalid_facts)}", ref)
+            add(warnings, "SCENE_FACT_OUTSIDE_CASE", f"{name} 引用了案件事实范围外编号：{'、'.join(invalid_facts)}", ref)
         if valid_facts and not facts:
             missing_fact_scene_names.append(name)
         for fact_id in facts:
             card = valid_facts.get(fact_id) or {}
             if valid_facts and not _items(card.get("source_refs")):
-                add(blocking, "FACT_WITHOUT_SOURCE", f"{name} 的事实 {fact_id} 缺少来源定位", ref)
+                add(warnings, "FACT_WITHOUT_SOURCE", f"{name} 的事实 {fact_id} 缺少来源定位", ref)
         stages = [item for item in _items(scene.get("stages")) if isinstance(item, dict)]
         if not stages:
-            add(blocking, "SCENE_WITHOUT_STAGES", f"{name} 没有训练阶段", ref)
+            add(warnings, "SCENE_WITHOUT_STAGES", f"{name} 没有训练阶段，建议补充", ref)
         for stage in stages:
             stage_facts = set(_fact_ids(stage.get("fact_ids")))
             if facts and not stage_facts:
-                add(blocking, "STAGE_WITHOUT_FACTS", f"{name} 存在未绑定事实的训练阶段", ref)
+                add(warnings, "STAGE_WITHOUT_FACTS", f"{name} 存在未绑定事实的训练阶段", ref)
             if stage_facts and not stage_facts.issubset(facts):
-                add(blocking, "STAGE_FACT_OUTSIDE_SCENE", f"{name} 的阶段引用了场景范围外事实", ref)
+                add(warnings, "STAGE_FACT_OUTSIDE_SCENE", f"{name} 的阶段引用了场景范围外事实", ref)
         goal = _text(scene.get("training_goal"))
         if not goal or not any(marker in goal for marker in POLICE_GOAL_MARKERS) or any(marker in goal for marker in NON_POLICE_GOAL_MARKERS):
-            add(blocking, "INVALID_POLICE_TRAINING_GOAL", f"{name} 的训练目标不是民警可执行的警情处置任务", ref)
+            add(warnings, "INVALID_POLICE_TRAINING_GOAL", f"{name} 的训练目标建议明确为民警可执行的警情处置任务", ref)
         outcomes = [_text(item) for item in _items(scene.get("expected_outcomes")) if _text(item)]
         if not outcomes:
-            add(blocking, "MISSING_EXPECTED_OUTCOMES", f"{name} 缺少预期达到效果", ref)
+            add(warnings, "MISSING_EXPECTED_OUTCOMES", f"{name} 缺少预期达到效果，建议补充", ref)
         if scene.get("canonical_outcome_locked") is False:
-            add(blocking, "CANONICAL_OUTCOME_UNLOCKED", f"{name} 未锁定案件既定结果", ref)
+            add(warnings, "CANONICAL_OUTCOME_UNLOCKED", f"{name} 未锁定案件既定结果", ref)
         phase = _text(scene.get("training_entry_phase"))
         if phase in PHASE_ORDER:
             current_phase = PHASE_ORDER[phase]
             if current_phase < previous_phase:
-                add(blocking, "SCENE_TIME_ORDER_CONFLICT", f"{name} 的训练时间阶段早于前一场景", ref)
+                add(warnings, "SCENE_TIME_ORDER_CONFLICT", f"{name} 的训练时间阶段早于前一场景", ref)
             previous_phase = max(previous_phase, current_phase)
 
     if missing_fact_scene_names:
-        add(blocking, "SCENE_WITHOUT_FACTS", "以下场景未绑定案件事实：" + "、".join(dict.fromkeys(missing_fact_scene_names)))
+        add(warnings, "SCENE_WITHOUT_FACTS", "以下场景未绑定案件事实：" + "、".join(dict.fromkeys(missing_fact_scene_names)))
     duplicate_names = sorted({name for name in scene_names if scene_names.count(name) > 1})
     if duplicate_names:
-        add(blocking, "DUPLICATED_SCENE_NAMES", "存在重复场景名称：" + "、".join(duplicate_names))
+        add(warnings, "DUPLICATED_SCENE_NAMES", "存在重复场景名称：" + "、".join(duplicate_names))
 
     for left, right in zip(scene_fact_sets, scene_fact_sets[1:]):
         if left and right and left == right:

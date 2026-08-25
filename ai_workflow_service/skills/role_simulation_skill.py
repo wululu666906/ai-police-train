@@ -211,6 +211,23 @@ class RoleSimulationSkill(Skill):
             validator=audit,
         )
         audit_rows = simulation_turn.audit.get("roles") if isinstance(simulation_turn.audit.get("roles"), dict) else {}
+        spoken_ids = {str(item.get("person_id") or "") for item in simulation_turn.reply_turns if str(item.get("content") or "").strip()}
+        addressed_ids = {
+            str(item.get("person_id") or "")
+            for item in intent_result.get("decisions") or []
+            if item.get("addressed")
+        }
+        role_intents = [
+            {
+                "person_id": persona.person_id,
+                "intent": "answer" if persona.person_id in spoken_ids else "silent",
+                "confidence": 1.0,
+                "reason": "TinyTroupe 本轮实际发言" if persona.person_id in spoken_ids else "TinyTroupe 本轮选择沉默",
+                "addressed": persona.person_id in addressed_ids,
+                "fallback": False,
+            }
+            for persona in present_personas
+        ]
         active_ids = {item["person_id"] for item in simulation_turn.active_speakers}
         affected = present_personas if input_kind == "action" else [item for item in present_personas if item.person_id in active_ids]
         role_state_results: list[dict[str, Any]] = []
@@ -236,6 +253,9 @@ class RoleSimulationSkill(Skill):
         reply_turns: list[dict[str, Any]] = []
         revealed_all: list[str] = []
         for turn in simulation_turn.reply_turns:
+            content = str(turn.get("content") or "").strip()
+            if not content:
+                continue
             audit_row = audit_rows.get(turn["person_id"]) or {}
             revealed = list(audit_row.get("revealed_fact_ids") or [])
             revealed_all.extend(revealed)
@@ -243,7 +263,7 @@ class RoleSimulationSkill(Skill):
                 "person_id": turn["person_id"],
                 "speaker_role_id": turn.get("platform_role_id") or None,
                 "speaker_name": turn["speaker_name"],
-                "content": turn["content"],
+                "content": content,
                 "revealed_fact_ids": revealed,
             })
         primary_turn = next(
@@ -274,7 +294,7 @@ class RoleSimulationSkill(Skill):
         recommendation_items = self.recommended_questions.execute(
             payload=recommendation_payload,
             training_result=training,
-            role_intents=intent_result["decisions"],
+            role_intents=role_intents,
         )
         training["recommended_question_items"] = recommendation_items
         training["recommended_questions"] = [item["text"] for item in recommendation_items]
@@ -291,7 +311,7 @@ class RoleSimulationSkill(Skill):
             "state": primary_state["state"] if primary_state else {},
             "state_delta": primary_state["state_delta"] if primary_state else {},
             "role_state_label": primary_state["role_state_label"] if primary_state else "",
-            "role_intents": intent_result["decisions"],
+            "role_intents": role_intents,
             "routing_summary": intent_result["routing_summary"],
             "addressing_warning": "当前没有角色认为自己适合发言，请明确询问对象或调整问题。" if not reply_turns and input_kind != "action" else "",
             "simulation_meta": simulation_meta,

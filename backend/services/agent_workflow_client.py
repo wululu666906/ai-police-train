@@ -13,7 +13,7 @@ class AgentWorkflowUnavailable(RuntimeError):
 
 
 class AgentWorkflowClient:
-    contract_version = "2026-08-15"
+    contract_version = "2026-08-24"
 
     def __init__(self) -> None:
         self._health_checked_at = 0.0
@@ -42,8 +42,10 @@ class AgentWorkflowClient:
                 f"AI 工作流契约版本不一致（后端={self.contract_version}，工作流={actual or '旧版本'}），请完整重启两项服务"
             )
         components = payload.get("components") or {}
-        if int(components.get("tinytroupe_max_actors") or 0) != 1:
-            raise AgentWorkflowUnavailable("AI 工作流仍在使用旧的多角色激活配置，请完整重启两项服务")
+        if str(components.get("tinytroupe_mode") or "") != "world":
+            raise AgentWorkflowUnavailable("AI 工作流未启用 TinyTroupe 世界模式，请完整重启两项服务")
+        if int(components.get("tinytroupe_max_actors") or 0) < 2:
+            raise AgentWorkflowUnavailable("AI 工作流仍在使用单角色导演配置，请完整重启两项服务")
         self._health_base_url = base_url
         self._health_checked_at = now
 

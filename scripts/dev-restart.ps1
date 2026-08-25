@@ -20,7 +20,7 @@ $FrontendLog = Join-Path $LogsRoot "dev-frontend.log"
 $FrontendErrLog = Join-Path $LogsRoot "dev-frontend.err.log"
 $OpsFrontendLog = Join-Path $LogsRoot "dev-ops-frontend.log"
 $OpsFrontendErrLog = Join-Path $LogsRoot "dev-ops-frontend.err.log"
-$RequiredWorkflowContractVersion = "2026-08-15"
+$RequiredWorkflowContractVersion = "2026-08-24"
 
 . (Join-Path $Root "scripts\fix-terminal-env.ps1")
 . (Join-Path $Root "scripts\windows-process-utils.ps1")
@@ -206,7 +206,7 @@ if (
     $aiWorkflowHealth.contract_version -ne $RequiredWorkflowContractVersion -or
     -not $aiWorkflowHealth.components.tinytroupe_available -or
     -not $aiWorkflowHealth.components.tinytroupe_model_configured -or
-    $aiWorkflowHealth.components.tinytroupe_max_actors -ne 1
+    [int]$aiWorkflowHealth.components.tinytroupe_max_actors -lt 2
 ) {
     Write-Host "AI 工作流版本或 TinyTroupe 状态校验失败。" -ForegroundColor Red
     Write-Host "期望契约: $RequiredWorkflowContractVersion；实际契约: $($aiWorkflowHealth.contract_version)" -ForegroundColor Yellow

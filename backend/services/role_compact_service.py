@@ -147,7 +147,6 @@ def _normalize_ledger(memories: list[dict[str, Any]], person: dict[str, Any] | N
 def person_to_role_compact_view(person: dict[str, Any] | None, *, scene_behavior_mode: str = "") -> dict[str, Any]:
     person = copy.deepcopy(person or {})
     memories = _normalize_role_memories(person)
-    ledger = _normalize_ledger(memories, person)
     return {
         "name": _as_text(person.get("name")),
         "role_type": _as_text(person.get("role_type") or person.get("role")) or "相关人员",
@@ -157,11 +156,11 @@ def person_to_role_compact_view(person: dict[str, Any] | None, *, scene_behavior
         "init_risk": person.get("init_risk"),
         "init_expression_clarity": person.get("init_expression_clarity"),
         "role_memories": memories,
-        "knowledge_ledger": ledger,
         "response_constraints": _as_text_list(person.get("response_constraints"), limit=12),
         "unresolved_claims": copy.deepcopy(person.get("unresolved_claims")) if isinstance(person.get("unresolved_claims"), list) else [],
         "source_verification": _as_text(person.get("source_verification")),
         "source_refs": _normalize_source_refs(person.get("source_refs")),
+        "soul_profile": copy.deepcopy(person.get("soul_profile")) if isinstance(person.get("soul_profile"), dict) else {},
         "role_template_version": ROLE_TEMPLATE_VERSION,
         "persona_autofill": False,
     }
@@ -170,7 +169,7 @@ def person_to_role_compact_view(person: dict[str, Any] | None, *, scene_behavior
 def expand_role_compact_to_person(compact: dict[str, Any] | None, *, scene_behavior_mode: str = "") -> dict[str, Any]:
     compact = copy.deepcopy(compact or {})
     memories = _normalize_role_memories(compact)
-    ledger = _normalize_ledger(memories, compact)
+    known = _as_text_list([item.get("statement") for item in memories if isinstance(item, dict)])
     return {
         "person_id": _as_text(compact.get("person_id")),
         "name": _as_text(compact.get("name")),
@@ -183,11 +182,17 @@ def expand_role_compact_to_person(compact: dict[str, Any] | None, *, scene_behav
         "init_risk": compact.get("init_risk"),
         "init_expression_clarity": compact.get("init_expression_clarity"),
         "role_memories": memories,
-        "knowledge_ledger": ledger,
+        "knows_facts": known,
+        "known_key_points": known,
+        "hidden_truths": [],
+        "withheld_key_points": [],
+        "does_not_know": [],
+        "cannot_answer": [],
         "response_constraints": _as_text_list(compact.get("response_constraints"), limit=12),
         "unresolved_claims": copy.deepcopy(compact.get("unresolved_claims")) if isinstance(compact.get("unresolved_claims"), list) else [],
         "source_verification": _as_text(compact.get("source_verification")),
         "source_refs": _normalize_source_refs(compact.get("source_refs")),
+        "soul_profile": copy.deepcopy(compact.get("soul_profile")) if isinstance(compact.get("soul_profile"), dict) else {},
         "persona_source": "source_grounded_role_memory",
         "persona_contract_version": ROLE_TEMPLATE_VERSION,
         "role_template_version": ROLE_TEMPLATE_VERSION,

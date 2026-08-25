@@ -305,7 +305,12 @@ async function fetchHistory() {
 }
 
 function normalizeTextRecord(item: any): UnifiedRecord {
-  const status = item.status === 'finished' ? 'finished' : item.status === 'abandoned' ? 'abandoned' : 'active'
+  const hasReport = item.total_score != null || Boolean(item.evaluation_result)
+  const status = item.status === 'finished' || (item.status === 'evaluating' && hasReport)
+    ? 'finished'
+    : item.status === 'abandoned'
+      ? 'abandoned'
+      : 'active'
   return {
     key: `text-${item.id}`,
     id: Number(item.id),

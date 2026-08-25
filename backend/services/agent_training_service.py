@@ -29,6 +29,36 @@ def _json(value: Any, default: Any):
         return default
 
 
+def resolve_revealed_fact_texts(case: models.Case | None, fact_ids: list[Any]) -> list[str]:
+    """Map runtime fact ids to readable clue text for student UI."""
+    structured = _json(getattr(case, "structured_data", None), {}) if case else {}
+    story_world = structured.get("story_world") if isinstance(structured.get("story_world"), dict) else {}
+    facts = []
+    for collection in (
+        structured.get("facts"),
+        structured.get("fact_cards"),
+        story_world.get("facts"),
+        story_world.get("fact_cards"),
+    ):
+        if isinstance(collection, list):
+            facts.extend(item for item in collection if isinstance(item, dict))
+    content_by_id: dict[str, str] = {}
+    for index, fact in enumerate(facts):
+        fact_id = str(fact.get("fact_id") or fact.get("id") or fact.get("claim_id") or f"F{index + 1:03d}").strip()
+        content = repair_text(str(fact.get("content") or fact.get("statement") or fact.get("fact") or "")).strip()
+        if fact_id and content:
+            content_by_id[fact_id] = content
+    texts: list[str] = []
+    for item in fact_ids or []:
+        key = str(item or "").strip()
+        if not key or key.lower() == "null":
+            continue
+        text = content_by_id.get(key) or key
+        if text not in texts:
+            texts.append(text)
+    return texts
+
+
 def _get_case_type(case: models.Case | None) -> str:
     return repair_text(case.case_type) if case and case.case_type else "其他"
 
@@ -407,6 +437,7 @@ def generate_dialogue(db: Session, session_id: int, user_text: str, user_id: int
         return {"inner_thought": "ERROR", "response": "", "communication_feedback": {"message": str(exc)}}
     result = response.get("result") or {}
     reply = str(result.get("reply") or "").strip()
+    previous_revealed = list(load_runtime_state(session.revealed_info).get("revealed_info") or [])
     state = _persist_workflow_result(session, roles, result)
     roles_by_person = {str(getattr(role, "person_id", None) or role.id): role for role in roles}
     roles_by_db_id = {str(role.id): role for role in roles}
@@ -424,6 +455,9 @@ def generate_dialogue(db: Session, session_id: int, user_text: str, user_id: int
         reply_turns.append({"person_id": str(getattr(role, "person_id", None) or role.id), "speaker_name": speaker_name, "speaker_role_id": role.id, "content": content})
     db.commit()
     latest_runtime = load_runtime_state(session.revealed_info)
+    revealed_ids = [str(item).strip() for item in (result.get("revealed_fact_ids") or []) if str(item).strip()]
+    newly_revealed = [item for item in revealed_ids if item not in {str(x).strip() for x in previous_revealed}]
+    new_fact_texts = resolve_revealed_fact_texts(case, newly_revealed or revealed_ids[:1])
     return {
         "response": reply,
         "reply_turns": reply_turns,
@@ -439,7 +473,8 @@ def generate_dialogue(db: Session, session_id: int, user_text: str, user_id: int
         "updated_cooperation": state["cooperation"],
         "updated_risk": state["risk"],
         "updated_clarity": state["clarity"],
-        "new_fact_revealed": (result.get("revealed_fact_ids") or [None])[0],
+        "new_fact_revealed": new_fact_texts[0] if new_fact_texts else None,
+        "new_facts_revealed": new_fact_texts,
         "is_stage_completed": bool(result.get("stage_advance_allowed")),
         "current_stage": result.get("current_stage") or session.current_stage,
         "assessment_progress": result.get("assessment_progress"),
@@ -520,6 +555,13 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
     if session.evaluation_result and not force_recompute:
         existing = _json(session.evaluation_result, {})
         if is_current_evaluation_report(existing):
+            if session.status != "finished":
+                session.status = "finished"
+                if session.training_finished_at is None:
+                    session.training_finished_at = datetime.utcnow()
+                if session.training_started_at is None:
+                    session.training_started_at = session.created_at or session.training_finished_at
+                db.commit()
             return existing
     messages = db.query(models.Message).filter(models.Message.session_id == session.id).order_by(models.Message.id.asc()).all()
     scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
@@ -569,5 +611,11 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
     if not is_current_evaluation_report(report):
         raise RuntimeError("Agent 返回的评估报告版本或封顶审计无效")
     session.evaluation_result = json.dumps(report, ensure_ascii=False)
+    if session.status != "finished":
+        session.status = "finished"
+    if session.training_finished_at is None:
+        session.training_finished_at = datetime.utcnow()
+    if session.training_started_at is None:
+        session.training_started_at = session.created_at or session.training_finished_at
     db.commit()
     return report

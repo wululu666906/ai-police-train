@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-WORKFLOW_CONTRACT_VERSION = "2026-08-15"
+WORKFLOW_CONTRACT_VERSION = "2026-08-24"
 
 
 class WorkflowStage(str, Enum):

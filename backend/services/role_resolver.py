@@ -314,7 +314,7 @@ def resolve_scene_roles(
     linked_rows = db.query(models.SceneRole).filter(models.SceneRole.scene_id == scene.id).all()
     if linked_rows:
         return _resolve_linked_scene_roles(db, scene, case, linked_rows)
-    return []
+    return _resolve_fallback_scene_roles(db, scene, case)
 
 
 def get_primary_scene_role(db: Session, scene: Optional[models.Scene], case: Optional[models.Case] = None) -> Optional[models.Role]:
