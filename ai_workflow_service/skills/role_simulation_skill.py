@@ -11,6 +11,7 @@ from ai_workflow_service.errors import WorkflowServiceError
 from ai_workflow_service.llm.deepseek_adapter import DeepSeekAdapter
 from ai_workflow_service.simulation.police_training_world import PoliceTrainingWorld
 from ai_workflow_service.simulation.role_validator import PoliceRoleValidator
+from ai_workflow_service.simulation.text_normalize import decode_literal_unicode_escapes
 from ai_workflow_service.simulation.tinytroupe_adapter import TinyTroupeAdapter
 from ai_workflow_service.skills.base import Skill
 from ai_workflow_service.skills.role_intent_skill import RoleIntentSkill
@@ -128,17 +129,18 @@ class RoleSimulationSkill(Skill):
             raise WorkflowServiceError("INVALID_PERSONAS", "场景人物 person_id 必须唯一")
 
         configured_participation = {item.person_id: item for item in scene.role_participation}
-        participation = {
-            persona.person_id: configured_participation.get(persona.person_id) or RoleParticipation(
+        participation = {}
+        for persona in personas:
+            configured = configured_participation.get(persona.person_id) or RoleParticipation(
                 person_id=persona.person_id,
                 present=True,
                 interaction_purpose="承担本场景中与其身份和已知事实相关的互动",
                 can_initiate=persona.is_primary,
                 can_interrupt=False,
             )
-            for persona in personas
-        }
-        present_personas = [persona for persona in personas if participation[persona.person_id].present]
+            # 场景绑定角色一律可交互，避免历史 present=false 脏数据阻断训练。
+            participation[persona.person_id] = configured.model_copy(update={"present": True})
+        present_personas = list(personas)
         if not present_personas:
             raise WorkflowServiceError("NO_PRESENT_PERSONAS", "当前场景没有在场且可参与交互的角色")
 
@@ -253,7 +255,7 @@ class RoleSimulationSkill(Skill):
         reply_turns: list[dict[str, Any]] = []
         revealed_all: list[str] = []
         for turn in simulation_turn.reply_turns:
-            content = str(turn.get("content") or "").strip()
+            content = decode_literal_unicode_escapes(str(turn.get("content") or "").strip())
             if not content:
                 continue
             audit_row = audit_rows.get(turn["person_id"]) or {}
@@ -291,6 +293,26 @@ class RoleSimulationSkill(Skill):
                 ],
             ],
         }
+        # 阶段已推进：建议提问必须按新阶段剧本节奏生成。
+        next_stage_name = str(training.get("current_stage") or "").strip()
+        if training.get("stage_advanced") and next_stage_name:
+            scene_world = recommendation_payload.get("scene_world") if isinstance(recommendation_payload.get("scene_world"), dict) else {}
+            stages = [item for item in (scene_world.get("stages") or []) if isinstance(item, dict)]
+            script_stages = [
+                item for item in (recommendation_payload.get("training_script_stages") or [])
+                if isinstance(item, dict)
+            ]
+            next_stage = next(
+                (item for item in (*script_stages, *stages) if str(item.get("stage_name") or "").strip() == next_stage_name),
+                None,
+            )
+            if isinstance(next_stage, dict):
+                recommendation_payload["current_stage"] = next_stage_name
+                recommendation_payload["stage"] = next_stage
+                recommendation_payload["current_stage_script"] = next_stage
+                scene_world = dict(scene_world)
+                scene_world["current_stage"] = next_stage_name
+                recommendation_payload["scene_world"] = scene_world
         recommendation_items = self.recommended_questions.execute(
             payload=recommendation_payload,
             training_result=training,

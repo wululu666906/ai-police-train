@@ -8,7 +8,12 @@ def init_db():
     models.Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        if db.query(models.User).count() == 0:
+        try:
+            user_count = db.query(models.User).count()
+        except Exception as seed_error:
+            print(f"Skip initial admin seed check until schema is compatible: {seed_error}")
+            user_count = 1
+        if user_count == 0:
             username = os.getenv("INITIAL_ADMIN_USERNAME", "").strip()
             password = os.getenv("INITIAL_ADMIN_PASSWORD", "")
             if username and len(password) >= 12:

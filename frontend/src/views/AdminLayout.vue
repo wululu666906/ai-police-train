@@ -32,26 +32,56 @@
             <span class="admin-nav-label">{{ group.label }}</span>
           </button>
 
-          <div v-else class="admin-group">
+          <div
+            v-else
+            class="admin-group"
+            :class="{ 'admin-group--flyout': sidebarCollapsed, 'admin-group--flyout-open': sidebarCollapsed && openFlyoutGroup === group.label }"
+            @mouseenter="openFlyout(group.label)"
+            @mouseleave="scheduleCloseFlyout"
+            @focusin="openFlyout(group.label)"
+            @focusout="handleFlyoutFocusOut"
+          >
             <button
               type="button"
               class="admin-nav-item admin-nav-item--group"
-              :class="{ 'admin-nav-item--collapsed': sidebarCollapsed }"
-              :aria-expanded="!isGroupCollapsed(group.label)"
-              @click="toggleGroup(group.label)"
+              :class="{ 'admin-nav-item--collapsed': sidebarCollapsed, 'active': isGroupActive(group) }"
+              :aria-expanded="sidebarCollapsed ? openFlyoutGroup === group.label : !isGroupCollapsed(group.label)"
+              :aria-haspopup="sidebarCollapsed ? 'menu' : undefined"
+              :title="sidebarCollapsed ? group.label : ''"
+              @click="sidebarCollapsed ? toggleFlyout(group.label) : toggleGroup(group.label)"
+              @keydown="handleGroupKeydown($event, group)"
             >
               <span class="admin-nav-icon"><van-icon :name="group.icon" size="19" /></span>
               <span class="admin-nav-label">{{ group.label }}</span>
               <span class="admin-nav-arrow" :class="{ 'admin-nav-arrow--closed': isGroupCollapsed(group.label) }">⌄</span>
             </button>
-            <div v-if="!isGroupCollapsed(group.label)" class="admin-sub">
+            <div
+              v-if="sidebarCollapsed && openFlyoutGroup === group.label"
+              class="admin-flyout"
+              role="menu"
+              :aria-label="`${group.label}子菜单`"
+              @mouseenter="cancelCloseFlyout"
+              @mouseleave="scheduleCloseFlyout"
+            >
+              <button
+                v-for="child in group.children || []"
+                :key="child.name"
+                type="button"
+                class="admin-flyout-item"
+                role="menuitem"
+                :class="{ active: active === child.name }"
+                @click="onChange(child.name)"
+              >
+                <span>{{ child.shortLabel || child.label }}</span>
+              </button>
+            </div>
+            <div v-else-if="!sidebarCollapsed && !isGroupCollapsed(group.label)" class="admin-sub">
               <button
                 v-for="child in group.children || []"
                 :key="child.name"
                 type="button"
                 class="admin-nav-item admin-nav-item--sub"
-                :class="{ active: active === child.name, 'admin-nav-item--collapsed': sidebarCollapsed }"
-                :title="sidebarCollapsed ? child.label : ''"
+                :class="{ active: active === child.name }"
                 @click="onChange(child.name)"
               >
                 <span class="admin-nav-label">{{ child.label }}</span>
@@ -96,8 +126,9 @@
             type="primary"
             icon="bell"
             class="admin-head-btn admin-head-btn--icon"
-            aria-label="消息"
-            title="消息"
+            aria-label="通知中心"
+            title="通知中心"
+            @click="router.push('/admin/notifications')"
           />
 
           <van-button
@@ -109,6 +140,17 @@
             class="admin-head-btn admin-head-btn--link"
           >
             切换到学员端
+          </van-button>
+
+          <van-button
+            size="small"
+            plain
+            type="danger"
+            icon="sign"
+            class="admin-head-btn"
+            @click="logout"
+          >
+            退出登录
           </van-button>
 
           <div class="admin-user">
@@ -154,6 +196,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { showConfirmDialog, showSuccessToast } from 'vant'
+import { clearAuth } from '../utils/auth'
 
 const SIDEBAR_COLLAPSED_KEY = 'admin.sidebar.collapsed'
 
@@ -164,7 +208,9 @@ const active = ref('dashboard')
 const menuOpen = ref(false)
 const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1')
 const collapsedGroups = ref<Record<string, boolean>>({})
+const openFlyoutGroup = ref('')
 const pageTabs = ref<PageTab[]>([])
+let flyoutCloseTimer: ReturnType<typeof setTimeout> | null = null
 
 type AdminNavLeaf = {
   name: string
@@ -216,6 +262,7 @@ const navGroups: AdminNavGroup[] = [
     ],
   },
   { name: 'settings', label: '系统设置', shortLabel: '设置', icon: 'setting-o' },
+  { name: 'notifications', label: '通知中心', shortLabel: '通知', icon: 'bell' },
 ]
 
 const navItems = computed(() => navGroups.flatMap((item) => item.name ? [item as AdminNavLeaf] : (item.children || [])))
@@ -223,6 +270,23 @@ const navItems = computed(() => navGroups.flatMap((item) => item.name ? [item as
 const username = computed(() => localStorage.getItem('username') || '管理员')
 const roleLabel = computed(() => (localStorage.getItem('role') === 'admin' ? '管理员账号' : '学员账号'))
 const avatarText = computed(() => username.value.slice(0, 1).toUpperCase())
+
+const logout = async () => {
+  try {
+    await showConfirmDialog({
+      title: '退出登录',
+      message: '确认退出当前管理账号？',
+      confirmButtonText: '退出',
+      cancelButtonText: '取消',
+    })
+    clearAuth()
+    router.push('/login')
+    showSuccessToast('已成功退出')
+  } catch {
+    // cancelled
+  }
+}
+
 const currentItem = computed(() => navItems.value.find((item) => item.name === active.value))
 const isFixedContentPage = computed(() => route.path === '/admin/students')
 
@@ -257,7 +321,7 @@ watch(
   () => route.path,
   (val) => {
     menuOpen.value = false
-
+    openFlyoutGroup.value = ''
     if (val.includes('/dashboard')) active.value = 'dashboard'
     else if (val.includes('/text-sessions')) active.value = 'text-sessions'
     else if (val.includes('/cases')) active.value = 'cases'
@@ -269,6 +333,7 @@ watch(
     else if (val.includes('/students')) active.value = 'students'
     else if (val.includes('/profile')) active.value = 'profile'
     else if (val.includes('/settings')) active.value = 'settings'
+    else if (val.includes('/notifications')) active.value = 'notifications'
 
     ensureActiveTab()
   },
@@ -277,10 +342,58 @@ watch(
 
 watch(sidebarCollapsed, (value) => {
   localStorage.setItem(SIDEBAR_COLLAPSED_KEY, value ? '1' : '0')
+  if (!value) openFlyoutGroup.value = ''
 })
 
 const onChange = (name: string) => {
+  openFlyoutGroup.value = ''
+  menuOpen.value = false
   router.push(`/admin/${name}`)
+}
+
+const isGroupActive = (group: AdminNavGroup) =>
+  Boolean(group.children?.some((child) => child.name === active.value))
+
+const openFlyout = (label: string) => {
+  if (!sidebarCollapsed.value) return
+  cancelCloseFlyout()
+  openFlyoutGroup.value = label
+}
+
+const scheduleCloseFlyout = () => {
+  if (!sidebarCollapsed.value) return
+  cancelCloseFlyout()
+  flyoutCloseTimer = setTimeout(() => {
+    openFlyoutGroup.value = ''
+    flyoutCloseTimer = null
+  }, 180)
+}
+
+const cancelCloseFlyout = () => {
+  if (flyoutCloseTimer) {
+    clearTimeout(flyoutCloseTimer)
+    flyoutCloseTimer = null
+  }
+}
+
+const handleFlyoutFocusOut = (event: FocusEvent) => {
+  if (!sidebarCollapsed.value) return
+  const current = event.currentTarget as HTMLElement | null
+  const next = event.relatedTarget as Node | null
+  if (current && next && current.contains(next)) return
+  scheduleCloseFlyout()
+}
+
+const handleGroupKeydown = (event: KeyboardEvent, group: AdminNavGroup) => {
+  if (!sidebarCollapsed.value) return
+  if (event.key === 'Escape') {
+    openFlyoutGroup.value = ''
+    return
+  }
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    toggleFlyout(group.label)
+  }
 }
 
 const activateTab = (path: string) => {
@@ -308,6 +421,10 @@ const isGroupCollapsed = (label: string) => Boolean(collapsedGroups.value[label]
 
 const toggleGroup = (label: string) => {
   collapsedGroups.value[label] = !collapsedGroups.value[label]
+}
+
+const toggleFlyout = (label: string) => {
+  openFlyoutGroup.value = openFlyoutGroup.value === label ? '' : label
 }
 
 </script>
@@ -688,6 +805,57 @@ const toggleGroup = (label: string) => {
 .sidebar-collapsed .admin-nav-arrow,
 .sidebar-collapsed .admin-sub {
   display: none;
+}
+
+.sidebar-collapsed .admin-sidebar,
+.sidebar-collapsed .admin-nav {
+  overflow: visible;
+}
+
+.admin-group--flyout {
+  position: relative;
+}
+
+.admin-flyout {
+  position: absolute;
+  top: 0;
+  left: 100%;
+  z-index: 60;
+  min-width: 168px;
+  padding: 8px 8px 8px 14px;
+  margin-left: -6px;
+  border: 1px solid #e6ebf3;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
+}
+
+.admin-group--flyout-open .admin-nav-item--group {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.admin-flyout-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #253047;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.admin-flyout-item:hover,
+.admin-flyout-item:focus-visible,
+.admin-flyout-item.active {
+  background: #eff6ff;
+  color: #2563eb;
+  outline: none;
 }
 
 .sidebar-collapsed .admin-nav-item,

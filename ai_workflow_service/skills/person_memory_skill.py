@@ -14,6 +14,29 @@ class PersonMemorySkill:
     def __init__(self, llm: DeepSeekAdapter):
         self.llm = llm
 
+    BAD_NAME_MARKERS = (
+        "未明确", "未知", "相关人员", "上述", "本院", "证言", "辨认", "材料", "通过",
+        "文档", "OCR", "块", "说明", "公诉", "辩护", "审判", "书记",
+    )
+
+    @classmethod
+    def _clean_person_name(cls, value: Any) -> str:
+        name = str(value or "").strip()
+        if not name:
+            return ""
+        name = re.sub(r"[（(][^()（）]{0,20}[)）]", "", name).strip()
+        name = re.sub(r"^(?:报警人|报案人|被害人|受害人|嫌疑人|犯罪嫌疑人|证人|被告人|当事人)[:：]?", "", name).strip()
+        name = name.strip("，。；：、 \"'“”")
+        if not name or any(marker in name for marker in cls.BAD_NAME_MARKERS):
+            return ""
+        if name.endswith(("的", "等", "称", "说", "在", "于", "与", "和", "及", "被", "将", "把", "向", "对", "通过")):
+            return ""
+        if re.fullmatch(r"[\u4e00-\u9fa5]某(?:[甲乙丙丁戊己庚辛壬癸]\d{0,2}|\d{1,2}|[\u4e00-\u9fa5]{1,2})?", name):
+            return name
+        if re.fullmatch(r"[\u4e00-\u9fa5]{2,4}", name):
+            return name
+        return ""
+
     @staticmethod
     def _initial_state(value: Any, person_id: str, role: str = "") -> dict[str, int]:
         raw = value if isinstance(value, dict) else {}
@@ -60,7 +83,8 @@ class PersonMemorySkill:
     def execute(self, world: CaseWorld, complete_story: str) -> tuple[CaseWorld, list[dict[str, Any]], dict]:
         try:
             result = self.llm.complete_json(
-                system=("根据案件剧情和事实账本，为剧情中出现的全部角色构建完整训练档案。"
+                system=("根据案件剧情和事实账本，为剧情中出现的全部真实人物构建完整训练档案。"
+                        "name 必须是剧情中可指认的人名（如首某、彭某乙），禁止输出“未明确/证言/材料/通过/相关人员”等脏名。"
                         "必须正向给出标准化参数，不得留空后依赖后置质量拦截。"
                         "排除法官、检察官、辩护人、审判员、书记员等非警情对话角色。"
                         "只输出 JSON："
@@ -83,10 +107,13 @@ class PersonMemorySkill:
         raw_by_person_id: dict[str, dict[str, Any]] = {}
         for index, raw in enumerate(result.get("persons") or []):
             item = raw if isinstance(raw, dict) else {}
+            name = self._clean_person_name(item.get("name"))
+            if not name:
+                continue
             person_id = str(item.get("person_id") or f"P{index + 1:03d}")
             role = str(item.get("role") or "相关人员")
             person = Person(
-                person_id=person_id, name=str(item.get("name") or "未知人员"),
+                person_id=person_id, name=name,
                 role=role,
                 facts_known=[str(v) for v in item.get("facts_known") or [] if str(v) in valid_fact_ids],
                 facts_hidden=[str(v) for v in item.get("facts_hidden") or [] if str(v) in valid_fact_ids],
@@ -102,18 +129,21 @@ class PersonMemorySkill:
         if not persons:
             excluded = {"办案机关", "鉴定机构", "公安机关", "人民法院", "检察机关", "辩护人", "审判员", "书记员", "公诉人"}
             names = list(dict.fromkeys(
-                name for fact in world.facts for name in fact.known_by
-                if name and name in complete_story and name not in excluded and len(name) <= 8
+                cleaned
+                for fact in world.facts for name in fact.known_by
+                if (cleaned := self._clean_person_name(name))
+                and cleaned in complete_story
+                and cleaned not in excluded
             ))[:12]
             if not names:
                 names = list(dict.fromkeys(
-                    name.strip("，。；：、 ")
+                    cleaned
                     for values in re.findall(
                         r"(?:报警人|报案人|被害人|受害人|证人|当事人|嫌疑人|被告人)[：为是称叫]?([\u4e00-\u9fa5某甲乙丙丁0-9]{2,10}(?:、[\u4e00-\u9fa5某甲乙丙丁0-9]{2,10})*)",
                         complete_story,
                     )
                     for name in values.split("、")
-                    if name.strip("，。；：、 ") not in excluded
+                    if (cleaned := self._clean_person_name(name)) and cleaned not in excluded
                 ))[:12]
             persons = [Person(
                 person_id=f"P{i + 1:03d}", name=name,
@@ -121,11 +151,18 @@ class PersonMemorySkill:
                 initial_state=self._initial_state({}, f"P{i + 1:03d}"),
             ) for i, name in enumerate(names)]
         if not persons:
+            names = list(dict.fromkeys(
+                match.group(0)
+                for match in re.finditer(
+                    r"[\u4e00-\u9fa5]某(?:[甲乙丙丁戊己庚辛壬癸]\d{0,2}|\d{1,2})?",
+                    complete_story,
+                )
+            ))[:12]
             persons = [Person(
-                person_id="P001", name="报警人",
-                facts_known=[fact.fact_id for fact in world.facts if "报警人" in fact.known_by],
-                initial_state=self._initial_state({}, "P001", "报警人"),
-            )]
+                person_id=f"P{i + 1:03d}", name=name,
+                facts_known=[fact.fact_id for fact in world.facts if name in fact.known_by],
+                initial_state=self._initial_state({}, f"P{i + 1:03d}"),
+            ) for i, name in enumerate(names)]
         persons = [
             person if person.facts_known else person.model_copy(update={
                 "facts_known": [fact.fact_id for fact in world.facts if person.name in fact.known_by]

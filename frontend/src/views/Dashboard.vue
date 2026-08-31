@@ -56,8 +56,8 @@
             >
               <div
                 class="bar"
-                :style="{ height: `${getBarHeight(item.count)}px` }"
-                :title="`${item.count} 次`"
+                :style="{ height: `${getBarHeight(item.count + Number(item.video_count || 0))}px` }"
+                :title="`文字训练 ${item.count} 次 / 视频实训 ${Number(item.video_count || 0)} 次`"
               ></div>
               <span>{{ item.label }}</span>
             </div>
@@ -168,6 +168,7 @@ import request from '../utils/request'
 type TrendItem = {
   label: string
   count: number
+  video_count?: number
   key: string
 }
 
@@ -214,6 +215,9 @@ type DashboardStats = {
   today_sessions: number
   active_sessions: number
   finished_sessions: number
+  video_sessions: number
+  video_active_sessions: number
+  video_finished_sessions: number
   completion_rate: number
   active_rate: number
   peak_daily_sessions: number
@@ -239,6 +243,9 @@ const statsData = ref<DashboardStats>({
   today_sessions: 0,
   active_sessions: 0,
   finished_sessions: 0,
+  video_sessions: 0,
+  video_active_sessions: 0,
+  video_finished_sessions: 0,
   completion_rate: 0,
   active_rate: 0,
   peak_daily_sessions: 0,
@@ -262,13 +269,20 @@ const trend = computed<TrendItem[]>(() => {
   return source.map((item, index) => ({
     label: item.label || '--',
     count: Number(item.count || 0),
+    video_count: Number((item as any).video_count || 0),
     key: `${item.label || 'empty'}-${index}`,
   }))
 })
 
-const trendMax = computed(() => Math.max(...trend.value.map((item) => item.count), 1))
+const trendMax = computed(() => Math.max(
+  ...trend.value.map((item) => item.count + Number(item.video_count || 0)),
+  1,
+))
 
 const finishedSessions = computed(() => Number(statsData.value.finished_sessions || 0))
+const videoSessionCount = computed(() => Number(statsData.value.video_sessions || 0))
+const videoFinishedSessions = computed(() => Number(statsData.value.video_finished_sessions || 0))
+const videoActiveSessions = computed(() => Number(statsData.value.video_active_sessions || 0))
 const activeSessions = computed(() => Number(statsData.value.active_sessions || 0))
 const sessionCount = computed(() => Number(statsData.value.sessions || 0))
 const studentCount = computed(() => Number(statsData.value.students || 0))
@@ -299,15 +313,15 @@ const summaryCards = computed<SummaryCard[]>(() => [
   {
     title: '普通训练会话',
     value: formatNumber(sessionCount.value),
-    note: `今日完成 ${formatNumber(statsData.value.today_sessions)} 条`,
+    note: `已完成 ${formatNumber(finishedSessions.value)} 条`,
     icon: 'todo-list-o',
     tone: 'tone-amber',
-    route: '/admin/video-sessions',
+    route: '/admin/text-sessions',
   },
   {
     title: '视频实训会话',
-    value: formatNumber(finishedSessions.value),
-    note: `进行中 ${formatNumber(activeSessions.value)} 条`,
+    value: formatNumber(videoSessionCount.value),
+    note: `进行中 ${formatNumber(videoActiveSessions.value)} 条，已完成 ${formatNumber(videoFinishedSessions.value)} 条`,
     icon: 'video-o',
     tone: 'tone-purple',
     route: '/admin/video-sessions',
@@ -315,12 +329,11 @@ const summaryCards = computed<SummaryCard[]>(() => [
 ])
 
 const contentSegments = computed<StatusSegment[]>(() => {
-  const draftCount = Math.max(stageGapReports.value, 1)
   const raw = [
     { label: '已发布案例', value: Number(statsData.value.cases || 0), color: '#4f6cf7' },
-    { label: '已完成分析', value: finishedSessions.value, color: '#30b96c' },
-    { label: '分析中/待审核', value: activeSessions.value, color: '#f6ab48' },
-    { label: '草稿/待补充', value: draftCount, color: '#e2e8f0' },
+    { label: '文字训练完成', value: finishedSessions.value, color: '#30b96c' },
+    { label: '视频实训进行中', value: videoActiveSessions.value, color: '#f6ab48' },
+    { label: '视频实训完成', value: videoFinishedSessions.value, color: '#8b5cf6' },
   ]
   const total = raw.reduce((sum, item) => sum + item.value, 0) || 1
 
@@ -370,8 +383,8 @@ const pendingTasks = computed<TaskItem[]>(() => {
       title: topScene ? `视频分析待复核：${topScene.scene_type}` : '视频训练报告待复核',
       meta: topScene
         ? `相关会话 ${formatNumber(topScene.count)} 条`
-        : `完成会话 ${formatNumber(finishedSessions.value)} 条`,
-      count: topScene ? `${formatNumber(topScene.count)} 条` : `${formatNumber(activeSessions.value)} 条`,
+        : `视频实训完成 ${formatNumber(videoFinishedSessions.value)} 条`,
+      count: topScene ? `${formatNumber(topScene.count)} 条` : `${formatNumber(videoActiveSessions.value)} 条`,
       action: '处理',
       route: '/admin/video-sessions',
       tone: 'tone-blue',

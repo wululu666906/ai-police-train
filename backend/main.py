@@ -582,6 +582,12 @@ def ensure_ops_audit_schema_compatibility():
         models.AIWorkflowRun.__table__.create(bind=database.engine, checkfirst=True)
         models.CaseStoryVersion.__table__.create(bind=database.engine, checkfirst=True)
         models.OpsIssueRecord.__table__.create(bind=database.engine, checkfirst=True)
+        inspector = inspect(database.engine)
+        if "ops_issue_records" in inspector.get_table_names():
+            issue_columns = {column["name"] for column in inspector.get_columns("ops_issue_records")}
+            if "updated_at" not in issue_columns:
+                with database.engine.begin() as connection:
+                    connection.execute(text("ALTER TABLE ops_issue_records ADD COLUMN updated_at DATETIME"))
     except Exception as error:
         print(f"Ops audit/speech usage schema compatibility check failed: {error}")
 
@@ -714,6 +720,12 @@ def on_startup():
     ensure_ops_audit_schema_compatibility()
     ensure_performance_indexes()
     ensure_default_users()
+    try:
+        from seed_avatars import seed_avatars
+
+        seed_avatars()
+    except Exception as exc:
+        print(f"Avatar seed skipped: {exc}")
     schedule_existing_videos()
     resume_pending_jobs()
     if os.getenv("FACE_ENGINE_WARMUP", "0").strip().lower() in {"1", "true", "yes", "on"}:

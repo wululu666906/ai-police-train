@@ -22,7 +22,7 @@ const memoryText = (memory: any) => String(memory?.statement || memory?.content 
           <strong>{{ person?.name || '未命名角色' }}</strong>
           <small>{{ person?.role_type || person?.role || '相关人员' }}</small>
         </span>
-        <span class="role-card__count">{{ memories.length }} 条记忆</span>
+        <span v-if="false" class="role-card__count">{{ memories.length }} 条记忆</span>
         <van-icon :name="expanded ? 'arrow-up' : 'arrow-down'" aria-hidden="true" />
       </button>
     </header>
@@ -40,7 +40,7 @@ const memoryText = (memory: any) => String(memory?.statement || memory?.content 
         <p v-if="person?.current_goal || soul.primary_need"><strong>当前诉求：</strong>{{ person?.current_goal || soul.primary_need }}</p>
       </section>
 
-      <section>
+      <section v-if="false">
         <h3>本人记忆时间线</h3>
         <ol v-if="memories.length" class="role-card__timeline">
           <li v-for="(memory, memoryIndex) in memories" :key="memory.memory_id || memoryIndex">
@@ -53,7 +53,7 @@ const memoryText = (memory: any) => String(memory?.statement || memory?.content 
         <p v-else class="role-card__muted">未从案件来源中提取到该人物的有效陈述或亲历信息。</p>
       </section>
 
-      <section>
+      <section v-if="false">
         <h3>回答边界</h3>
         <p v-for="item in list(person?.response_constraints)" :key="String(item)">• {{ item }}</p>
         <p v-for="item in list(person?.unresolved_claims)" :key="String(item)" class="role-card__muted">

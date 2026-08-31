@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -26,29 +27,128 @@ def filter_stale_missing_requirements_for_history(missing: list[str], **kwargs) 
 
 
 def build_recommended_question_items(*, stored_items=None, custom_prompts=None, missing_requirements=None, **kwargs) -> list[dict[str, Any]]:
+    coach_re = re.compile(
+        r"^(请立即|请先|请务必|请尽快|请具体说明|请核实|请确认|为推进|建议你|学员应|需要你|应当|必须先)"
+    )
+
+    def _ok(text: str) -> bool:
+        value = str(text or "").strip()
+        return bool(value) and not coach_re.search(value) and "…" not in value and "..." not in value
+
     items = [
         {
             "text": str(item.get("text") or "").strip(),
             "category": str(item.get("category") or "追问"),
+            "kind": str(item.get("kind") or ("plot_advance" if "推进" in str(item.get("category") or "") else "hint")),
             "priority": str(item.get("priority") or "medium"),
             "target_role_name": item.get("target_role_name"),
             "related_point_id": item.get("related_point_id"),
         }
         for item in (stored_items or [])
-        if isinstance(item, dict) and str(item.get("text") or "").strip()
+        if isinstance(item, dict) and _ok(str(item.get("text") or ""))
     ]
     if items:
-        return items[:5]
-    items = [
-        {"text": item.strip(), "category": "推荐", "priority": "medium"}
-        for item in (custom_prompts or [])
-        if isinstance(item, str) and item.strip()
+        return items[:6]
+    items = []
+    for item in (custom_prompts or []):
+        if not isinstance(item, str) or not item.strip():
+            continue
+        normalized = _as_question_item(item.strip(), "快速发言", kind="hint")
+        if normalized and _ok(normalized["text"]):
+            items.append(normalized)
+    for item in (missing_requirements or [])[:3]:
+        normalized = _as_question_item(str(item), "推进剧情", kind="plot_advance")
+        if normalized and _ok(normalized["text"]):
+            items.append(normalized)
+    return items[:6]
+
+
+def _as_question_item(text: Any, category: str = "开场核实", *, kind: str = "hint") -> dict[str, Any] | None:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return None
+    # 去掉教练口吻前缀，改写成可说出口的口语
+    cleaned = re.sub(
+        r"^(请立即|请先|请务必|请尽快|请具体说明|请核实|请确认|为推进处置[，,]?请说明|为推进|建议你|学员应|需要你|应当|必须先)",
+        "",
+        cleaned,
+    ).strip(" ：:，,。.")
+    if not cleaned:
+        return None
+    if cleaned.endswith(("？", "?")):
+        speakable = cleaned
+    elif kind == "plot_advance":
+        speakable = f"先说清楚：{cleaned[:18]}？"
+    else:
+        speakable = f"{cleaned[:18]}是怎么回事？"
+    if len(speakable) > 56:
+        speakable = speakable[:55].rstrip("，。；、 ") + "？"
+    if speakable.startswith(("请立即", "请具体说明", "为推进")) or "…" in speakable or "..." in speakable:
+        return None
+    return {"text": speakable, "category": category, "kind": kind}
+
+
+def _stage_prompts_from_scene(scene, case, *, current_stage: str = "") -> list[dict[str, Any]]:
+    """按当前阶段取方向种子；仅作会话只读兜底，不得跨阶段回退到开场模板冒充新题。"""
+    items: list[dict[str, Any]] = []
+    stages = _safe_json(getattr(scene, "stages", None), []) if scene else []
+    structured = _safe_json(getattr(case, "structured_data", None), {}) if case else {}
+    scripts = [
+        item for item in (structured.get("training_scripts") or structured.get("scene_scripts") or [])
+        if isinstance(item, dict)
     ]
-    items.extend(
-        {"text": f"请问{item}？", "category": "缺失项", "priority": "high", "target_role_name": None}
-        for item in (missing_requirements or [])[:3]
+    scene_name = str(getattr(scene, "name", "") or "")
+    matched = next((item for item in scripts if str(item.get("scene_name") or "") == scene_name), scripts[0] if scripts else {})
+    script_stages = matched.get("stages") if isinstance(matched.get("stages"), list) else []
+    stage_name = str(current_stage or "").strip()
+    scene_stage = next(
+        (item for item in stages if isinstance(item, dict) and str(item.get("stage_name") or "").strip() == stage_name),
+        None,
     )
-    return items[:5]
+    script_stage = next(
+        (item for item in script_stages if isinstance(item, dict) and str(item.get("stage_name") or "").strip() == stage_name),
+        None,
+    )
+    if scene_stage is None and script_stage is None:
+        # 无当前阶段匹配时：仅开场（尚无阶段名）可用首阶段；中后期返回空。
+        if stage_name:
+            return []
+        scene_stage = next((item for item in stages if isinstance(item, dict)), {})
+        script_stage = next((item for item in script_stages if isinstance(item, dict)), {})
+    scene_stage = scene_stage or {}
+    script_stage = script_stage or {}
+    hint_sources = [
+        *(scene_stage.get("recommended_prompts") or []),
+        *(script_stage.get("recommended_prompts") or []),
+    ]
+    plot_sources = [
+        *(scene_stage.get("learner_actions") or []),
+        *(script_stage.get("learner_actions") or []),
+        *(scene_stage.get("role_pressure_points") or []),
+        *(script_stage.get("role_pressure_points") or []),
+    ]
+    seen: set[str] = set()
+    for text in hint_sources:
+        item = _as_question_item(text, "快速发言", kind="hint")
+        if not item or item["text"] in seen:
+            continue
+        seen.add(item["text"])
+        items.append(item)
+        if len(items) >= 2:
+            break
+    for text in plot_sources:
+        item = _as_question_item(text, "推进剧情", kind="plot_advance")
+        if not item or item["text"] in seen:
+            continue
+        seen.add(item["text"])
+        items.append(item)
+        if sum(1 for row in items if row.get("kind") == "plot_advance") >= 2:
+            break
+    return items[:4]
+
+
+def _opening_prompts_from_scene(scene, case) -> list[dict[str, Any]]:
+    return _stage_prompts_from_scene(scene, case, current_stage="")
 
 
 def build_intake_sequence_feedback(*args, **kwargs) -> dict[str, Any]:
@@ -96,11 +196,19 @@ def backfill_role_initial_states(db: Session) -> None:
 def serialize_scene_roles(db: Session, scene, case, *, runtime_state=None) -> list[dict[str, Any]]:
     if not scene:
         return []
+    from services.avatar_service import assign_avatar, get_avatar_url
+
     runtime_state = runtime_state or {}
     snapshots = runtime_state.get("role_state_snapshots") or {}
     deltas = runtime_state.get("role_state_deltas") or {}
     labels = runtime_state.get("role_state_labels") or {}
     active_role_ids = {str(item) for item in runtime_state.get("last_active_role_ids") or []}
+    structured = _safe_json(getattr(case, "structured_data", None), {}) if case else {}
+    persons_by_name = {
+        repair_text(item.get("name") or ""): item
+        for item in (structured.get("persons") or [])
+        if isinstance(item, dict) and repair_text(item.get("name") or "")
+    }
     links = db.query(models.SceneRole).filter(models.SceneRole.scene_id == scene.id).all()
     result = []
     for link in links:
@@ -116,9 +224,27 @@ def serialize_scene_roles(db: Session, scene, case, *, runtime_state=None) -> li
             except (TypeError, ValueError):
                 participation = {}
         present = participation.get("present") is not False
+        role_name = repair_text(role.name or "")
+        persona_meta = _safe_json(getattr(role, "persona_meta", None), {})
+        structured_person = persons_by_name.get(role_name, {})
+        age = persona_meta.get("age")
+        if age is None:
+            age = structured_person.get("age")
+        try:
+            age = int(age) if age is not None and str(age).strip() != "" else None
+        except (TypeError, ValueError):
+            age = None
+        gender = (
+            persona_meta.get("gender")
+            or structured_person.get("gender")
+            or persona_meta.get("sex")
+            or structured_person.get("sex")
+        )
+        avatar_id = assign_avatar(age, gender, role_name or f"role-{role.id}")
+        avatar_url = get_avatar_url(avatar_id)
         result.append({
             "id": role.id,
-            "name": repair_text(role.name or ""),
+            "name": role_name,
             "role_type": role.role_type or "",
             "speakable": present,
             "present": present,
@@ -135,6 +261,8 @@ def serialize_scene_roles(db: Session, scene, case, *, runtime_state=None) -> li
             "clarity_delta": int(delta.get("clarity") or 0),
             "state_label": labels.get(str(role.id)) or runtime_state.get("role_state_label"),
             "is_active": str(role.id) in active_role_ids,
+            "avatar_id": avatar_id,
+            "avatar_url": avatar_url,
         })
     return result
 
@@ -156,14 +284,107 @@ def redact_first_impression_for_student(scene, session) -> str | None:
     return getattr(scene, "first_impression", None) if scene else None
 
 
-def ensure_opening_turn(db: Session, session, scene, case, role) -> None:
+def _safe_json(value: Any, default: Any):
+    if isinstance(value, type(default)):
+        return value
+    try:
+        parsed = json.loads(value or "")
+        return parsed if isinstance(parsed, type(default)) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_opening_preset_turns(scene, case, role) -> list[dict[str, Any]]:
+    config = _safe_json(getattr(scene, "opening_config", None), {}) if scene else {}
+    turns = []
+    for item in config.get("preset_turns") or []:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        turns.append({
+            "speaker_role_id": item.get("speaker_role_id"),
+            "speaker_name": str(item.get("speaker_name") or "").strip(),
+            "content": content[:500],
+        })
+    if turns:
+        return turns[:3]
+    structured = _safe_json(getattr(case, "structured_data", None), {}) if case else {}
+    scripts = [
+        item for item in (structured.get("scene_scripts") or structured.get("training_scripts") or [])
+        if isinstance(item, dict)
+    ]
+    scene_name = str(getattr(scene, "name", "") or "")
+    matched = next((item for item in scripts if str(item.get("scene_name") or "") == scene_name), scripts[0] if scripts else {})
+    for item in matched.get("opening_lines") or []:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        turns.append({
+            "speaker_role_id": None,
+            "speaker_name": str(item.get("speaker_name") or "").strip(),
+            "content": content[:500],
+        })
+    return turns[:3]
+
+
+def _compose_plot_opening_turns(scene, case, role) -> list[dict[str, Any]]:
+    role_name = repair_text(role.name) if role else "现场人员"
+    structured = _safe_json(getattr(case, "structured_data", None), {}) if case else {}
+    scripts = [item for item in (structured.get("scene_scripts") or structured.get("training_scripts") or []) if isinstance(item, dict)]
+    scene_name = str(getattr(scene, "name", "") or "")
+    matched = next((item for item in scripts if str(item.get("scene_name") or "") == scene_name), scripts[0] if scripts else {})
+    plot = str(matched.get("plot_arc") or getattr(scene, "description", "") or "").strip()
+    stages = matched.get("stages") if isinstance(matched.get("stages"), list) else _safe_json(getattr(scene, "stages", None), [])
+    first_stage = next((item for item in stages if isinstance(item, dict)), {})
+    pressure = ""
+    points = first_stage.get("role_pressure_points") or []
+    if points:
+        pressure = str(points[0]).strip()
+    impression = str(getattr(scene, "first_impression", "") or "").strip()
+    kind = infer_session_scene_kind(scene, None)
+    if kind == "intake":
+        body = pressure or plot.split("。")[0] or impression[:80]
+        content = f"警察同志，我是{role_name}。{body}。你们得先听我说完怎么回事。"
+    else:
+        body = pressure or impression[:80] or plot.split("。")[0]
+        content = f"我是{role_name}。{body}。你们先看现场，我把刚才发生的事情说清楚。"
+    return [{
+        "speaker_role_id": role.id if role else None,
+        "speaker_name": role_name,
+        "content": repair_text(content)[:500],
+    }]
+
+
+def ensure_opening_turn(db: Session, session, scene, case, role) -> bool:
     state = load_runtime_state(session.revealed_info)
     if state.get("opening_delivered"):
-        return
-    role_name = repair_text(role.name) if role else "报警人"
-    content = "喂，110吗？我要报警！" if infer_session_scene_kind(scene, session) == "intake" else "警察同志，你们来了。"
-    message = models.Message(session_id=session.id, role="assistant", content=content, speaker_role_id=role.id if role else None, speaker_name=role_name)
-    db.add(message)
-    db.flush()
-    state.update({"opening_delivered": True, "opening_message_ids": [message.id]})
+        return True
+    turns = _resolve_opening_preset_turns(scene, case, role)
+    if not turns:
+        return False
+    message_ids = []
+    for item in turns:
+        speaker_name = repair_text(item.get("speaker_name") or (role.name if role else "现场人员"))
+        speaker_id = item.get("speaker_role_id") or (role.id if role else None)
+        message = models.Message(
+            session_id=session.id,
+            role="assistant",
+            content=repair_text(item.get("content") or ""),
+            speaker_role_id=speaker_id,
+            speaker_name=speaker_name,
+        )
+        db.add(message)
+        db.flush()
+        message_ids.append(message.id)
+    prompts = list(state.get("recommended_question_items") or []) or _opening_prompts_from_scene(scene, case)
+    state.update({
+        "opening_delivered": True,
+        "opening_message_ids": message_ids,
+        "recommended_question_items": prompts,
+    })
     session.revealed_info = dump_runtime_state(state)
+    return True

@@ -1,4 +1,34 @@
 services:
+  ai-workflow:
+    image: ${AI_WORKFLOW_IMAGE:-ai-police-workflow:latest}
+    build:
+      context: .
+      dockerfile: ai_workflow_service/Dockerfile
+    container_name: ai_police_workflow
+    env_file:
+      - ./backend/.env
+    environment:
+      AI_WORKFLOW_DATA_DIR: /app/ai_workflow_service/data
+      AI_WORKFLOW_INTERNAL_TOKEN: ${AI_WORKFLOW_INTERNAL_TOKEN:-}
+      DEEPSEEK_CHAT_MODEL: ${DEEPSEEK_CHAT_MODEL:-deepseek-v4-flash}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_REASONING_MODE: ${DEEPSEEK_REASONING_MODE:-disabled}
+      TINY_TROUPE_MODE: ${TINY_TROUPE_MODE:-world}
+      TINY_TROUPE_MAX_ACTORS: ${TINY_TROUPE_MAX_ACTORS:-24}
+      TINY_TROUPE_MODEL_CONCURRENCY: ${TINY_TROUPE_MODEL_CONCURRENCY:-1}
+      TINY_TROUPE_MAX_TOKENS: ${TINY_TROUPE_MAX_TOKENS:-1600}
+    ports:
+      - "${AI_WORKFLOW_BIND:-127.0.0.1}:${AI_WORKFLOW_PORT:-8020}:8020"
+    volumes:
+      - ./ai_workflow_service/data:/app/ai_workflow_service/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/healthz')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+
   app:
     image: ${APP_IMAGE:-ghcr.io/wululu666906/ai-police-train:codex-github-deploy-bundle}
     container_name: ai_police_app
@@ -26,6 +56,10 @@ services:
       MINIO_BUCKET_PRIVATE: ${MINIO_BUCKET_PRIVATE:-ai-police-private}
       MINIO_REGION: ${MINIO_REGION:-us-east-1}
       OBJECT_SIGNED_URL_EXPIRE_SECONDS: ${OBJECT_SIGNED_URL_EXPIRE_SECONDS:-7200}
+      AI_WORKFLOW_URL: ${AI_WORKFLOW_HOST_URL:-http://ai_police_workflow:8020}
+      AI_WORKFLOW_INTERNAL_TOKEN: ${AI_WORKFLOW_INTERNAL_TOKEN:-}
+      AI_WORKFLOW_TIMEOUT_SECONDS: ${AI_WORKFLOW_TIMEOUT_SECONDS:-900}
+      CASE_IMPORT_TIMEOUT_SECONDS: ${CASE_IMPORT_TIMEOUT_SECONDS:-900}
       PORT: "8000"
     ports:
       - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-5555}:8000"
@@ -33,6 +67,8 @@ services:
       - ./data:/app/backend/data
     depends_on:
       minio:
+        condition: service_healthy
+      ai-workflow:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:

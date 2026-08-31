@@ -34,14 +34,16 @@ class Settings:
     deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
     deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
     deepseek_model: str = os.getenv("DEEPSEEK_CHAT_MODEL") or "deepseek-v4-flash"
-    deepseek_timeout_seconds: float = float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "45"))
+    deepseek_timeout_seconds: float = float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "900"))
     deepseek_reasoning_mode: str = (os.getenv("DEEPSEEK_REASONING_MODE") or "disabled").strip().lower()
     complete_story_max_tokens: int = max(8000, int(os.getenv("COMPLETE_STORY_MAX_TOKENS") or os.getenv("CASE_STORY_MAX_TOKENS") or "24000"))
     complete_story_reasoning_mode: str = (os.getenv("COMPLETE_STORY_REASONING_MODE") or os.getenv("CASE_STORY_REASONING_MODE") or "enabled").strip().lower()
     complete_story_reasoning_effort: str = (os.getenv("COMPLETE_STORY_REASONING_EFFORT") or os.getenv("CASE_STORY_REASONING_EFFORT") or "max").strip().lower()
     tinytroupe_mode: str = (os.getenv("TINY_TROUPE_MODE") or "world").strip().lower()
-    tinytroupe_max_actors: int = max(1, min(6, int(os.getenv("TINY_TROUPE_MAX_ACTORS", "6"))))
-    tinytroupe_model_concurrency: int = max(1, min(6, int(os.getenv("TINY_TROUPE_MODEL_CONCURRENCY", "6"))))
+    # Soft safety ceiling only; scene can include many present roles. Default 24.
+    tinytroupe_max_actors: int = max(1, min(32, int(os.getenv("TINY_TROUPE_MAX_ACTORS", "24"))))
+    # Forced to 1: multi-actor turns must never pack into parallel DeepSeek batches.
+    tinytroupe_model_concurrency: int = 1
     tinytroupe_max_tokens: int = max(400, int(os.getenv("TINY_TROUPE_MAX_TOKENS", "1600")))
     tinytroupe_state_version: int = 1
 

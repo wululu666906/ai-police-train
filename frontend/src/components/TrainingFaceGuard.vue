@@ -22,7 +22,9 @@
         人脸异常已连续达到上限，系统将自动终止训练并进入评估报告。
       </p>
       <div v-if="mode === 'gate'" class="face-guard__actions">
-        <van-button size="small" type="primary" :loading="verifying" @click="runVerify">开始验证</van-button>
+        <van-button size="small" type="primary" :loading="verifying" @click="restartVerify">
+          {{ verifying ? '验证中' : '重新验证' }}
+        </van-button>
       </div>
     </div>
 
@@ -53,7 +55,15 @@
             <span v-if="lastSimilarityText">匹配度 {{ lastSimilarityText }}</span>
           </div>
         </div>
-        <van-button size="small" plain hairline type="default" @click="cancelVerify">退出验证</van-button>
+        <van-button
+          v-if="!verifying || !cameraReady"
+          size="small"
+          type="primary"
+          :loading="verifying"
+          @click="restartVerify"
+        >
+          重新验证
+        </van-button>
       </div>
     </van-dialog>
   </section>
@@ -315,13 +325,16 @@ const applyResult = (result: any, endpoint: 'verify' | 'heartbeat') => {
   }
   if (endpoint === 'verify' && result?.passed) failureCount.value = 0
   maxFailures.value = Number(result?.max_failures ?? maxFailures.value)
-  if (result?.terminated) {
+  const limitReached = endpoint === 'heartbeat' && failureCount.value >= maxFailures.value
+  if (result?.terminated || limitReached) {
     verified.value = false
-    failureCount.value = maxFailures.value
+    failureCount.value = Math.max(failureCount.value, maxFailures.value)
     stopHeartbeat()
     stopVerifyLoop()
     verifyDialogVisible.value = false
     verifying.value = false
+    const reason = localizeFaceMessage(result?.reason, '人脸验证连续异常，训练即将结束。')
+    showToast(`${reason}（${failureCount.value}/${maxFailures.value}）`)
     emit('terminated', result)
     return
   }
@@ -337,6 +350,13 @@ const applyResult = (result: any, endpoint: 'verify' | 'heartbeat') => {
     emit('verified')
     startHeartbeat()
     return
+  }
+  if (endpoint === 'heartbeat' && !result?.passed && !result?.terminated) {
+    const currentFailures = Number(result?.monitor_failure_count ?? result?.failure_count ?? failureCount.value)
+    const localized = localizeFaceMessage(result?.reason)
+    if (localized && currentFailures > 0) {
+      verifyHint.value = `${localized}（${currentFailures}/${maxFailures.value}）`
+    }
   }
   if (endpoint === 'verify') {
     verifyHint.value = localizeFaceMessage(result?.reason)
@@ -416,11 +436,10 @@ const runVerify = async () => {
   }
 }
 
-const cancelVerify = () => {
-  stopCamera()
+const restartVerify = async () => {
+  stopVerifyLoop()
   verifying.value = false
-  verifyDialogVisible.value = false
-  verifyStatusText.value = '已退出验证'
+  await runVerify()
 }
 
 const startHeartbeat = () => {
@@ -438,25 +457,40 @@ const fetchStatus = async () => {
     const result: any = await request.get(`/face/session/${props.sessionId}/status`, { _skipErrorToast: true } as any)
     failureCount.value = Number(result.monitor_failure_count ?? result.failure_count ?? 0)
     maxFailures.value = Number(result.max_failures || 5)
-    if (result.verified && !verified.value) {
-      verified.value = true
-      emit('verified')
-      startHeartbeat()
-    }
+    // 历史 verified 仅作档案/监控参考，不作为本次进场放行；每次进入场景都须重新活体验证。
     if (!result.registered) verifyHint.value = '当前账号尚未注册人脸档案'
-    if (result.terminated) emit('terminated', result)
+    if (result.terminated || failureCount.value >= maxFailures.value) emit('terminated', result)
   } catch {
     verifyHint.value = '人脸校验服务暂不可用'
   }
 }
 
-defineExpose({ runVerify, stopCamera })
+const beginEntryVerification = async () => {
+  verified.value = false
+  stopHeartbeat()
+  await fetchStatus()
+  // 无论父组件当前 mode，进场一律重新活体验证。
+  if (!verifying.value) {
+    await runVerify()
+  }
+}
+
+defineExpose({ runVerify, stopCamera, beginEntryVerification })
 
 onMounted(async () => {
   resetMonitorPosition()
   window.addEventListener('resize', clampMonitorPosition)
-  await fetchStatus()
+  await beginEntryVerification()
 })
+
+watch(
+  () => props.sessionId,
+  async (nextId, previousId) => {
+    if (!nextId || String(nextId) === String(previousId ?? '')) return
+    stopCamera()
+    await beginEntryVerification()
+  },
+)
 
 watch(mode, (nextMode, previousMode) => {
   if (nextMode === 'monitor' && previousMode !== 'monitor') resetMonitorPosition()

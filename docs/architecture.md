@@ -45,7 +45,7 @@ AI Workflow FastAPI ---- 独立工作流状态目录
 - Agent 不可访问平台数据库，因此不能破坏账号、成绩或训练数据。
 - TinyTroupe 导入或运行失败转成 `SIMULATION_UNAVAILABLE`。
 - 角色台词只能来自 TinyTroupe 的 `TALK`；DeepSeek 作为 TinyTroupe 底层模型并执行只读聚合审计，不二次改写台词。
-- 全部场景角色接收公开事件；TinyTroupe 世界内最多 6 名在场角色自行行动，未开口视为合法沉默。
+- 全部场景角色接收公开事件；TinyTroupe 世界内最多 24 名在场角色逐人单独行动，未开口视为合法沉默。
 - DeepSeek 超时、限流或无效输出转成明确错误；最多两次受控重试。
 - 所有已接收任务状态写入 Agent 自有存储，进程重启后可恢复。
 

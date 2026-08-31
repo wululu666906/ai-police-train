@@ -104,6 +104,7 @@ export default defineConfig(({ mode }) => {
         '/classes': apiProxy,
         '/avatars': apiProxy,
         '/object-storage': apiProxy,
+        '/ops': apiProxy,
         // 静态文件（视频、封面图等）
         '/static': apiProxy,
       },

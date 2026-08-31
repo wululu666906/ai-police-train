@@ -28,6 +28,7 @@ from services.agent_training_service import (
     _role_state_label,
     apply_training_action,
     generate_dialogue,
+    generate_opening_dialogue,
     resolve_revealed_fact_texts,
 )
 from services.agent_training_service import evaluate_session, is_current_evaluation_report
@@ -55,6 +56,9 @@ from services.training_view_service import (
     infer_session_scene_kind,
     redact_dispatch_brief_for_student,
     redact_first_impression_for_student,
+    _compose_plot_opening_turns,
+    _opening_prompts_from_scene,
+    _stage_prompts_from_scene,
     resolve_dialogue_mode,
 )
 from services.role_resolver import resolve_scene_role
@@ -117,7 +121,7 @@ def _serialize_opening_message(item: models.Message) -> dict[str, Any]:
     }
 
 
-def _opening_payload(db: Session, session: models.TrainingSession) -> dict[str, Any]:
+def _opening_payload(db: Session, session: models.TrainingSession, scene=None, case=None) -> dict[str, Any]:
     runtime_state = load_runtime_state(session.revealed_info)
     opening_ids = [int(item) for item in runtime_state.get("opening_message_ids") or [] if str(item).isdigit()]
     query = db.query(models.Message).filter(models.Message.session_id == session.id)
@@ -126,14 +130,62 @@ def _opening_payload(db: Session, session: models.TrainingSession) -> dict[str, 
     elif runtime_state.get("opening_delivered"):
         query = query.filter(models.Message.role == "assistant")
     else:
-        return {"opening_delivered": False, "messages": []}
+        return {
+            "opening_delivered": False,
+            "messages": [],
+            "recommended_questions": [],
+            "recommended_question_items": [],
+            "scene_roles": serialize_scene_roles(db, scene, case, runtime_state=runtime_state) if scene else [],
+        }
     messages = filter_internal_prompt_messages(
         query.order_by(models.Message.created_at.asc(), models.Message.id.asc()).all()
     )
+    recommended_question_items = build_recommended_question_items(
+        stored_items=runtime_state.get("recommended_question_items") or [],
+    )
+    scene_roles = serialize_scene_roles(db, scene, case, runtime_state=runtime_state) if scene else []
+    roles_by_name = {str(item.get("name") or ""): item for item in scene_roles}
+    serialized_messages = []
+    for item in messages:
+        payload = _serialize_opening_message(item)
+        role_meta = roles_by_name.get(str(payload.get("speaker_name") or ""))
+        if role_meta:
+            payload["avatar_id"] = role_meta.get("avatar_id")
+            payload["avatar_url"] = role_meta.get("avatar_url")
+        serialized_messages.append(payload)
     return {
         "opening_delivered": bool(runtime_state.get("opening_delivered")),
-        "messages": [_serialize_opening_message(item) for item in messages],
+        "messages": serialized_messages,
+        "recommended_questions": [item["text"] for item in recommended_question_items],
+        "recommended_question_items": recommended_question_items,
+        "scene_roles": scene_roles,
     }
+
+
+def _persist_plot_opening(db: Session, session, scene, case, role, extra_prompts: list | None = None) -> None:
+    state = load_runtime_state(session.revealed_info)
+    if state.get("opening_delivered"):
+        return
+    message_ids = []
+    for item in _compose_plot_opening_turns(scene, case, role):
+        message = models.Message(
+            session_id=session.id,
+            role="assistant",
+            content=item.get("content") or "",
+            speaker_role_id=item.get("speaker_role_id"),
+            speaker_name=item.get("speaker_name"),
+        )
+        db.add(message)
+        db.flush()
+        message_ids.append(message.id)
+    prompts = [item for item in (extra_prompts or []) if isinstance(item, dict) and str(item.get("text") or "").strip()]
+    prompts = prompts or list(state.get("recommended_question_items") or []) or _opening_prompts_from_scene(scene, case)
+    state.update({
+        "opening_delivered": True,
+        "opening_message_ids": message_ids,
+        "recommended_question_items": prompts,
+    })
+    session.revealed_info = dump_runtime_state(state)
 
 
 def _ensure_opening_payload(
@@ -142,11 +194,25 @@ def _ensure_opening_payload(
     scene: models.Scene | None,
     case: models.Case | None,
     role: models.Role | None,
+    current_user: models.User | None = None,
 ) -> dict[str, Any]:
-    ensure_opening_turn(db, session, scene, case, role)
+    delivered = ensure_opening_turn(db, session, scene, case, role)
+    if not delivered and current_user is not None:
+        result = generate_opening_dialogue(db, session.id, current_user.id)
+        if result.get("inner_thought") in {"ERROR", "ACCESS_DENIED"} or not result.get("reply_turns"):
+            _persist_plot_opening(
+                db,
+                session,
+                scene,
+                case,
+                role,
+                extra_prompts=result.get("recommended_question_items") or [],
+            )
+    elif not delivered:
+        _persist_plot_opening(db, session, scene, case, role)
     db.commit()
     db.refresh(session)
-    return _opening_payload(db, session)
+    return _opening_payload(db, session, scene=scene, case=case)
 
 
 def _artifact_url(db: Session, artifact: models.TrainingSessionArtifact) -> str | None:
@@ -177,22 +243,20 @@ def _get_accessible_training_session(db: Session, session_id: int, current_user:
 
 
 def _managed_student_ids_subquery(db: Session, admin_id: int):
-    return (
-        db.query(models.ClassMembership.user_id)
-        .join(models.TrainingClass, models.TrainingClass.id == models.ClassMembership.class_id)
-        .filter(
-            models.TrainingClass.created_by == admin_id,
-            models.ClassMembership.role == "student",
-            models.ClassMembership.status == "active",
-        )
-        .distinct()
-    )
+    """Return student accounts whose training records an admin may review.
+
+    Platform admins are not scoped to self-created classes here; that matches
+    video-training admin listings and the student directory, which are also global.
+    """
+    del admin_id
+    return db.query(models.User.id).filter(models.User.role == "student")
 
 
 def _is_managed_student(db: Session, admin_id: int, student_id: int) -> bool:
+    del admin_id
     return (
-        _managed_student_ids_subquery(db, admin_id)
-        .filter(models.ClassMembership.user_id == student_id)
+        db.query(models.User.id)
+        .filter(models.User.id == student_id, models.User.role == "student")
         .first()
         is not None
     )
@@ -422,6 +486,13 @@ def _build_session_guidance(
         # recommendations are generated only as part of an explicit chat turn.
         use_llm=False,
     )
+    if not recommended_question_items:
+        # 只读会话：按当前阶段取方向种子；中后期禁止回退首阶段模板冒充新题。
+        recommended_question_items = _stage_prompts_from_scene(
+            scene,
+            case,
+            current_stage=session.current_stage or "",
+        )
     recommended_questions = [item["text"] for item in recommended_question_items]
     communication_feedback = _build_feedback(
         last_user_message,
@@ -486,12 +557,138 @@ def _build_session_guidance(
     }
 
 
+def _peek_face_termination_pending(session: models.TrainingSession) -> dict[str, Any] | None:
+    runtime = load_runtime_state(session.revealed_info)
+    pending = runtime.get("face_termination_pending")
+    return pending if isinstance(pending, dict) else None
+
+
 def _pop_face_termination_pending(session: models.TrainingSession) -> dict[str, Any] | None:
     runtime = load_runtime_state(session.revealed_info)
     pending = runtime.pop("face_termination_pending", None)
     if pending:
         session.revealed_info = dump_runtime_state(runtime)
     return pending if isinstance(pending, dict) else None
+
+
+def _ensure_training_session_writable(session: models.TrainingSession) -> None:
+    if session.status != "active":
+        raise HTTPException(status_code=400, detail="Training session has already been finished")
+    if _peek_face_termination_pending(session):
+        raise HTTPException(status_code=409, detail="训练已因人脸验证异常终止，正在进入评估")
+
+
+def _face_termination_fallback_report(
+    session: models.TrainingSession,
+    face_pending: dict[str, Any],
+    *,
+    error: str,
+) -> dict[str, Any]:
+    failure_count = int(face_pending.get("failure_count") or 0)
+    reason = str(face_pending.get("reason") or "")
+    report = build_adaptive_fallback_report(
+        session=session,
+        failure_count=failure_count,
+        reason=reason,
+        error=error or "未知评估错误",
+    )
+    return apply_face_termination_report_metadata(
+        report,
+        failure_count=failure_count,
+        reason=reason,
+        evaluation_type="auto_terminated_fallback",
+        policy_source="face_termination_fallback",
+    )
+
+
+def _persist_finished_report(
+    db: Session,
+    session: models.TrainingSession,
+    report: dict[str, Any],
+    *,
+    user_id: int,
+) -> dict[str, Any]:
+    session.evaluation_result = json.dumps(report, ensure_ascii=False)
+    _mark_session_training_finished(session)
+    session.status = "finished"
+    db.commit()
+    try:
+        sync_assignment_submission_for_session(db, session.id, user_id, report)
+    except Exception as error:
+        print(f"Assignment submission sync failed: {error}")
+    return report
+
+
+def _repair_stuck_face_evaluating_session(
+    db: Session,
+    session: models.TrainingSession,
+    user_id: int,
+) -> bool:
+    """Repair sessions left in evaluating without a report after face auto-termination."""
+    if session.evaluation_result:
+        return False
+    if session.status not in {"evaluating", "active"}:
+        return False
+    runtime = load_runtime_state(session.revealed_info)
+    if runtime.get("face_eval_repair_done"):
+        return False
+
+    face_pending = _peek_face_termination_pending(session)
+    if not isinstance(face_pending, dict):
+        face_msg = (
+            db.query(models.Message)
+            .filter(
+                models.Message.session_id == session.id,
+                models.Message.role == "system",
+                models.Message.content.like("%人脸验证连续异常%"),
+            )
+            .order_by(models.Message.id.desc())
+            .first()
+        )
+        if not face_msg:
+            return False
+        face_pending = {"failure_count": 0, "reason": "人脸验证异常"}
+
+    runtime["face_eval_repair_done"] = True
+    session.revealed_info = dump_runtime_state(runtime)
+    popped = _pop_face_termination_pending(session)
+    if popped:
+        face_pending = popped
+    db.commit()
+
+    user_messages = (
+        db.query(models.Message)
+        .filter(models.Message.session_id == session.id, models.Message.role == "user")
+        .all()
+    )
+    user_message_count = len(filter_internal_prompt_messages(user_messages))
+    if user_message_count <= 0:
+        report = _face_termination_fallback_report(
+            session,
+            face_pending,
+            error="训练尚未形成有效对话轮次",
+        )
+        _persist_finished_report(db, session, report, user_id=user_id)
+        return True
+
+    _mark_session_training_finished(session)
+    session.status = "evaluating"
+    db.commit()
+    try:
+        report = evaluate_session(db, session.id, user_id, force_recompute=True)
+        if not report:
+            raise RuntimeError("评估结果为空")
+        if report.get("error"):
+            raise RuntimeError(str(report.get("error")))
+        report = apply_face_termination_report_metadata(
+            report,
+            failure_count=int(face_pending.get("failure_count") or 0),
+            reason=str(face_pending.get("reason") or ""),
+        )
+    except Exception as exc:
+        report = _face_termination_fallback_report(session, face_pending, error=str(exc))
+    _persist_finished_report(db, session, report, user_id=user_id)
+    return True
 
 
 @router.post("/start/{scene_id}", response_model=schemas.Session)
@@ -604,13 +801,15 @@ def start_session_opening(
     session = get_owned_session(db, session_id, current_user.id)
     if session.status != "active":
         raise HTTPException(status_code=409, detail="训练会话已结束，不能生成开场对话")
+    if _peek_face_termination_pending(session):
+        raise HTTPException(status_code=409, detail="训练已因人脸验证异常终止，正在进入评估")
     if not has_successful_session_verification(db, session.id):
         raise HTTPException(status_code=409, detail="请先完成人脸身份验证")
 
     scene = db.query(models.Scene).filter(models.Scene.id == session.scene_id).first()
     case = db.query(models.Case).filter(models.Case.id == scene.case_id).first() if scene else None
     role = resolve_scene_role(db, scene, case) if scene else None
-    return _ensure_opening_payload(db, session, scene, case, role)
+    return _ensure_opening_payload(db, session, scene, case, role, current_user)
 
 
 def _opening_stream_response(
@@ -619,6 +818,7 @@ def _opening_stream_response(
     scene: models.Scene | None,
     case: models.Case | None,
     role: models.Role | None,
+    current_user: models.User,
     *,
     phase: str,
     log_context: str,
@@ -626,19 +826,23 @@ def _opening_stream_response(
     def _stream():
         yield _sse_event("meta", {"session_id": session.id, "phase": phase})
         try:
-            payload = _ensure_opening_payload(db, session, scene, case, role)
+            payload = _ensure_opening_payload(db, session, scene, case, role, current_user)
             messages = payload.get("messages") or []
             for index, message in enumerate(messages):
                 yield _sse_event("thinking", {
                     "index": index,
                     "speaker_name": message.get("speaker_name") or "",
                     "speaker_role_id": message.get("speaker_role_id"),
+                    "avatar_id": message.get("avatar_id"),
+                    "avatar_url": message.get("avatar_url"),
                 })
                 yield _sse_event("chunk", {
                     "index": index,
                     "message_id": message.get("id"),
                     "speaker_name": message.get("speaker_name") or "",
                     "speaker_role_id": message.get("speaker_role_id"),
+                    "avatar_id": message.get("avatar_id"),
+                    "avatar_url": message.get("avatar_url"),
                     "content": message.get("content") or "",
                     "is_last": index == len(messages) - 1,
                 })
@@ -665,6 +869,8 @@ def stream_session_opening(
     session = get_owned_session(db, session_id, current_user.id)
     if session.status != "active":
         raise HTTPException(status_code=409, detail="训练会话已结束，不能生成开场对话")
+    if _peek_face_termination_pending(session):
+        raise HTTPException(status_code=409, detail="训练已因人脸验证异常终止，正在进入评估")
     if not has_successful_session_verification(db, session.id):
         raise HTTPException(status_code=409, detail="请先完成人脸身份验证")
 
@@ -677,6 +883,7 @@ def stream_session_opening(
         scene,
         case,
         role,
+        current_user,
         phase="generating",
         log_context="opening stream",
     )
@@ -690,8 +897,7 @@ def training_chat(
     current_user: models.User = Depends(get_current_user),
 ):
     session = get_owned_session(db, session_id, current_user.id)
-    if session.status != "active":
-        raise HTTPException(status_code=400, detail="Training session has already been finished")
+    _ensure_training_session_writable(session)
     if not message.content or not message.content.strip():
         raise HTTPException(status_code=400, detail="Message content cannot be empty")
     result = generate_dialogue(
@@ -725,8 +931,7 @@ def training_chat_stream(
     current_user: models.User = Depends(get_current_user),
 ):
     session = get_owned_session(db, session_id, current_user.id)
-    if session.status != "active":
-        raise HTTPException(status_code=400, detail="Training session has already been finished")
+    _ensure_training_session_writable(session)
     if not message.content or not message.content.strip():
         raise HTTPException(status_code=400, detail="Message content cannot be empty")
 
@@ -839,8 +1044,7 @@ def training_action(
     current_user: models.User = Depends(get_current_user),
 ):
     session = get_owned_session(db, session_id, current_user.id)
-    if session.status != "active":
-        raise HTTPException(status_code=400, detail="Training session has already been finished")
+    _ensure_training_session_writable(session)
     if not payload.action_id or not payload.action_id.strip():
         raise HTTPException(status_code=400, detail="Action id cannot be empty")
 
@@ -874,6 +1078,12 @@ def get_session(
     current_user: models.User = Depends(get_current_user),
 ):
     session = _get_readable_training_session(db, session_id, current_user)
+    if for_report:
+        try:
+            _repair_stuck_face_evaluating_session(db, session, current_user.id)
+            db.refresh(session)
+        except Exception as error:
+            print(f"Face termination report repair failed for session {session_id}: {error}")
     if _sync_session_finished_from_report(session):
         db.commit()
         try:
@@ -1117,20 +1327,21 @@ def finish_training(
 ):
     session = get_owned_session(db, session_id, current_user.id)
 
+    face_pending_peek = _peek_face_termination_pending(session)
     user_messages = (
         db.query(models.Message)
         .filter(models.Message.session_id == session_id, models.Message.role == "user")
         .all()
     )
     user_message_count = len(filter_internal_prompt_messages(user_messages))
-    if user_message_count <= 0:
+    if user_message_count <= 0 and not face_pending_peek:
         raise HTTPException(status_code=400, detail="At least one valid round of dialogue is required before finishing")
 
     face_pending = _pop_face_termination_pending(session)
     if face_pending:
         db.commit()
 
-    if session.status == "active":
+    if session.status == "active" or (face_pending and session.status == "evaluating"):
         _mark_session_training_finished(session)
         session.status = "evaluating"
         db.commit()
@@ -1152,33 +1363,36 @@ def finish_training(
                     print(f"Assignment submission sync failed: {error}")
             return existing
 
-    report = evaluate_session(db, session_id, current_user.id, force_recompute=bool(face_pending))
+    if face_pending and user_message_count <= 0:
+        report = _face_termination_fallback_report(
+            session,
+            face_pending,
+            error="训练尚未形成有效对话轮次",
+        )
+        return _persist_finished_report(db, session, report, user_id=current_user.id)
+
+    try:
+        report = evaluate_session(db, session_id, current_user.id, force_recompute=bool(face_pending))
+    except Exception as exc:
+        if not face_pending:
+            if session.status == "evaluating":
+                session.status = "active"
+                session.training_finished_at = None
+                db.commit()
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        report = _face_termination_fallback_report(session, face_pending, error=str(exc))
+        return _persist_finished_report(db, session, report, user_id=current_user.id)
+
     if not report:
         raise HTTPException(status_code=404, detail="Session not found")
     if report.get("error"):
         if face_pending:
-            report = build_adaptive_fallback_report(
-                session=session,
-                failure_count=int(face_pending.get("failure_count") or 0),
-                reason=str(face_pending.get("reason") or ""),
+            report = _face_termination_fallback_report(
+                session,
+                face_pending,
                 error=str(report.get("error") or "未知评估错误"),
             )
-            report = apply_face_termination_report_metadata(
-                report,
-                failure_count=int(face_pending.get("failure_count") or 0),
-                reason=str(face_pending.get("reason") or ""),
-                evaluation_type="auto_terminated_fallback",
-                policy_source="face_termination_fallback",
-            )
-            _mark_session_training_finished(session)
-            session.status = "finished"
-            session.evaluation_result = json.dumps(report, ensure_ascii=False)
-            db.commit()
-            try:
-                sync_assignment_submission_for_session(db, session_id, current_user.id, report)
-            except Exception as error:
-                print(f"Assignment submission sync failed: {error}")
-            return report
+            return _persist_finished_report(db, session, report, user_id=current_user.id)
         session.status = "active"
         session.training_finished_at = None
         db.commit()
@@ -1190,16 +1404,8 @@ def finish_training(
             failure_count=int(face_pending.get("failure_count") or 0),
             reason=str(face_pending.get("reason") or ""),
         )
-        session.evaluation_result = json.dumps(report, ensure_ascii=False)
 
-    _mark_session_training_finished(session)
-    session.status = "finished"
-    db.commit()
-    try:
-        sync_assignment_submission_for_session(db, session_id, current_user.id, report)
-    except Exception as error:
-        print(f"Assignment submission sync failed: {error}")
-    return report
+    return _persist_finished_report(db, session, report, user_id=current_user.id)
 
 
 @router.post("/re-evaluate/{session_id}")

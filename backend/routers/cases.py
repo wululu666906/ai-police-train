@@ -3,7 +3,7 @@ import os
 import re
 import uuid
 from collections import defaultdict
-from typing import List
+from typing import Any, List
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import bindparam, inspect, text
@@ -49,6 +49,7 @@ from services.assessment_point_import_service import (
     list_builtin_templates,
     parse_text_to_assessment_points,
 )
+from services.expected_outcome_service import generate_expected_outcomes
 from services.ai_roles import list_ai_roles
 from services.agent_case_service import generate_scenes_with_agent, parse_case_with_agent
 from services.scene_bucket_service import BUCKET_LABELS, STANDARD_SCENE_NAMES
@@ -488,15 +489,40 @@ def _canonicalize_scene_role_payloads(scenes_data: list[dict] | None, persons: l
         if not isinstance(scene, dict):
             continue
         scene_payload = dict(scene)
-        roles = scene_payload.get("roles") or scene_payload.get("role_names") or []
-        canonical_roles = workflow_service.canonicalize_role_names(roles, persons)
+        role_sources: list[Any] = []
+        for key in ("roles", "role_names", "present_roles"):
+            values = scene_payload.get(key)
+            if isinstance(values, list):
+                role_sources.extend(values)
+        for item in scene_payload.get("role_training_functions") or []:
+            if isinstance(item, dict):
+                role_sources.append(item.get("role_name") or item.get("name"))
+        canonical_roles = workflow_service.canonicalize_role_names(role_sources, persons)
+        if not canonical_roles:
+            for person in persons or []:
+                if not isinstance(person, dict):
+                    continue
+                name = str(person.get("name") or "").strip()
+                status = str(person.get("status") or "正常")
+                if not name or "无法交流" in status or status in {"死亡", "昏迷"}:
+                    continue
+                canonical_roles.append(name)
+                if len(canonical_roles) >= 3:
+                    break
         scene_payload["roles"] = canonical_roles
         scene_payload["role_names"] = canonical_roles
+        present_roles = workflow_service.canonicalize_role_names(
+            scene_payload.get("present_roles") or canonical_roles,
+            persons,
+        )
+        scene_payload["present_roles"] = present_roles or list(canonical_roles)
         primary_role_name = workflow_service.canonicalize_role_name(scene_payload.get("primary_role_name"), persons)
         if primary_role_name in canonical_roles:
             scene_payload["primary_role_name"] = primary_role_name
         elif canonical_roles:
             scene_payload["primary_role_name"] = canonical_roles[0]
+        else:
+            scene_payload["primary_role_name"] = ""
         normalized_scenes.append(scene_payload)
     return normalized_scenes
 
@@ -675,6 +701,21 @@ def _compile_persisted_case_artifacts(db: Session, db_case: models.Case, structu
         role.id: role for role in db.query(models.Role).filter(models.Role.case_id == db_case.id).all()
     }
     scene_rows = db.query(models.Scene).filter(models.Scene.case_id == db_case.id).order_by(models.Scene.id.asc()).all()
+    script_by_ref = {
+        str(item.get("scene_ref") or item.get("scene_id") or ""): item
+        for item in structured.get("scene_scripts") or []
+        if isinstance(item, dict)
+    }
+    script_by_name = {
+        str(item.get("scene_name") or item.get("name") or ""): item
+        for item in structured.get("scene_scripts") or []
+        if isinstance(item, dict)
+    }
+    blueprint_by_name = {
+        str(item.get("scene_name") or item.get("name") or ""): item
+        for item in structured.get("scene_blueprints") or []
+        if isinstance(item, dict)
+    }
     scene_payloads = []
     for scene in scene_rows:
         links = (
@@ -685,6 +726,31 @@ def _compile_persisted_case_artifacts(db: Session, db_case: models.Case, structu
         )
         role_names = [roles_by_id[link.role_id].name for link in links if link.role_id in roles_by_id]
         primary = next((roles_by_id[link.role_id].name for link in links if link.is_primary and link.role_id in roles_by_id), "")
+        script = script_by_ref.get(f"db:{scene.id}") or script_by_name.get(scene.name or "") or {}
+        blueprint = blueprint_by_name.get(scene.name or "") or {}
+        training_by_name = {
+            str(item.get("scene_name") or item.get("name") or ""): item
+            for item in structured.get("training_scripts") or []
+            if isinstance(item, dict)
+        }
+        training = training_by_name.get(scene.name or "") or {}
+        merged = {**blueprint, **script, **training}
+        db_stages = _safe_json_loads(scene.stages, []) or []
+        merged_stages = merged.get("stages") or []
+        # Prefer script-first stages that still carry narrative fields.
+        def _stage_score(rows: list) -> int:
+            score = len(rows or [])
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                if row.get("learner_actions"):
+                    score += 3
+                if row.get("role_pressure_points"):
+                    score += 2
+                if row.get("expected_stage_effects"):
+                    score += 2
+            return score
+        stages = merged_stages if _stage_score(merged_stages) >= _stage_score(db_stages) else db_stages
         scene_payloads.append({
             "id": scene.id,
             "scene_ref": f"db:{scene.id}",
@@ -693,10 +759,21 @@ def _compile_persisted_case_artifacts(db: Session, db_case: models.Case, structu
             "difficulty": scene.difficulty,
             "dispatch_brief": scene.dispatch_brief,
             "first_impression": scene.first_impression,
-            "stages": _safe_json_loads(scene.stages, []),
+            "stages": stages or merged.get("stages") or db_stages,
             "roles": role_names,
             "role_names": role_names,
+            "present_roles": role_names,
             "primary_role_name": primary,
+            "training_goal": merged.get("training_goal") or "",
+            "expected_outcomes": merged.get("expected_outcomes") or [],
+            "plot_arc": merged.get("plot_arc") or "",
+            "opening_lines": merged.get("opening_lines") or [],
+            "role_training_functions": merged.get("role_training_functions") or [],
+            "completion_criteria": merged.get("completion_criteria") or [],
+            "failure_patterns": merged.get("failure_patterns") or [],
+            "fact_ids": merged.get("fact_ids") or [],
+            "training_entry_phase": merged.get("training_entry_phase") or "",
+            "student_role": merged.get("student_role") or "民警",
         })
     derived = compile_case_scene_artifacts(structured, scene_payloads)
     for key, value in derived.items():
@@ -1283,32 +1360,10 @@ def get_assessment_point_templates():
 
 @router.post("/assessment-points/parse-text")
 def parse_assessment_points_text(payload: dict = Body(...)):
-    text = str(payload.get("text") or payload.get("source_text") or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="text is required")
-    case_type = str(payload.get("case_type") or "").strip()
-    scene_name = str(payload.get("scene_name") or "").strip()
-    scene_index = int(payload.get("scene_index") or 0)
-    scene_count = max(1, int(payload.get("scene_count") or 1))
-    if scene_name:
-        points, warnings = parse_points_for_scene_text(
-            text,
-            scene_name=scene_name,
-            scene_index=scene_index,
-            scene_count=scene_count,
-            case_type=case_type,
-        )
-    else:
-        raw = parse_text_to_assessment_points(text)
-        points, warnings = finalize_assessment_points(raw, case_type=case_type, scene_name=scene_name)
-    return {
-        "points": points,
-        "count": len(points),
-        "mode": "replace",
-        "max_per_scene": ASSESSMENT_POINTS_MAX_PER_SCENE,
-        "warnings": warnings,
-        "message": f"已解析 {len(points)} 条考察点",
-    }
+    raise HTTPException(
+        status_code=410,
+        detail="考察点粘贴导入已下线。请使用剧本导入、AI 追加/刷新或手工编辑「本场景考察点」。",
+    )
 
 
 @router.post("/assessment-points/parse-file")
@@ -1320,70 +1375,10 @@ async def parse_assessment_points_file(
     scene_count: int = Form(1),
     db: Session = Depends(database.get_db),
 ):
-    filename = file.filename or ""
-    extension = os.path.splitext(filename)[1].lower()
-    if extension not in document_extract_service.ALLOWED_EXTENSIONS and extension not in {".txt", ".json"}:
-        raise HTTPException(status_code=400, detail="支持 TXT、JSON、MD、PDF、DOCX")
-
-    file_bytes = await file.read()
-    if not file_bytes:
-        raise HTTPException(status_code=400, detail="上传文件为空")
-    if len(file_bytes) > document_extract_service.MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="文件不能超过 20MB")
-
-    if extension in {".txt", ".json"}:
-        try:
-            extracted_text = file_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            extracted_text = file_bytes.decode("gbk", errors="ignore")
-    else:
-        try:
-            extracted_text = document_extract_service.extract_text(filename, file_bytes)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    clean_scene_name = scene_name.strip()
-    clean_case_type = case_type.strip()
-    if clean_scene_name:
-        points, warnings = parse_points_for_scene_text(
-            extracted_text,
-            scene_name=clean_scene_name,
-            scene_index=scene_index,
-            scene_count=max(1, scene_count),
-            case_type=clean_case_type,
-        )
-    else:
-        raw = parse_text_to_assessment_points(extracted_text)
-        points, warnings = finalize_assessment_points(raw, case_type=clean_case_type, scene_name=clean_scene_name)
-    stored = object_storage.put_bytes(
-        bucket=MEDIA_BUCKET,
-        object_key=build_object_key("case-source-files", filename),
-        data=file_bytes,
-        content_type=guess_content_type(filename, file.content_type),
+    raise HTTPException(
+        status_code=410,
+        detail="考察点文件导入已下线。请使用剧本导入、AI 追加/刷新或手工编辑「本场景考察点」。",
     )
-    asset = upsert_media_asset(
-        db,
-        owner_type="case_upload",
-        owner_key=stored.object_key,
-        asset_kind="source_file",
-        stored=stored,
-        original_filename=filename,
-        content_type=guess_content_type(filename, file.content_type),
-    )
-    db.commit()
-    return {
-        "points": points,
-        "count": len(points),
-        "extracted_chars": len(extracted_text),
-        "extracted_text": extracted_text[:8000],
-        "filename": filename,
-        "source_asset_id": asset.id,
-        "source_asset_key": asset.object_key,
-        "mode": "replace",
-        "max_per_scene": ASSESSMENT_POINTS_MAX_PER_SCENE,
-        "warnings": warnings,
-        "message": f"已从「{filename}」解析 {len(points)} 条考察点",
-    }
 
 
 @router.get("/ai-roles")
@@ -1391,37 +1386,21 @@ def get_ai_roles_catalog():
     return {"roles": list_ai_roles()}
 
 
-
 @router.get("/assessment-points/scene-naming-rules")
 def get_assessment_scene_naming_rules():
     return {
         "standard_names": STANDARD_SCENE_NAMES,
         "bucket_labels": BUCKET_LABELS,
-        "naming_hint": "场景名须含关键词：接警/现场/询问（或接处警、初查、讯问等），系统才能自动分派考察点。",
+        "naming_hint": "场景考察配置已改为剧本考察点；请使用 AI 追加/刷新或手工编辑。",
     }
 
 
 @router.post("/assessment-points/distribute")
 def distribute_assessment_points_api(payload: dict = Body(...)):
-    case_info = payload.get("case_info") if isinstance(payload.get("case_info"), dict) else {}
-    scenes = payload.get("scenes") if isinstance(payload.get("scenes"), list) else []
-    if not scenes:
-        raise HTTPException(status_code=400, detail="scenes 不能为空")
-
-    try:
-        result = distribute_assessment_points_to_scenes(
-            case_info,
-            scenes,
-            source_text=str(payload.get("source_text") or "").strip(),
-            extra_hint=str(payload.get("extra_hint") or "").strip(),
-            use_llm=bool(payload.get("use_llm", True)),
-            rename_scenes=bool(payload.get("rename_scenes", True)),
-            reference_text=str(payload.get("reference_text") or "").strip(),
-        )
-        result["officer_role"] = "考察点生成"
-        return result
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"分场景考察点生成失败: {exc}") from exc
+    raise HTTPException(
+        status_code=410,
+        detail="分场景考察点生成已下线。请使用剧本导入、AI 追加/刷新或手工编辑「本场景考察点」。",
+    )
 
 
 @router.post("/assessment-points/generate")
@@ -1431,13 +1410,14 @@ def generate_assessment_points_api(payload: dict = Body(...)):
     if not case_info and not scene_info:
         raise HTTPException(status_code=400, detail="case_info 或 scene_info 至少提供一项")
 
+    existing = payload.get("existing_outcomes")
+    if existing is None:
+        existing = scene_info.get("expected_outcomes")
     try:
-        return generate_assessment_points(
+        return generate_expected_outcomes(
             case_info,
             scene_info,
-            source_text=str(payload.get("source_text") or "").strip(),
-            template_key=str(payload.get("template_key") or "").strip(),
-            extra_hint=str(payload.get("extra_hint") or "").strip(),
+            existing_outcomes=existing if isinstance(existing, list) else [],
             use_llm=bool(payload.get("use_llm", True)),
         )
     except Exception as exc:
@@ -1676,10 +1656,23 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
             "ai_workflows": case_data.get("ai_workflows", []),
             "scene_scripts": [
                 {
-                    "scene_name": item.get("scene_name"),
+                    "scene_name": item.get("scene_name") or item.get("name"),
                     "fact_ids": item.get("fact_ids", []),
                     "supplement_ids": item.get("supplement_ids", []),
                     "script_markdown": item.get("script_markdown", ""),
+                    "dispatch_brief": item.get("dispatch_brief", ""),
+                    "first_impression": item.get("first_impression", ""),
+                    "training_goal": item.get("training_goal", ""),
+                    "expected_outcomes": item.get("expected_outcomes", []),
+                    "plot_arc": item.get("plot_arc", ""),
+                    "opening_lines": item.get("opening_lines", []),
+                    "stages": item.get("stages", []),
+                    "role_training_functions": item.get("role_training_functions", []),
+                    "completion_criteria": item.get("completion_criteria", []),
+                    "failure_patterns": item.get("failure_patterns", []),
+                    "roles": item.get("roles") or item.get("role_names") or [],
+                    "role_names": item.get("role_names") or item.get("roles") or [],
+                    "primary_role_name": item.get("primary_role_name", ""),
                 }
                 for item in scenes_data if isinstance(item, dict)
             ],
@@ -1755,7 +1748,7 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
                 continue
             person = workflow_service._clean_person(person)
             role_name = person.get("name")
-            if not role_name:
+            if not role_name or not workflow_service._is_valid_person_name(role_name):
                 continue
 
             db_role = models.Role(
@@ -1796,7 +1789,15 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
                 description=scene_data.get("scene_description") or "",
                 difficulty=scene_data.get("difficulty") or "中等",
                 estimated_minutes=_resolve_estimated_minutes(scene_data),
-                opening_config=_normalize_opening_config(scene_data.get("opening_config"), created_roles),
+                opening_config=_normalize_opening_config(
+                    scene_data.get("opening_config")
+                    or {
+                        "enabled": True,
+                        "mode": "preset" if scene_data.get("opening_lines") else "dynamic",
+                        "preset_turns": scene_data.get("opening_lines") or [],
+                    },
+                    created_roles,
+                ),
                 dispatch_brief=scene_data.get("dispatch_brief") or "暂无接警信息",
                 first_impression=scene_data.get("first_impression") or "暂无现场第一印象描述",
                 stages=json.dumps(normalized_stages, ensure_ascii=False),
@@ -1812,8 +1813,8 @@ def full_create_case(payload: dict = Body(...), db: Session = Depends(database.g
             requested_primary_role_name = workflow_service.canonicalize_role_name(scene_data.get("primary_role_name"), persons_data)
             selected_roles = []
 
-            for role_name in scene_data.get("roles") or []:
-                role = created_roles.get(role_name)
+            for role_name in scene_data.get("roles") or scene_data.get("role_names") or []:
+                role = created_roles.get(str(role_name or "").strip())
                 if not role or role.id in linked_role_ids:
                     continue
 
@@ -2004,8 +2005,16 @@ def update_case(case_id: int, payload: dict = Body(...), db: Session = Depends(d
                 db_scene.difficulty = scene_data.get("difficulty") or "中等"
             if any(key in scene_data for key in ("estimated_minutes", "estimate_minutes", "duration_minutes", "training_minutes")):
                 db_scene.estimated_minutes = _resolve_estimated_minutes(scene_data)
-            if "opening_config" in scene_data:
-                db_scene.opening_config = _normalize_opening_config(scene_data.get("opening_config"), role_map)
+            if "opening_config" in scene_data or "opening_lines" in scene_data:
+                db_scene.opening_config = _normalize_opening_config(
+                    scene_data.get("opening_config")
+                    or {
+                        "enabled": True,
+                        "mode": "preset",
+                        "preset_turns": scene_data.get("opening_lines") or [],
+                    },
+                    role_map,
+                )
             if "dispatch_brief" in scene_data:
                 db_scene.dispatch_brief = scene_data.get("dispatch_brief") or ""
             if "first_impression" in scene_data:

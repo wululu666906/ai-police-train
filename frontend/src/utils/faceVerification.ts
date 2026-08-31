@@ -1,5 +1,5 @@
 export const FACE_VERIFY_RETRY_MS = 350
-export const FACE_HEARTBEAT_RETRY_MS = 1500
+export const FACE_HEARTBEAT_RETRY_MS = 2500
 
 export function localizeFaceMessage(
   value: unknown,

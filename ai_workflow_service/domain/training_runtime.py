@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -32,19 +33,66 @@ def dedupe_points(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def evaluate_points(points: list[dict[str, Any]], transcript: list[dict[str, Any]], actions: list[str]) -> list[dict[str, Any]]:
     corpus = "\n".join(_text(item.get("content")) for item in transcript if item.get("role") in {"user", "action"})
+    compact_corpus = "".join(ch for ch in corpus if not ch.isspace())
     action_set = {_text(item) for item in actions if _text(item)}
+    # 领域短词：用于从考察点正文派生可观察命中词
+    domain_terms = (
+        "报警人", "报警", "身份", "姓名", "联系方式", "电话", "时间", "地点", "地址", "在场",
+        "经过", "原因", "诉求", "矛盾", "伤情", "伤员", "受伤", "流血", "危险", "风险", "安全",
+        "证据", "监控", "现场", "隔离", "疏散", "控制", "警告", "告知", "劝离", "制止",
+        "救护", "救护车", "急救", "派警", "增援", "武器", "刀具", "持刀", "斗殴", "冲突",
+        "情绪", "安抚", "询问", "核实", "确认", "记录", "闭环", "收尾", "总结", "反馈",
+        "暴力", "规模", "人数", "人员", "嫌疑人", "证人", "当事人", "被害人", "受害者",
+    )
+    stopwords = {"能够", "可以", "应当", "应该", "需要", "要求", "迅速", "及时", "正确", "有效", "充分", "进行", "完成"}
     results = []
     for point in dedupe_points(points):
-        keywords = point.get("keywords") or []
-        keyword_hits = [word for word in keywords if word in corpus]
+        keywords = [_text(item) for item in (point.get("keywords") or []) if _text(item)]
+        label = _text(point.get("label") or point.get("content"))
+        content = _text(point.get("content") or point.get("label"))
+        compact_content = "".join(ch for ch in content if not ch.isspace())
+        derived: list[str] = []
+        for term in sorted(domain_terms, key=len, reverse=True):
+            if term in compact_content and term not in derived:
+                derived.append(term)
+            if len(derived) >= 6:
+                break
+        for chunk in re.split(r"[，。；、,/；]", content or label):
+            token = "".join(ch for ch in chunk if not ch.isspace())
+            token = re.sub(r"^(能够|可以|应当|应该|需要|要求|迅速|及时|正确|有效|充分|进行)", "", token)
+            if 2 <= len(token) <= 8 and token not in stopwords and token not in derived:
+                derived.append(token)
+            if len(derived) >= 8:
+                break
+        # 过滤过长整句关键词（历史数据可能仍带 10+ 字整句）
+        usable_keywords = [word for word in keywords if 2 <= len(word) <= 8 and word not in stopwords]
+        search_terms = list(dict.fromkeys([*usable_keywords, *derived[:6]]))
+        if not search_terms and label:
+            short_label = re.sub(r"^(能够|可以|应当|应该|需要|要求)", "", "".join(ch for ch in label if not ch.isspace()))
+            if 2 <= len(short_label) <= 8:
+                search_terms = [short_label]
+        keyword_hits = [word for word in search_terms if word and (word in corpus or word in compact_corpus)]
+        if not keyword_hits and compact_content:
+            # 短前缀兜底：仅用前 6 字，降低整句永不命中概率
+            tip = compact_content[:6]
+            if tip and tip in compact_corpus:
+                keyword_hits = [tip]
         related = {_text(item) for item in point.get("related_actions") or point.get("actions") or []}
         action_hits = sorted(related & action_set)
         evidence = keyword_hits + [f"action:{item}" for item in action_hits]
-        ratio = (len(keyword_hits) / len(keywords)) if keywords else (1.0 if action_hits else 0.0)
+        ratio = (len(keyword_hits) / max(len([w for w in search_terms if w]), 1)) if search_terms else (1.0 if action_hits else 0.0)
         if action_hits:
             ratio = max(ratio, 1.0)
-        status = "hit" if ratio >= 1 else "partial" if ratio > 0 else "missed"
-        results.append({**point, "status": status, "hit_ratio": round(ratio, 4), "evidence": evidence})
+        if keyword_hits and ratio < 0.34:
+            ratio = 0.34
+        # 命中任一可观察短词即至少 partial；命中过半或 >=2 词视为 hit
+        if keyword_hits:
+            if len(keyword_hits) >= 2 or ratio >= 0.5:
+                ratio = max(ratio, 0.5)
+            else:
+                ratio = max(ratio, 0.34)
+        status = "hit" if ratio >= 0.5 else "partial" if ratio > 0 else "missed"
+        results.append({**point, "status": status, "hit_ratio": round(min(ratio, 1.0), 4), "evidence": evidence})
     return results
 
 
@@ -55,7 +103,20 @@ def evaluate_training(payload: dict[str, Any], learner_input: str) -> dict[str, 
     actions = list(payload.get("completed_action_ids") or [])
     if payload.get("input_kind") == "action" and payload.get("action_id"):
         actions.append(_text(payload.get("action_id")))
-    results = evaluate_points(stage.get("assessment_points") or [], transcript, actions)
+    outcome_points = []
+    for index, item in enumerate(payload.get("expected_outcomes") or []):
+        text = _text(item)
+        if not text:
+            continue
+        outcome_points.append({
+            "id": f"eo_{index + 1}",
+            "label": text[:40],
+            "content": text,
+            "required": True,
+            "keywords": [],
+        })
+    points = outcome_points or stage.get("assessment_points") or payload.get("assessment_points") or []
+    results = evaluate_points(points, transcript, actions)
     previously_completed = {_text(item) for item in payload.get("completed_point_ids") or []}
     for item in results:
         if _text(item.get("id")) in previously_completed:

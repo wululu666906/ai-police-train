@@ -137,10 +137,6 @@ def evaluate_dialogue_admission(scene: dict[str, Any]) -> dict[str, Any]:
         reasons.append("missing_dialogue_core_markers")
     if not stages:
         reasons.append("missing_training_stages")
-    if not assessment_points:
-        reasons.append("missing_assessment_points")
-    elif len(observable_points) < len(assessment_points):
-        reasons.append("unobservable_assessment_points")
     if not outcomes:
         reasons.append("missing_expected_outcomes")
     if non_dialogue and len(dialogue) < 2:
@@ -152,7 +148,7 @@ def evaluate_dialogue_admission(scene: dict[str, Any]) -> dict[str, Any]:
 
     dialogue_score = round(len(dialogue) / max(len(dialogue) + len(non_dialogue), 1), 4)
     training_value_score = round(
-        min(1.0, dialogue_score * 0.45 + min(len(assessment_points), 4) / 4 * 0.3 + min(len(outcomes), 3) / 3 * 0.25),
+        min(1.0, dialogue_score * 0.45 + min(len(outcomes), 6) / 6 * 0.55),
         4,
     )
     if training_value_score < 0.55:

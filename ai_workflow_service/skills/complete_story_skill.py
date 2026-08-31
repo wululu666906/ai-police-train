@@ -37,47 +37,79 @@ class CompleteStorySkill:
             story = "# 案件完整剧情\n\n" + story.lstrip("# ")
         return story
 
-    def _generate(self, system: str, user: str, *, max_tokens: int) -> str:
+    def _generate(self, system: str, user: str, *, max_tokens: int) -> tuple[str, dict]:
+        meta = {"partial": False, "partial_reason": "", "error": ""}
         try:
             result = self.llm.complete_message(
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
                 max_tokens=max_tokens,
                 max_attempts=1,
                 extra_kwargs=self._story_completion_kwargs(),
+                allow_partial_on_timeout=True,
             )
-            return self._normalize_story_output(str(result.get("content") or ""))
+            meta["partial"] = bool(result.get("partial"))
+            meta["partial_reason"] = str(result.get("partial_reason") or "")
+            meta["error"] = str(result.get("error") or "")
+            return self._normalize_story_output(str(result.get("content") or "")), meta
         except WorkflowServiceError as exc:
             if exc.code not in {"MODEL_REQUEST_FAILED", "MODEL_NOT_CONFIGURED"}:
                 raise
-            return ""
+            meta["error"] = str(exc.message or exc)
+            return "", meta
 
     def execute(self, cleaned_text: str) -> tuple[str, dict]:
         max_tokens = settings.complete_story_max_tokens
-        story = self._generate(
+        story, gen_meta = self._generate(
             system=COMPLETE_STORY_SYSTEM_PROMPT,
             user=cleaned_text,
             max_tokens=max_tokens,
         )
         refusal_markers = ("无法整理", "原始案件文本未提供", "字符编码损坏", "不能构成完整", "无法构成完整")
-        if any(marker in story for marker in refusal_markers):
+        refused = bool(story and any(marker in story for marker in refusal_markers))
+        if refused:
             story = ""
         audit = story_quality(cleaned_text, story)
+        audit["generation"] = gen_meta
+        audit["refused"] = refused
         repaired = False
-        if story and not audit["sufficient"]:
-            repaired_story = self._generate(
+        # Empty / timeout-partial / insufficient: always attempt one repair when possible.
+        need_repair = (not story) or (not audit["sufficient"])
+        if need_repair:
+            repair_user = (
+                f"原文：\n{cleaned_text}\n\n"
+                f"当前不合格或中断的剧情：\n{story or '（空，可能因超时中断，请根据原文完整重写）'}\n\n"
+                f"失败原因：{audit.get('fail_reasons') or ['empty_or_insufficient']}；"
+                f"缺失证据类别：{audit['missing_evidence_markers']}；最低建议长度：{audit['minimum_story_chars']}字。"
+            )
+            repaired_story, repair_meta = self._generate(
                 system=COMPLETE_STORY_REPAIR_PROMPT,
-                user=(
-                    f"原文：\n{cleaned_text}\n\n当前不合格剧情：\n{story}\n\n"
-                    f"缺失证据类别：{audit['missing_evidence_markers']}；最低建议长度：{audit['minimum_story_chars']}字。"
-                ),
+                user=repair_user,
                 max_tokens=max(max_tokens, 12000),
             )
+            audit["repair_generation"] = repair_meta
             repaired_audit = story_quality(cleaned_text, repaired_story)
+            # Prefer repaired full pass; otherwise keep the longer usable draft (including timeout partial).
             if repaired_audit["sufficient"]:
                 story, audit, repaired = repaired_story, repaired_audit, True
-        if not audit["sufficient"]:
-            story = "# 案件完整剧情\n\n" + cleaned_text
-            audit = story_quality(cleaned_text, story)
-            audit["fallback"] = "source_preserving"
+                audit["generation"] = gen_meta
+                audit["repair_generation"] = repair_meta
+            elif repaired_story and len(repaired_story) > len(story or ""):
+                story = repaired_story
+                audit = repaired_audit
+                audit["generation"] = gen_meta
+                audit["repair_generation"] = repair_meta
+                repaired = True
+        if not audit.get("sufficient"):
+            # Last resort: if we still hold a chaptered partial draft, keep it instead of OCR paste
+            # when it already looks like a narrative with chapters.
+            keep_partial = bool(story) and story.count("## ") >= 1 and len(story) >= max(600, audit.get("minimum_story_chars", 600) // 2)
+            if keep_partial:
+                audit["fallback"] = "partial_draft_kept"
+                audit["sufficient"] = False
+            else:
+                story = "# 案件完整剧情\n\n" + cleaned_text
+                audit = story_quality(cleaned_text, story)
+                audit["fallback"] = "source_preserving"
+                audit["generation"] = gen_meta
         audit["repaired"] = repaired
         return story, audit

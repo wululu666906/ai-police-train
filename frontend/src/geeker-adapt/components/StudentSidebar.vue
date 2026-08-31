@@ -31,7 +31,7 @@
           }"
           :disabled="item.disabled"
           :title="collapsed ? item.label : ''"
-          @click="item.key === 'notifications' ? emit('notify') : go(item.path)"
+          @click="go(item.path)"
         >
           <span class="nav-icon"><el-icon><component :is="item.icon" /></el-icon></span>
           <span class="nav-label">{{ item.label }}</span>
@@ -91,7 +91,7 @@ const rawMenuItems: StudentMenuItem[] = [
   { key: 'training-center', label: '训练大厅', icon: VideoPlay, path: '/student/training-center', disabled: false, activePaths: ['/student/hall', '/student/training', '/student/videos', '/student/video-training'] },
   { key: 'classes', label: '我的班级', icon: Files, path: '/student/classes', disabled: false },
   { key: 'history', label: '练习记录', icon: Clock, path: '/student/history', disabled: false, activePaths: ['/student/text-history', '/student/video-history', '/student/evaluation'] },
-  { key: 'notifications', label: '通知中心', icon: Bell, path: '', disabled: false },
+  { key: 'notifications', label: '通知中心', icon: Bell, path: '/student/notifications', disabled: false, activePaths: ['/student/notifications'] },
   { key: 'settings', label: '个人中心', icon: User, path: '/student/settings', disabled: false },
 ]
 

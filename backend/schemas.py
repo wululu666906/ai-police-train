@@ -149,6 +149,7 @@ class SceneRoleBrief(BaseModel):
 class RecommendedQuestionItem(BaseModel):
     text: str
     category: str = "追问"
+    kind: str = "hint"  # hint | plot_advance
     target_role_name: Optional[str] = None
     priority: str = "medium"
     related_point_id: Optional[str] = None

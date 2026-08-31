@@ -566,28 +566,32 @@
                 <div class="scene-editor-card__section-head">
                   <div>
                     <div class="scene-editor-card__section-title">参与角色与主对话人</div>
+                    <div class="scene-editor-card__section-sub">点击人物芯片配置进场景；至少保留 1 名可交流角色</div>
                   </div>
                 </div>
-                <div class="scene-role-preview__header">
-                  <span>现场全部可交流人员</span>
-                  <span>{{ (scene.present_roles || scene.roles || []).length }} 人</span>
-                </div>
-                <div class="mt-2 flex flex-wrap gap-2">
-                  <span
-                    v-for="roleName in scene.present_roles || scene.roles || []"
-                    :key="roleName"
-                    class="inline-flex items-center rounded-full bg-[#1D3557] px-3 py-1 text-xs font-bold text-white"
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <button
+                    v-for="person in aiParsedData.persons || []"
+                    :key="`gen-${idx}-${person.name}`"
+                    type="button"
+                    class="rounded-full border px-3 py-1.5 text-xs font-bold transition-colors"
+                    :class="(scene.role_names || scene.roles || []).includes(person.name) ? 'border-[#1D3557] bg-[#1D3557] text-white' : 'border-slate-200 bg-white text-slate-600'"
+                    @click="toggleGeneratedSceneRole(scene, person.name)"
                   >
-                    {{ roleName }}
-                  </span>
+                    {{ person.name }}
+                  </button>
                 </div>
-                <div v-if="scene.primary_roles?.length" class="mt-2 text-xs text-slate-500">
-                  优先交涉：{{ scene.primary_roles.join('、') }}
+                <div class="mt-4">
+                  <label class="form-label form-label--muted">主对话人</label>
+                  <select v-model="scene.primary_role_name" class="form-input">
+                    <option value="">请选择主对话人</option>
+                    <option v-for="roleName in scene.role_names || scene.roles || []" :key="roleName" :value="roleName">{{ roleName }}</option>
+                  </select>
                 </div>
-                <div v-if="getSceneRoleRecommendation({ persons: aiParsedData.persons || [] }, { role_names: scene.roles || [] })" class="scene-role-preview__audit">
+                <div v-if="getSceneRoleRecommendation({ persons: aiParsedData.persons || [] }, { role_names: scene.role_names || scene.roles || [] })" class="scene-role-preview__audit">
                   <strong>匹配校验</strong>
-                  <span>推荐主对话人：{{ getSceneRoleRecommendation({ persons: aiParsedData.persons || [] }, { role_names: scene.roles || [] })?.name }}</span>
-                  <span>{{ getSceneRoleRecommendation({ persons: aiParsedData.persons || [] }, { role_names: scene.roles || [] })?.reason }}</span>
+                  <span>推荐主对话人：{{ getSceneRoleRecommendation({ persons: aiParsedData.persons || [] }, { role_names: scene.role_names || scene.roles || [] })?.name }}</span>
+                  <span>{{ getSceneRoleRecommendation({ persons: aiParsedData.persons || [] }, { role_names: scene.role_names || scene.roles || [] })?.reason }}</span>
                 </div>
               </div>
 
@@ -972,7 +976,7 @@
                   <span class="wp__nav-index">场景 {{ Number(idx) + 1 }}</span>
                   <span class="wp__nav-name">{{ scene.name || '未命名' }}</span>
                   <span v-if="(scene.assessmentPointsModel || []).length" class="wp__nav-meta">
-                    {{ (scene.assessmentPointsModel || []).length }} 考察点
+                    {{ (scene.expectedOutcomesModel || scene.expected_outcomes || []).length }} 考察点
                   </span>
                 </button>
               </aside>
@@ -1009,7 +1013,7 @@
                       :placeholder="SCENE_NAME_PLACEHOLDERS[Number(idx)] || '须含：接警 / 现场 / 询问 关键词'"
                     />
                     <p class="mt-1 text-xs text-slate-400">
-                      类型：{{ sceneBucketLabel(scene.name, Number(idx), (editableCase.scenes || []).length) }} · 用于自动分派考察点
+                      类型：{{ sceneBucketLabel(scene.name, Number(idx), (editableCase.scenes || []).length) }} · 剧本驱动考察点
                     </p>
                   </div>
                   <div>
@@ -1089,8 +1093,7 @@
                 <div class="scene-flow-panel">
                   <div class="scene-flow-panel__toolbar">
                     <span class="scene-flow-panel__badge scene-flow-panel__badge--bucket">
-                      {{ sceneBucketLabel(scene.name, Number(idx), (editableCase.scenes || []).length) }}
-                      · 已配置 {{ assessmentPointCountLabel(scene) }}
+                      本场景考察点 · 已配置 {{ expectedOutcomeCountLabel(scene) }}
                     </span>
                     <div class="scene-flow-panel__actions">
                       <van-button
@@ -1100,114 +1103,36 @@
                         :loading="isSceneAssessmentLoading(scene)"
                         @click="generateAssessmentPointsForScene(scene, Number(idx))"
                       >
-                        {{ (scene.assessmentPointsModel || []).length ? 'AI 刷新考察点' : 'AI 生成考察点' }}
-                      </van-button>
-                      <van-button
-                        size="small"
-                        plain
-                        :loading="isSceneAssessmentUploading(scene)"
-                        @click.stop.prevent="openSceneAssessmentFilePicker(scene)"
-                      >
-                        上传文件
-                      </van-button>
-                      <van-button
-                        v-if="(scene.assessmentPointsModel || []).length"
-                        size="small"
-                        class="persona-toolbar-button"
-                        :plain="!areAllSceneAssessmentPointsExpanded(scene)"
-                        type="primary"
-                        @click="toggleAllSceneAssessmentPoints(scene)"
-                      >
-                        {{ areAllSceneAssessmentPointsExpanded(scene) ? '收起' : '展开' }}
+                        {{ (scene.expectedOutcomesModel || []).length >= MAX_ASSESSMENT_POINTS_PER_SCENE ? 'AI 刷新考察点' : ((scene.expectedOutcomesModel || []).length ? 'AI 追加考察点' : 'AI 生成考察点') }}
                       </van-button>
                       <van-button plain size="small" @click="addAssessmentPointToScene(scene)">补一条</van-button>
                     </div>
                   </div>
 
-                  <div class="mt-3 flex flex-wrap items-end gap-2">
-                    <textarea
-                      v-model="scene._assessmentPaste"
-                      rows="2"
-                      class="form-textarea flex-1 min-w-[240px]"
-                      placeholder="可选：粘贴本场景考察清单后点「导入粘贴」"
-                    ></textarea>
-                    <van-button
-                      size="small"
-                      plain
-                      :loading="isSceneAssessmentLoading(scene)"
-                      @click="importAssessmentPasteForScene(scene, Number(idx))"
-                    >
-                      导入粘贴
-                    </van-button>
-                  </div>
+                  <p class="mt-2 text-xs text-slate-500">考察点以剧本为唯一数据源（1-6 条）。未满可追加，已满仅刷新替换；粘贴/上传/分派入口已下线。</p>
                   <p v-if="scene._assessmentMessage" class="mt-2 text-xs text-emerald-700">{{ scene._assessmentMessage }}</p>
 
-                  <input
-                    ref="sceneAssessmentFileInputRef"
-                    type="file"
-                    accept=".txt,.json,.md,.pdf,.docx"
-                    class="sr-only"
-                    tabindex="-1"
-                    @change="onSceneAssessmentFileChange"
-                  />
-
-                  <div v-if="!(scene.assessmentPointsModel || []).length" class="scene-flow-panel__empty">
-                    暂无考察点。请使用「AI 生成考察点」、上传文件或手动新增（每场景最多 {{ MAX_ASSESSMENT_POINTS_PER_SCENE }} 条）。
+                  <div v-if="!(scene.expectedOutcomesModel || []).length" class="scene-flow-panel__empty">
+                    暂无考察点。请使用「AI 生成考察点」或手动新增（每场景最多 {{ MAX_ASSESSMENT_POINTS_PER_SCENE }} 条）。新整理案件由剧本自动带入。
                   </div>
 
                   <div
-                    v-for="(point, pointIndex) in scene.assessmentPointsModel || []"
-                    :key="`${scene.id}-ap-${point._editor_id || pointIndex}`"
-                    :class="['scene-flow-stage', point._collapsed ? 'scene-flow-stage--collapsed' : '']"
+                    v-for="(point, pointIndex) in scene.expectedOutcomesModel || []"
+                    :key="`${scene.id}-eo-${point._editor_id || pointIndex}`"
+                    class="scene-flow-stage"
                   >
                     <div class="scene-flow-stage__head">
                       <span class="scene-flow-stage__index">考察点 {{ Number(pointIndex) + 1 }}</span>
-                      <div class="flex items-center gap-2">
-                        <span class="persona-stack-toggle" @click.stop="toggleAssessmentPointCollapsed(point)">{{ point._collapsed ? '展开详情' : '收起详情' }}</span>
-                        <van-button plain size="mini" class="!text-rose-600" @click="removeAssessmentPointFromScene(scene, Number(pointIndex))">删除</van-button>
-                      </div>
+                      <van-button plain size="mini" class="!text-rose-600" @click="removeAssessmentPointFromScene(scene, Number(pointIndex))">删除</van-button>
                     </div>
-                    <div v-if="!point._collapsed" class="scene-flow-stage__core">
-                      <div class="scene-flow-stage__row">
-                        <div class="scene-flow-stage__col">
-                          <label class="form-label form-label--muted">考察点名称（核心能力要求）</label>
-                          <input v-model="point.label" type="text" class="form-input" placeholder="如：压实双方陈述矛盾" />
-                        </div>
-                        <div class="scene-flow-stage__col">
-                          <div class="form-field-head">
-                            <label class="form-label form-label--muted">考察内容（具体训练题目）</label>
-                            <van-button
-                              plain
-                              size="mini"
-                              icon="expand-o"
-                              class="textarea-expand-button"
-                              @click.stop="openLargeTextEditor(
-                                point,
-                                'content',
-                                `考察点 ${Number(pointIndex) + 1}`,
-                                '考察内容（具体训练题目）',
-                                '建议三段：①学员应做到什么；②具体要求（怎么问/怎么做）；③怎样算完成（回放记录时能听出什么算达标）。不要只重复上面的名称。'
-                              )"
-                            >
-                              放大
-                            </van-button>
-                          </div>
-                          <textarea
-                            v-model="point.content"
-                            rows="4"
-                            class="form-textarea"
-                            placeholder="建议三段：①学员应做到什么；②具体要求（怎么问/怎么做）；③怎样算完成（回放记录时能听出什么算达标）。不要只重复上面的名称。"
-                          ></textarea>
-                        </div>
-                      </div>
-                    </div>
-                    <div v-else class="scene-flow-stage__audit">
-                      <span class="scene-flow-stage__stats">
-                        {{ String(point.label || '').trim() ? '已配置' : '待补全' }}
-                      </span>
-                      <div class="mt-1 text-xs text-slate-500">
-                        {{ String(point.label || '').trim() || `考察点 ${Number(pointIndex) + 1}` }}
-                      </div>
+                    <div class="scene-flow-stage__core">
+                      <label class="form-label form-label--muted">考察点</label>
+                      <textarea
+                        v-model="point.content"
+                        rows="2"
+                        class="form-textarea"
+                        placeholder="如：能够安全控制现场，避免冲突升级"
+                      ></textarea>
                     </div>
                   </div>
                 </div>
@@ -1284,11 +1209,15 @@ import {
 import {
   MAX_ASSESSMENT_POINTS_PER_SCENE,
   assessmentPointCountLabel,
+  expectedOutcomeCountLabel,
   buildCaseInfoForAssessment,
   buildSceneInfoForAssessment,
   canAddAssessmentPoint,
   capAssessmentPoints,
   dedupeAssessmentPointsByLabel,
+  serializeExpectedOutcomesForSave,
+  capExpectedOutcomes,
+  dedupeExpectedOutcomes,
 } from '../utils/assessmentPoints'
 import {
   dedupeStringList,
@@ -1304,6 +1233,7 @@ import SceneTrainingContract from '../components/cases/SceneTrainingContract.vue
 import SceneOpeningConfigForm from '../components/cases/SceneOpeningConfigForm.vue'
 import { saveWithCaseQualityGate } from '../utils/caseQuality'
 import { normalizeCasePipelineResult, useCasePipeline } from '../composables/useCasePipeline'
+import { normalizeSceneScriptFields, resolveSceneRoleNames, hydrateSceneFromStructuredScripts } from '../utils/sceneRoleBinding'
 import {
   aiWorkflowSummary,
   normalizeCaseTags,
@@ -1613,12 +1543,17 @@ const upgradeAssessmentPointEditorContent = (point: any) => {
 
 const ensureSceneAssessmentPointsModel = (scene: any) => {
   if (!scene) return
-  if (!Array.isArray(scene.assessmentPointsModel)) {
-    scene.assessmentPointsModel = normalizeAssessmentPointsFromStages(scene.stagesModel || [])
-    return
+  if (!Array.isArray(scene.expectedOutcomesModel)) {
+    const source = Array.isArray(scene.expected_outcomes) ? scene.expected_outcomes : []
+    scene.expectedOutcomesModel = capExpectedOutcomes(source).map((content: string, index: number) => ({
+      _editor_id: assessmentPointSeed++,
+      content,
+      label: content,
+    }))
   }
-  for (const point of scene.assessmentPointsModel) {
-    upgradeAssessmentPointEditorContent(point)
+  // Keep legacy model unused; do not migrate old assessment_points for historical cases.
+  if (!Array.isArray(scene.assessmentPointsModel)) {
+    scene.assessmentPointsModel = []
   }
 }
 
@@ -1629,19 +1564,17 @@ const addAssessmentPointToScene = (scene: any) => {
     showToast(`每场景最多 ${MAX_ASSESSMENT_POINTS_PER_SCENE} 条考察点`)
     return
   }
-  const nextIndex = (scene.assessmentPointsModel || []).length
-  scene.assessmentPointsModel.push({
-    ...createPointEditor({ label: `考察点 ${nextIndex + 1}` }, nextIndex),
+  scene.expectedOutcomesModel.push({
     _editor_id: assessmentPointSeed++,
-    _collapsed: false,
     content: '',
+    label: '',
   })
 }
 
 const removeAssessmentPointFromScene = (scene: any, index: number) => {
   if (!scene) return
   ensureSceneAssessmentPointsModel(scene)
-  scene.assessmentPointsModel = (scene.assessmentPointsModel || []).filter((_: any, i: number) => i !== index)
+  scene.expectedOutcomesModel = (scene.expectedOutcomesModel || []).filter((_: any, i: number) => i !== index)
 }
 
 const toggleAssessmentPointCollapsed = (point: any) => {
@@ -1709,9 +1642,17 @@ const mapApiPointsToEditors = (points: any[]) =>
 
 const replaceSceneAssessmentPoints = (scene: any, points: any[]) => {
   ensureSceneAssessmentPointsModel(scene)
-  scene.assessmentPointsModel = mapApiPointsToEditors(
-    capAssessmentPoints(dedupeAssessmentPointsByLabel(Array.isArray(points) ? points : []))
+  const outcomes = capExpectedOutcomes(
+    (Array.isArray(points) ? points : []).map((item: any) =>
+      typeof item === 'string' ? item : String(item?.content || item?.label || item?.text || '').trim()
+    )
   )
+  scene.expectedOutcomesModel = outcomes.map((content: string) => ({
+    _editor_id: assessmentPointSeed++,
+    content,
+    label: content,
+  }))
+  scene.expected_outcomes = outcomes
 }
 
 const sceneAssessmentFileInputRef = ref<HTMLInputElement | null>(null)
@@ -1732,32 +1673,31 @@ const showAssessmentWarnings = (warnings: any) => {
 
 const generateAssessmentPointsForScene = async (scene: any, sceneIndex: number) => {
   if (!scene || !editableCase.value) return
-  const narrative = String(
-    editableCase.value.original_content || editableCase.value.narrative_document?.content || editableCase.value.full_narrative || editableCase.value.background || ''
-  ).trim()
-  if (!narrative) {
-    showToast('请先在「案情原文」填写案件材料，再为本场景生成考察点')
-    return
-  }
+  ensureSceneAssessmentPointsModel(scene)
   const key = sceneAssessmentKey(scene, sceneIndex)
   sceneAssessmentLoadingKey.value = key
   scene._assessmentMessage = ''
   try {
+    const existing = serializeExpectedOutcomesForSave(scene.expectedOutcomesModel || [])
     const data: any = await request.post(
       '/cases/assessment-points/generate',
       {
         case_info: buildCaseInfoForAssessment(editableCase.value),
-        scene_info: buildSceneInfoForAssessment(scene, editableCase.value),
-        source_text: narrative,
+        scene_info: {
+          ...buildSceneInfoForAssessment(scene, editableCase.value),
+          expected_outcomes: existing,
+        },
+        existing_outcomes: existing,
         use_llm: true,
       },
       { _skipErrorToast: true } as any
     )
-    replaceSceneAssessmentPoints(scene, data?.points || [])
-    scene._assessmentMessage = data?.message || `已替换本场景考察点（${(scene.assessmentPointsModel || []).length} 条）`
+    const outcomes = data?.expected_outcomes || data?.outcomes || []
+    replaceSceneAssessmentPoints(scene, outcomes)
+    scene._assessmentMessage = data?.message || `已更新本场景考察点（${(scene.expectedOutcomesModel || []).length} 条）`
     showAssessmentWarnings(data?.warnings)
-    if (!data?.points?.length) {
-      showToast(getApiErrorDetail(null, '未生成考察点，请检查案情原文或稍后重试'))
+    if (!outcomes.length) {
+      showToast(getApiErrorDetail(null, '未生成考察点，请检查剧本训练目标后重试'))
       return
     }
     showToast(scene._assessmentMessage)
@@ -1770,82 +1710,21 @@ const generateAssessmentPointsForScene = async (scene: any, sceneIndex: number) 
   }
 }
 
-const importAssessmentPasteForScene = async (scene: any, sceneIndex: number) => {
-  if (!scene || !editableCase.value) return
-  const text = String(scene._assessmentPaste || '').trim()
-  if (!text) {
-    showToast('请先粘贴考察点内容')
-    return
-  }
-  const key = sceneAssessmentKey(scene, sceneIndex)
-  sceneAssessmentLoadingKey.value = key
-  scene._assessmentMessage = ''
-  try {
-    const data: any = await request.post(
-      '/cases/assessment-points/parse-text',
-      {
-        text,
-        case_type: editableCase.value.case_type,
-        scene_name: scene.name,
-        scene_index: sceneIndex,
-        scene_count: (editableCase.value.scenes || []).length,
-      },
-      { _skipErrorToast: true } as any
-    )
-    replaceSceneAssessmentPoints(scene, data?.points || [])
-    scene._assessmentMessage = data?.message || `已从粘贴内容替换本场景考察点（${(scene.assessmentPointsModel || []).length} 条）`
-    showAssessmentWarnings(data?.warnings)
-    showToast(scene._assessmentMessage)
-  } catch (error: any) {
-    showToast(getApiErrorDetail(error, '考察点解析失败'))
-  } finally {
-    if (sceneAssessmentLoadingKey.value === key) {
-      sceneAssessmentLoadingKey.value = ''
-    }
-  }
+
+const importAssessmentPasteForScene = async () => {
+  showToast('考察点粘贴导入已下线，请使用 AI 追加/刷新或手工编辑考察点')
 }
 
-const openSceneAssessmentFilePicker = (scene: any) => {
-  pendingSceneForFileImport.value = scene
-  const input = sceneAssessmentFileInputRef.value
-  if (!input) {
-    showToast('文件选择器未就绪，请刷新页面后重试')
-    return
-  }
-  input.value = ''
-  input.click()
+
+const openSceneAssessmentFilePicker = () => {
+  showToast('考察点文件导入已下线，请使用 AI 追加/刷新或手工编辑考察点')
 }
 
-const onSceneAssessmentFileChange = async (event: Event) => {
-  const scene = pendingSceneForFileImport.value
-  const file = (event.target as HTMLInputElement)?.files?.[0]
-  pendingSceneForFileImport.value = null
-  if (!scene || !file || !editableCase.value) return
-  const sceneIndex = (editableCase.value.scenes || []).indexOf(scene)
-  const key = sceneAssessmentKey(scene, sceneIndex)
-  sceneAssessmentUploadingKey.value = key
-  scene._assessmentMessage = ''
-  try {
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('case_type', String(editableCase.value.case_type || ''))
-    formData.append('scene_name', String(scene.name || ''))
-    formData.append('scene_index', String(Math.max(sceneIndex, 0)))
-    formData.append('scene_count', String((editableCase.value.scenes || []).length))
-    const data: any = await request.post('/cases/assessment-points/parse-file', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      _skipErrorToast: true,
-    } as any)
-    replaceSceneAssessmentPoints(scene, data?.points || [])
-    scene._assessmentMessage = data?.message || `已从文件替换本场景考察点（${(scene.assessmentPointsModel || []).length} 条）`
-    showAssessmentWarnings(data?.warnings)
-    showToast(scene._assessmentMessage)
-  } catch (error: any) {
-    showToast(getApiErrorDetail(error, '考察点文件解析失败'))
-  } finally {
-    sceneAssessmentUploadingKey.value = ''
-  }
+
+const onSceneAssessmentFileChange = async () => {
+  showToast('考察点文件导入已下线')
 }
+
 
 const resetReviewWorkspace = () => {
   activeReviewModule.value = 'basic'
@@ -2415,22 +2294,36 @@ const normalizeSceneEditors = (scenes: any, structuredData: any, persons: any[])
   const sceneRoleMap = structuredData?.scene_role_map || {}
   return (scenes || []).map((scene: any) => {
     const sceneName = String(scene?.name || '').trim()
+    const source = hydrateSceneFromStructuredScripts(scene, structuredData)
     const mapped = sceneRoleMap?.[sceneName] || {}
-    const roleNames = Array.isArray(mapped?.role_names) ? mapped.role_names.filter(Boolean) : []
-    const fallbackRoles = Array.isArray(scene?.roles) ? scene.roles.map((item: any) => String(item?.name || item || '').trim()).filter(Boolean) : []
-    const normalizedRoleNames: string[] = Array.from(new Set((roleNames.length ? roleNames : fallbackRoles).filter((name: string) => persons.some((person) => person.name === name))))
+    const mappedRoles = Array.isArray(mapped?.role_names) ? mapped.role_names.filter(Boolean) : []
+    const normalizedRoleNames = resolveSceneRoleNames(
+      {
+        ...source,
+        role_names: mappedRoles.length ? mappedRoles : source.role_names,
+        roles: mappedRoles.length ? mappedRoles : source.roles,
+      },
+      persons,
+    )
     const mappedPrimaryRoleName = String(mapped?.primary_role_name || '').trim()
     const recommendedPrimaryRoleName = pickRecommendedPrimaryRoleName(persons, normalizedRoleNames)
-    const stagesModel = normalizeStageEditors(scene.stages)
+    const stagesModel = normalizeStageEditors(source.stages)
     return {
-      ...scene,
+      ...source,
       _assessmentPaste: String(scene?._assessmentPaste || ''),
       _assessmentMessage: String(scene?._assessmentMessage || ''),
-      stagesText: stringifyStages(scene.stages),
+      stagesText: stringifyStages(source.stages),
       stagesModel,
       stagesAdvanced: false,
-      assessmentPointsModel: normalizeAssessmentPointsFromStages(stagesModel),
+      assessmentPointsModel: [],
+      expectedOutcomesModel: capExpectedOutcomes(source.expected_outcomes || []).map((content: string) => ({
+        _editor_id: assessmentPointSeed++,
+        content,
+        label: content,
+      })),
       role_names: normalizedRoleNames,
+      roles: normalizedRoleNames,
+      present_roles: normalizedRoleNames,
       primary_role_name: normalizedRoleNames.includes(mappedPrimaryRoleName)
         ? mappedPrimaryRoleName
         : (recommendedPrimaryRoleName || normalizedRoleNames[0] || ''),
@@ -2471,11 +2364,17 @@ const toggleSceneRole = (scene: any, roleName: string) => {
   } else {
     scene.role_names = [...current, roleName]
   }
+  scene.roles = [...(scene.role_names || [])]
+  scene.present_roles = [...(scene.role_names || [])]
   if (!scene.role_names.length) {
     scene.primary_role_name = ''
   } else if (!scene.role_names.includes(scene.primary_role_name)) {
     scene.primary_role_name = scene.role_names[0]
   }
+}
+
+const toggleGeneratedSceneRole = (scene: any, roleName: string) => {
+  toggleSceneRole(scene, roleName)
 }
 
 const getSceneRoleCandidates = (caseItem: any, scene: any) => {
@@ -2790,22 +2689,13 @@ const handleTranscriptFilePaste = (event: ClipboardEvent) => {
 
 const normalizeGeneratedScenesFromPipeline = (scenes: any[], persons: any[]) => {
   return (Array.isArray(scenes) ? scenes : []).map((scene: any) => {
-    const baseRoleNames = Array.isArray(scene?.roles)
-      ? scene.roles
-      : Array.isArray(scene?.role_names)
-        ? scene.role_names
-        : []
-    const presentRoleNames = Array.isArray(scene?.present_roles) ? scene.present_roles : []
-    const isOnsiteScene = String(scene?.training_entry_phase || scene?.scene_kind || scene?.scene_name || '').includes('现场')
-      || String(scene?.training_entry_phase || '') === 'post_incident_onsite'
-    const roleNames = Array.from(new Set((isOnsiteScene ? [...presentRoleNames, ...baseRoleNames] : baseRoleNames).filter(Boolean)))
+    const normalized = normalizeSceneScriptFields(scene)
+    const roleNames = resolveSceneRoleNames(normalized, persons)
     return {
-      ...scene,
+      ...normalized,
       roles: roleNames,
       role_names: roleNames,
-      present_roles: presentRoleNames.length ? presentRoleNames : roleNames,
-      dispatch_brief: String(scene.dispatch_brief || scene.dispatch_brief_suggestion || '').trim(),
-      first_impression: String(scene.first_impression || scene.first_impression_suggestion || '').trim(),
+      present_roles: roleNames,
       opening_config: scene.opening_config || {
         enabled: true,
         mode: 'dynamic',
@@ -2814,9 +2704,15 @@ const normalizeGeneratedScenesFromPipeline = (scenes: any[], persons: any[]) => 
         director_note: '',
         preset_turns: [],
       },
-      primary_role_name: scene.primary_role_name || pickRecommendedPrimaryRoleName(persons || [], roleNames) || roleNames[0] || '',
+      primary_role_name: matchPreferredPrimary(scene.primary_role_name, roleNames, persons),
     }
   })
+}
+
+const matchPreferredPrimary = (preferred: unknown, roleNames: string[], persons: any[]) => {
+  const preferredName = String(preferred || '').trim()
+  if (preferredName && roleNames.includes(preferredName)) return preferredName
+  return pickRecommendedPrimaryRoleName(persons || [], roleNames) || roleNames[0] || ''
 }
 
 const applyPipelineJobResult = (rawResult: any) => {
@@ -2951,8 +2847,29 @@ const submitFinal = async () => {
         source_file_type: fileMeta.type || '',
         source_file_size: fileMeta.size || 0,
         extracted_text_preview: aiParsedData.value.extracted_text_preview || '',
+        scene_scripts: generatedScenes.value.map((scene: any) => ({
+          scene_name: scene.scene_name || scene.name,
+          dispatch_brief: scene.dispatch_brief || '',
+          first_impression: scene.first_impression || '',
+          training_goal: scene.training_goal || '',
+          expected_outcomes: scene.expected_outcomes || [],
+          plot_arc: scene.plot_arc || '',
+          stages: scene.stages || [],
+          role_training_functions: scene.role_training_functions || [],
+          completion_criteria: scene.completion_criteria || [],
+          failure_patterns: scene.failure_patterns || [],
+          roles: scene.role_names || scene.roles || [],
+          role_names: scene.role_names || scene.roles || [],
+          primary_role_name: scene.primary_role_name || '',
+        })),
       },
-      scenes: generatedScenes.value,
+      scenes: generatedScenes.value.map((scene: any) => ({
+        ...normalizeSceneScriptFields(scene),
+        roles: scene.role_names || scene.roles || [],
+        role_names: scene.role_names || scene.roles || [],
+        present_roles: scene.present_roles || scene.role_names || scene.roles || [],
+        primary_role_name: scene.primary_role_name || '',
+      })),
       quality_acknowledgements: qualityAcknowledgements,
     }, { _skipErrorToast: true } as any))
     showToast({ type: 'success', message: '案件发布成功' })
@@ -3154,21 +3071,36 @@ const applyCaseCompletionPayload = (target: any, payload: any, rawText: string) 
   target.persons = mergePersonEditors(target.persons || [], parsed.persons || [])
 
   target.scenes = (target.scenes || []).map((scene: any, index: number) => {
-    const aiScene = sceneByName[String(scene?.name || '').trim()] || generatedScenes[index] || {}
-    const nextRoleNames = Array.isArray(aiScene.roles) && aiScene.roles.length
-      ? aiScene.roles
-      : scene.role_names || []
+    const aiScene = normalizeSceneScriptFields(sceneByName[String(scene?.name || '').trim()] || generatedScenes[index] || {})
+    const nextRoleNames = resolveSceneRoleNames(aiScene, target.persons || [])
     const nextStages = Array.isArray(aiScene.stages) && aiScene.stages.length ? aiScene.stages : null
     return {
       ...scene,
-      description: pickFilled(scene.description, aiScene.scene_description),
+      ...aiScene,
+      description: pickFilled(scene.description, aiScene.scene_description || aiScene.plot_arc),
       dispatch_brief: pickFilled(scene.dispatch_brief, aiScene.dispatch_brief),
       first_impression: pickFilled(scene.first_impression, aiScene.first_impression),
+      training_goal: pickFilled(scene.training_goal, aiScene.training_goal),
+      expected_outcomes: Array.isArray(aiScene.expected_outcomes) && aiScene.expected_outcomes.length
+        ? aiScene.expected_outcomes
+        : (scene.expected_outcomes || []),
+      plot_arc: pickFilled(scene.plot_arc, aiScene.plot_arc),
+      role_training_functions: Array.isArray(aiScene.role_training_functions) && aiScene.role_training_functions.length
+        ? aiScene.role_training_functions
+        : (scene.role_training_functions || []),
+      completion_criteria: Array.isArray(aiScene.completion_criteria) && aiScene.completion_criteria.length
+        ? aiScene.completion_criteria
+        : (scene.completion_criteria || []),
+      failure_patterns: Array.isArray(aiScene.failure_patterns) && aiScene.failure_patterns.length
+        ? aiScene.failure_patterns
+        : (scene.failure_patterns || []),
       opening_config: scene.opening_config || aiScene.opening_config || null,
       difficulty: pickFilled(scene.difficulty, aiScene.difficulty),
       stagesModel: nextStages ? normalizeStageEditors(nextStages) : scene.stagesModel,
       stagesText: nextStages ? stringifyStages(nextStages) : scene.stagesText,
+      roles: nextRoleNames.length ? nextRoleNames : scene.role_names || [],
       role_names: nextRoleNames.length ? nextRoleNames : scene.role_names || [],
+      present_roles: nextRoleNames.length ? nextRoleNames : scene.role_names || [],
       primary_role_name:
         pickFilled(
           scene.primary_role_name,
@@ -3277,27 +3209,39 @@ const saveCaseDetail = async () => {
   const scenesPayload = []
   for (const scene of editableCase.value.scenes || []) {
     ensureSceneAssessmentPointsModel(scene)
-    const parsedStages = [
-      {
-        stage_name: '考察点',
-        stage_goal: '',
-        recommended_prompts: [],
-        assessment_points: serializeAssessmentPointsForSave(scene.assessmentPointsModel || []),
-        action_catalog: [],
-        completion_rules: {
-          min_user_turns: 3,
-          required_point_ids: [],
-          required_action_ids: [],
+    let parsedStages = serializeStageEditors(scene.stagesModel || [])
+    if (!parsedStages.length) {
+      parsedStages = [
+        {
+          stage_name: '考察点',
+          stage_goal: scene.training_goal || '完成当前场景警务处置目标',
+          recommended_prompts: [],
+          assessment_points: serializeExpectedOutcomesForSave(scene.expectedOutcomesModel || []).map((content: string, index: number) => ({
+        id: `eo_${index + 1}`,
+        label: content.slice(0, 40),
+        content,
+        category: 'procedure',
+        required: true,
+        weight: 12,
+        keywords: [],
+        knowledge_refs: [],
+      })),
+          action_catalog: [],
+          completion_rules: {
+            min_user_turns: 3,
+            required_point_ids: [],
+            required_action_ids: [],
+          },
+          end_conditions: {
+            must_complete_current_stage: true,
+            required_point_ids: [],
+            required_action_ids: [],
+            closure_actions: [],
+            closing_script: '',
+          },
         },
-        end_conditions: {
-          must_complete_current_stage: true,
-          required_point_ids: [],
-          required_action_ids: [],
-          closure_actions: [],
-          closing_script: '',
-        },
-      },
-    ]
+      ]
+    }
     scene.stagesText = JSON.stringify(parsedStages, null, 2)
 
     const sceneMeta = resolveSceneCompactMeta(scene)
@@ -3308,12 +3252,31 @@ const saveCaseDetail = async () => {
       difficulty: scene.difficulty,
       dispatch_brief: scene.dispatch_brief,
       first_impression: scene.first_impression,
+      training_goal: scene.training_goal || '',
+      expected_outcomes: serializeExpectedOutcomesForSave(scene.expectedOutcomesModel || scene.expected_outcomes || []),
+      plot_arc: scene.plot_arc || '',
+      role_training_functions: Array.isArray(scene.role_training_functions) ? scene.role_training_functions : [],
+      completion_criteria: Array.isArray(scene.completion_criteria) ? scene.completion_criteria : [],
+      failure_patterns: Array.isArray(scene.failure_patterns) ? scene.failure_patterns : [],
       opening_config: scene.opening_config || null,
       training_focus: sceneMeta.training_focus,
       behavior_mode: sceneMeta.behavior_mode,
-      assessment_points: serializeAssessmentPointsForSave(scene.assessmentPointsModel || []),
+      assessment_points: serializeExpectedOutcomesForSave(scene.expectedOutcomesModel || []).map((content: string, index: number) => ({
+        id: `eo_${index + 1}`,
+        label: content.slice(0, 40),
+        content,
+        category: 'procedure',
+        required: true,
+        weight: 12,
+        keywords: [],
+        knowledge_refs: [],
+      })),
       stages: parsedStages,
+      roles: Array.isArray(scene.role_names) ? scene.role_names : [],
       role_names: Array.isArray(scene.role_names) ? scene.role_names : [],
+      present_roles: Array.isArray(scene.present_roles) && scene.present_roles.length
+        ? scene.present_roles
+        : (Array.isArray(scene.role_names) ? scene.role_names : []),
       primary_role_name: scene.primary_role_name || '',
     })
   }
@@ -3331,9 +3294,26 @@ const saveCaseDetail = async () => {
       canonical_person_fields: PERSON_CANONICAL_FIELDS,
       canonical_alias_map: PERSON_ALIAS_TO_CANONICAL,
       rawText: editableCase.value.original_content,
+      scene_scripts: scenesPayload.map((scene: any) => ({
+        scene_name: scene.name,
+        scene_ref: scene.id ? `db:${scene.id}` : undefined,
+        dispatch_brief: scene.dispatch_brief || '',
+        first_impression: scene.first_impression || '',
+        training_goal: scene.training_goal || '',
+        expected_outcomes: scene.expected_outcomes || [],
+        plot_arc: scene.plot_arc || '',
+        stages: scene.stages || [],
+        role_training_functions: scene.role_training_functions || [],
+        completion_criteria: scene.completion_criteria || [],
+        failure_patterns: scene.failure_patterns || [],
+        opening_lines: scene.opening_lines || [],
+        roles: scene.role_names || [],
+        role_names: scene.role_names || [],
+        primary_role_name: scene.primary_role_name || '',
+      })),
     }
 
-    const res: any = await request.put(`/cases/${editableCase.value.id}`, {
+    const res: any = await saveWithCaseQualityGate((qualityAcknowledgements) => request.put(`/cases/${editableCase.value.id}`, {
       case: {
         title: editableCase.value.title,
         case_type: editableCase.value.case_type,
@@ -3342,7 +3322,8 @@ const saveCaseDetail = async () => {
         structured_data: structuredData,
       },
       scenes: scenesPayload,
-    }, { _skipErrorToast: true } as any)
+      quality_acknowledgements: qualityAcknowledgements,
+    }, { _skipErrorToast: true } as any))
 
     showToast({ type: 'success', message: '案件已更新' })
     selectedCase.value = res
@@ -4770,6 +4751,13 @@ const previewFormatDate = (dt: string | null | undefined) => {
   line-height: 1.35;
   font-weight: 800;
   color: #0f172a;
+}
+
+.scene-editor-card__section-sub {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .scene-role-preview__header {

@@ -12,7 +12,7 @@ from services.agent_workflow_client import AgentWorkflowUnavailable, agent_workf
 from services.role_resolver import resolve_scene_roles
 from services.text_repair import repair_text
 from services.training_runtime_service import dump_runtime_state, load_runtime_state
-from services.training_view_service import serialize_scene_roles
+from services.training_view_service import serialize_scene_roles, _opening_prompts_from_scene
 
 
 SCORING_VERSION = "adaptive_v1"
@@ -123,6 +123,41 @@ def _scene_assessment_points(scene: models.Scene | None) -> list[dict[str, Any]]
     return points
 
 
+def _scene_expected_outcomes(scene: models.Scene | None, case: models.Case | None = None) -> list[str]:
+    from services.expected_outcome_service import finalize_expected_outcomes
+
+    structured = _json(getattr(case, "structured_data", None), {}) if case else {}
+    scene_name = repair_text(getattr(scene, "name", "") or "")
+    candidates: list[Any] = []
+    for key in ("training_scripts", "scene_scripts", "scene_blueprints", "necessary_scenes"):
+        for item in structured.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            name = repair_text(item.get("scene_name") or item.get("name") or "")
+            if scene_name and name and name != scene_name:
+                continue
+            candidates.extend(item.get("expected_outcomes") or [])
+    for item in structured.get("scenes") or []:
+        if not isinstance(item, dict):
+            continue
+        name = repair_text(item.get("scene_name") or item.get("name") or "")
+        if scene_name and name and name != scene_name:
+            continue
+        candidates.extend(item.get("expected_outcomes") or [])
+    outcomes, _ = finalize_expected_outcomes(candidates)
+    return outcomes
+
+
+def _scene_eval_points(scene: models.Scene | None, case: models.Case | None = None) -> list[dict[str, Any]]:
+    from services.expected_outcome_service import outcomes_to_eval_points
+
+    outcomes = _scene_expected_outcomes(scene, case)
+    if outcomes:
+        return outcomes_to_eval_points(outcomes)
+    # Legacy cases without expected_outcomes keep old assessment_points.
+    return _scene_assessment_points(scene)
+
+
 def _scene_knowledge_refs(scene: models.Scene | None) -> list[str]:
     refs = []
     for point in _scene_assessment_points(scene):
@@ -174,6 +209,22 @@ def _build_payload(db: Session, session, scene, case, roles, messages, user_text
         for item in structured.get("persons") or []
         if isinstance(item, dict) and repair_text(item.get("name") or "")
     }
+    scene_ref = f"db:{getattr(scene, 'id', '')}"
+    script_candidates = [
+        item for item in (
+            *(structured.get("training_scripts") or []),
+            *(structured.get("scene_scripts") or []),
+        )
+        if isinstance(item, dict)
+    ]
+    training_script = next(
+        (
+            item for item in script_candidates
+            if str(item.get("scene_ref") or item.get("scene_id") or "").strip() == scene_ref
+            or str(item.get("scene_name") or "").strip() == str(getattr(scene, "name", "") or "").strip()
+        ),
+        script_candidates[0] if script_candidates else {},
+    )
 
     def fact_id(value: Any) -> str:
         if isinstance(value, dict):
@@ -346,10 +397,38 @@ def _build_payload(db: Session, session, scene, case, roles, messages, user_text
             "role_states": role_states,
             "role_participation": role_participation,
             "fact_ids": scene_fact_ids,
+            "plot_arc": str(training_script.get("plot_arc") or ""),
+            "completion_criteria": list(training_script.get("completion_criteria") or []),
+            "role_training_functions": list(training_script.get("role_training_functions") or []),
         },
         "personas": personas,
         "current_stage": session.current_stage or "",
         "stage": stage_config,
+        "training_goal": str(training_script.get("training_goal") or ""),
+        "expected_outcomes": _scene_expected_outcomes(scene, case) or list(training_script.get("expected_outcomes") or []),
+        "plot_arc": str(training_script.get("plot_arc") or ""),
+        "role_training_functions": list(training_script.get("role_training_functions") or []),
+        "completion_criteria": list(training_script.get("completion_criteria") or []),
+        "failure_patterns": list(training_script.get("failure_patterns") or []),
+        "current_stage_script": next(
+            (
+                item for item in training_script.get("stages") or []
+                if isinstance(item, dict) and str(item.get("stage_name") or "") == str(session.current_stage or "")
+            ),
+            stage_config,
+        ),
+        "training_script_stages": [
+            item for item in (training_script.get("stages") or [])
+            if isinstance(item, dict)
+        ],
+        "previous_recommended_question_items": list(runtime.get("recommended_question_items") or []),
+        "previous_recommended_question_texts": [
+            str(item.get("text") or "").strip()
+            for item in (runtime.get("recommended_question_items") or [])
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ],
+        "served_recommended_question_texts": list(runtime.get("served_recommended_question_texts") or []),
+        "used_recommended_question_texts": list(runtime.get("used_recommended_question_texts") or []),
         "completed_point_ids": runtime.get("completed_point_ids") or [],
         "completed_action_ids": runtime.get("completed_action_ids") or [],
         "state_thresholds": stage_config.get("state_thresholds") or {},
@@ -407,7 +486,19 @@ def _persist_workflow_result(session, roles, result: dict[str, Any]) -> dict[str
     runtime["auto_finish_ready"] = bool(result.get("training_finished", False))
     runtime["stage_advance_allowed"] = bool(result.get("stage_advance_allowed", False))
     runtime["action_effective"] = bool(result.get("action_effective", False))
-    runtime["recommended_question_items"] = list(result.get("recommended_question_items") or [])
+    new_items = [
+        item for item in (result.get("recommended_question_items") or [])
+        if isinstance(item, dict) and str(item.get("text") or "").strip()
+    ]
+    # 本轮有新题则覆盖；空结果不把旧题冒充为新题。
+    runtime["recommended_question_items"] = new_items
+    if new_items:
+        served = list(runtime.get("served_recommended_question_texts") or [])
+        for item in new_items:
+            text = str(item.get("text") or "").strip()
+            if text and text not in served:
+                served.append(text)
+        runtime["served_recommended_question_texts"] = served[-80:]
     session.revealed_info = dump_runtime_state(runtime)
     session.current_emotion = primary_state["emotion"]
     session.current_trust = primary_state["cooperation"]
@@ -423,6 +514,21 @@ def generate_dialogue(db: Session, session_id: int, user_text: str, user_id: int
     session, scene, case, roles, messages = context
     if not scene or not case or not roles:
         return {"inner_thought": "ERROR", "response": "", "communication_feedback": {"message": "训练上下文不完整"}}
+    # 学员本轮实际说出的建议题记入已用，禁止后续批次复用。
+    runtime_before = load_runtime_state(session.revealed_info)
+    spoken = repair_text(user_text or "").strip()
+    if spoken:
+        used = list(runtime_before.get("used_recommended_question_texts") or [])
+        previous_texts = [
+            str(item.get("text") or "").strip()
+            for item in (runtime_before.get("recommended_question_items") or [])
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        matched = next((text for text in previous_texts if text == spoken or text in spoken or spoken in text), "")
+        if matched and matched not in used:
+            used.append(matched)
+            runtime_before["used_recommended_question_texts"] = used[-80:]
+            session.revealed_info = dump_runtime_state(runtime_before)
     try:
         response = agent_workflow_client.execute(
             workflow_id=f"training-{session.id}",
@@ -489,6 +595,92 @@ def generate_dialogue(db: Session, session_id: int, user_text: str, user_id: int
         "recommended_questions": result.get("recommended_questions") or [],
         "recommended_question_items": result.get("recommended_question_items") or [],
         "communication_feedback": result.get("communication_feedback") or {},
+    }
+
+
+def generate_opening_dialogue(db: Session, session_id: int, user_id: int) -> dict[str, Any]:
+    context = _context(db, session_id, user_id)
+    if not context:
+        return {"inner_thought": "ACCESS_DENIED", "response": ""}
+    session, scene, case, roles, messages = context
+    if not scene or not case or not roles:
+        return {"inner_thought": "ERROR", "response": "", "communication_feedback": {"message": "训练上下文不完整"}}
+    runtime = load_runtime_state(session.revealed_info)
+    if runtime.get("opening_delivered"):
+        return {"opening_delivered": True, "reply_turns": [], "recommended_question_items": runtime.get("recommended_question_items") or []}
+    opening_cue = (
+        "[system] 训练开场：民警已进入场景但尚未提问。"
+        "请按角色身份、剧情走向和现场第一印象主动开口，说明眼前情况和你此刻最急的事。"
+        "禁止套话“喂，110吗？我要报警！”和“警察同志，你们来了。”"
+    )
+    payload = _build_payload(db, session, scene, case, roles, messages, opening_cue)
+    payload.update({"input_kind": "opening"})
+    try:
+        response = agent_workflow_client.execute(
+            workflow_id=f"training-{session.id}",
+            stage="TRAINING",
+            skill="role_simulation",
+            case_id=str(case.id),
+            training_id=str(session.id),
+            payload=payload,
+            idempotency_key=_idempotency_key(session, "opening", "scene-entry", 0),
+        )
+    except AgentWorkflowUnavailable as exc:
+        return {"inner_thought": "ERROR", "response": "", "communication_feedback": {"message": str(exc)}}
+    result = response.get("result") or {}
+    _persist_workflow_result(session, roles, result)
+    roles_by_person = {str(getattr(role, "person_id", None) or role.id): role for role in roles}
+    roles_by_db_id = {str(role.id): role for role in roles}
+    reply_turns = []
+    message_ids = []
+    for turn in result.get("reply_turns") or []:
+        if not isinstance(turn, dict):
+            continue
+        content = str(turn.get("content") or "").strip()
+        role = roles_by_person.get(str(turn.get("person_id") or "")) or roles_by_db_id.get(str(turn.get("speaker_role_id") or ""))
+        if not content or role is None:
+            continue
+        speaker_name = repair_text(role.name or "")
+        message = models.Message(
+            session_id=session.id,
+            role="assistant",
+            content=content,
+            speaker_role_id=role.id,
+            speaker_name=speaker_name,
+        )
+        db.add(message)
+        db.flush()
+        message_ids.append(message.id)
+        reply_turns.append({
+            "person_id": str(getattr(role, "person_id", None) or role.id),
+            "speaker_name": speaker_name,
+            "speaker_role_id": role.id,
+            "content": content,
+        })
+    latest = load_runtime_state(session.revealed_info)
+    if not reply_turns:
+        return {
+            "opening_delivered": False,
+            "reply_turns": [],
+            "recommended_question_items": result.get("recommended_question_items") or [],
+            "inner_thought": result.get("inner_thought") or "ERROR",
+        }
+    prompts = list(result.get("recommended_question_items") or latest.get("recommended_question_items") or [])
+    if not prompts:
+        prompts = _opening_prompts_from_scene(scene, case)
+    latest.update({
+        "opening_delivered": True,
+        "opening_message_ids": message_ids or latest.get("opening_message_ids") or [],
+        "recommended_question_items": prompts,
+    })
+    session.revealed_info = dump_runtime_state(latest)
+    db.commit()
+    return {
+        "opening_delivered": True,
+        "reply_turns": reply_turns,
+        "recommended_questions": [str(item.get("text") or "") for item in prompts if isinstance(item, dict)],
+        "recommended_question_items": prompts,
+        "inner_thought": result.get("inner_thought") or "",
     }
 
 
@@ -576,7 +768,8 @@ def evaluate_session(db: Session, session_id: int, user_id: int | None = None, f
             case_id=str(scene.case_id) if scene else None,
             payload={
                 "transcript": [{"role": item.role, "content": repair_text(item.content or "")} for item in messages],
-                "assessment_points": _scene_assessment_points(scene),
+                "assessment_points": _scene_eval_points(scene, case),
+                "expected_outcomes": _scene_expected_outcomes(scene, case),
                 "action_results": [{"action_id": item, "status": "completed", "evidence": [f"动作:{item}"]} for item in runtime.get("completed_action_ids") or []],
                 "scene_type": "接警" if scene and "接警" in (scene.name or "") else "现场" if scene and any(token in (scene.name or "") for token in ("现场", "勘查", "调查")) else "通用",
                 "knowledge_refs": list(dict.fromkeys([*(runtime.get("knowledge_refs") or []), *_scene_knowledge_refs(scene)])),

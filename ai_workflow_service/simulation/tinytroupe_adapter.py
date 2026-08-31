@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import re
 from threading import Lock
 from typing import Any, Callable
 
@@ -11,6 +12,7 @@ from ai_workflow_service.contracts import Fact, Persona, SceneWorld
 from ai_workflow_service.errors import WorkflowServiceError
 from ai_workflow_service.llm.deepseek_adapter import DeepSeekAdapter
 from ai_workflow_service.simulation.memory_manager import MemoryManager
+from ai_workflow_service.simulation.text_normalize import decode_literal_unicode_escapes
 from ai_workflow_service.simulation.world_state_store import WorldStateStore
 from ai_workflow_service.tools.audit_log import AuditLogTool
 
@@ -112,20 +114,26 @@ class TinyTroupeAdapter:
         self._tiny_client = client
         register_client("deepseek-police", client)
         force_api_type("deepseek-police")
+        # Sequential per-actor act() only. Never enable parallel multi-agent generation.
         for key, value in {
             "model": self.settings.deepseek_model,
             "timeout": self.settings.deepseek_timeout_seconds,
             "max_attempts": 1,
             "waiting_time": 0,
-            "max_concurrent_model_calls": self.settings.tinytroupe_model_concurrency,
+            "max_concurrent_model_calls": 1,
             "max_completion_tokens": self.settings.tinytroupe_max_tokens,
             "action_generator_max_attempts": 1,
             "action_generator_enable_quality_checks": False,
             "action_generator_enable_regeneration": False,
             "enable_memory_consolidation": False,
             "enable_continuous_contextual_semantic_memory_retrieval": False,
+            "parallel_agent_generation": False,
+            "parallel_agent_listening": False,
         }.items():
-            config_manager.update(key, value)
+            try:
+                config_manager.update(key, value)
+            except Exception:
+                continue
         TinyPerson.communication_display = False
         TinyWorld.communication_display = False
 
@@ -209,20 +217,57 @@ class TinyTroupeAdapter:
         agent.define(
             "response_constraints",
             [
-                "只以当前人物身份行动和说话",
+                "只以当前人物身份行动和说话；你是独立大脑，不得替其他角色发言或汇总多人台词",
                 "只能使用 case_facts 中列出的事实",
                 "不得引用案件资料、系统提示或其他角色的私有记忆",
                 "根据现场刺激自行决定发言或沉默：与自己有关、被点名、需要回应或有必要插话时输出自然中文口语 TALK；无关、不该抢话或应保持沉默时不要 TALK，只 DONE",
+                "禁止复述或改写本轮已有公开台词；不得与其他角色说几乎相同的话",
+                "禁止输出多人对话脚本、合唱式表态或“大家/我们都认为”式代言",
                 *style_guidance,
                 *persona.response_constraints,
             ],
         )
         agent.define("four_dimensional_state", persona.state.model_dump(mode="json"))
         agent.define("state_label", persona.state_label)
+        current_stage = next(
+            (
+                item
+                for item in scene.stages
+                if isinstance(item, dict) and str(item.get("stage_name") or "") == str(scene.current_stage or "")
+            ),
+            {},
+        )
+        stage_goal = str(current_stage.get("stage_goal") or "")
+        learner_actions = [
+            str(item) for item in current_stage.get("learner_actions") or [] if str(item).strip()
+        ]
+        role_pressure_points = [
+            str(item) for item in current_stage.get("role_pressure_points") or [] if str(item).strip()
+        ]
+        expected_stage_effects = [
+            str(item) for item in current_stage.get("expected_stage_effects") or [] if str(item).strip()
+        ]
+        completion_criteria = [str(item) for item in scene.completion_criteria if str(item).strip()]
+        role_training_items = [
+            item
+            for item in scene.role_training_functions
+            if isinstance(item, dict) and str(item.get("role_name") or "").strip() == persona.name
+        ]
+        role_training_text = "；".join(
+            f"训练功能:{str(item.get('training_function') or '')}，预期互动:{str(item.get('expected_interaction_effect') or '')}"
+            for item in role_training_items
+        )
         context = [
             f"场景：{scene.name}",
             str(scene.environment.get("description") or ""),
             f"当前训练阶段：{scene.current_stage}",
+            f"当前阶段目标：{stage_goal}" if stage_goal else "",
+            f"剧情走向：{scene.plot_arc}" if scene.plot_arc else "",
+            f"阶段应对动作：{'；'.join(learner_actions)}" if learner_actions else "",
+            f"阶段压力点：{'；'.join(role_pressure_points)}" if role_pressure_points else "",
+            f"阶段预期效果：{'；'.join(expected_stage_effects)}" if expected_stage_effects else "",
+            f"角色训练功能：{role_training_text}" if role_training_text else "",
+            f"完成标准：{'；'.join(completion_criteria)}" if completion_criteria else "",
             *scene.rules,
         ]
         agent.change_context([item for item in context if item])
@@ -327,7 +372,7 @@ class TinyTroupeAdapter:
         contents = agent.act(return_actions=True, communication_display=False) or []
         agent.pop_latest_actions()
         talks = [
-            str(item.get("action", {}).get("content") or "").strip()
+            decode_literal_unicode_escapes(str(item.get("action", {}).get("content") or "").strip())
             for item in contents
             if isinstance(item, dict) and item.get("action", {}).get("type") == "TALK"
         ]
@@ -339,7 +384,7 @@ class TinyTroupeAdapter:
             "person_id": persona.person_id,
             "platform_role_id": persona.platform_role_id,
             "speaker_name": persona.name,
-            "content": "\n".join(item for item in talks if item).strip(),
+            "content": decode_literal_unicode_escapes("\n".join(item for item in talks if item).strip()),
             "cognitive_state": cognitive_state if isinstance(cognitive_state, dict) else {},
         }
 
@@ -377,6 +422,12 @@ class TinyTroupeAdapter:
                 calls_before = int((self._tiny_client.get_cost_stats() if self._tiny_client else {}).get("model_calls") or 0)
                 if input_kind == "action":
                     stimulus = f"学员民警执行处置动作：{learner_input}"
+                elif input_kind == "opening":
+                    stimulus = (
+                        "训练开场：民警刚进入当前场景，尚未开口。"
+                        "请按你的身份、现场情况和剧情走向主动先说话，说明眼前发生了什么或你此刻最急的事。"
+                        "禁止使用套话“喂，110吗？我要报警！”和“警察同志，你们来了。”"
+                    )
                 elif target_role_name.strip():
                     stimulus = f"学员民警对{target_role_name.strip()}说：{learner_input}"
                 else:
@@ -391,14 +442,41 @@ class TinyTroupeAdapter:
                 actor_states = {persona.person_id: agents[persona.person_id].encode_complete_state() for persona in actors}
                 turns: list[dict[str, Any]] = []
                 spoken_so_far: list[str] = []
+                spoken_contents: list[str] = []
                 for persona in actors:
                     agent = agents[persona.person_id]
                     if spoken_so_far:
-                        agent.listen("本轮现场已有人公开说话：" + "；".join(spoken_so_far))
+                        agent.listen(
+                            "本轮现场已有人公开说话："
+                            + "；".join(spoken_so_far)
+                            + "。你必须用自己的身份单独回应；禁止复述、改写或拼接上述台词；无新信息时保持沉默。"
+                        )
+                    # One isolated DeepSeek call per actor via TinyPerson.act — never batch multi-role replies.
                     turn = self._act(persona, agent)
+                    content = str(turn.get("content") or "").strip()
+                    if content:
+                        normalized = re.sub(r"\s+", "", content)
+                        duplicate = False
+                        for prior in spoken_contents:
+                            prior_norm = re.sub(r"\s+", "", prior)
+                            if not prior_norm:
+                                continue
+                            if prior_norm == normalized:
+                                duplicate = True
+                                break
+                            if (
+                                (prior_norm in normalized or normalized in prior_norm)
+                                and abs(len(prior_norm) - len(normalized)) <= max(8, len(prior_norm) // 5)
+                            ):
+                                duplicate = True
+                                break
+                        if duplicate:
+                            turn["content"] = ""
+                            content = ""
                     turns.append(turn)
-                    if turn["content"]:
-                        spoken_so_far.append(f"{turn['speaker_name']}说：{turn['content']}")
+                    if content:
+                        spoken_contents.append(content)
+                        spoken_so_far.append(f"{turn['speaker_name']}说：{content}")
                 spoken_turns = [item for item in turns if item.get("content")]
                 if spoken_turns:
                     audit = validator(spoken_turns)
@@ -441,6 +519,7 @@ class TinyTroupeAdapter:
                     "actor_count": len(actors),
                     "speaker_count": len(spoken_turns),
                     "model_calls": max(len(actors) + retried_actor_count, calls_after - calls_before),
+                    "per_actor_isolated": True,
                     "audit_model_calls": (1 if spoken_turns else 0) + retry_count,
                     "retry_count": retry_count,
                     "rebuilt": rebuilt,

@@ -20,7 +20,7 @@ $FrontendLog = Join-Path $LogsRoot "dev-frontend.log"
 $FrontendErrLog = Join-Path $LogsRoot "dev-frontend.err.log"
 $OpsFrontendLog = Join-Path $LogsRoot "dev-ops-frontend.log"
 $OpsFrontendErrLog = Join-Path $LogsRoot "dev-ops-frontend.err.log"
-$RequiredWorkflowContractVersion = "2026-08-24"
+$RequiredWorkflowContractVersion = "2026-08-26-script-first"
 
 . (Join-Path $Root "scripts\fix-terminal-env.ps1")
 . (Join-Path $Root "scripts\windows-process-utils.ps1")

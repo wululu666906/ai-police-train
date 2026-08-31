@@ -90,6 +90,20 @@
           </div>
         </section>
 
+        <section v-if="trainingAnomalyDetails" class="report-section report-section--anomaly">
+          <div class="section-title"><i></i><span>训练异常明细</span></div>
+          <div class="anomaly-panel">
+            <strong>{{ trainingAnomalyDetails.title }}</strong>
+            <p>{{ trainingAnomalyDetails.detail }}</p>
+            <div class="overview-table">
+              <div v-for="item in trainingAnomalyDetails.items" :key="item.label">
+                <span>{{ item.label }}</span>
+                <strong>{{ item.value }}</strong>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section class="report-section">
           <div class="section-title"><i></i><span>能力指标结果</span></div>
           <div class="score-grid">
@@ -661,6 +675,41 @@ const studentNoticeItems = computed(() => {
     ...redFlags.value.map((item: any) => formatStudentNotice(item?.label, '风险提醒')),
   ].filter(Boolean)
   return Array.from(new Set(items)).slice(0, 4)
+})
+
+const trainingAnomalyDetails = computed(() => {
+  const payload = report.value || {}
+  const meta = payload.evaluation_meta || {}
+  const evaluationType = String(meta.evaluation_type || '')
+  const trigger = String(meta.trigger || '')
+  const terminationReason = String(payload.termination_reason || '')
+  const terminationReport = String(payload.termination_report || '').trim()
+  const lastReason = String(payload.last_reason || '').trim()
+  const failureCount = Number(payload.failure_count || 0)
+  const autoFinished = Boolean(meta.auto_finished)
+  const isAbnormalTermination = Boolean(
+    autoFinished
+    || terminationReason
+    || evaluationType.includes('terminated')
+    || trigger === 'face_verification_guard',
+  )
+  if (!isAbnormalTermination) return null
+
+  const reasonLabelMap: Record<string, string> = {
+    face_verification_finished: '人脸验证连续异常',
+    device_lost: '设备接入异常',
+    identity_lost: '身份校验异常',
+  }
+  const title = reasonLabelMap[terminationReason] || '训练异常终止'
+  const detail = terminationReport || lastReason || '训练因系统风控或设备异常被提前结束。'
+  const items: Array<{ label: string; value: string }> = [
+    { label: '异常类型', value: title },
+    { label: '异常说明', value: detail },
+  ]
+  if (failureCount > 0) items.push({ label: '累计异常次数', value: `${failureCount} 次` })
+  if (evaluationType) items.push({ label: '评估类型', value: evaluationType })
+  if (trigger) items.push({ label: '触发来源', value: trigger === 'face_verification_guard' ? '人脸风控' : trigger })
+  return { title, detail, items }
 })
 
 const overallComment = computed(() => {
@@ -1354,6 +1403,10 @@ onUnmounted(() => {
 .score-gauge { min-width: 0; height: 210px; }
 .notice-list { display: grid; gap: 8px; margin-top: 18px; }
 .notice-list p { margin: 0; padding: 10px 14px; color: #8a4b12; background: #fff6eb; border-left: 3px solid #f2a13b; }
+.anomaly-panel { padding: 16px 18px; border: 1px solid #fecaca; border-radius: 8px; background: #fff5f5; }
+.anomaly-panel strong { display: block; color: #b42318; font-size: 16px; margin-bottom: 8px; }
+.anomaly-panel p { margin: 0 0 14px; color: #7a271a; line-height: 1.75; }
+.report-section--anomaly .overview-table strong { color: #7a271a; }
 .report-list { margin: 0; padding-left: 22px; color: #344054; line-height: 2; }
 .advice-list li + li { margin-top: 4px; }
 .dialogue-table th:first-child, .dialogue-table td:first-child { width: 38%; }

@@ -15,8 +15,10 @@ from services.face_service import (
     count_video_session_monitor_failures,
     count_video_session_monitor_failures_total,
     engine_status,
+    face_termination_pending_flag,
     has_successful_session_verification,
     is_face_session_terminated_by_policy,
+    is_training_face_monitor_terminated,
     is_video_face_session_terminated_by_policy,
     read_upload,
     record_event,
@@ -220,6 +222,7 @@ def get_session_face_status(
     monitor_failure_count = count_session_monitor_failures(db, session.id)
     monitor_failure_total = count_session_monitor_failures_total(db, session.id)
     terminated_by_policy = is_face_session_terminated_by_policy(db, session.id)
+    face_pending = face_termination_pending_flag(session)
     return {
         "registered": profile is not None,
         "verified": has_successful_session_verification(db, session.id),
@@ -229,7 +232,7 @@ def get_session_face_status(
         "failure_total": monitor_failure_count,
         "max_failures": FACE_MAX_FAILURES,
         "terminated_by_policy": terminated_by_policy,
-        "terminated": terminated_by_policy or session.status in {"evaluating", "finished"},
+        "terminated": bool(face_pending) or terminated_by_policy or session.status in {"evaluating", "finished"},
         "session_status": session.status,
     }
 
@@ -310,7 +313,10 @@ def record_session_face_event(
         status="failed",
         reason=payload.reason,
     )
-    terminated = is_face_session_terminated_by_policy(db, session.id) or session.status in {"evaluating", "finished"}
+    terminated = (
+        is_training_face_monitor_terminated(db, session, event, auto_finalize=True, passed=False)
+        or session.status in {"evaluating", "finished"}
+    )
     return {
         "passed": False,
         "status": "terminated" if terminated else "failed",

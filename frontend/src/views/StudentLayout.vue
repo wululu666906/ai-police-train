@@ -172,16 +172,20 @@ const fetchStudentAnnouncements = async () => {
     const latestKey = studentAnnouncements.value.map((item) => item.id).join(',')
     const seenKey = sessionStorage.getItem(ANNOUNCEMENT_SEEN_KEY)
     if (studentAnnouncements.value.length && latestKey && latestKey !== seenKey) {
-      setAnnouncementPanel(studentAnnouncements.value[0])
       sessionStorage.setItem(ANNOUNCEMENT_SEEN_KEY, latestKey)
+      if (route.path !== '/student/notifications') {
+        router.push('/student/notifications')
+      }
     }
   } catch {
     studentAnnouncements.value = []
   }
 }
 
-const openNotificationCenter = (announcement?: any) => {
-  setAnnouncementPanel(announcement || activeAnnouncement.value || studentAnnouncements.value[0])
+const openNotificationCenter = () => {
+  if (route.path !== '/student/notifications') {
+    router.push('/student/notifications')
+  }
 }
 
 const openAnnouncementDetail = (announcement: any) => {

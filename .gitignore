@@ -69,6 +69,14 @@ frontend/dist/
 
 # Third-party model source dumps
 vendor/face_antispoof_onnx_src/
+vendor/TinyTroupe/*
+!vendor/TinyTroupe/LICENSE
+!vendor/TinyTroupe/MANIFEST.in
+!vendor/TinyTroupe/README.md
+!vendor/TinyTroupe/config.ini
+!vendor/TinyTroupe/pyproject.toml
+!vendor/TinyTroupe/tinytroupe/
+!vendor/TinyTroupe/tinytroupe/**
 
 # Logs
 *.log
@@ -151,3 +159,13 @@ scripts/push_main.ps1
 
 # Word docs (design drafts)
 *.docx
+
+# Keep only the lightweight installable TinyTroupe package source.
+!vendor/TinyTroupe/
+!vendor/TinyTroupe/LICENSE
+!vendor/TinyTroupe/MANIFEST.in
+!vendor/TinyTroupe/README.md
+!vendor/TinyTroupe/config.ini
+!vendor/TinyTroupe/pyproject.toml
+!vendor/TinyTroupe/tinytroupe/
+!vendor/TinyTroupe/tinytroupe/**

@@ -170,6 +170,13 @@ def compile_case_scene_artifacts(case_info: dict[str, Any], scenes: list[dict[st
             "canonical_outcome_locked": scene.get("canonical_outcome_locked", previous.get("canonical_outcome_locked", True)) is not False,
             "first_impression": first_impression,
             "first_impression_quality_issues": impression_issues,
+            "plot_arc": _text(scene.get("plot_arc") or previous.get("plot_arc")),
+            "opening_lines": [item for item in _items(scene.get("opening_lines") or previous.get("opening_lines")) if isinstance(item, dict)],
+            "training_goal": _text(scene.get("training_goal") or previous.get("training_goal")),
+            "expected_outcomes": [_text(item) for item in _items(scene.get("expected_outcomes") or previous.get("expected_outcomes")) if _text(item)],
+            "completion_criteria": [_text(item) for item in _items(scene.get("completion_criteria") or previous.get("completion_criteria")) if _text(item)],
+            "failure_patterns": [_text(item) for item in _items(scene.get("failure_patterns") or previous.get("failure_patterns")) if _text(item)],
+            "role_training_functions": [item for item in _items(scene.get("role_training_functions") or previous.get("role_training_functions")) if isinstance(item, dict)],
         })
         compiled_scenes.append(scene)
 
@@ -186,6 +193,13 @@ def compile_case_scene_artifacts(case_info: dict[str, Any], scenes: list[dict[st
             "supplement_ids": supplement_ids,
             "stages": stages,
             "training_entry_phase": _text(scene.get("training_entry_phase") or previous.get("training_entry_phase")),
+            "training_goal": scene.get("training_goal"),
+            "expected_outcomes": scene.get("expected_outcomes"),
+            "plot_arc": scene.get("plot_arc"),
+            "opening_lines": scene.get("opening_lines") or previous.get("opening_lines") or [],
+            "completion_criteria": scene.get("completion_criteria"),
+            "failure_patterns": scene.get("failure_patterns"),
+            "role_training_functions": scene.get("role_training_functions"),
             "canonical_outcome_locked": scene["canonical_outcome_locked"],
             "manual_override": manual_override or bool(previous.get("manual_override")),
         }
@@ -199,7 +213,14 @@ def compile_case_scene_artifacts(case_info: dict[str, Any], scenes: list[dict[st
             "supplement_ids": supplement_ids,
             "dispatch_brief": _text(scene.get("dispatch_brief")),
             "first_impression": _text(scene.get("first_impression")),
+            "training_goal": _text(scene.get("training_goal")),
+            "expected_outcomes": [_text(item) for item in _items(scene.get("expected_outcomes")) if _text(item)],
+            "plot_arc": _text(scene.get("plot_arc")),
+            "opening_lines": [item for item in _items(scene.get("opening_lines")) if isinstance(item, dict)],
             "stages": stages,
+            "role_training_functions": [item for item in _items(scene.get("role_training_functions")) if isinstance(item, dict)],
+            "completion_criteria": [_text(item) for item in _items(scene.get("completion_criteria")) if _text(item)],
+            "failure_patterns": [_text(item) for item in _items(scene.get("failure_patterns")) if _text(item)],
             "script_markdown": _text(scene.get("script_markdown") or previous.get("script_markdown")),
             "manual_override": blueprint["manual_override"],
         })
@@ -219,10 +240,28 @@ def compile_case_scene_artifacts(case_info: dict[str, Any], scenes: list[dict[st
         sort_keys=True,
     )
     derived_revision = hashlib.sha256(revision_source.encode("utf-8")).hexdigest()[:16]
+
+    # Keep training_scripts.expected_outcomes in sync with compiled scene truth.
+    training_scripts = [
+        dict(item) for item in _items(case_info.get("training_scripts")) if isinstance(item, dict)
+    ]
+    by_name = {
+        _text(item.get("scene_name") or item.get("name")): item
+        for item in compiled_scenes
+        if _text(item.get("scene_name") or item.get("name"))
+    }
+    for script in training_scripts:
+        name = _text(script.get("scene_name") or script.get("name"))
+        match = by_name.get(name)
+        if match is not None:
+            script["expected_outcomes"] = list(match.get("expected_outcomes") or [])
+            script["training_goal"] = _text(match.get("training_goal") or script.get("training_goal"))
+
     return {
         "scenes": compiled_scenes,
         "scene_blueprints": blueprints,
         "scene_scripts": scripts,
+        "training_scripts": training_scripts or case_info.get("training_scripts") or [],
         "scene_role_map": role_map,
         "training_tasks": training_tasks,
         "state_machine": state_machine,

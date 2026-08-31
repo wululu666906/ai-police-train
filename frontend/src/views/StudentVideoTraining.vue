@@ -29,6 +29,10 @@
         @opened="onBriefingOpened"
       >
         <div class="briefing-card briefing-card--dark">
+          <div class="brief-face-alert" role="note">
+            <van-icon name="warning-o" />
+            <span>人脸连续异常 5 次将自动结束训练。请保持面部在摄像头识别范围内，并确保光线充足、正对镜头。</span>
+          </div>
           <!-- Step indicator -->
           <div class="briefing-steps">
             <span class="briefing-step" :class="{ 'briefing-step--active': briefingStep === 1, 'briefing-step--done': briefingStep > 1 }">{{ briefingStep > 1 ? '✓' : '1' }}</span>
@@ -1183,6 +1187,8 @@ import { useSegmentedVideoPlayback } from '../composables/useSegmentedVideoPlayb
 import { createSpeechProvider } from '../services/speech/index'
 import type { SpeechRecognitionProvider } from '../services/speech/types'
 import { resolveMediaUrl } from '../utils/media'
+import { localizeFaceMessage } from '../utils/faceVerification'
+import { prefetchPlayback } from '../services/videoPlayback'
 
 interface VideoNode {
   id: number
@@ -1993,22 +1999,46 @@ watch(identityReady, (ready) => {
   }
 })
 
-watch(faceIdentityTerminated, (terminated) => {
+watch(faceIdentityTerminated, async (terminated) => {
   if (!terminated || showBriefing.value) return
-  pauseNodeForInterruption('identity', '训练过程中人脸验证连续异常')
+  const reason = localizeFaceMessage(
+    faceIdentityStatusText.value,
+    '训练过程中人脸验证连续异常，当前节点已暂停。',
+  )
+  try {
+    await ElMessageBox.alert(
+      `${reason}\n\n请调整坐姿与光线，确认本人在镜头内后可继续训练。`,
+      '人脸验证异常',
+      { confirmButtonText: '我知道了', type: 'warning' },
+    )
+  } catch {
+    // dismissed
+  }
+  pauseNodeForInterruption('identity', reason)
 })
+
+let interruptionDebounceTimer: number | null = null
+const INTERRUPTION_DEBOUNCE_MS = 6000
 
 watch(
   [nodeActive, showBriefing, deviceReady, identityReady, faceIdentityStatusText, deviceWarningText],
   ([active, briefing, deviceOk, identityOk, identityText, deviceText]) => {
     if (!active || briefing || nodeSubmitting.value) return
-    if (!deviceOk) {
-      pauseNodeForInterruption('device', String(deviceText || '训练过程中检测到摄像头或麦克风异常'))
-      return
+    if (interruptionDebounceTimer != null) {
+      window.clearTimeout(interruptionDebounceTimer)
+      interruptionDebounceTimer = null
     }
-    if (!identityOk) {
-      pauseNodeForInterruption('identity', String(identityText || '训练过程中身份校验未通过'))
-    }
+    interruptionDebounceTimer = window.setTimeout(() => {
+      interruptionDebounceTimer = null
+      if (!nodeActive.value || showBriefing.value || nodeSubmitting.value) return
+      if (!deviceReady.value) {
+        pauseNodeForInterruption('device', String(deviceText || '训练过程中检测到摄像头或麦克风异常'))
+        return
+      }
+      if (!identityReady.value) {
+        pauseNodeForInterruption('identity', String(identityText || '训练过程中身份校验未通过'))
+      }
+    }, INTERRUPTION_DEBOUNCE_MS)
   },
 )
 
@@ -2020,6 +2050,7 @@ async function confirmBriefing() {
   showBriefing.value = false
   await nextTick()
   if (cameraStream && cameraRef.value) {
+    cameraRef.value.srcObject = cameraStream
     await bindCameraStream(cameraRef.value)
     void attachPresenceVideo(cameraRef.value)
     await attachGestureVideo(cameraRef.value)
@@ -2032,6 +2063,16 @@ async function confirmBriefing() {
   }
   if (trainingMode.value === 'exam') {
     startExamTimer()
+  }
+  if (playbackPreparePromise) {
+    try {
+      await Promise.race([
+        playbackPreparePromise,
+        new Promise((resolve) => window.setTimeout(resolve, 8000)),
+      ])
+    } catch {
+      // Playback attach errors are surfaced by playTrainingVideo.
+    }
   }
   await playTrainingVideo()
 }
@@ -2067,6 +2108,7 @@ async function fetchVideo() {
   try {
     const res: any = await request.get(`/videos/${videoId}`)
     video.value = res
+    prefetchPlayback(videoId, 10)
     await nextTick()
     playbackPreparePromise = attachPlayback(videoId, resolveMediaUrl(res.video_url))
   } catch (error: any) {
@@ -5461,6 +5503,20 @@ function resultLabel(r: string) {
   border: 1px solid rgba(59, 130, 246, 0.2) !important;
   color: #e2e8f0 !important;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5) !important;
+}
+
+.brief-face-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 16px 24px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(251, 146, 60, 0.12);
+  border: 1px solid rgba(251, 146, 60, 0.35);
+  color: #fdba74;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .briefing-steps {

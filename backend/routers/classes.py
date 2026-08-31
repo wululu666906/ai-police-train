@@ -452,6 +452,129 @@ def list_student_announcements(
     return [serialize_announcement(row) for row in rows]
 
 
+@router.get("/notifications/inbox")
+def list_notification_inbox(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    from services.face_service import FACE_CONSECUTIVE_MAX_FAILURES, localize_face_reason
+
+    items: list[dict[str, Any]] = []
+
+    if current_user.role == "admin":
+        announcement_rows = (
+            db.query(models.ClassAnnouncement)
+            .order_by(models.ClassAnnouncement.created_at.desc())
+            .limit(80)
+            .all()
+        )
+        for row in announcement_rows:
+            payload = serialize_announcement(row)
+            items.append({
+                **payload,
+                "notification_type": "announcement",
+                "severity": "info",
+            })
+    else:
+        class_ids = [
+            row.class_id
+            for row in db.query(models.ClassMembership.class_id)
+            .filter(
+                models.ClassMembership.user_id == current_user.id,
+                models.ClassMembership.status == "active",
+            )
+            .all()
+        ]
+        if class_ids:
+            announcement_rows = (
+                db.query(models.ClassAnnouncement)
+                .filter(models.ClassAnnouncement.class_id.in_(class_ids))
+                .order_by(models.ClassAnnouncement.created_at.desc())
+                .limit(50)
+                .all()
+            )
+            for row in announcement_rows:
+                payload = serialize_announcement(row)
+                items.append({
+                    **payload,
+                    "notification_type": "announcement",
+                    "severity": "info",
+                })
+
+        terminated_seen: set[int] = set()
+        terminated_events = (
+            db.query(models.FaceVerificationEvent, models.TrainingSession, models.Scene, models.Case)
+            .join(models.TrainingSession, models.TrainingSession.id == models.FaceVerificationEvent.session_id)
+            .outerjoin(models.Scene, models.Scene.id == models.TrainingSession.scene_id)
+            .outerjoin(models.Case, models.Case.id == models.Scene.case_id)
+            .filter(
+                models.FaceVerificationEvent.student_id == current_user.id,
+                models.FaceVerificationEvent.event_type != "verify",
+                models.FaceVerificationEvent.status == "failed",
+                models.FaceVerificationEvent.failure_count >= FACE_CONSECUTIVE_MAX_FAILURES,
+            )
+            .order_by(models.FaceVerificationEvent.created_at.desc())
+            .limit(20)
+            .all()
+        )
+        for event, session, scene, case in terminated_events:
+            if event.session_id in terminated_seen:
+                continue
+            terminated_seen.add(event.session_id)
+            scene_name = scene.name if scene else "训练场景"
+            case_title = case.title if case else "训练案件"
+            items.append({
+                "id": f"face-terminated-{event.id}",
+                "notification_type": "training_anomaly",
+                "severity": "warning",
+                "title": f"训练异常结束：{case_title}",
+                "content": localize_face_reason(event.reason) or "人脸验证连续异常，训练已自动结束。",
+                "source_type": "system",
+                "source_label": "系统风控",
+                "created_at": serialize_datetime(event.created_at),
+                "session_id": session.id,
+                "scene_name": scene_name,
+                "failure_count": event.failure_count,
+            })
+
+        video_terminated_seen: set[int] = set()
+        video_terminated_events = (
+            db.query(models.FaceVerificationEvent, models.VideoTrainingSession, models.TrainingVideo)
+            .join(models.VideoTrainingSession, models.VideoTrainingSession.id == models.FaceVerificationEvent.video_session_id)
+            .outerjoin(models.TrainingVideo, models.TrainingVideo.id == models.VideoTrainingSession.video_id)
+            .filter(
+                models.FaceVerificationEvent.student_id == current_user.id,
+                models.FaceVerificationEvent.event_type != "verify",
+                models.FaceVerificationEvent.status == "failed",
+                models.FaceVerificationEvent.failure_count >= FACE_CONSECUTIVE_MAX_FAILURES,
+            )
+            .order_by(models.FaceVerificationEvent.created_at.desc())
+            .limit(20)
+            .all()
+        )
+        for event, session, video in video_terminated_events:
+            if event.video_session_id in video_terminated_seen:
+                continue
+            video_terminated_seen.add(event.video_session_id)
+            video_title = video.title if video else "视频实训"
+            items.append({
+                "id": f"video-face-terminated-{event.id}",
+                "notification_type": "training_anomaly",
+                "severity": "warning",
+                "title": f"视频实训异常结束：{video_title}",
+                "content": localize_face_reason(event.reason) or "人脸验证连续异常，实训已自动结束。",
+                "source_type": "system",
+                "source_label": "系统风控",
+                "created_at": serialize_datetime(event.created_at),
+                "session_id": session.id,
+                "video_id": session.video_id,
+                "failure_count": event.failure_count,
+            })
+
+    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return items[:100]
+
+
 @router.get("/student/assignments")
 def list_student_assignments(
     class_id: int | None = None,

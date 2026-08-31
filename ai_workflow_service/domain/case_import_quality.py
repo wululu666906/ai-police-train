@@ -35,6 +35,19 @@ def story_quality(source_text: str, story: str) -> dict[str, Any]:
     minimum_chars = min(len(source), max(800, int(len(source) * 0.15))) if len(source) > 3000 else min(len(source), max(600, int(len(source) * 0.45)))
     has_chapters = narrative.count("## ") >= 2
     looks_like_source_paste = narrative.startswith("# 案件完整剧情") and "经审理查明" in narrative and narrative.count("## ") < 2
+    fail_reasons: list[str] = []
+    if not narrative:
+        fail_reasons.append("empty_story")
+    if narrative and not has_chapters:
+        fail_reasons.append("missing_chapter_headings")
+    if looks_like_source_paste:
+        fail_reasons.append("looks_like_source_paste")
+    if narrative and len(narrative) < minimum_chars:
+        fail_reasons.append("too_short")
+    if source_markers and len(covered_markers) / len(source_markers) < 0.55:
+        fail_reasons.append("evidence_coverage_low")
+    if source_numbers and len(covered_numbers) / len(source_numbers) < 0.45:
+        fail_reasons.append("number_coverage_low")
     sufficient = bool(
         narrative
         and has_chapters
@@ -53,6 +66,8 @@ def story_quality(source_text: str, story: str) -> dict[str, Any]:
         "missing_evidence_markers": [item for item in source_markers if item not in covered_markers],
         "number_coverage": round(len(covered_numbers) / len(source_numbers), 4) if source_numbers else 1.0,
         "sufficient": sufficient,
+        "fail_reasons": fail_reasons,
+        "chapter_count": narrative.count("## "),
     }
 
 

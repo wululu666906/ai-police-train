@@ -20,6 +20,50 @@ FIRST_IMPRESSION_BANNED_MARKERS = (
 )
 
 
+def _split_role_names(value: Any) -> list[str]:
+    if isinstance(value, list):
+        result: list[str] = []
+        for item in value:
+            result.extend(_split_role_names(item))
+        return list(dict.fromkeys(name for name in result if name))
+    text = str(value or "").strip()
+    if not text:
+        return []
+    parts = re.split(r"[、，,；;/\s]+|(?:以及)|(?:及)|(?:和)|(?:与)", text)
+    return list(dict.fromkeys(part.strip() for part in parts if part.strip()))
+
+
+def _normalize_assessment_points(value: Any, learner_actions: list[str]) -> list[dict[str, Any]]:
+    rows = value if isinstance(value, list) else []
+    points: list[dict[str, Any]] = []
+    for index, item in enumerate(rows, start=1):
+        if isinstance(item, dict):
+            label = str(item.get("label") or item.get("assessment_item") or item.get("name") or f"考核点{index}").strip()
+            content = str(item.get("content") or item.get("standard") or item.get("description") or label).strip()
+            keywords = [str(word).strip() for word in item.get("keywords") or [] if str(word).strip()]
+            related_actions = [
+                str(action).strip()
+                for action in item.get("related_actions") or item.get("actions") or []
+                if str(action).strip()
+            ]
+            points.append({
+                "label": label,
+                "content": content,
+                "keywords": keywords or ([label] if label else []),
+                "related_actions": related_actions or learner_actions[:3],
+            })
+            continue
+        text = str(item or "").strip()
+        if text:
+            points.append({
+                "label": f"考核点{index}",
+                "content": text,
+                "keywords": [text],
+                "related_actions": learner_actions[:3],
+            })
+    return points
+
+
 def _normalize_first_impression(value: Any, _phase: str) -> str:
     text = re.sub(r"\s+", " ", str(value or "").strip())
     if (
@@ -102,7 +146,8 @@ def _select_roles(item: dict[str, Any], persons: list[Any]) -> list[dict[str, An
             continue
         selected.append(person)
     roles = []
-    for person in selected[:6]:
+    # Soft ceiling only — scene role count follows script/binding, not a hard 6-person cap.
+    for person in selected[:32]:
         person_id = str(getattr(person, "person_id", ""))
         name = str(getattr(person, "name", ""))
         proposed = next((value for value in proposed_states if str(value.get("person_id")) == person_id or str(value.get("name")) == name), {})
@@ -142,7 +187,8 @@ def normalize_blueprint(raw: Any, *, case_id: str, index: int, title: str, summa
     stages = [stage for stage in item.get("stages") or [] if isinstance(stage, dict)] if isinstance(item.get("stages"), list) else []
     normalized_stages = []
     for stage_index, stage in enumerate(stages):
-        points = [value for value in stage.get("assessment_points") or [] if isinstance(value, dict)]
+        learner_actions = [str(value) for value in stage.get("learner_actions") or [] if str(value).strip()]
+        points = _normalize_assessment_points(stage.get("assessment_points"), learner_actions)
         actions = [value for value in stage.get("action_catalog") or stage.get("available_actions") or [] if isinstance(value, dict)]
         proposed_stage_goal = str(stage.get("stage_goal") or "").strip()
         stage_goal = proposed_stage_goal if is_police_training_goal(proposed_stage_goal) else goal
@@ -155,31 +201,35 @@ def normalize_blueprint(raw: Any, *, case_id: str, index: int, title: str, summa
             "action_catalog": actions,
             "completion_rules": list(stage.get("completion_rules") or []),
             "end_conditions": list(stage.get("end_conditions") or []),
+            "learner_actions": learner_actions,
         })
     stages = normalized_stages
     scene_thresholds = item.get("state_thresholds") if isinstance(item.get("state_thresholds"), dict) else {}
     if scene_thresholds:
         stages = [{**stage, "state_thresholds": stage.get("state_thresholds") or scene_thresholds} for stage in stages if isinstance(stage, dict)]
+    outcomes = [str(value) for value in item.get("expected_outcomes") or [] if str(value).strip()] if isinstance(item.get("expected_outcomes"), list) else []
+    student_role = str(item.get("student_role") or "民警").strip() or "民警"
+    if "民警" in student_role:
+        student_role = "民警"
     return {
         "scene_id": str(item.get("scene_id") or f"{case_id}-scene-{index + 1}"),
         "scene_name": scene_name,
         "scene_description": str(item.get("scene_description") or summary),
         "location": str(item.get("location") or item.get("place") or default_location),
-        "training_goal": goal,
+        "training_goal": goal or proposed_goal,
         "training_goal_repaired": goal_repaired,
-        "student_role": "民警",
+        "student_role": student_role,
         "training_entry_phase": phase,
         "dispatch_brief": str(item.get("dispatch_brief") or summary[:240]),
-        "first_impression": _normalize_first_impression(item.get("first_impression"), phase),
-        "expected_outcomes": [str(value) for value in item.get("expected_outcomes") if str(value).strip()]
-        if isinstance(item.get("expected_outcomes"), list) and not goal_repaired else [],
+        "first_impression": _normalize_first_impression(item.get("first_impression"), phase) or str(item.get("first_impression") or "").strip()[:160],
+        "expected_outcomes": outcomes if outcomes else ([proposed_goal] if proposed_goal else []),
         "roles": [role["name"] for role in roles], "role_ids": [role["person_id"] for role in roles],
         "scene_roles": roles, "fact_ids": scene_fact_ids, "stages": stages,
         "state_thresholds": scene_thresholds,
         "harness_contract": {
             "template_version": SCENE_TEMPLATE_VERSION,
             "fact_boundary": "case_world.fact_ids", "role_boundary": "case_world.person_ids",
-            "max_scenes": 4, "training_validated": True, "student_role": "民警",
+            "max_scenes": 4, "training_validated": True, "student_role": student_role,
             "first_impression_contract": "80-160_chars_single_paragraph_observable_only",
         },
     }
@@ -240,3 +290,103 @@ def select_necessary_scenes(candidates: list[dict[str, Any]]) -> list[dict[str, 
             break
     admitted, _ = filter_dialogue_admitted_scenes(selected, allow_remap=False)
     return admitted
+
+
+def training_scripts_to_scene_candidates(
+    training_scripts: list[dict[str, Any]],
+    *,
+    case_id: str,
+    title: str,
+    summary: str,
+    persons: list[Any],
+    facts: list[Any],
+    default_location: str = "",
+) -> list[dict[str, Any]]:
+    """Compile script-first payload into normalized scene blueprint candidates."""
+    candidates: list[dict[str, Any]] = []
+    for index, script in enumerate(training_scripts[:4]):
+        if not isinstance(script, dict):
+            continue
+        scene_pack = script.get("scene_pack") if isinstance(script.get("scene_pack"), dict) else {}
+        stages = script.get("stages") if isinstance(script.get("stages"), list) else []
+        compiled_stages: list[dict[str, Any]] = []
+        for stage_idx, stage in enumerate(stages):
+            if not isinstance(stage, dict):
+                continue
+            learner_actions = [str(item) for item in stage.get("learner_actions") or [] if str(item).strip()]
+            points = _normalize_assessment_points(stage.get("assessment_points"), learner_actions)
+            compiled_stages.append(
+                {
+                    "stage_name": str(stage.get("stage_name") or f"训练阶段{stage_idx + 1}"),
+                    "stage_goal": str(stage.get("stage_goal") or script.get("training_goal") or "").strip(),
+                    "assessment_points": points,
+                    "fact_ids": [str(item) for item in stage.get("fact_ids") or [] if str(item).strip()],
+                    "action_catalog": [],
+                    "completion_rules": [],
+                    "end_conditions": [],
+                    "learner_actions": learner_actions,
+                    "role_pressure_points": [str(item) for item in stage.get("role_pressure_points") or [] if str(item).strip()],
+                    "expected_stage_effects": [str(item) for item in stage.get("expected_stage_effects") or [] if str(item).strip()],
+                    "recommended_prompts": [
+                        str(item) for item in (stage.get("recommended_prompts") or learner_actions)[:4]
+                        if str(item).strip()
+                    ],
+                }
+            )
+        role_rows = [item for item in script.get("role_training_functions") or [] if isinstance(item, dict)]
+        role_names = _split_role_names([item.get("role_name") for item in role_rows if isinstance(item, dict)])
+        role_ids = []
+        for name in role_names:
+            for person in persons:
+                if str(getattr(person, "name", "")).strip() == name:
+                    role_ids.append(str(getattr(person, "person_id", "")))
+        role_ids = list(dict.fromkeys([item for item in role_ids if item]))
+        scene_candidate = {
+            "scene_id": f"{case_id}-scene-{index + 1}",
+            "scene_name": str(script.get("scene_name") or "").strip(),
+            "scene_description": str(script.get("plot_arc") or summary),
+            "training_goal": str(script.get("training_goal") or "").strip(),
+            "student_role": str(scene_pack.get("student_role") or "民警"),
+            "training_entry_phase": str(scene_pack.get("training_entry_phase") or "post_incident_onsite"),
+            "dispatch_brief": str(scene_pack.get("dispatch_brief") or ""),
+            "first_impression": str(scene_pack.get("first_impression") or ""),
+            "expected_outcomes": [str(item) for item in script.get("expected_outcomes") or [] if str(item).strip()],
+            "fact_ids": list(
+                dict.fromkeys(
+                    [
+                        str(item)
+                        for stage in compiled_stages
+                        for item in stage.get("fact_ids") or []
+                        if str(item).strip()
+                    ]
+                )
+            ),
+            "roles": role_names,
+            "role_ids": role_ids,
+            "stages": compiled_stages,
+            "plot_arc": str(script.get("plot_arc") or "").strip(),
+            "role_training_functions": role_rows,
+            "completion_criteria": [str(item) for item in script.get("completion_criteria") or [] if str(item).strip()],
+            "failure_patterns": [str(item) for item in script.get("failure_patterns") or [] if str(item).strip()],
+            "opening_lines": [item for item in script.get("opening_lines") or [] if isinstance(item, dict)],
+        }
+        candidates.append(
+            normalize_blueprint(
+                scene_candidate,
+                case_id=case_id,
+                index=index,
+                title=title,
+                summary=summary,
+                persons=persons,
+                facts=facts,
+                default_location=default_location,
+            )
+            | {
+                "plot_arc": scene_candidate["plot_arc"],
+                "role_training_functions": scene_candidate["role_training_functions"],
+                "completion_criteria": scene_candidate["completion_criteria"],
+                "failure_patterns": scene_candidate["failure_patterns"],
+                "opening_lines": scene_candidate["opening_lines"],
+            }
+        )
+    return candidates

@@ -559,6 +559,8 @@ def normalize_stage(stage: dict[str, Any] | None, index: int, case_type: str = "
 
     raw_prompts = stage.get("recommended_prompts")
     recommended_prompts = _dedupe_strings(raw_prompts) if isinstance(raw_prompts, list) else []
+    if not recommended_prompts:
+        recommended_prompts = _dedupe_strings(stage.get("learner_actions") or [])[:4]
     observable_actions = _dedupe_strings(stage.get("observable_actions") or [])
     exit_condition_list = _dedupe_strings(stage.get("exit_conditions") or [])
 
@@ -587,6 +589,11 @@ def normalize_stage(stage: dict[str, Any] | None, index: int, case_type: str = "
         "stuck_recovery": str(stage.get("stuck_recovery") or "").strip(),
         "role_response_policy": str(stage.get("role_response_policy") or "").strip(),
         "transition_mode": str(stage.get("transition_mode") or "observable_actions").strip(),
+        # Preserve script-first narrative fields used by training contracts.
+        "learner_actions": _dedupe_strings(stage.get("learner_actions") or []),
+        "role_pressure_points": _dedupe_strings(stage.get("role_pressure_points") or []),
+        "expected_stage_effects": _dedupe_strings(stage.get("expected_stage_effects") or []),
+        "fact_ids": _dedupe_strings(stage.get("fact_ids") or []),
     }
 
 

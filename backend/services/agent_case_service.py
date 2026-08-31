@@ -73,6 +73,7 @@ def _parse_case_import_result(text: str, *, workflow_id: str, case_id: str, sour
         "scene_blueprint": imported.get("scene_blueprint") or {},
         "scene_blueprints": imported.get("scene_blueprints") or imported.get("necessary_scenes") or [],
         "necessary_scenes": imported.get("necessary_scenes") or imported.get("scene_blueprints") or [],
+        "training_scripts": imported.get("training_scripts") or [],
         "training_read_sources": imported.get("training_read_sources") or {},
         "case_import_quality": imported.get("case_import_quality") or {},
         "original_content": text,
@@ -86,28 +87,91 @@ def parse_case_with_agent(text: str, *, workflow_id: str, case_id: str = "draft"
     return _parse_case_import_result(text, workflow_id=workflow_id, case_id=case_id, source_mode=source_mode)
 
 
+def _scenes_from_training_scripts(case_info: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compile script points 1-6 into scene JSON payloads when blueprints are absent."""
+    scripts = case_info.get("training_scripts") or []
+    case_id = str(case_info.get("case_id") or "draft")
+    scenes: list[dict[str, Any]] = []
+    for index, script in enumerate(scripts[:4]):
+        if not isinstance(script, dict):
+            continue
+        scene_pack = script.get("scene_pack") if isinstance(script.get("scene_pack"), dict) else {}
+        scene_name = str(script.get("scene_name") or "").strip()
+        if not scene_name:
+            continue
+        scenes.append({
+            "scene_id": f"{case_id}-scene-{index + 1}",
+            "scene_name": scene_name,
+            "scene_description": str(script.get("plot_arc") or case_info.get("case_background") or ""),
+            "training_goal": str(script.get("training_goal") or ""),
+            "student_role": str(scene_pack.get("student_role") or "民警"),
+            "training_entry_phase": str(scene_pack.get("training_entry_phase") or "post_incident_onsite"),
+            "dispatch_brief": str(scene_pack.get("dispatch_brief") or ""),
+            "first_impression": str(scene_pack.get("first_impression") or ""),
+            "expected_outcomes": list(script.get("expected_outcomes") or []),
+            "plot_arc": str(script.get("plot_arc") or ""),
+            "opening_lines": [item for item in script.get("opening_lines") or [] if isinstance(item, dict)],
+            "opening_config": {
+                "enabled": True,
+                "mode": "preset" if script.get("opening_lines") else "dynamic",
+                "preset_turns": [
+                    {
+                        "speaker_name": str(item.get("speaker_name") or "").strip(),
+                        "content": str(item.get("content") or "").strip(),
+                    }
+                    for item in script.get("opening_lines") or []
+                    if isinstance(item, dict) and str(item.get("content") or "").strip()
+                ],
+            },
+            "stages": [item for item in script.get("stages") or [] if isinstance(item, dict)],
+            "role_training_functions": [item for item in script.get("role_training_functions") or [] if isinstance(item, dict)],
+            "completion_criteria": list(script.get("completion_criteria") or []),
+            "failure_patterns": list(script.get("failure_patterns") or []),
+            "roles": [
+                str(item.get("role_name") or "").strip()
+                for item in script.get("role_training_functions") or []
+                if isinstance(item, dict) and str(item.get("role_name") or "").strip()
+            ],
+            "fact_ids": list(dict.fromkeys(
+                str(fid)
+                for stage in script.get("stages") or []
+                if isinstance(stage, dict)
+                for fid in stage.get("fact_ids") or []
+                if str(fid).strip()
+            )),
+        })
+    return scenes
+
+
 def generate_scenes_with_agent(case_info: dict[str, Any], *, workflow_id: str) -> dict[str, Any]:
     blueprints = case_info.get("necessary_scenes") or case_info.get("scene_blueprints") or []
     if not blueprints and isinstance(case_info.get("scene_blueprint"), dict):
         blueprints = [case_info["scene_blueprint"]]
     blueprints = [item for item in blueprints if isinstance(item, dict) and item.get("scene_id")][:4]
+    generation_mode = "agent-workflow-v2-flowchart"
+    if not blueprints:
+        blueprints = _scenes_from_training_scripts(case_info)
+        if blueprints:
+            generation_mode = "script-first-direct"
     if blueprints:
         blueprint = blueprints[0]
         return {
             "scenes": blueprints,
+            "training_scripts": case_info.get("training_scripts") or [],
             "scene_world": {
                 "scene_id": blueprint["scene_id"],
                 "case_id": str(case_info.get("case_id") or "draft"),
                 "name": blueprint.get("scene_name") or "训练场景",
-                "environment": {"description": blueprint.get("scene_description") or ""},
+                "environment": {"description": blueprint.get("scene_description") or blueprint.get("plot_arc") or ""},
                 "role_ids": blueprint.get("role_ids") or [],
                 "rules": [],
             },
-            "scene_generation_mode": "agent-workflow-v2-flowchart",
-            "ai_workflow": {"engine": "agent-workflow-v2-flowchart", "skills": ["case_import_harness", "scene_blueprint_agent"]},
+            "scene_generation_mode": generation_mode,
+            "ai_workflow": {"engine": "agent-workflow-v2-flowchart", "skills": ["case_import_harness", "scene_script_skill"]},
         }
     return {
         "scenes": [],
+        "training_scripts": case_info.get("training_scripts") or [],
         "scene_world": {},
         "scene_generation_mode": "no-suitable-dialogue-scene",
         "scene_generation_issue": {

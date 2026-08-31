@@ -87,6 +87,9 @@ def get_stats(db: Session = Depends(database.get_db)):
     student_count = db.query(models.User).filter(models.User.role == "student").count()
     active_session_count = db.query(models.TrainingSession).filter(models.TrainingSession.status == "active").count()
     finished_session_count = db.query(models.TrainingSession).filter(models.TrainingSession.status == "finished").count()
+    video_session_count = db.query(models.VideoTrainingSession).count()
+    video_active_session_count = db.query(models.VideoTrainingSession).filter(models.VideoTrainingSession.status == "active").count()
+    video_finished_session_count = db.query(models.VideoTrainingSession).filter(models.VideoTrainingSession.status == "finished").count()
     today_session_count = (
         db.query(models.TrainingSession)
         .filter(models.TrainingSession.created_at >= today_start)
@@ -123,7 +126,36 @@ def get_stats(db: Session = Depends(database.get_db)):
         if day_key in day_buckets:
             day_buckets[day_key]["count"] += 1
 
-    trend = list(day_buckets.values())
+    recent_video_sessions = (
+        db.query(models.VideoTrainingSession.finished_at, models.VideoTrainingSession.created_at)
+        .filter(
+            (models.VideoTrainingSession.finished_at >= seven_days_ago)
+            | (
+                models.VideoTrainingSession.finished_at.is_(None)
+                & (models.VideoTrainingSession.created_at >= seven_days_ago)
+            )
+        )
+        .all()
+    )
+    video_day_buckets = {
+        day_key: 0
+        for day_key in day_buckets
+    }
+    for finished_at, created_at in recent_video_sessions:
+        anchor = finished_at or created_at
+        if not anchor:
+            continue
+        day_key = anchor.strftime("%Y-%m-%d")
+        if day_key in video_day_buckets:
+            video_day_buckets[day_key] += 1
+
+    trend = [
+        {
+            **day_buckets[day_key],
+            "video_count": video_day_buckets.get(day_key, 0),
+        }
+        for day_key in day_buckets
+    ]
     peak_daily_sessions = max((item["count"] for item in trend), default=0)
     avg_daily_sessions = round(sum(item["count"] for item in trend) / 7, 1)
     completion_rate = round((finished_session_count / session_count) * 100, 1) if session_count else 0.0
@@ -165,6 +197,9 @@ def get_stats(db: Session = Depends(database.get_db)):
         "today_sessions": today_session_count,
         "active_sessions": active_session_count,
         "finished_sessions": finished_session_count,
+        "video_sessions": video_session_count,
+        "video_active_sessions": video_active_session_count,
+        "video_finished_sessions": video_finished_session_count,
         "completion_rate": completion_rate,
         "active_rate": active_rate,
         "peak_daily_sessions": peak_daily_sessions,

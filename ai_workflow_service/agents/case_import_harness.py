@@ -4,14 +4,18 @@ import json
 import re
 from typing import Any
 
-from ai_workflow_service.domain.scene_blueprints import normalize_blueprint, select_necessary_scenes
+from ai_workflow_service.domain.scene_blueprints import (
+    normalize_blueprint,
+    select_necessary_scenes,
+    training_scripts_to_scene_candidates,
+)
 from ai_workflow_service.domain.dialogue_scene_admission import (
     admission_prompt_block,
     filter_dialogue_admitted_scenes,
 )
 from ai_workflow_service.errors import WorkflowServiceError
 from ai_workflow_service.llm.deepseek_adapter import DeepSeekAdapter
-from ai_workflow_service.skills import CompleteStorySkill, FactAnalysisSkill, PersonMemorySkill
+from ai_workflow_service.skills import CompleteStorySkill, FactAnalysisSkill, PersonMemorySkill, SceneScriptSkill
 from ai_workflow_service.tools.audit_log import AuditLogTool
 
 
@@ -24,6 +28,32 @@ class CaseImportHarnessAgent:
         self.complete_story = CompleteStorySkill(llm)
         self.fact_analysis = FactAnalysisSkill(llm)
         self.person_memory = PersonMemorySkill(llm)
+        self.scene_script = SceneScriptSkill(llm)
+
+    @staticmethod
+    def _minimal_script_from_scenes(scenes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        scripts: list[dict[str, Any]] = []
+        for scene in scenes:
+            if not isinstance(scene, dict):
+                continue
+            scripts.append({
+                "script_id": str(scene.get("scene_id") or scene.get("scene_name") or ""),
+                "scene_name": str(scene.get("scene_name") or ""),
+                "scene_pack": {
+                    "dispatch_brief": str(scene.get("dispatch_brief") or ""),
+                    "first_impression": str(scene.get("first_impression") or ""),
+                    "training_entry_phase": str(scene.get("training_entry_phase") or ""),
+                    "student_role": str(scene.get("student_role") or "民警"),
+                },
+                "training_goal": str(scene.get("training_goal") or ""),
+                "expected_outcomes": list(scene.get("expected_outcomes") or []),
+                "plot_arc": str(scene.get("plot_arc") or scene.get("scene_description") or ""),
+                "stages": list(scene.get("stages") or []),
+                "role_training_functions": list(scene.get("role_training_functions") or []),
+                "completion_criteria": list(scene.get("completion_criteria") or []),
+                "failure_patterns": list(scene.get("failure_patterns") or []),
+            })
+        return scripts
 
     def _record(self, trace_id: str, workflow_id: str, node: str, status: str, **details: Any) -> None:
         self.audit_log.write({"trace_id": trace_id, "workflow_id": workflow_id, "node": node, "status": status, **details})
@@ -145,16 +175,54 @@ class CaseImportHarnessAgent:
         self._record(trace_id, workflow_id, "person_memory_skill", "succeeded", **memory_audit)
         story_world = {"complete_story": story, "facts": [fact.model_dump(mode="json") for fact in world.facts], "roles": memories}
         self._record(trace_id, workflow_id, "case_story_world", "succeeded")
-        scenes, scene_admission = self._blueprints(world, story, trace_id=trace_id, workflow_id=workflow_id)
+        training_scripts, script_audit = self.scene_script.execute(world.model_dump(mode="json"), story)
+        self._record(trace_id, workflow_id, "scene_script_skill", "succeeded", **script_audit)
+        scene_payloads: list[dict[str, Any]] = []
+        if training_scripts:
+            candidates = training_scripts_to_scene_candidates(
+                training_scripts,
+                case_id=world.case_id,
+                title=world.title,
+                summary=world.summary,
+                persons=world.persons,
+                facts=world.facts,
+                default_location=world.locations[0] if world.locations else "",
+            )
+            scenes = select_necessary_scenes(candidates)
+            scene_payloads = scenes or candidates
+            _admitted, rejected = filter_dialogue_admitted_scenes(candidates, allow_remap=False)
+            scene_admission = {
+                "rule_version": "dialogue_scene_admission_v1",
+                "admitted_count": len(scenes),
+                "rejected_count": len(rejected),
+                "rejected_scenes": [
+                    {
+                        "scene_name": item.get("scene_name"),
+                        "reasons": (item.get("dialogue_admission") or {}).get("reasons") or [],
+                        "non_dialogue_markers": (item.get("dialogue_admission") or {}).get("non_dialogue_markers") or [],
+                        "suggested_alternative": (item.get("dialogue_admission") or {}).get("suggested_alternative") or "",
+                    }
+                    for item in rejected
+                ],
+                "sufficient": bool(scene_payloads),
+                "repair_attempted": False,
+                "no_suitable_scene": not scene_payloads,
+                "generation_mode": "script_first" if scenes else "script_first_direct",
+            }
+        else:
+            scenes, scene_admission = self._blueprints(world, story, trace_id=trace_id, workflow_id=workflow_id)
+            training_scripts = self._minimal_script_from_scenes(scenes)
+            scene_payloads = scenes
         self._record(
             trace_id, workflow_id, "scene_blueprint_agent", "succeeded",
-            candidate_count=len(scenes), bound_fact_count=sum(len(scene.get("fact_ids") or []) for scene in scenes),
+            candidate_count=len(scene_payloads), bound_fact_count=sum(len(scene.get("fact_ids") or []) for scene in scene_payloads),
         )
-        self._record(trace_id, workflow_id, "necessary_scene_selector", "succeeded", scene_count=len(scenes))
+        self._record(trace_id, workflow_id, "necessary_scene_selector", "succeeded", scene_count=len(scene_payloads))
         return {
             "cleaning": cleaned, "complete_story": story, "case_world": world.model_dump(mode="json"),
             "role_memories": memories, "story_world": story_world,
-            "scene_blueprint": scenes[0] if scenes else {}, "scene_blueprints": scenes, "necessary_scenes": scenes,
+            "scene_blueprint": scene_payloads[0] if scene_payloads else {}, "scene_blueprints": scene_payloads, "necessary_scenes": scene_payloads,
+            "training_scripts": training_scripts,
             "case_import_quality": {
                 "story": story_audit,
                 "facts": fact_audit,

@@ -55,7 +55,7 @@ def _resolve_path(value: str | Path) -> Path:
 
 FACE_SIMILARITY_THRESHOLD = float(os.getenv("FACE_SIMILARITY_THRESHOLD", "0.68"))
 FACE_FAST_VERIFY_SIMILARITY_THRESHOLD = float(os.getenv("FACE_FAST_VERIFY_SIMILARITY_THRESHOLD", "0.55"))
-FACE_HEARTBEAT_SIMILARITY_THRESHOLD = float(os.getenv("FACE_HEARTBEAT_SIMILARITY_THRESHOLD", "0.68"))
+FACE_HEARTBEAT_SIMILARITY_THRESHOLD = float(os.getenv("FACE_HEARTBEAT_SIMILARITY_THRESHOLD", "0.60"))
 FACE_MAX_FAILURES = int(os.getenv("FACE_MAX_FAILURES", "5"))
 FACE_SERIOUS_MAX_FAILURES = int(os.getenv("FACE_SERIOUS_MAX_FAILURES", "5"))
 FACE_VOTE_WINDOW = int(os.getenv("FACE_VOTE_WINDOW", "3"))
@@ -268,7 +268,7 @@ def _resolve_similarity_threshold(
         similarity_threshold -= 0.03
     if event_type == "verify" and _client_liveness_verified(quality_payload):
         similarity_threshold -= 0.03
-    floor = 0.58 if event_type == "heartbeat" else 0.55 if event_type == "verify" else 0.62
+    floor = 0.55 if event_type == "heartbeat" else 0.55 if event_type == "verify" else 0.62
     return max(floor, similarity_threshold)
 
 
@@ -815,9 +815,32 @@ def has_successful_session_verification(db: Session, session_id: int) -> bool:
     )
 
 
+def face_termination_pending_flag(session: models.TrainingSession) -> dict[str, Any] | None:
+    runtime = load_runtime_state(session.revealed_info)
+    pending = runtime.get("face_termination_pending")
+    return pending if isinstance(pending, dict) else None
+
+
 def is_face_session_terminated_by_policy(db: Session, session_id: int) -> bool:
     consecutive_failures = _count_consecutive_session_failures(db, session_id=session_id, monitor_only=True)
     return consecutive_failures >= FACE_CONSECUTIVE_MAX_FAILURES
+
+
+def is_training_face_monitor_terminated(
+    db: Session,
+    session: models.TrainingSession,
+    event: models.FaceVerificationEvent,
+    *,
+    auto_finalize: bool,
+    passed: bool,
+) -> bool:
+    if face_termination_pending_flag(session):
+        return True
+    if not auto_finalize or passed:
+        return False
+    if int(event.failure_count or 0) >= FACE_CONSECUTIVE_MAX_FAILURES:
+        return True
+    return is_face_session_terminated_by_policy(db, session.id)
 
 
 def is_video_face_session_terminated_by_policy(db: Session, video_session_id: int) -> bool:
@@ -848,13 +871,14 @@ def _count_consecutive_session_failures(
     failure_count = 0
     for event in events:
         if event.status == "failed":
+            # Minor quality glitches (lighting, distance) should not push users toward forced termination.
+            if str(event.abnormal_level or "").lower() == "minor":
+                continue
             failure_count += 1
             continue
         if event.status == "passed":
             break
-    return (
-        failure_count
-    )
+    return failure_count
 
 
 def build_adaptive_fallback_report(
@@ -939,6 +963,8 @@ def _finalize_face_termination(
     failure_count: int,
     reason: str,
 ) -> None:
+    if face_termination_pending_flag(session):
+        return
     db.add(
         models.Message(
             session_id=session.id,
@@ -946,8 +972,6 @@ def _finalize_face_termination(
             content="系统检测到人脸验证连续异常，本次训练已自动终止并进入评估。",
         )
     )
-    session.status = "evaluating"
-    session.evaluation_result = None
     now = datetime.utcnow()
     if session.training_started_at is None:
         session.training_started_at = session.created_at or now
@@ -985,7 +1009,8 @@ def record_event(
             failure_basis = _count_consecutive_session_failures(db, video_session_id=video_session.id, monitor_only=True)
         else:
             failure_basis = _count_consecutive_session_failures(db, session_id=session.id, monitor_only=True)
-        failure_count = failure_basis + 1 if status == "failed" else 0
+        counts_toward_limit = status == "failed" and str(abnormal_level or "").lower() != "minor"
+        failure_count = failure_basis + 1 if counts_toward_limit else 0
     else:
         failure_count = 0
     event = models.FaceVerificationEvent(
@@ -1005,13 +1030,11 @@ def record_event(
     db.commit()
 
     if session is not None:
-        consecutive_failures = (
-            _count_consecutive_session_failures(db, session_id=session.id, monitor_only=True) if auto_finalize else 0
-        )
         should_finalize = (
             auto_finalize
             and status == "failed"
-            and consecutive_failures >= FACE_CONSECUTIVE_MAX_FAILURES
+            and failure_count >= FACE_CONSECUTIVE_MAX_FAILURES
+            and not face_termination_pending_flag(session)
         )
         if should_finalize:
             _finalize_face_termination(
@@ -1047,7 +1070,14 @@ def verify_frame(
             reason_code="no_registered_profile",
             abnormal_level="serious" if auto_finalize else "medium",
         )
-        return _verification_response(False, event, None, reason)
+        terminated = is_training_face_monitor_terminated(
+            db,
+            session,
+            event,
+            auto_finalize=auto_finalize,
+            passed=False,
+        )
+        return _verification_response(False, event, None, reason, terminated=terminated)
 
     try:
         similarity, extraction, best_template_index = match_profile_frame(profile, decode_data_url(frame_data_url))
@@ -1065,7 +1095,15 @@ def verify_frame(
             reason_code=reason_code,
             abnormal_level=abnormal_level,
         )
-        return _verification_response(False, event, None, localize_face_reason(error.detail))
+        localized_reason = localize_face_reason(error.detail)
+        terminated = is_training_face_monitor_terminated(
+            db,
+            session,
+            event,
+            auto_finalize=auto_finalize,
+            passed=False,
+        )
+        return _verification_response(False, event, None, localized_reason, terminated=terminated)
 
     quality_payload = _merge_client_quality(extraction.quality, client_quality)
     similarity_threshold = _resolve_similarity_threshold(event_type, quality_payload)
@@ -1088,7 +1126,13 @@ def verify_frame(
         abnormal_level=abnormal_level,
     )
     vote = _vote_window(db, session_id=session.id) if auto_finalize else None
-    terminated = is_face_session_terminated_by_policy(db, session.id) if auto_finalize and not passed else False
+    terminated = is_training_face_monitor_terminated(
+        db,
+        session,
+        event,
+        auto_finalize=auto_finalize,
+        passed=passed,
+    )
     return _verification_response(
         passed,
         event,

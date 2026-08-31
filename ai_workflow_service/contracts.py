@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-WORKFLOW_CONTRACT_VERSION = "2026-08-24"
+WORKFLOW_CONTRACT_VERSION = "2026-08-26-script-first"
 
 
 class WorkflowStage(str, Enum):
@@ -119,6 +119,22 @@ class SceneWorld(StrictModel):
     role_states: list[RoleInitialState] = Field(default_factory=list)
     role_participation: list[RoleParticipation] = Field(default_factory=list)
     fact_ids: list[str] = Field(default_factory=list)
+    plot_arc: str = ""
+    completion_criteria: list[str] = Field(default_factory=list)
+    role_training_functions: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class TrainingScript(StrictModel):
+    script_id: str
+    scene_name: str
+    scene_pack: dict[str, Any] = Field(default_factory=dict)
+    training_goal: str = ""
+    expected_outcomes: list[str] = Field(default_factory=list)
+    plot_arc: str = ""
+    stages: list[dict[str, Any]] = Field(default_factory=list)
+    role_training_functions: list[dict[str, Any]] = Field(default_factory=list)
+    completion_criteria: list[str] = Field(default_factory=list)
+    failure_patterns: list[str] = Field(default_factory=list)
 
 
 class WorkflowRequest(StrictModel):

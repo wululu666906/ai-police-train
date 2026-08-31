@@ -104,7 +104,17 @@
             inactive-text="下架"
             @change="togglePublish(video)"
           />
-          <el-button size="small" text :icon="SetUp" :disabled="video.status === 'analyzing'" @click="openNodeEditor(video)">编辑节点</el-button>
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            :icon="SetUp"
+            :disabled="video.status === 'analyzing'"
+            @click="openNodeEditor(video)"
+          >
+            节点题目
+            <el-tag v-if="video.node_count" size="small" effect="plain" style="margin-left:6px">{{ video.node_count }}</el-tag>
+          </el-button>
           <el-button size="small" text type="danger" @click="deleteVideo(video)">删除</el-button>
         </div>
       </article>
@@ -125,7 +135,7 @@
     </section>
 
     <!-- 节点编辑器 -->
-    <el-dialog v-model="showNodeEditor" :title="`编辑节点 - ${nodeEditorVideo?.title || ''}`" width="900px" :close-on-click-modal="false">
+    <el-dialog v-model="showNodeEditor" :title="`节点题目配置 - ${nodeEditorVideo?.title || ''}`" width="960px" :close-on-click-modal="false">
       <VideoNodeEditor v-if="showNodeEditor && nodeEditorVideo" :video="nodeEditorVideo" @updated="onNodesUpdated" />
     </el-dialog>
   </div>
@@ -379,8 +389,8 @@ async function deleteVideo(video: VideoItem) {
     await request.delete(`/videos/${video.id}`)
     ElMessage.success('已删除')
     await fetchVideos()
-  } catch {
-    ElMessage.error('删除失败')
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || '删除失败')
   }
 }
 

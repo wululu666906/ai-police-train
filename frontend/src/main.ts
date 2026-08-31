@@ -55,6 +55,7 @@ const routes = [
       { path: 'students/:id', component: () => import('./views/StudentProfile.vue'), meta: { title: '学员档案' } },
       { path: 'profile', component: () => import('./views/Profile.vue'), meta: { title: '个人中心' } },
       { path: 'settings', component: () => import('./views/Profile.vue'), meta: { title: '系统设置' } },
+      { path: 'notifications', component: () => import('./views/AdminNotifications.vue'), meta: { title: '通知中心' } },
     ]
   },
   { path: '/', redirect: () => {
@@ -77,7 +78,8 @@ const routes = [
       { path: 'history', component: () => import('./views/StudentPracticeHistory.vue'), meta: { title: '练习记录' } },
       { path: 'text-history', component: () => import('./views/StudentHistory.vue'), meta: { title: '文字训练记录' } },
       { path: 'evaluation', component: () => import('./views/StudentEvaluation.vue'), meta: { title: '训练评估报告' } },
-      { path: 'settings', component: () => import('./views/StudentSettings.vue'), meta: { title: '个人设置' } }
+      { path: 'settings', component: () => import('./views/StudentSettings.vue'), meta: { title: '个人设置' } },
+      { path: 'notifications', component: () => import('./views/StudentNotifications.vue'), meta: { title: '通知中心' } }
     ]
   },
   { path: '/student/history/:id/dialogue', component: () => import('./views/StudentDialogueRecord.vue'), meta: { requiresAuth: true, roles: ['student', 'admin'] } },

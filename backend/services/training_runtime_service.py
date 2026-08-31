@@ -53,6 +53,8 @@ _RUNTIME_PASSTHROUGH_KEYS = (
     "action_effective",
     "knowledge_refs",
     "recommended_question_items",
+    "served_recommended_question_texts",
+    "used_recommended_question_texts",
 )
 
 

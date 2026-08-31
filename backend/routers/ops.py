@@ -1550,7 +1550,11 @@ def _serialize_system_issue(item: models.OpsIssueRecord) -> dict:
         "detail": item.detail,
         "metadata": _parse_ops_json(item.metadata_json),
         "created_at": item.created_at.isoformat() if item.created_at else None,
-        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+        "updated_at": (
+            item.updated_at.isoformat()
+            if getattr(item, "updated_at", None)
+            else (item.created_at.isoformat() if item.created_at else None)
+        ),
     }
 
 
@@ -1611,6 +1615,7 @@ def update_system_issue(
     if next_status not in {"pending", "acknowledged", "resolved", "ignored"}:
         raise HTTPException(status_code=400, detail="不支持的异常状态")
     issue.status = next_status
+    issue.updated_at = datetime.utcnow()
     db.add(issue)
     write_ops_audit(db, actor=current_user, action="update_system_issue", detail={"issue_id": issue.id, "status": next_status})
     db.commit()

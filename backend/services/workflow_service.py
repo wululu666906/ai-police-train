@@ -2041,7 +2041,7 @@ class WorkflowService:
         scene_behavior_mode = str(compact_fields.get("scene_behavior_mode") or person.get("scene_behavior_mode") or "核查取证型").strip() or "核查取证型"
         cleaned = {
             "person_id": str(person.get("person_id") or "").strip(),
-            "name": WorkflowService._normalize_person_name(person.get("name")) or "未明确",
+            "name": WorkflowService._normalize_person_name(person.get("name")) or "",
             "aliases": person.get("aliases") if isinstance(person.get("aliases"), list) else [],
             "role": str(person.get("role") or "相关人员").strip(),
             "role_type": str(person.get("role_type") or WorkflowService._guess_role_type(person.get("role"))).strip() or "相关人员",
@@ -2179,7 +2179,12 @@ class WorkflowService:
         if isinstance(roles, str):
             source_roles = [roles]
         elif isinstance(roles, list):
-            source_roles = roles
+            source_roles = []
+            for item in roles:
+                if isinstance(item, dict):
+                    source_roles.append(str(item.get("role_name") or item.get("name") or "").strip())
+                else:
+                    source_roles.append(str(item or "").strip())
         else:
             source_roles = []
         if not source_roles or not isinstance(persons, list):
@@ -2198,13 +2203,24 @@ class WorkflowService:
                 if alias_text:
                     name_map[alias_text] = canonical_name
 
-        result: list[str] = []
-        for role in source_roles:
-            raw_name = str(role or "").strip()
-            if not raw_name:
+        expanded: list[str] = []
+        for raw in source_roles:
+            text = str(raw or "").strip()
+            if not text:
                 continue
+            parts = [part.strip() for part in re.split(r"[、，,；;/]|以及|及|和|与", text) if part.strip()]
+            expanded.extend(parts or [text])
+
+        result: list[str] = []
+        for raw_name in expanded:
             normalized_name = self._normalize_person_name(raw_name) or raw_name
             canonical_name = name_map.get(raw_name) or name_map.get(normalized_name)
+            if not canonical_name:
+                # Soft match: allow contained person names inside compound labels.
+                for person_name, mapped in name_map.items():
+                    if person_name and (person_name in raw_name or raw_name in person_name):
+                        canonical_name = mapped
+                        break
             if canonical_name and canonical_name not in result:
                 result.append(canonical_name)
         return result
@@ -2237,11 +2253,11 @@ class WorkflowService:
         "嫌疑人", "犯罪嫌疑人", "被害人", "受害人", "报警人", "报案人", "证言", "陈述",
         "被告人", "原告人", "上诉人", "辩护人", "审判员", "书记员", "公诉机关", "公诉人",
         "及被告人", "及被害人", "及受害人", "及嫌疑人", "和被告人", "与被告人",
-        "本院认为", "经审理查明", "上述人员", "相关人员", "原审被告人",
+        "本院认为", "经审理查明", "上述人员", "相关人员", "原审被告人", "未明确", "不详",
         "供述", "交代", "笔录", "口供", "某某", "目击者", "家属", "邻居", "当事人",
         "伤者", "死者", "纠纷", "冲突", "争吵", "警情", "案情", "案件", "现场",
-        "报警记录", "报案材料", "询问记录", "调解记录", "情况", "材料",
-        "线索", "证据", "监控", "录像", "视频", "照片",
+        "报警记录", "报案材料", "询问记录", "调解记录", "情况", "材料", "辨认",
+        "证言及辨认", "通过", "线索", "证据", "监控", "录像", "视频", "照片",
         "电动车", "手机", "菜刀", "木棍", "汽车", "钱包", "自行车",
         "店长", "顾客", "店员", "保安", "路人", "同学", "朋友",
         "工友", "老乡", "房东", "租客", "乘客", "司机", "业主",
@@ -2295,26 +2311,27 @@ class WorkflowService:
         clean = WorkflowService._normalize_person_name(name)
         if not clean:
             return False
-        # Court records commonly anonymise parties as “苗某”“首某”“彭某乙”.
-        # These are stable source identifiers, not incomplete names, and must
-        # remain usable as role keys even when the surname is outside the common
-        # surname table used for real-name validation.
+        if clean in WorkflowService.BAD_TOKENS:
+            return False
+        if any(token in clean for token in ("证言", "辨认", "材料", "判决", "笔录", "口供", "通过", "未明确", "不详")):
+            return False
+        if clean.endswith(("的", "等", "均", "称", "说", "在", "于", "与", "和", "及", "被", "将", "把", "向", "对", "通过")):
+            return False
+        # Court records commonly anonymise parties as “苗某”“首某”“彭某乙”“首某远”.
+        # Keep the full anonymised token; never truncate “首某远” down to “首某”.
         if re.fullmatch(
-            r"[\u4e00-\u9fa5]某(?:[甲乙丙丁戊己庚辛壬癸]\d{0,2}|\d{1,2})?",
+            r"[\u4e00-\u9fa5]某(?:[甲乙丙丁戊己庚辛壬癸]\d{0,2}|\d{1,2}|[\u4e00-\u9fa5]{1,2})?",
             clean,
         ):
             return True
         if not re.fullmatch(r"[\u4e00-\u9fa5]{2,4}", clean):
-            return False
-        # Reject known non-person tokens
-        if clean in WorkflowService.BAD_TOKENS:
             return False
         # Reject names ending with location/place suffixes
         place_suffixes = ("村", "路", "街", "镇", "乡", "县", "区", "市", "省", "巷", "号", "院", "所", "站", "店", "楼", "室", "桥", "路口", "小区", "学校", "医院", "商场", "广场", "仓库", "大厦", "花园", "公寓")
         if any(clean.endswith(suffix) for suffix in place_suffixes):
             return False
         # Reject names starting with ambiguous prefix characters
-        place_prefixes = ("某", "该", "本", "各", "全", "原", "被", "涉")
+        place_prefixes = ("某", "该", "本", "各", "全", "原", "被", "涉", "未")
         if clean[0] in place_prefixes:
             return False
         # Surname validation: first character must be a known Chinese surname
@@ -2334,10 +2351,19 @@ class WorkflowService:
             "",
             clean,
         ).strip()
-        clean = re.sub(r"(?:称|说|表示|反映|供述|陈述|介绍|联系|发现|报警|报案|哭诉|求助|证言|口供|笔录|交代|讲述|回忆|证实)$", "", clean).strip()
+        clean = re.sub(r"(?:称|说|表示|反映|供述|陈述|介绍|联系|发现|报警|报案|哭诉|求助|证言|口供|笔录|交代|讲述|回忆|证实|通过)$", "", clean).strip()
         clean = re.sub(r"(?:嫌疑人|犯罪嫌疑人|证人|报警人|报案人|被害人|受害人|当事人|家属|邻居|目击者|伤者|死者)$", "", clean).strip()
+        clean = re.sub(r"[的之了着过]+$", "", clean).strip()
 
-        prefix_match = re.match(r"^([\u4e00-\u9fa5]{2,4})(?=称|说|表示|反映|供述|陈述|介绍|与|和|因|于|在|被|将|把|向|对|及|并|后|时|处|，|。|、|：|:|$)", clean)
+        # Keep full anonymised names such as 首某 / 彭某乙 / 首某远.
+        # Do not truncate longer tokens like “首某远” into “首某”.
+        if re.fullmatch(
+            r"[\u4e00-\u9fa5]某(?:[甲乙丙丁戊己庚辛壬癸]\d{0,2}|\d{1,2}|[\u4e00-\u9fa5]{1,2})?",
+            clean,
+        ):
+            return clean
+
+        prefix_match = re.match(r"^([\u4e00-\u9fa5]{2,4})(?=称|说|表示|反映|供述|陈述|介绍|与|和|因|于|在|被|将|把|向|对|及|并|后|时|处|的|通过|，|。|、|：|:|$)", clean)
         if prefix_match:
             clean = prefix_match.group(1)
 

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 import database
 import models
 from routers.auth import get_current_user
+from routers.ops import delete_video_owned_data
 from services import video_auto_config_service
 from services.object_storage_service import (
     MEDIA_BUCKET,
@@ -1708,13 +1709,12 @@ def delete_video(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(_require_admin),
 ):
-    """删除视频（同时删除节点和文件）"""
+    """删除视频（同时删除节点、实训记录和文件）"""
     video = _get_video_for_access(db, video_id, current_user)
     if not video:
         raise HTTPException(status_code=404, detail="视频不存在")
 
     delete_playback_assets(db, video.id)
-    delete_media_assets(db, owner_type="video", owner_key=video.id)
     if video.file_path:
         fp = os.path.join(VIDEOS_DIR, video.file_path)
         if os.path.exists(fp):
@@ -1724,7 +1724,7 @@ def delete_video(
         if os.path.exists(tp):
             os.remove(tp)
 
-    db.delete(video)
+    delete_video_owned_data(db, [video.id])
     db.commit()
     return {"message": "视频已删除", "video_id": video_id}
 

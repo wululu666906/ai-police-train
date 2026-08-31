@@ -80,7 +80,14 @@ def _scene_text_parts(scene: dict[str, Any]) -> list[str]:
             parts.extend((stage.get("stage_name"), stage.get("stage_goal")))
             for point in stage.get("assessment_points") or []:
                 if isinstance(point, dict):
-                    parts.append(point.get("label"))
+                    parts.append(point.get("label") or point.get("assessment_item"))
+                    parts.append(point.get("content") or point.get("standard"))
+                    for keyword in point.get("keywords") or []:
+                        parts.append(keyword)
+                    for action in point.get("related_actions") or point.get("actions") or []:
+                        parts.append(action)
+            for action in stage.get("learner_actions") or []:
+                parts.append(action)
     return [_text(item) for item in parts if _text(item)]
 
 
@@ -143,12 +150,9 @@ def evaluate_dialogue_admission(scene: dict[str, Any]) -> dict[str, Any]:
         reasons.append("missing_dialogue_core_markers")
     if not stages:
         reasons.append("missing_training_stages")
-    if not assessment_points:
-        reasons.append("missing_assessment_points")
-    elif len(observable_points) < len(assessment_points):
-        reasons.append("unobservable_assessment_points")
     if not outcomes:
         reasons.append("missing_expected_outcomes")
+    # assessment_points 不再作为考察配置准入硬条件；仅新剧本 expected_outcomes 约束训练效果。
 
     # Non-dialogue markers dominate when present without sufficient dialogue anchors.
     if non_dialogue and len(dialogue) < 2:
@@ -161,7 +165,7 @@ def evaluate_dialogue_admission(scene: dict[str, Any]) -> dict[str, Any]:
 
     dialogue_score = round(len(dialogue) / max(len(dialogue) + len(non_dialogue), 1), 4)
     training_value_score = round(
-        min(1.0, dialogue_score * 0.45 + min(len(assessment_points), 4) / 4 * 0.3 + min(len(outcomes), 3) / 3 * 0.25),
+        min(1.0, dialogue_score * 0.45 + min(len(outcomes), 6) / 6 * 0.55),
         4,
     )
     if training_value_score < 0.55:

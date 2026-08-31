@@ -71,7 +71,7 @@ class RoleIntentSkill:
             if persona not in ordered:
                 ordered.append(persona)
 
-        cap = max(1, min(6, max_actors))
+        cap = max(1, min(32, int(max_actors or 24)))
         actors = ordered[:cap]
         actor_ids = {item.person_id for item in actors}
         decisions = [

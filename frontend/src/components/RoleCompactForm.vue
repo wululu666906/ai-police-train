@@ -66,7 +66,7 @@ const removeMemory = (index: number) => updateField('role_memories', memoryRows.
       </div>
     </section>
 
-    <section class="form-section">
+    <section v-if="false" class="form-section">
       <header><strong>人物线与角色证言</strong><span>按角色经历顺序整理，尽量保留原文，仅做轻微润色。</span></header>
       <div v-if="!memoryRows.length" class="empty">暂未提取到该角色的陈述、证言或亲历内容</div>
       <article v-for="(memory, index) in memoryRows" :key="memory.memory_id || index" class="memory-row">
@@ -82,7 +82,7 @@ const removeMemory = (index: number) => updateField('role_memories', memoryRows.
       <button type="button" @click="addMemory">添加角色证言</button>
     </section>
 
-    <section class="form-section">
+    <section v-if="false" class="form-section">
       <header><strong>事实边界</strong><span>约束角色只能依据本人人物线回答。</span></header>
       <div class="grid grid-2">
         <label>回答约束<textarea :value="listToTextarea(compact.response_constraints)" rows="5" placeholder="每行一条" @input="updateList('response_constraints', ($event.target as HTMLTextAreaElement).value)" /></label>

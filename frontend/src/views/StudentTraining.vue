@@ -179,7 +179,7 @@
       </div>
 
       <div class="panel-actions">
-        <van-button block type="danger" size="small" class="finish-btn" @click="finishTraining">
+        <van-button block type="danger" size="small" class="finish-btn" :disabled="!canFinishTraining" @click="finishTraining">
           <van-icon name="flag-o" /> {{ finishButtonText }}
         </van-button>
       </div>
@@ -188,6 +188,7 @@
     <div class="chat-area">
       <TrainingFaceGuard
         v-if="sessionId"
+        :key="`face-guard-${sessionId}`"
         ref="faceGuardRef"
         class="training-face-guard"
         :session-id="sessionId"
@@ -272,21 +273,40 @@
         </div>
         <div v-if="showTrainingHints && suggestedQuestionItems.length" class="suggested-questions">
           <div class="suggested-questions__head">
-            <span class="suggested-questions__title">建议追问</span>
-            <span class="suggested-questions__hint">点选填入输入框，将自动对准询问对象</span>
+            <span class="suggested-questions__title">建议提问</span>
+            <span class="suggested-questions__hint">按剧本节奏每轮新生成；点选填入输入框</span>
           </div>
-          <div class="suggested-questions__list">
-            <button
-              v-for="(item, index) in suggestedQuestionItems"
-              :key="`${index}-${item.text}`"
-              type="button"
-              class="suggested-question-chip"
-              :disabled="isAssistantBusy"
-              @click="applySuggestedQuestion(item)"
-            >
-              <span class="suggested-question-chip__cat">{{ item.category || '追问' }}</span>
-              <span class="suggested-question-chip__text">{{ item.text }}</span>
-            </button>
+          <div v-if="hintQuestionItems.length" class="suggested-questions__group">
+            <span class="suggested-questions__group-label">快速发言</span>
+            <div class="suggested-questions__list">
+              <button
+                v-for="(item, index) in hintQuestionItems"
+                :key="`hint-${index}-${item.text}`"
+                type="button"
+                class="suggested-question-chip suggested-question-chip--hint"
+                :disabled="isAssistantBusy"
+                @click="applySuggestedQuestion(item)"
+              >
+                <span class="suggested-question-chip__cat">提示</span>
+                <span class="suggested-question-chip__text">{{ item.text }}</span>
+              </button>
+            </div>
+          </div>
+          <div v-if="plotQuestionItems.length" class="suggested-questions__group">
+            <span class="suggested-questions__group-label">推进剧情</span>
+            <div class="suggested-questions__list">
+              <button
+                v-for="(item, index) in plotQuestionItems"
+                :key="`plot-${index}-${item.text}`"
+                type="button"
+                class="suggested-question-chip suggested-question-chip--plot"
+                :disabled="isAssistantBusy"
+                @click="applySuggestedQuestion(item)"
+              >
+                <span class="suggested-question-chip__cat">推进</span>
+                <span class="suggested-question-chip__text">{{ item.text }}</span>
+              </button>
+            </div>
           </div>
         </div>
         <TrainingInputBar
@@ -328,6 +348,14 @@
 
           <div class="brief-layout brief-layout--single">
             <main class="brief-card brief-main">
+              <div class="brief-face-alert" role="note">
+                <van-icon name="warning-o" size="18" />
+                <div class="brief-face-alert__copy">
+                  <strong>人脸风控提示</strong>
+                  <span>连续异常 5 次将自动结束训练。请保持面部在摄像头识别范围内，确保光线充足并正对镜头。</span>
+                </div>
+              </div>
+
               <section class="brief-info-section">
                 <h2>{{ isIntakeScene ? '110 接警状态' : '110 接警简报' }}</h2>
                 <div class="brief-text-box">
@@ -390,6 +418,7 @@ import { isInternalPromptMessage } from '../utils/dialogueMessage'
 import TrainingInputBar from '../components/TrainingInputBar.vue'
 import RoleSpeakingAvatar from '../components/RoleSpeakingAvatar.vue'
 import TrainingFaceGuard from '../components/TrainingFaceGuard.vue'
+import { localizeFaceMessage } from '../utils/faceVerification'
 
 const AVATAR_PALETTE = [
   '#4F46E5', '#0891B2', '#059669', '#D97706', '#DC2626',
@@ -440,6 +469,10 @@ const assignmentContext = ref<any | null>(null)
 const faceGuardRef = ref<InstanceType<typeof TrainingFaceGuard> | null>(null)
 const failedAvatarUrls = ref<Set<string>>(new Set())
 const canUseConversation = computed(() => faceVerified.value && !faceTerminated.value)
+const hasValidUserRound = computed(() =>
+  chatHistory.value.some((message) => message.role === 'human' && String(message.content || '').trim()),
+)
+const canFinishTraining = computed(() => faceTerminated.value || hasValidUserRound.value)
 const isAssistantBusy = computed(() => isLoading.value || isOpeningLoading.value)
 const hasPendingAssistantBubble = computed(() =>
   chatHistory.value.some((message) => message.role === 'assistant' && Boolean(message.pending)),
@@ -528,6 +561,7 @@ interface SceneRoleBrief {
 interface SuggestedQuestionItem {
   text: string
   category?: string
+  kind?: 'hint' | 'plot_advance' | string
   target_role_name?: string | null
 }
 
@@ -539,6 +573,13 @@ const targetRoleName = ref('')
 const communicationFeedback = ref<{ level?: string; message?: string }>({ message: '' })
 const stageMissing = ref<string[]>([])
 const suggestedQuestionItems = ref<SuggestedQuestionItem[]>([])
+const usedSuggestedQuestionTexts = ref<string[]>([])
+const hintQuestionItems = computed(() =>
+  suggestedQuestionItems.value.filter((item) => (item.kind || 'hint') !== 'plot_advance'),
+)
+const plotQuestionItems = computed(() =>
+  suggestedQuestionItems.value.filter((item) => item.kind === 'plot_advance'),
+)
 const assessmentProgress = ref<any>(null)
 const completedPointIds = ref<string[]>([])
 const completedActionIds = ref<string[]>([])
@@ -664,24 +705,88 @@ const defaultBriefTips = [
   '留意对方表述中的矛盾点、隐瞒点和风险点。',
 ]
 const META_QUESTION_PATTERN = /先围绕|把最关键|这一点|训练已恢复|补齐这些关键项/
+const COACH_QUESTION_PATTERN = /^(请立即|请先|请务必|请尽快|请具体说明|请核实|请确认|为推进|建议你|学员应|需要你|应当|必须先)/
+
+const findSceneRoleByName = (speakerName: string) => {
+  const name = String(speakerName || '').trim()
+  if (!name) return null
+  const exact = sceneRoles.value.find((role) => role.name === name)
+  if (exact) return exact
+  const normalized = name.replace(/\s+/g, '')
+  const loose = sceneRoles.value
+    .filter((role) => {
+      const roleName = String(role.name || '').replace(/\s+/g, '')
+      return Boolean(roleName) && (roleName === normalized || roleName.includes(normalized) || normalized.includes(roleName))
+    })
+    .sort((a, b) => String(b.name || '').length - String(a.name || '').length)
+  return loose[0] || null
+}
+
+const resolveSpeakerMeta = (speakerName: string) => {
+  const speakerRole = findSceneRoleByName(speakerName)
+  return {
+    speakerName: speakerRole?.name || String(speakerName || '').trim() || roleInfo.name,
+    avatarUrl: speakerRole?.avatar_url,
+    avatarId: speakerRole?.avatar_id,
+  }
+}
+
+const backfillChatAvatarsFromSceneRoles = () => {
+  if (!sceneRoles.value.length) return
+  chatHistory.value = chatHistory.value.map((message) => {
+    if (message.role !== 'assistant') return message
+    const meta = resolveSpeakerMeta(message.speakerName || roleInfo.name)
+    if (!meta.avatarUrl && meta.avatarId == null) return message
+    return {
+      ...message,
+      speakerName: meta.speakerName || message.speakerName,
+      avatarUrl: meta.avatarUrl || message.avatarUrl,
+      avatarId: meta.avatarId ?? message.avatarId,
+    }
+  })
+}
 
 const normalizeSuggestedItems = (payload: unknown): SuggestedQuestionItem[] => {
   if (Array.isArray(payload) && payload.length && typeof payload[0] === 'object') {
     return payload
-      .map((item: any) => ({
-        text: String(item?.text || '').trim(),
-        category: String(item?.category || '追问').trim() || '追问',
-        target_role_name: item?.target_role_name || null,
-      }))
-      .filter((item) => item.text && !META_QUESTION_PATTERN.test(item.text) && item.text.length <= 48)
-      .slice(0, 3)
+      .map((item: any) => {
+        const category = String(item?.category || '追问').trim() || '追问'
+        const rawKind = String(item?.kind || '').trim()
+        const kind = rawKind === 'plot_advance' || rawKind === 'hint'
+          ? rawKind
+          : (category.includes('推进') || category.includes('剧情') ? 'plot_advance' : 'hint')
+        return {
+          text: String(item?.text || '').trim(),
+          category,
+          kind,
+          target_role_name: item?.target_role_name || null,
+        }
+      })
+      .filter((item) => (
+        item.text
+        && !META_QUESTION_PATTERN.test(item.text)
+        && !COACH_QUESTION_PATTERN.test(item.text)
+        && !item.text.includes('…')
+        && !item.text.includes('...')
+        && item.text.length <= 56
+      ))
+      .filter((item) => !usedSuggestedQuestionTexts.value.includes(item.text))
+      .slice(0, 6)
   }
   const list = Array.isArray(payload) ? payload : []
   return list
     .map((item) => String(item || '').trim())
-    .filter((item) => item && !META_QUESTION_PATTERN.test(item) && item.length <= 48)
-    .slice(0, 3)
-    .map((text) => ({ text, category: '追问', target_role_name: null }))
+    .filter((item) => (
+      item
+      && !META_QUESTION_PATTERN.test(item)
+      && !COACH_QUESTION_PATTERN.test(item)
+      && !item.includes('…')
+      && !item.includes('...')
+      && item.length <= 56
+    ))
+    .filter((item) => !usedSuggestedQuestionTexts.value.includes(item))
+    .slice(0, 6)
+    .map((text) => ({ text, category: '快速发言', kind: 'hint' as const, target_role_name: null }))
 }
 
 const applySuggestedQuestions = (items: unknown, fallbackTexts?: unknown) => {
@@ -690,7 +795,9 @@ const applySuggestedQuestions = (items: unknown, fallbackTexts?: unknown) => {
     suggestedQuestionItems.value = normalized
     return
   }
-  suggestedQuestionItems.value = normalizeSuggestedItems(fallbackTexts)
+  // 空结果不回退展示旧批次，避免「偷懒复用」观感。
+  const fallback = normalizeSuggestedItems(fallbackTexts)
+  suggestedQuestionItems.value = fallback
 }
 
 const applySuggestedQuestion = (item: SuggestedQuestionItem | string) => {
@@ -698,6 +805,11 @@ const applySuggestedQuestion = (item: SuggestedQuestionItem | string) => {
   const text = String(payload?.text || '').trim()
   if (!text || isAssistantBusy.value) return
   inputMessage.value = text
+  if (text && !usedSuggestedQuestionTexts.value.includes(text)) {
+    usedSuggestedQuestionTexts.value = [...usedSuggestedQuestionTexts.value, text].slice(-40)
+  }
+  // 点选后从当前批次移除，避免同一轮重复点同一句。
+  suggestedQuestionItems.value = suggestedQuestionItems.value.filter((row) => row.text !== text)
   const roleName = String(payload?.target_role_name || '').trim()
   if (roleName) {
     targetRoleName.value = roleName
@@ -852,15 +964,6 @@ const consumeAssistantStream = async (response: Response) => {
   let buffer = ''
   let pendingRow: AssistantStreamRow | null = null
 
-  const resolveSpeakerMeta = (speakerName: string) => {
-    const speakerRole = sceneRoles.value.find((role) => role.name === speakerName)
-    return {
-      speakerName,
-      avatarUrl: speakerRole?.avatar_url,
-      avatarId: speakerRole?.avatar_id,
-    }
-  }
-
   const consumeBlock = async (block: string) => {
     const parsed = parseSseBlock(block)
     if (!parsed) return
@@ -882,7 +985,9 @@ const consumeAssistantStream = async (response: Response) => {
         role: 'assistant',
         content: '',
         pending: true,
-        ...meta,
+        speakerName: meta.speakerName,
+        avatarUrl: data.avatar_url || meta.avatarUrl,
+        avatarId: data.avatar_id ?? meta.avatarId,
       }
       chatHistory.value.push(pendingRow)
       await nextTick()
@@ -900,8 +1005,8 @@ const consumeAssistantStream = async (response: Response) => {
       pendingRow.content = content
       pendingRow.pending = false
       pendingRow.speakerName = meta.speakerName
-      pendingRow.avatarUrl = meta.avatarUrl
-      pendingRow.avatarId = meta.avatarId
+      pendingRow.avatarUrl = chunk.avatar_url || meta.avatarUrl || pendingRow.avatarUrl
+      pendingRow.avatarId = chunk.avatar_id ?? meta.avatarId ?? pendingRow.avatarId
       assistantRows.push({ ...pendingRow })
       pendingRow = null
     } else {
@@ -910,7 +1015,9 @@ const consumeAssistantStream = async (response: Response) => {
         role: 'assistant',
         content,
         pending: false,
-        ...meta,
+        speakerName: meta.speakerName,
+        avatarUrl: chunk.avatar_url || meta.avatarUrl,
+        avatarId: chunk.avatar_id ?? meta.avatarId,
       }
       if (chatHistory.value.some((message) => message.id === row.id)) return
       assistantRows.push(row)
@@ -967,6 +1074,11 @@ const maybeStartOpening = async () => {
     const response = await requestOpeningStream()
     const { result, assistantRows } = await consumeAssistantStream(response)
     if (!result.opening_delivered) throw new Error('开场对话未生成')
+    if (Array.isArray(result.scene_roles) && result.scene_roles.length) {
+      sceneRoles.value = result.scene_roles
+    }
+    applyGuidancePayload(result)
+    backfillChatAvatarsFromSceneRoles()
     if (!assistantRows.length && !chatHistory.value.some((message) => message.role === 'assistant')) {
       throw new Error('开场对话内容为空')
     }
@@ -986,14 +1098,14 @@ const playAssistantReplies = async (res: any, baseId: number) => {
 
   for (let index = 0; index < items.length; index += 1) {
       const item = items[index]
-      const speakerRole = sceneRoles.value.find((r) => r.name === item.speakerName)
+      const meta = resolveSpeakerMeta(item.speakerName)
       const message = {
         id: baseId + index,
         role: 'assistant',
         content: '',
-        speakerName: item.speakerName,
-        avatarUrl: speakerRole?.avatar_url,
-        avatarId: speakerRole?.avatar_id,
+        speakerName: meta.speakerName || item.speakerName,
+        avatarUrl: meta.avatarUrl,
+        avatarId: meta.avatarId,
       }
       chatHistory.value.push(message)
       await streamTextIntoMessage(message, item.content)
@@ -1094,17 +1206,20 @@ const fetchSessionData = async () => {
         content: buildSystemIntro(res.scene_name, res.role_name, sceneRoles.value),
       },
       ...persistedMessages.map((message: any) => {
-        const speaker = message.role === 'assistant' ? sceneRoles.value.find((r) => r.name === (message.speaker_name || '')) : null
+        const meta = message.role === 'assistant'
+          ? resolveSpeakerMeta(message.speaker_name || roleInfo.name)
+          : { speakerName: undefined, avatarUrl: undefined, avatarId: undefined }
         return {
           id: message.id,
           role: message.role === 'user' ? 'human' : message.role === 'system' ? 'system' : 'assistant',
           content: message.content,
-          speakerName: message.speaker_name || undefined,
-          avatarUrl: speaker?.avatar_url,
-          avatarId: speaker?.avatar_id,
+          speakerName: meta.speakerName || message.speaker_name || undefined,
+          avatarUrl: meta.avatarUrl,
+          avatarId: meta.avatarId,
         }
       })
     ]
+    backfillChatAvatarsFromSceneRoles()
     scrollToBottom()
 
     suppressedBriefThisSession.value = isBriefSuppressedInSession()
@@ -1159,6 +1274,7 @@ const onSuppressCheckboxChange = (event: Event) => {
 }
 
 const handleBriefStartTraining = () => {
+  if (suppressedBriefThisSession.value) suppressBriefInSession()
   briefAcknowledged.value = true
   showCaseBrief.value = false
 }
@@ -1313,6 +1429,10 @@ const goToEvaluationPage = (targetSessionId: string) => {
 
 const finishTraining = async () => {
   if (isFinishingTraining.value || !sessionId.value) return
+  if (!faceTerminated.value && !hasValidUserRound.value) {
+    showToast('请至少完成一轮有效发言后再结束训练')
+    return
+  }
   isFinishingTraining.value = true
   faceGuardRef.value?.stopCamera?.()
   const targetSessionId = sessionId.value
@@ -1322,9 +1442,12 @@ const finishTraining = async () => {
     duration: 0,
   })
   try {
-    await request.post(`/training/finish/${targetSessionId}`, null, { _skipErrorToast: true } as any)
+    await request.post(`/training/finish/${targetSessionId}`, null, {
+      timeout: faceTerminated.value ? 300000 : 120000,
+      _skipErrorToast: true,
+    } as any)
   } catch {
-    showToast('评估报告生成失败')
+    showToast(faceTerminated.value ? '评估报告生成失败，进入报告页后将自动重试' : '评估报告生成失败')
   } finally {
     loader.close()
     isFinishingTraining.value = false
@@ -1358,11 +1481,16 @@ const handleFaceFailed = (message: string) => {
   }
 }
 
-const handleFaceTerminated = () => {
+const handleFaceTerminated = async (payload?: any) => {
   if (isFinishingTraining.value) return
   faceVerified.value = false
   faceTerminated.value = true
-  void finishTraining()
+  const reason = localizeFaceMessage(
+    payload?.reason || payload?.last_reason,
+    '人脸验证连续异常，正在进入评估环节。',
+  )
+  showToast(reason)
+  await finishTraining()
 }
 
 const getDifficultyColor = (diff: string) => {
@@ -1384,6 +1512,21 @@ const scrollToBottom = () => {
 watch(sceneReadyForOpening, (ready) => {
   if (ready) void maybeStartOpening()
 }, { flush: 'post' })
+
+watch(
+  sceneRoles,
+  () => {
+    backfillChatAvatarsFromSceneRoles()
+  },
+  { deep: true },
+)
+
+watch(sessionId, () => {
+  faceVerified.value = false
+  faceTerminated.value = false
+  usedSuggestedQuestionTexts.value = []
+  suggestedQuestionItems.value = []
+})
 
 onMounted(fetchSessionData)
 </script>
@@ -1653,6 +1796,33 @@ onMounted(fetchSessionData)
   gap: 8px;
 }
 
+.suggested-questions__group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.suggested-questions__group-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #86909c;
+}
+
+.suggested-question-chip--hint {
+  border-color: #d9e8ff;
+  background: #f7fbff;
+}
+
+.suggested-question-chip--plot {
+  border-color: #ffe4c2;
+  background: #fff9f0;
+}
+
+.suggested-question-chip--plot .suggested-question-chip__cat {
+  background: #fff1e0;
+  color: #d46b08;
+}
+
 .suggested-question-chip {
   max-width: 100%;
   border: 1px solid #d9e8ff;
@@ -1716,7 +1886,40 @@ onMounted(fetchSessionData)
   border-radius: 13px;
   border: 1px solid #e5e6eb;
   box-shadow: 0 20px 52px rgba(15, 23, 42, 0.16);
-  overflow: hidden;
+  max-height: min(680px, 92vh);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.brief-face-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border: 1px solid #fb923c;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fff7ed 0%, #ffedd5 100%);
+  color: #9a3412;
+  font-size: 13px;
+  line-height: 1.6;
+  box-shadow: 0 8px 20px rgba(234, 88, 12, 0.12);
+}
+
+.brief-face-alert__copy {
+  display: grid;
+  gap: 4px;
+}
+
+.brief-face-alert__copy strong {
+  color: #c2410c;
+  font-size: 14px;
+}
+
+.brief-face-alert .van-icon {
+  margin-top: 2px;
+  flex: 0 0 auto;
+  color: #ea580c;
 }
 
 .brief-dialog__header {
@@ -2607,7 +2810,8 @@ onMounted(fetchSessionData)
 
 .brief-dialog {
   max-height: min(680px, 92vh);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: #fff;
   border-radius: 12px;
   border: 1px solid #e5e7eb;
@@ -2681,8 +2885,6 @@ onMounted(fetchSessionData)
 }
 
 .brief-page {
-  max-height: min(680px, 92vh);
-  overflow: hidden;
   padding: 20px 24px 18px;
   display: flex;
   flex-direction: column;
@@ -2761,15 +2963,12 @@ onMounted(fetchSessionData)
 }
 
 .brief-layout {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: hidden;
+  flex: 0 0 auto;
 }
 
 .brief-layout--single {
   display: flex;
   flex-direction: column;
-  min-height: 0;
 }
 
 .brief-card {
@@ -2829,8 +3028,6 @@ onMounted(fetchSessionData)
 
 .brief-main {
   padding: 16px 18px;
-  max-height: 100%;
-  overflow-y: auto;
 }
 
 .brief-info-section + .brief-info-section {
@@ -2989,9 +3186,7 @@ onMounted(fetchSessionData)
 
 .brief-warm-tip span {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.55;
 }
 
 .brief-actions {

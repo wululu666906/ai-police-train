@@ -13,7 +13,7 @@ class AgentWorkflowUnavailable(RuntimeError):
 
 
 class AgentWorkflowClient:
-    contract_version = "2026-08-24"
+    contract_version = "2026-08-26-script-first"
 
     def __init__(self) -> None:
         self._health_checked_at = 0.0
@@ -51,7 +51,7 @@ class AgentWorkflowClient:
 
     def execute_case_import(self, *, workflow_id: str, case_id: str, source_text: str, idempotency_key: str) -> dict[str, Any]:
         base_url = os.getenv("AI_WORKFLOW_URL", "http://127.0.0.1:8020").rstrip("/")
-        timeout = float(os.getenv("CASE_IMPORT_TIMEOUT_SECONDS", "180"))
+        timeout = float(os.getenv("CASE_IMPORT_TIMEOUT_SECONDS", "900"))
         self._ensure_compatible(base_url, timeout)
         try:
             response = httpx.post(
@@ -82,7 +82,7 @@ class AgentWorkflowClient:
     ) -> dict[str, Any]:
         headers = self._headers(idempotency_key)
         base_url = os.getenv("AI_WORKFLOW_URL", "http://127.0.0.1:8020").rstrip("/")
-        timeout = float(os.getenv("AI_WORKFLOW_TIMEOUT_SECONDS", "120"))
+        timeout = float(os.getenv("AI_WORKFLOW_TIMEOUT_SECONDS", "900"))
         self._ensure_compatible(base_url, timeout)
         try:
             response = httpx.post(

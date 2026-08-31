@@ -23,8 +23,17 @@ from services.object_storage_service import (
 
 PLAYBACK_ASSET_KIND = "hls_manifest"
 HLS_SEGMENT_SECONDS = max(4, int(os.getenv("VIDEO_HLS_SEGMENT_SECONDS", "10")))
-FFMPEG_BINARY = os.getenv("FFMPEG_BINARY", "ffmpeg")
 IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
+
+def _resolve_ffmpeg_binary() -> str:
+    configured = (os.getenv("FFMPEG_BINARY") or "").strip()
+    if configured and (os.path.isfile(configured) or shutil.which(configured)):
+        return configured
+    return shutil.which("ffmpeg") or "ffmpeg"
+
+
+FFMPEG_BINARY = _resolve_ffmpeg_binary()
 
 _job_queue: queue.Queue[int] = queue.Queue()
 _queued_ids: set[int] = set()
@@ -138,7 +147,7 @@ def _process_video(video_id: int) -> None:
             suffix=suffix,
         ) as input_path:
             command = [
-                FFMPEG_BINARY,
+                _resolve_ffmpeg_binary(),
                 "-hide_banner",
                 "-loglevel",
                 "error",
