@@ -45,6 +45,10 @@ backend/static/session_media/**/*.webm
 backend/static/session_media/**/*.mp4
 !backend/static/session_media/.gitkeep
 
+# HLS/fMP4 packaging scratch output
+/init.mp4
+/backend/init.mp4
+
 # Secrets — never commit real keys (keep local backend/.env)
 .env
 .env.local
